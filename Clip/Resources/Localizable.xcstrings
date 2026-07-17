@@ -1,0 +1,830 @@
+{
+  "sourceLanguage" : "en",
+  "strings" : {
+    "" : {
+
+    },
+    "%@ / %@" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "%1$@ / %2$@"
+          }
+        }
+      }
+    },
+    "%@ and its Clip-managed file will be permanently deleted." : {
+
+    },
+    "%@ could not use %@. That shortcut may already be used by macOS or another app. Choose another shortcut in Clip Settings." : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "%1$@ could not use %2$@. That shortcut may already be used by macOS or another app. Choose another shortcut in Clip Settings."
+          }
+        }
+      }
+    },
+    "%@ has no visible windows on the original display." : {
+
+    },
+    "%@, %@" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "%1$@, %2$@"
+          }
+        }
+      }
+    },
+    "%lld" : {
+
+    },
+    "1 day" : {
+
+    },
+    "1 second" : {
+
+    },
+    "10 MB" : {
+
+    },
+    "25 MB" : {
+
+    },
+    "3 seconds" : {
+
+    },
+    "30 FPS" : {
+
+    },
+    "30 days" : {
+
+    },
+    "5 seconds" : {
+
+    },
+    "60 FPS" : {
+
+    },
+    "7 days" : {
+
+    },
+    "A recording is already in progress." : {
+
+    },
+    "A retake is already in progress." : {
+
+    },
+    "All visible windows on this display" : {
+
+    },
+    "macOS must allow this exact Clip build. If Clip already appears enabled, turn it off and on again, or remove it and re-add /Applications/Clip.app. Then quit and reopen Clip." : {
+
+    },
+    "Allow Screen Recording" : {
+
+    },
+    "Allow screen recording" : {
+
+    },
+    "Allowed" : {
+
+    },
+    "An ad-hoc rebuilt app may need privacy approval again if macOS treats it as a new code identity." : {
+
+    },
+    "Apply" : {
+
+    },
+    "Approximate target" : {
+
+    },
+    "Audio is optional" : {
+
+    },
+    "Audio removed" : {
+
+    },
+    "Back" : {
+
+    },
+    "Calculating storage usage…" : {
+
+    },
+    "Cancel" : {
+
+    },
+    "Cancel Recording" : {
+
+    },
+    "Capture" : {
+
+    },
+    "Capture App" : {
+
+    },
+    "Capture App…" : {
+
+    },
+    "Capture Area" : {
+
+    },
+    "Capture Area…" : {
+
+    },
+    "Capture shortcut" : {
+
+    },
+    "Capture target prepared" : {
+
+    },
+    "Choose" : {
+
+    },
+    "Choose a valid destination for the MP4 file." : {
+
+    },
+    "Choose an area or display before recording." : {
+
+    },
+    "Choose any target from 1 MB through 500 MB. The result is approximate." : {
+
+    },
+    "Choose the folder Clip shows first when you use Save As." : {
+
+    },
+    "Choose this display" : {
+
+    },
+    "Choose…" : {
+
+    },
+    "Cleanup candidates" : {
+
+    },
+    "Clear All" : {
+
+    },
+    "Clear All History?" : {
+
+    },
+    "Clear All…" : {
+
+    },
+    "Clear Recording History" : {
+
+    },
+    "Clear Recording History?" : {
+
+    },
+    "Clear Recording History…" : {
+
+    },
+    "Click, then type the new shortcut. Press Escape to cancel." : {
+
+    },
+    "Clip" : {
+
+    },
+    "Clip History" : {
+
+    },
+    "Clip Settings" : {
+
+    },
+    "Clip could not keep access to the selected folder. Choose it again." : {
+
+    },
+    "Clip could not place the video file on the clipboard." : {
+
+    },
+    "Clip could not prepare a recoverable recording file. Check available storage and try again." : {
+
+    },
+    "Clip could not start" : {
+
+    },
+    "Clip could not start its global shortcut handler. Restart Clip and try again." : {
+
+    },
+    "Clip couldn’t update History. The shared MP4 is still available." : {
+
+    },
+    "Clip countdown" : {
+
+    },
+    "Clip does not request Accessibility access." : {
+
+    },
+    "Clip is paused" : {
+
+    },
+    "Clip is recording" : {
+
+    },
+    "Clip lives in the menu bar. Use the global Capture shortcut from any app, or click the Clip icon to choose an area, Last Area, or a full display." : {
+
+    },
+    "Clip needs Screen & System Audio Recording access to record only the area or display you choose. Recordings stay local on this Mac." : {
+
+    },
+    "Clip never removes files you create with Save As." : {
+
+    },
+    "Clip retake countdown" : {
+
+    },
+    "Close Preview after explicit Copy" : {
+
+    },
+    "Compact" : {
+
+    },
+    "Continue" : {
+
+    },
+    "Copy" : {
+
+    },
+    "Crisp" : {
+
+    },
+    "Current microphone" : {
+
+    },
+    "Current usage" : {
+
+    },
+    "Custom" : {
+
+    },
+    "Custom target" : {
+
+    },
+    "Customize Shortcuts in Settings…" : {
+
+    },
+    "Default Save As folder" : {
+
+    },
+    "Default capture mode" : {
+
+    },
+    "Default filename format" : {
+
+    },
+    "Default preset" : {
+
+    },
+    "Delete" : {
+
+    },
+    "Delete Recording" : {
+
+    },
+    "Delete Recording?" : {
+
+    },
+    "Delete this recording?" : {
+
+    },
+    "Delete…" : {
+
+    },
+    "Denied" : {
+
+    },
+    "Deterministic UI scenarios are available only in isolated UI-test launches." : {
+
+    },
+    "Discard Recording" : {
+
+    },
+    "Discard this recording?" : {
+
+    },
+    "Dismiss error" : {
+
+    },
+    "Display" : {
+
+    },
+    "Done" : {
+
+    },
+    "Drag anywhere on this display" : {
+
+    },
+    "Drag this video into a compatible app" : {
+
+    },
+    "Drag video to share" : {
+
+    },
+    "Dragging, Copy, and Save As always use the edited filename and current trim." : {
+
+    },
+    "Draw an area" : {
+
+    },
+    "Elapsed time: %@" : {
+
+    },
+    "Enter a filename format, such as clip-YYYYMMDD-HHmmss.mp4." : {
+
+    },
+    "Enter a valid MP4 filename without folders or control characters." : {
+
+    },
+    "Enter a valid filename format." : {
+
+    },
+    "Example: %@" : {
+
+    },
+    "Export" : {
+
+    },
+    "File names" : {
+
+    },
+    "Filename" : {
+
+    },
+    "Finish" : {
+
+    },
+    "Finish the current Preview operation before opening another recording." : {
+
+    },
+    "Finished recordings will appear here until the configured cleanup date." : {
+
+    },
+    "Finishing…" : {
+
+    },
+    "Frame rate" : {
+
+    },
+    "Fullscreen" : {
+
+    },
+    "Fullscreen selected" : {
+
+    },
+    "General" : {
+
+    },
+    "Global shortcuts" : {
+
+    },
+    "History" : {
+
+    },
+    "History recordings" : {
+
+    },
+    "Indefinitely" : {
+
+    },
+    "Input unavailable" : {
+
+    },
+    "Keep Recording" : {
+
+    },
+    "Keep original recording after export" : {
+
+    },
+    "Keep recordings" : {
+
+    },
+    "Last Area" : {
+
+    },
+    "Launch Clip at login" : {
+
+    },
+    "MB" : {
+
+    },
+    "Managed history" : {
+
+    },
+    "Megabytes" : {
+
+    },
+    "Microphone" : {
+
+    },
+    "Microphone and system audio became unavailable. Video recording continues." : {
+
+    },
+    "Microphone became unavailable. Video recording continues without microphone audio." : {
+
+    },
+    "Microphone: Off" : {
+
+    },
+    "More Actions" : {
+
+    },
+    "No Recordings" : {
+
+    },
+    "No visible application windows are available to record." : {
+
+    },
+    "Not Now" : {
+
+    },
+    "Not requested" : {
+
+    },
+    "OK" : {
+
+    },
+    "Off" : {
+
+    },
+    "On" : {
+
+    },
+    "Only an MP4 video can be copied." : {
+
+    },
+    "Open %@, %@" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Open %1$@, %2$@"
+          }
+        }
+      }
+    },
+    "Open System Settings" : {
+
+    },
+    "Pause" : {
+
+    },
+    "Pause or Resume" : {
+
+    },
+    "Paused" : {
+
+    },
+    "Paused time is excluded from the clip." : {
+
+    },
+    "Permission denied" : {
+
+    },
+    "Permission requested when enabled" : {
+
+    },
+    "Permission restricted" : {
+
+    },
+    "Permissions" : {
+
+    },
+    "Play" : {
+
+    },
+    "Playback is muted and shared files contain no audio." : {
+
+    },
+    "Preview" : {
+
+    },
+    "Previous Area" : {
+
+    },
+    "Quality" : {
+
+    },
+    "Quick screen recordings" : {
+
+    },
+    "Quit" : {
+
+    },
+    "Quit Clip" : {
+
+    },
+    "Ready to record" : {
+
+    },
+    "Ready when you are" : {
+
+    },
+    "Recent Recordings" : {
+
+    },
+    "Record" : {
+
+    },
+    "Record App" : {
+
+    },
+    "Record global shortcut" : {
+
+    },
+    "Record microphone" : {
+
+    },
+    "Record system audio" : {
+
+    },
+    "Record without audio, with the current default microphone, with system audio, or with both. Audio starts Off and its permissions are requested only when you enable it." : {
+
+    },
+    "Recording" : {
+
+    },
+    "Recording Saved" : {
+
+    },
+    "Recording needs at least %@ of free space. Only %@ is available." : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Recording needs at least %1$@ of free space. Only %2$@ is available."
+          }
+        }
+      }
+    },
+    "Recording starts in %lld" : {
+
+    },
+    "Recording stopped because free disk space fell to %@. The captured video will be finalized." : {
+
+    },
+    "Recordings are stored locally on this Mac." : {
+
+    },
+    "Recorded audio is included in playback and shared files." : {
+
+    },
+    "Refresh" : {
+
+    },
+    "Refresh History" : {
+
+    },
+    "Refresh Usage" : {
+
+    },
+    "Remember the last area" : {
+
+    },
+    "Remove after export or share" : {
+
+    },
+    "Remove audio" : {
+
+    },
+    "Rename" : {
+
+    },
+    "Rename Recording" : {
+
+    },
+    "Rename…" : {
+
+    },
+    "Request Screen Recording Access" : {
+
+    },
+    "Reset Trim" : {
+
+    },
+    "Restore Default Shortcuts" : {
+
+    },
+    "Restricted" : {
+
+    },
+    "Resume" : {
+
+    },
+    "Retake" : {
+
+    },
+    "Reveal" : {
+
+    },
+    "Reveal in Finder" : {
+
+    },
+    "Save As…" : {
+
+    },
+    "Save an independent MP4 file. Clip will never delete it." : {
+
+    },
+    "Screen & System Audio Recording" : {
+
+    },
+    "Screen Recording Is Not Allowed" : {
+
+    },
+    "Screen Recording allowed" : {
+
+    },
+    "Screen Recording denied" : {
+
+    },
+    "Screen Recording not requested" : {
+
+    },
+    "Screen Recording restricted" : {
+
+    },
+    "Select Display" : {
+
+    },
+    "Select an area, record a short demonstration, trim it, then drag or copy a compact MP4 in seconds. Everything stays on this Mac." : {
+
+    },
+    "Select, record, trim, drag or copy" : {
+
+    },
+    "Selected Area" : {
+
+    },
+    "Settings" : {
+
+    },
+    "Show Clip in the Dock" : {
+
+    },
+    "Show cursor" : {
+
+    },
+    "Silent countdown" : {
+
+    },
+    "Smallest" : {
+
+    },
+    "Space" : {
+
+    },
+    "Start Using Clip" : {
+
+    },
+    "Storage" : {
+
+    },
+    "Storage usage and cleanup are unavailable until history services finish starting." : {
+
+    },
+    "System Audio" : {
+
+    },
+    "System Audio: Off" : {
+
+    },
+    "System audio became unavailable. Video recording continues without system audio." : {
+
+    },
+    "The Application Support directory is unavailable." : {
+
+    },
+    "The Caches directory is unavailable." : {
+
+    },
+    "The captured video will be permanently discarded." : {
+
+    },
+    "The default Save As location must be a local folder." : {
+
+    },
+    "The deterministic UI scenario did not receive an isolated state directory." : {
+
+    },
+    "The exported video file is unavailable." : {
+
+    },
+    "The filename format cannot be “.” or “..”." : {
+
+    },
+    "The filename format cannot contain / or : characters." : {
+
+    },
+    "The filename format cannot contain line breaks or control characters." : {
+
+    },
+    "The filename format cannot end with a period before .mp4." : {
+
+    },
+    "The filename format is too long. Use no more than 240 UTF-8 bytes before .mp4." : {
+
+    },
+    "The folder also contains %@ of unknown MP4 files. Clip will not delete them." : {
+
+    },
+    "The key “%@” cannot be used as a global shortcut. Use a letter, number, Space, or a standard punctuation key." : {
+
+    },
+    "The original display (%@) is no longer available." : {
+
+    },
+    "The recording did not contain any video frames." : {
+
+    },
+    "The recording does not contain a usable video track." : {
+
+    },
+    "The recording is safe in History. Finish the current Preview operation, then open the recording from History." : {
+
+    },
+    "The retake finished after its Preview was closed." : {
+
+    },
+    "The same global shortcut is assigned to %@. Choose a different shortcut for each action." : {
+
+    },
+    "The screen capture stream ended unexpectedly." : {
+
+    },
+    "The selected Save As folder is no longer available." : {
+
+    },
+    "The selected capture area is too small." : {
+
+    },
+    "The selected display is no longer available." : {
+
+    },
+    "The selected recording is no longer available." : {
+
+    },
+    "There is no recording in progress." : {
+
+    },
+    "This permanently removes Clip-managed recordings. Files created with Save As are never removed." : {
+
+    },
+    "This recording does not contain enough capture information to retake it." : {
+
+    },
+    "This removes the managed recording from Clip History. Files previously saved or shared are not deleted." : {
+
+    },
+    "Tokens: YYYY year, MM month, DD day, HH hour, mm minute, and ss second. They are case-sensitive; .mp4 is added automatically." : {
+
+    },
+    "Trim end" : {
+
+    },
+    "Trim start" : {
+
+    },
+    "Try Another Shortcut" : {
+
+    },
+    "Two actions use the same shortcut." : {
+
+    },
+    "Type Shortcut" : {
+
+    },
+    "Unavailable" : {
+
+    },
+    "Video continues without microphone audio." : {
+
+    },
+    "Video timeline" : {
+
+    },
+    "Waiting for the first video frame…" : {
+
+    },
+    "Welcome to Clip" : {
+
+    },
+    "Working" : {
+
+    },
+    "You can continue now and grant access when you make the first recording." : {
+
+    },
+    "clip-YYYYMMDD-HHmmss.mp4" : {
+
+    },
+    "macOS requires Screen & System Audio Recording access before Clip can record the area or display you choose. Clip excludes its own windows and keeps recordings local." : {
+
+    }
+  },
+  "version" : "1.0"
+}

@@ -1,0 +1,1026 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 56;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		B00000000000000000000001 /* ClipApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = F00000000000000000000001 /* ClipApp.swift */; };
+		B00000000000000000000002 /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = F00000000000000000000002 /* AppDelegate.swift */; };
+		B00000000000000000000003 /* ApplicationCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = F00000000000000000000003 /* ApplicationCoordinator.swift */; };
+		A8D100000000000000000001 /* DeterministicUIScenarioCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = A8D200000000000000000001 /* DeterministicUIScenarioCoordinator.swift */; };
+		E7B100000000000000000001 /* UnattendedCaptureSmokeCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = E7F200000000000000000001 /* UnattendedCaptureSmokeCoordinator.swift */; };
+		B00000000000000000000004 /* MenuBarPopoverView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F00000000000000000000004 /* MenuBarPopoverView.swift */; };
+		B00000000000000000000005 /* ServiceInterfaces.swift in Sources */ = {isa = PBXBuildFile; fileRef = F00000000000000000000005 /* ServiceInterfaces.swift */; };
+		B00000000000000000000006 /* LiveServices.swift in Sources */ = {isa = PBXBuildFile; fileRef = F00000000000000000000006 /* LiveServices.swift */; };
+		B00000000000000000000007 /* ApplicationDirectories.swift in Sources */ = {isa = PBXBuildFile; fileRef = F00000000000000000000007 /* ApplicationDirectories.swift */; };
+		B00000000000000000000008 /* ClipLog.swift in Sources */ = {isa = PBXBuildFile; fileRef = F00000000000000000000008 /* ClipLog.swift */; };
+		B00000000000000000000009 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = F00000000000000000000009 /* Assets.xcassets */; };
+		B0000000000000000000000A /* Localizable.xcstrings in Resources */ = {isa = PBXBuildFile; fileRef = F0000000000000000000000A /* Localizable.xcstrings */; };
+		B0000000000000000000000B /* ApplicationDirectoriesTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F0000000000000000000000D /* ApplicationDirectoriesTests.swift */; };
+		B0000000000000000000000C /* ClipLaunchTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F0000000000000000000000E /* ClipLaunchTests.swift */; };
+		A8D100000000000000000002 /* DeterministicScenarioLaunchTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A8D200000000000000000002 /* DeterministicScenarioLaunchTests.swift */; };
+		B0000000000000000000000D /* main.swift in Sources */ = {isa = PBXBuildFile; fileRef = F0000000000000000000000F /* main.swift */; };
+		BA1100000000000000000001 /* AcceptanceFixture.swift in Sources */ = {isa = PBXBuildFile; fileRef = FA1100000000000000000001 /* AcceptanceFixture.swift */; };
+		BA1100000000000000000002 /* AcceptanceProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = FA1100000000000000000002 /* AcceptanceProtocol.swift */; };
+		BA1100000000000000000003 /* MP4Validation.swift in Sources */ = {isa = PBXBuildFile; fileRef = FA1100000000000000000003 /* MP4Validation.swift */; };
+		BA1100000000000000000004 /* SyntheticMP4Generator.swift in Sources */ = {isa = PBXBuildFile; fileRef = FA1100000000000000000004 /* SyntheticMP4Generator.swift */; };
+		B10000000000000000000001 /* CaptureSelectionAdapter.swift in Sources */ = {isa = PBXBuildFile; fileRef = F10000000000000000000001 /* CaptureSelectionAdapter.swift */; };
+		B10000000000000000000002 /* CaptureSelectionController.swift in Sources */ = {isa = PBXBuildFile; fileRef = F10000000000000000000002 /* CaptureSelectionController.swift */; };
+		B10000000000000000000003 /* CaptureSelectionGeometry.swift in Sources */ = {isa = PBXBuildFile; fileRef = F10000000000000000000003 /* CaptureSelectionGeometry.swift */; };
+		B10000000000000000000004 /* CaptureSelectionModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = F10000000000000000000004 /* CaptureSelectionModels.swift */; };
+		B10000000000000000000005 /* CaptureSelectionOverlayView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F10000000000000000000005 /* CaptureSelectionOverlayView.swift */; };
+		B3A100000000000000000001 /* ApplicationCaptureSelection.swift in Sources */ = {isa = PBXBuildFile; fileRef = F3A200000000000000000001 /* ApplicationCaptureSelection.swift */; };
+		B10000000000000000000006 /* RecordingHUDController.swift in Sources */ = {isa = PBXBuildFile; fileRef = F10000000000000000000006 /* RecordingHUDController.swift */; };
+		B10000000000000000000007 /* RecordingPresentationModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = F10000000000000000000007 /* RecordingPresentationModel.swift */; };
+		B10000000000000000000008 /* RecordingPresentationModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = F10000000000000000000008 /* RecordingPresentationModels.swift */; };
+		B10000000000000000000009 /* RecordingStatusView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F10000000000000000000009 /* RecordingStatusView.swift */; };
+		B1000000000000000000000A /* SilentCountdown.swift in Sources */ = {isa = PBXBuildFile; fileRef = F1000000000000000000000A /* SilentCountdown.swift */; };
+		B1000000000000000000000B /* PreviewModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = F1000000000000000000000B /* PreviewModels.swift */; };
+		B1000000000000000000000C /* PreviewPlayerSurface.swift in Sources */ = {isa = PBXBuildFile; fileRef = F1000000000000000000000C /* PreviewPlayerSurface.swift */; };
+		B1000000000000000000000D /* PreviewTimelineView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F1000000000000000000000D /* PreviewTimelineView.swift */; };
+		B1000000000000000000000E /* PreviewView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F1000000000000000000000E /* PreviewView.swift */; };
+		B1000000000000000000000F /* PreviewViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = F1000000000000000000000F /* PreviewViewModel.swift */; };
+		B10000000000000000000010 /* PreviewExportCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = F10000000000000000000010 /* PreviewExportCoordinator.swift */; };
+		B10000000000000000000011 /* HistoryModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = F10000000000000000000011 /* HistoryModels.swift */; };
+		B10000000000000000000012 /* HistoryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F10000000000000000000012 /* HistoryView.swift */; };
+		B10000000000000000000013 /* HistoryViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = F10000000000000000000013 /* HistoryViewModel.swift */; };
+		B10000000000000000000014 /* AppSettingsModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = F10000000000000000000014 /* AppSettingsModel.swift */; };
+		B10000000000000000000015 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F10000000000000000000015 /* SettingsView.swift */; };
+		B10000000000000000000016 /* ManagedHistoryFileSystem.swift in Sources */ = {isa = PBXBuildFile; fileRef = F10000000000000000000016 /* ManagedHistoryFileSystem.swift */; };
+		B10000000000000000000017 /* ManagedHistoryRepository.swift in Sources */ = {isa = PBXBuildFile; fileRef = F10000000000000000000017 /* ManagedHistoryRepository.swift */; };
+		B10000000000000000000018 /* ApplicationBehaviorService.swift in Sources */ = {isa = PBXBuildFile; fileRef = F10000000000000000000018 /* ApplicationBehaviorService.swift */; };
+		B10000000000000000000019 /* LivePlatformServices.swift in Sources */ = {isa = PBXBuildFile; fileRef = F10000000000000000000019 /* LivePlatformServices.swift */; };
+		B1000000000000000000001A /* NativeCaptureService.swift in Sources */ = {isa = PBXBuildFile; fileRef = F1000000000000000000001A /* NativeCaptureService.swift */; };
+		B1000000000000000000001B /* CaptureSelectionAdapterTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F1000000000000000000001B /* CaptureSelectionAdapterTests.swift */; };
+		B1000000000000000000001C /* LivePlatformServicesTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F1000000000000000000001C /* LivePlatformServicesTests.swift */; };
+		B1000000000000000000001D /* ManagedHistoryRepositoryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F1000000000000000000001D /* ManagedHistoryRepositoryTests.swift */; };
+		B1000000000000000000001E /* GlobalShortcutService.swift in Sources */ = {isa = PBXBuildFile; fileRef = F1000000000000000000001E /* GlobalShortcutService.swift */; };
+		B1000000000000000000001F /* GlobalShortcutServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F1000000000000000000001F /* GlobalShortcutServiceTests.swift */; };
+		B20000000000000000000001 /* ClipCore in Frameworks */ = {isa = PBXBuildFile; productRef = A20000000000000000000001 /* ClipCore */; };
+		B20000000000000000000002 /* ClipMedia in Frameworks */ = {isa = PBXBuildFile; productRef = A20000000000000000000002 /* ClipMedia */; };
+		B20000000000000000000003 /* ClipCore in Frameworks */ = {isa = PBXBuildFile; productRef = A20000000000000000000003 /* ClipCore */; };
+		B20000000000000000000004 /* ClipMedia in Frameworks */ = {isa = PBXBuildFile; productRef = A20000000000000000000004 /* ClipMedia */; };
+		C7A100000000000000000001 /* OnboardingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C7A200000000000000000001 /* OnboardingView.swift */; };
+		C7A100000000000000000002 /* MenuBarPopoverModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C7A200000000000000000002 /* MenuBarPopoverModelTests.swift */; };
+		C7A100000000000000000003 /* OnboardingViewModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C7A200000000000000000003 /* OnboardingViewModelTests.swift */; };
+		D9B100000000000000000001 /* PreviewViewModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D9B200000000000000000001 /* PreviewViewModelTests.swift */; };
+		A8D100000000000000000003 /* SettingsPresentationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A8D200000000000000000003 /* SettingsPresentationTests.swift */; };
+		E1B100000000000000000001 /* CaptureRecoveryRecord.swift in Sources */ = {isa = PBXBuildFile; fileRef = E1F100000000000000000001 /* CaptureRecoveryRecord.swift */; };
+		E1B100000000000000000002 /* CaptureRecoveryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E1F100000000000000000002 /* CaptureRecoveryTests.swift */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		P00000000000000000000001 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = P10000000000000000000001 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = T00000000000000000000001;
+			remoteInfo = Clip;
+		};
+		P00000000000000000000002 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = P10000000000000000000001 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = T00000000000000000000001;
+			remoteInfo = Clip;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXFileReference section */
+		F00000000000000000000001 /* ClipApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ClipApp.swift; sourceTree = "<group>"; };
+		F00000000000000000000002 /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDelegate.swift; sourceTree = "<group>"; };
+		F00000000000000000000003 /* ApplicationCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ApplicationCoordinator.swift; sourceTree = "<group>"; };
+		A8D200000000000000000001 /* DeterministicUIScenarioCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeterministicUIScenarioCoordinator.swift; sourceTree = "<group>"; };
+		E7F200000000000000000001 /* UnattendedCaptureSmokeCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UnattendedCaptureSmokeCoordinator.swift; sourceTree = "<group>"; };
+		F00000000000000000000004 /* MenuBarPopoverView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MenuBarPopoverView.swift; sourceTree = "<group>"; };
+		F00000000000000000000005 /* ServiceInterfaces.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServiceInterfaces.swift; sourceTree = "<group>"; };
+		F00000000000000000000006 /* LiveServices.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveServices.swift; sourceTree = "<group>"; };
+		F00000000000000000000007 /* ApplicationDirectories.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ApplicationDirectories.swift; sourceTree = "<group>"; };
+		F00000000000000000000008 /* ClipLog.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ClipLog.swift; sourceTree = "<group>"; };
+		F00000000000000000000009 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		F0000000000000000000000A /* Localizable.xcstrings */ = {isa = PBXFileReference; lastKnownFileType = text.json.xcstrings; path = Localizable.xcstrings; sourceTree = "<group>"; };
+		F0000000000000000000000B /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		F0000000000000000000000C /* Clip.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = Clip.entitlements; sourceTree = "<group>"; };
+		F0000000000000000000000D /* ApplicationDirectoriesTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ApplicationDirectoriesTests.swift; sourceTree = "<group>"; };
+		F0000000000000000000000E /* ClipLaunchTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ClipLaunchTests.swift; sourceTree = "<group>"; };
+		A8D200000000000000000002 /* DeterministicScenarioLaunchTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeterministicScenarioLaunchTests.swift; sourceTree = "<group>"; };
+		F0000000000000000000000F /* main.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = main.swift; sourceTree = "<group>"; };
+		FA1100000000000000000001 /* AcceptanceFixture.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AcceptanceFixture.swift; sourceTree = "<group>"; };
+		FA1100000000000000000002 /* AcceptanceProtocol.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AcceptanceProtocol.swift; sourceTree = "<group>"; };
+		FA1100000000000000000003 /* MP4Validation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MP4Validation.swift; sourceTree = "<group>"; };
+		FA1100000000000000000004 /* SyntheticMP4Generator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SyntheticMP4Generator.swift; sourceTree = "<group>"; };
+		F00000000000000000000010 /* Clip.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Clip.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		F00000000000000000000011 /* ClipTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = ClipTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		F00000000000000000000012 /* ClipUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = ClipUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		F00000000000000000000013 /* ClipTestHelper */ = {isa = PBXFileReference; explicitFileType = "compiled.mach-o.executable"; includeInIndex = 0; path = ClipTestHelper; sourceTree = BUILT_PRODUCTS_DIR; };
+		F10000000000000000000001 /* CaptureSelectionAdapter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CaptureSelectionAdapter.swift; sourceTree = "<group>"; };
+		F10000000000000000000002 /* CaptureSelectionController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CaptureSelectionController.swift; sourceTree = "<group>"; };
+		F10000000000000000000003 /* CaptureSelectionGeometry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CaptureSelectionGeometry.swift; sourceTree = "<group>"; };
+		F10000000000000000000004 /* CaptureSelectionModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CaptureSelectionModels.swift; sourceTree = "<group>"; };
+		F10000000000000000000005 /* CaptureSelectionOverlayView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CaptureSelectionOverlayView.swift; sourceTree = "<group>"; };
+		F3A200000000000000000001 /* ApplicationCaptureSelection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ApplicationCaptureSelection.swift; sourceTree = "<group>"; };
+		F10000000000000000000006 /* RecordingHUDController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecordingHUDController.swift; sourceTree = "<group>"; };
+		F10000000000000000000007 /* RecordingPresentationModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecordingPresentationModel.swift; sourceTree = "<group>"; };
+		F10000000000000000000008 /* RecordingPresentationModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecordingPresentationModels.swift; sourceTree = "<group>"; };
+		F10000000000000000000009 /* RecordingStatusView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecordingStatusView.swift; sourceTree = "<group>"; };
+		F1000000000000000000000A /* SilentCountdown.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SilentCountdown.swift; sourceTree = "<group>"; };
+		F1000000000000000000000B /* PreviewModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PreviewModels.swift; sourceTree = "<group>"; };
+		F1000000000000000000000C /* PreviewPlayerSurface.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PreviewPlayerSurface.swift; sourceTree = "<group>"; };
+		F1000000000000000000000D /* PreviewTimelineView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PreviewTimelineView.swift; sourceTree = "<group>"; };
+		F1000000000000000000000E /* PreviewView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PreviewView.swift; sourceTree = "<group>"; };
+		F1000000000000000000000F /* PreviewViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PreviewViewModel.swift; sourceTree = "<group>"; };
+		F10000000000000000000010 /* PreviewExportCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PreviewExportCoordinator.swift; sourceTree = "<group>"; };
+		F10000000000000000000011 /* HistoryModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HistoryModels.swift; sourceTree = "<group>"; };
+		F10000000000000000000012 /* HistoryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HistoryView.swift; sourceTree = "<group>"; };
+		F10000000000000000000013 /* HistoryViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HistoryViewModel.swift; sourceTree = "<group>"; };
+		F10000000000000000000014 /* AppSettingsModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppSettingsModel.swift; sourceTree = "<group>"; };
+		F10000000000000000000015 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
+		F10000000000000000000016 /* ManagedHistoryFileSystem.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ManagedHistoryFileSystem.swift; sourceTree = "<group>"; };
+		F10000000000000000000017 /* ManagedHistoryRepository.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ManagedHistoryRepository.swift; sourceTree = "<group>"; };
+		F10000000000000000000018 /* ApplicationBehaviorService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ApplicationBehaviorService.swift; sourceTree = "<group>"; };
+		F10000000000000000000019 /* LivePlatformServices.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LivePlatformServices.swift; sourceTree = "<group>"; };
+		F1000000000000000000001A /* NativeCaptureService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeCaptureService.swift; sourceTree = "<group>"; };
+		F1000000000000000000001B /* CaptureSelectionAdapterTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CaptureSelectionAdapterTests.swift; sourceTree = "<group>"; };
+		F1000000000000000000001C /* LivePlatformServicesTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LivePlatformServicesTests.swift; sourceTree = "<group>"; };
+		F1000000000000000000001D /* ManagedHistoryRepositoryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ManagedHistoryRepositoryTests.swift; sourceTree = "<group>"; };
+		F1000000000000000000001E /* GlobalShortcutService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GlobalShortcutService.swift; sourceTree = "<group>"; };
+		F1000000000000000000001F /* GlobalShortcutServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GlobalShortcutServiceTests.swift; sourceTree = "<group>"; };
+		C7A200000000000000000001 /* OnboardingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OnboardingView.swift; sourceTree = "<group>"; };
+		C7A200000000000000000002 /* MenuBarPopoverModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MenuBarPopoverModelTests.swift; sourceTree = "<group>"; };
+		C7A200000000000000000003 /* OnboardingViewModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OnboardingViewModelTests.swift; sourceTree = "<group>"; };
+		D9B200000000000000000001 /* PreviewViewModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PreviewViewModelTests.swift; sourceTree = "<group>"; };
+		A8D200000000000000000003 /* SettingsPresentationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsPresentationTests.swift; sourceTree = "<group>"; };
+		E1F100000000000000000001 /* CaptureRecoveryRecord.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CaptureRecoveryRecord.swift; sourceTree = "<group>"; };
+		E1F100000000000000000002 /* CaptureRecoveryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CaptureRecoveryTests.swift; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		P20000000000000000000001 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				B20000000000000000000001 /* ClipCore in Frameworks */,
+				B20000000000000000000002 /* ClipMedia in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		P20000000000000000000002 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				B20000000000000000000003 /* ClipCore in Frameworks */,
+				B20000000000000000000004 /* ClipMedia in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		P20000000000000000000003 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		P20000000000000000000004 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		G00000000000000000000001 = {
+			isa = PBXGroup;
+			children = (
+				G00000000000000000000002 /* Clip */,
+				G00000000000000000000008 /* ClipTests */,
+				G00000000000000000000009 /* ClipUITests */,
+				G0000000000000000000000A /* ClipTestHelper */,
+				G0000000000000000000000B /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		G00000000000000000000002 /* Clip */ = {
+			isa = PBXGroup;
+			children = (
+				G00000000000000000000003 /* App */,
+				G10000000000000000000001 /* Capture */,
+				G10000000000000000000002 /* Recording */,
+				G10000000000000000000003 /* Preview */,
+				G10000000000000000000004 /* Export */,
+				G10000000000000000000005 /* History */,
+				G10000000000000000000006 /* Settings */,
+				G10000000000000000000007 /* Storage */,
+				C7A300000000000000000001 /* Onboarding */,
+				G00000000000000000000004 /* UI */,
+				G00000000000000000000005 /* Services */,
+				G00000000000000000000006 /* Infrastructure */,
+				G00000000000000000000007 /* Resources */,
+			);
+			path = Clip;
+			sourceTree = "<group>";
+		};
+		G00000000000000000000003 /* App */ = {
+			isa = PBXGroup;
+			children = (
+				F00000000000000000000001 /* ClipApp.swift */,
+				F00000000000000000000002 /* AppDelegate.swift */,
+				F00000000000000000000003 /* ApplicationCoordinator.swift */,
+				A8D200000000000000000001 /* DeterministicUIScenarioCoordinator.swift */,
+				E7F200000000000000000001 /* UnattendedCaptureSmokeCoordinator.swift */,
+			);
+			path = App;
+			sourceTree = "<group>";
+		};
+		G00000000000000000000004 /* UI */ = {
+			isa = PBXGroup;
+			children = (
+				F00000000000000000000004 /* MenuBarPopoverView.swift */,
+			);
+			path = UI;
+			sourceTree = "<group>";
+		};
+		G00000000000000000000005 /* Services */ = {
+			isa = PBXGroup;
+			children = (
+				F10000000000000000000018 /* ApplicationBehaviorService.swift */,
+				F1000000000000000000001E /* GlobalShortcutService.swift */,
+				F10000000000000000000019 /* LivePlatformServices.swift */,
+				F00000000000000000000005 /* ServiceInterfaces.swift */,
+				F00000000000000000000006 /* LiveServices.swift */,
+				F1000000000000000000001A /* NativeCaptureService.swift */,
+			);
+			path = Services;
+			sourceTree = "<group>";
+		};
+		G00000000000000000000006 /* Infrastructure */ = {
+			isa = PBXGroup;
+			children = (
+				F00000000000000000000007 /* ApplicationDirectories.swift */,
+				F00000000000000000000008 /* ClipLog.swift */,
+			);
+			path = Infrastructure;
+			sourceTree = "<group>";
+		};
+		G00000000000000000000007 /* Resources */ = {
+			isa = PBXGroup;
+			children = (
+				F00000000000000000000009 /* Assets.xcassets */,
+				F0000000000000000000000A /* Localizable.xcstrings */,
+				F0000000000000000000000B /* Info.plist */,
+				F0000000000000000000000C /* Clip.entitlements */,
+			);
+			path = Resources;
+			sourceTree = "<group>";
+		};
+		G10000000000000000000001 /* Capture */ = {
+			isa = PBXGroup;
+			children = (
+				F3A200000000000000000001 /* ApplicationCaptureSelection.swift */,
+				F10000000000000000000001 /* CaptureSelectionAdapter.swift */,
+				F10000000000000000000002 /* CaptureSelectionController.swift */,
+				F10000000000000000000003 /* CaptureSelectionGeometry.swift */,
+				F10000000000000000000004 /* CaptureSelectionModels.swift */,
+				F10000000000000000000005 /* CaptureSelectionOverlayView.swift */,
+			);
+			path = Capture;
+			sourceTree = "<group>";
+		};
+		G10000000000000000000002 /* Recording */ = {
+			isa = PBXGroup;
+			children = (
+				F10000000000000000000006 /* RecordingHUDController.swift */,
+				F10000000000000000000007 /* RecordingPresentationModel.swift */,
+				F10000000000000000000008 /* RecordingPresentationModels.swift */,
+				F10000000000000000000009 /* RecordingStatusView.swift */,
+				F1000000000000000000000A /* SilentCountdown.swift */,
+			);
+			path = Recording;
+			sourceTree = "<group>";
+		};
+		G10000000000000000000003 /* Preview */ = {
+			isa = PBXGroup;
+			children = (
+				F1000000000000000000000B /* PreviewModels.swift */,
+				F1000000000000000000000C /* PreviewPlayerSurface.swift */,
+				F1000000000000000000000D /* PreviewTimelineView.swift */,
+				F1000000000000000000000E /* PreviewView.swift */,
+				F1000000000000000000000F /* PreviewViewModel.swift */,
+			);
+			path = Preview;
+			sourceTree = "<group>";
+		};
+		G10000000000000000000004 /* Export */ = {
+			isa = PBXGroup;
+			children = (
+				F10000000000000000000010 /* PreviewExportCoordinator.swift */,
+			);
+			path = Export;
+			sourceTree = "<group>";
+		};
+		G10000000000000000000005 /* History */ = {
+			isa = PBXGroup;
+			children = (
+				F10000000000000000000011 /* HistoryModels.swift */,
+				F10000000000000000000012 /* HistoryView.swift */,
+				F10000000000000000000013 /* HistoryViewModel.swift */,
+			);
+			path = History;
+			sourceTree = "<group>";
+		};
+		G10000000000000000000006 /* Settings */ = {
+			isa = PBXGroup;
+			children = (
+				F10000000000000000000014 /* AppSettingsModel.swift */,
+				F10000000000000000000015 /* SettingsView.swift */,
+			);
+			path = Settings;
+			sourceTree = "<group>";
+		};
+		G10000000000000000000007 /* Storage */ = {
+			isa = PBXGroup;
+			children = (
+				E1F100000000000000000001 /* CaptureRecoveryRecord.swift */,
+				F10000000000000000000016 /* ManagedHistoryFileSystem.swift */,
+				F10000000000000000000017 /* ManagedHistoryRepository.swift */,
+			);
+			path = Storage;
+			sourceTree = "<group>";
+		};
+		C7A300000000000000000001 /* Onboarding */ = {
+			isa = PBXGroup;
+			children = (
+				C7A200000000000000000001 /* OnboardingView.swift */,
+			);
+			path = Onboarding;
+			sourceTree = "<group>";
+		};
+		G00000000000000000000008 /* ClipTests */ = {
+			isa = PBXGroup;
+			children = (
+				F0000000000000000000000D /* ApplicationDirectoriesTests.swift */,
+				E1F100000000000000000002 /* CaptureRecoveryTests.swift */,
+				F1000000000000000000001B /* CaptureSelectionAdapterTests.swift */,
+				F1000000000000000000001C /* LivePlatformServicesTests.swift */,
+				F1000000000000000000001D /* ManagedHistoryRepositoryTests.swift */,
+				F1000000000000000000001F /* GlobalShortcutServiceTests.swift */,
+				C7A200000000000000000002 /* MenuBarPopoverModelTests.swift */,
+				C7A200000000000000000003 /* OnboardingViewModelTests.swift */,
+				D9B200000000000000000001 /* PreviewViewModelTests.swift */,
+				A8D200000000000000000003 /* SettingsPresentationTests.swift */,
+			);
+			path = ClipTests;
+			sourceTree = "<group>";
+		};
+		G00000000000000000000009 /* ClipUITests */ = {
+			isa = PBXGroup;
+			children = (
+				F0000000000000000000000E /* ClipLaunchTests.swift */,
+				A8D200000000000000000002 /* DeterministicScenarioLaunchTests.swift */,
+			);
+			path = ClipUITests;
+			sourceTree = "<group>";
+		};
+		G0000000000000000000000A /* ClipTestHelper */ = {
+			isa = PBXGroup;
+			children = (
+				FA1100000000000000000001 /* AcceptanceFixture.swift */,
+				FA1100000000000000000002 /* AcceptanceProtocol.swift */,
+				FA1100000000000000000003 /* MP4Validation.swift */,
+				FA1100000000000000000004 /* SyntheticMP4Generator.swift */,
+				F0000000000000000000000F /* main.swift */,
+			);
+			path = ClipTestHelper;
+			sourceTree = "<group>";
+		};
+		G0000000000000000000000B /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				F00000000000000000000010 /* Clip.app */,
+				F00000000000000000000011 /* ClipTests.xctest */,
+				F00000000000000000000012 /* ClipUITests.xctest */,
+				F00000000000000000000013 /* ClipTestHelper */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		T00000000000000000000001 /* Clip */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = L00000000000000000000002 /* Build configuration list for PBXNativeTarget "Clip" */;
+			buildPhases = (
+				P30000000000000000000001 /* Sources */,
+				P20000000000000000000001 /* Frameworks */,
+				P40000000000000000000001 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = Clip;
+			packageProductDependencies = (
+				A20000000000000000000001 /* ClipCore */,
+				A20000000000000000000002 /* ClipMedia */,
+			);
+			productName = Clip;
+			productReference = F00000000000000000000010 /* Clip.app */;
+			productType = "com.apple.product-type.application";
+		};
+		T00000000000000000000002 /* ClipTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = L00000000000000000000003 /* Build configuration list for PBXNativeTarget "ClipTests" */;
+			buildPhases = (
+				P30000000000000000000002 /* Sources */,
+				P20000000000000000000002 /* Frameworks */,
+				P40000000000000000000002 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				D00000000000000000000001 /* PBXTargetDependency */,
+			);
+			name = ClipTests;
+			packageProductDependencies = (
+				A20000000000000000000003 /* ClipCore */,
+				A20000000000000000000004 /* ClipMedia */,
+			);
+			productName = ClipTests;
+			productReference = F00000000000000000000011 /* ClipTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
+		T00000000000000000000003 /* ClipUITests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = L00000000000000000000004 /* Build configuration list for PBXNativeTarget "ClipUITests" */;
+			buildPhases = (
+				P30000000000000000000003 /* Sources */,
+				P20000000000000000000003 /* Frameworks */,
+				P40000000000000000000003 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				D00000000000000000000002 /* PBXTargetDependency */,
+			);
+			name = ClipUITests;
+			productName = ClipUITests;
+			productReference = F00000000000000000000012 /* ClipUITests.xctest */;
+			productType = "com.apple.product-type.bundle.ui-testing";
+		};
+		T00000000000000000000004 /* ClipTestHelper */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = L00000000000000000000005 /* Build configuration list for PBXNativeTarget "ClipTestHelper" */;
+			buildPhases = (
+				P30000000000000000000004 /* Sources */,
+				P20000000000000000000004 /* Frameworks */,
+				P40000000000000000000004 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = ClipTestHelper;
+			productName = ClipTestHelper;
+			productReference = F00000000000000000000013 /* ClipTestHelper */;
+			productType = "com.apple.product-type.tool";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		P10000000000000000000001 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastSwiftUpdateCheck = 2660;
+				LastUpgradeCheck = 2660;
+				TargetAttributes = {
+					T00000000000000000000001 = {
+						CreatedOnToolsVersion = 26.6;
+					};
+					T00000000000000000000002 = {
+						CreatedOnToolsVersion = 26.6;
+						TestTargetID = T00000000000000000000001;
+					};
+					T00000000000000000000003 = {
+						CreatedOnToolsVersion = 26.6;
+						TestTargetID = T00000000000000000000001;
+					};
+					T00000000000000000000004 = {
+						CreatedOnToolsVersion = 26.6;
+					};
+				};
+			};
+			buildConfigurationList = L00000000000000000000001 /* Build configuration list for PBXProject "Clip" */;
+			compatibilityVersion = "Xcode 14.0";
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = G00000000000000000000001;
+			packageReferences = (
+				A10000000000000000000001 /* XCLocalSwiftPackageReference "Packages/ClipCore" */,
+				A10000000000000000000002 /* XCLocalSwiftPackageReference "Packages/ClipMedia" */,
+			);
+			productRefGroup = G0000000000000000000000B /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				T00000000000000000000001 /* Clip */,
+				T00000000000000000000002 /* ClipTests */,
+				T00000000000000000000003 /* ClipUITests */,
+				T00000000000000000000004 /* ClipTestHelper */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		P40000000000000000000001 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				B00000000000000000000009 /* Assets.xcassets in Resources */,
+				B0000000000000000000000A /* Localizable.xcstrings in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		P40000000000000000000002 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		P40000000000000000000003 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		P40000000000000000000004 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		P30000000000000000000001 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				B00000000000000000000001 /* ClipApp.swift in Sources */,
+				B00000000000000000000002 /* AppDelegate.swift in Sources */,
+				B00000000000000000000003 /* ApplicationCoordinator.swift in Sources */,
+				A8D100000000000000000001 /* DeterministicUIScenarioCoordinator.swift in Sources */,
+				E7B100000000000000000001 /* UnattendedCaptureSmokeCoordinator.swift in Sources */,
+				B00000000000000000000004 /* MenuBarPopoverView.swift in Sources */,
+				B00000000000000000000005 /* ServiceInterfaces.swift in Sources */,
+				B00000000000000000000006 /* LiveServices.swift in Sources */,
+				B00000000000000000000007 /* ApplicationDirectories.swift in Sources */,
+				B00000000000000000000008 /* ClipLog.swift in Sources */,
+				B10000000000000000000001 /* CaptureSelectionAdapter.swift in Sources */,
+				B10000000000000000000002 /* CaptureSelectionController.swift in Sources */,
+				B10000000000000000000003 /* CaptureSelectionGeometry.swift in Sources */,
+				B10000000000000000000004 /* CaptureSelectionModels.swift in Sources */,
+				B10000000000000000000005 /* CaptureSelectionOverlayView.swift in Sources */,
+				B3A100000000000000000001 /* ApplicationCaptureSelection.swift in Sources */,
+				B10000000000000000000006 /* RecordingHUDController.swift in Sources */,
+				B10000000000000000000007 /* RecordingPresentationModel.swift in Sources */,
+				B10000000000000000000008 /* RecordingPresentationModels.swift in Sources */,
+				B10000000000000000000009 /* RecordingStatusView.swift in Sources */,
+				B1000000000000000000000A /* SilentCountdown.swift in Sources */,
+				B1000000000000000000000B /* PreviewModels.swift in Sources */,
+				B1000000000000000000000C /* PreviewPlayerSurface.swift in Sources */,
+				B1000000000000000000000D /* PreviewTimelineView.swift in Sources */,
+				B1000000000000000000000E /* PreviewView.swift in Sources */,
+				B1000000000000000000000F /* PreviewViewModel.swift in Sources */,
+				B10000000000000000000010 /* PreviewExportCoordinator.swift in Sources */,
+				B10000000000000000000011 /* HistoryModels.swift in Sources */,
+				B10000000000000000000012 /* HistoryView.swift in Sources */,
+				B10000000000000000000013 /* HistoryViewModel.swift in Sources */,
+				B10000000000000000000014 /* AppSettingsModel.swift in Sources */,
+				B10000000000000000000015 /* SettingsView.swift in Sources */,
+				B10000000000000000000016 /* ManagedHistoryFileSystem.swift in Sources */,
+				B10000000000000000000017 /* ManagedHistoryRepository.swift in Sources */,
+				E1B100000000000000000001 /* CaptureRecoveryRecord.swift in Sources */,
+				B10000000000000000000018 /* ApplicationBehaviorService.swift in Sources */,
+				B10000000000000000000019 /* LivePlatformServices.swift in Sources */,
+				B1000000000000000000001A /* NativeCaptureService.swift in Sources */,
+				B1000000000000000000001E /* GlobalShortcutService.swift in Sources */,
+				C7A100000000000000000001 /* OnboardingView.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		P30000000000000000000002 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				B0000000000000000000000B /* ApplicationDirectoriesTests.swift in Sources */,
+				E1B100000000000000000002 /* CaptureRecoveryTests.swift in Sources */,
+				B1000000000000000000001B /* CaptureSelectionAdapterTests.swift in Sources */,
+				B1000000000000000000001C /* LivePlatformServicesTests.swift in Sources */,
+				B1000000000000000000001D /* ManagedHistoryRepositoryTests.swift in Sources */,
+				B1000000000000000000001F /* GlobalShortcutServiceTests.swift in Sources */,
+				C7A100000000000000000002 /* MenuBarPopoverModelTests.swift in Sources */,
+				C7A100000000000000000003 /* OnboardingViewModelTests.swift in Sources */,
+				D9B100000000000000000001 /* PreviewViewModelTests.swift in Sources */,
+				A8D100000000000000000003 /* SettingsPresentationTests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		P30000000000000000000003 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				B0000000000000000000000C /* ClipLaunchTests.swift in Sources */,
+				A8D100000000000000000002 /* DeterministicScenarioLaunchTests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		P30000000000000000000004 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				BA1100000000000000000001 /* AcceptanceFixture.swift in Sources */,
+				BA1100000000000000000002 /* AcceptanceProtocol.swift in Sources */,
+				BA1100000000000000000003 /* MP4Validation.swift in Sources */,
+				BA1100000000000000000004 /* SyntheticMP4Generator.swift in Sources */,
+				B0000000000000000000000D /* main.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		D00000000000000000000001 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = T00000000000000000000001 /* Clip */;
+			targetProxy = P00000000000000000000001 /* PBXContainerItemProxy */;
+		};
+		D00000000000000000000002 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = T00000000000000000000001 /* Clip */;
+			targetProxy = P00000000000000000000002 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin XCLocalSwiftPackageReference section */
+		A10000000000000000000001 /* XCLocalSwiftPackageReference "Packages/ClipCore" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = Packages/ClipCore;
+		};
+		A10000000000000000000002 /* XCLocalSwiftPackageReference "Packages/ClipMedia" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = Packages/ClipMedia;
+		};
+/* End XCLocalSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		A20000000000000000000001 /* ClipCore */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = A10000000000000000000001 /* XCLocalSwiftPackageReference "Packages/ClipCore" */;
+			productName = ClipCore;
+		};
+		A20000000000000000000002 /* ClipMedia */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = A10000000000000000000002 /* XCLocalSwiftPackageReference "Packages/ClipMedia" */;
+			productName = ClipMedia;
+		};
+		A20000000000000000000003 /* ClipCore */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = A10000000000000000000001 /* XCLocalSwiftPackageReference "Packages/ClipCore" */;
+			productName = ClipCore;
+		};
+		A20000000000000000000004 /* ClipMedia */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = A10000000000000000000002 /* XCLocalSwiftPackageReference "Packages/ClipMedia" */;
+			productName = ClipMedia;
+		};
+/* End XCSwiftPackageProductDependency section */
+
+/* Begin XCBuildConfiguration section */
+		C00000000000000000000001 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				ARCHS = arm64;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"DEBUG=1",
+					"$(inherited)",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
+				MACOSX_DEPLOYMENT_TARGET = 15.0;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				SDKROOT = macosx;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG $(inherited)";
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+			};
+			name = Debug;
+		};
+		C00000000000000000000002 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				ARCHS = arm64;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
+				MACOSX_DEPLOYMENT_TARGET = 15.0;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				SDKROOT = macosx;
+				SWIFT_COMPILATION_MODE = wholemodule;
+			};
+			name = Release;
+		};
+		C10000000000000000000001 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = Clip/Resources/Clip.entitlements;
+				CODE_SIGN_IDENTITY = "-";
+				CODE_SIGN_STYLE = Manual;
+				COMBINE_HIDPI_IMAGES = YES;
+				CURRENT_PROJECT_VERSION = 1;
+				ENABLE_APP_SANDBOX = YES;
+				ENABLE_HARDENED_RUNTIME = YES;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = Clip/Resources/Info.plist;
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.utilities";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				MARKETING_VERSION = 1.0.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.tomaslejdung.clip;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_STRICT_CONCURRENCY = complete;
+				SWIFT_VERSION = 6.0;
+			};
+			name = Debug;
+		};
+		C10000000000000000000002 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = Clip/Resources/Clip.entitlements;
+				CODE_SIGN_IDENTITY = "-";
+				CODE_SIGN_STYLE = Manual;
+				COMBINE_HIDPI_IMAGES = YES;
+				CURRENT_PROJECT_VERSION = 1;
+				ENABLE_APP_SANDBOX = YES;
+				ENABLE_HARDENED_RUNTIME = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = Clip/Resources/Info.plist;
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.utilities";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				MARKETING_VERSION = 1.0.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.tomaslejdung.clip;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_STRICT_CONCURRENCY = complete;
+				SWIFT_VERSION = 6.0;
+			};
+			name = Release;
+		};
+		C20000000000000000000001 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_IDENTITY = "-";
+				CODE_SIGN_STYLE = Manual;
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+					"@loader_path/../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.tomaslejdung.clip.tests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_STRICT_CONCURRENCY = complete;
+				SWIFT_VERSION = 6.0;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Clip.app/Contents/MacOS/Clip";
+			};
+			name = Debug;
+		};
+		C20000000000000000000002 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_IDENTITY = "-";
+				CODE_SIGN_STYLE = Manual;
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+					"@loader_path/../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.tomaslejdung.clip.tests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_STRICT_CONCURRENCY = complete;
+				SWIFT_VERSION = 6.0;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Clip.app/Contents/MacOS/Clip";
+			};
+			name = Release;
+		};
+		C30000000000000000000001 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_IDENTITY = "-";
+				CODE_SIGN_STYLE = Manual;
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+					"@loader_path/../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.tomaslejdung.clip.uitests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "$(inherited) $(CLIP_REAL_CAPTURE_CONDITION)";
+				SWIFT_STRICT_CONCURRENCY = complete;
+				SWIFT_VERSION = 6.0;
+				TEST_TARGET_NAME = Clip;
+			};
+			name = Debug;
+		};
+		C30000000000000000000002 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_IDENTITY = "-";
+				CODE_SIGN_STYLE = Manual;
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+					"@loader_path/../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.tomaslejdung.clip.uitests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "$(inherited) $(CLIP_REAL_CAPTURE_CONDITION)";
+				SWIFT_STRICT_CONCURRENCY = complete;
+				SWIFT_VERSION = 6.0;
+				TEST_TARGET_NAME = Clip;
+			};
+			name = Release;
+		};
+		C40000000000000000000001 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGNING_ALLOWED = NO;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_STRICT_CONCURRENCY = complete;
+				SWIFT_VERSION = 6.0;
+			};
+			name = Debug;
+		};
+		C40000000000000000000002 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGNING_ALLOWED = NO;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_STRICT_CONCURRENCY = complete;
+				SWIFT_VERSION = 6.0;
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		L00000000000000000000001 /* Build configuration list for PBXProject "Clip" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				C00000000000000000000001 /* Debug */,
+				C00000000000000000000002 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		L00000000000000000000002 /* Build configuration list for PBXNativeTarget "Clip" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				C10000000000000000000001 /* Debug */,
+				C10000000000000000000002 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		L00000000000000000000003 /* Build configuration list for PBXNativeTarget "ClipTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				C20000000000000000000001 /* Debug */,
+				C20000000000000000000002 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		L00000000000000000000004 /* Build configuration list for PBXNativeTarget "ClipUITests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				C30000000000000000000001 /* Debug */,
+				C30000000000000000000002 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		L00000000000000000000005 /* Build configuration list for PBXNativeTarget "ClipTestHelper" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				C40000000000000000000001 /* Debug */,
+				C40000000000000000000002 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = P10000000000000000000001 /* Project object */;
+}

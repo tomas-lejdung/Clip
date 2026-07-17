@@ -8,11 +8,11 @@ Here is the finalized product specification for **Clip**.
 
 Its primary workflow is:
 
-1. Choose an area of the screen.
+1. Choose an area of the screen, an application, or a display.
 2. Record a short demonstration.
 3. Trim the beginning or end.
-4. Copy a compact MP4.
-5. Paste it directly into Slack, GitHub, Linear, Discord, or another application.
+4. Drag the video from the preview, or copy a compact MP4.
+5. Drop or paste it directly into Slack, GitHub, Linear, Discord, or another application.
 
 Clip is not intended to replace a full video editor or general screenshot suite. It should do one task extremely well:
 
@@ -46,7 +46,9 @@ By default:
 - No regular application window opens.
 - No Dock icon is shown.
 - A Clip icon appears in the macOS menu bar.
-- Clip may optionally launch automatically when the user logs in.
+- Launch at login is Off but may be enabled in Settings.
+- Clip follows the current macOS light or dark appearance.
+- Version 1.0 is English-only and uses a String Catalog so later localization remains straightforward.
 
 Clicking the menu-bar icon opens the main Clip popover.
 
@@ -58,6 +60,7 @@ The default popover contains:
 
 ```text
 Capture Area…
+Capture App…
 Last Area
 Fullscreen
 Display 1
@@ -75,6 +78,9 @@ Quit Clip
 
 Unavailable options should be hidden. For example, `Display 2` should only appear when a second display is connected.
 
+Every clickable popover row must show immediate hover feedback and use the
+pointing-hand cursor so the action about to be selected is unambiguous.
+
 Clip remembers:
 
 - The most recently used capture mode.
@@ -82,6 +88,25 @@ Clip remembers:
 - Audio settings.
 - Frame-rate preference.
 - Export preset.
+
+The floating Preview remains visible when Clip deactivates or Capture Mode
+starts. A Preview that is already open does not block a new selection or
+recording and is not closed when capture begins. After the new recording has
+been safely imported, Clip persists and replaces the old Preview. If the old
+Preview is still completing Copy, Save As, or another operation, the new
+recording remains safe in History and Clip reports that Preview opening was
+deferred; it must never report that the completed recording failed.
+
+Choosing **Quit Clip** immediately closes the popover and all Clip-owned
+windows and overlays, removes the menu-bar item, stops UI-producing background
+work, and prevents late startup or capture tasks from reopening UI. Clip then
+gets a best-effort grace period of at most eight seconds to finalize an active
+recording, persist Preview state, and release managed sessions. An in-flight
+first video frame is offered to the capture writer for authoritative
+finalization rather than being discarded merely because its UI event is still
+queued. AppKit receives exactly one termination reply. If cleanup does not
+finish within the grace period, Clip exits without leaving frozen UI and uses
+its durable capture/history recovery state on the next launch.
 
 ---
 
@@ -96,10 +121,15 @@ During Capture Mode:
 - All connected displays are covered by transparent selection overlays.
 - The screen outside the selected region is dimmed.
 - The cursor becomes a crosshair.
-- The user draws a rectangular capture region.
+- The user draws a rectangular capture region by pressing at one corner and
+  smoothly dragging to the opposite corner.
+- A new region begins at the exact mouse-down position and follows the pointer;
+  Clip does not create an initial minimum-sized rectangle or warp the pointer.
 - The selected region remains undimmed.
 - The region displays resize handles.
 - The region can be moved or resized before recording begins.
+- A capture region belongs to exactly one display and cannot span display boundaries.
+- Dragging or resizing is constrained to the selected display.
 
 A compact toolbar appears next to the selected region.
 
@@ -119,17 +149,23 @@ Keyboard controls:
 ```text
 Return     Start recording
 Escape     Cancel Capture Mode
-Arrow keys Move selection
-Shift      Resize or constrain movement
+Tab        Move focus between the region, handles, and toolbar
+Arrow keys Move the focused region or resize the focused handle by 1 pixel
+Shift      Increase keyboard movement to 10 pixels; preserve aspect ratio while dragging
 ```
 
 The toolbar must position itself outside the selected region whenever possible so that it does not cover the content being recorded.
+The Cancel and Record buttons use the pointing-hand cursor; the surrounding
+selection surface continues to use the capture crosshair and resize/move
+cursors appropriate to its current interaction.
 
 ---
 
 ## Last Area
 
 The **Last Area** preset immediately restores the most recently used capture rectangle.
+
+It reopens Capture Mode with that rectangle ready for adjustment; it does not begin recording automatically.
 
 This is particularly important for repeated recordings of:
 
@@ -139,9 +175,31 @@ This is particularly important for repeated recordings of:
 - A fixed section of an ultrawide display.
 - A development environment.
 
-The region should be stored relative to its display configuration where practical.
+The region is stored using its display identity and normalized coordinates.
 
-If the original display is unavailable, Clip should fall back gracefully and allow the user to adjust the region.
+If the original display is unavailable, Clip moves and clamps the region to the main display, then allows the user to adjust it before recording.
+
+---
+
+## Capture App
+
+Choosing **Capture App…** opens an application-selection overlay on every
+connected display.
+
+- Moving the pointer over a visible application highlights all of that
+  application's visible windows on that display.
+- Clicking selects the application under the pointer. The user confirms with
+  Record or Return; double-click may confirm immediately.
+- Clip records the union of all visible windows belonging to the selected
+  application on the clicked display. It does not capture only the single
+  window that was clicked, and it does not include that application's windows
+  from other displays.
+- Clip's own windows and selection UI remain excluded.
+- Escape and Cancel leave application selection without starting a recording.
+- The selected application and display are stored as the durable target so
+  Retake can resolve the application again when it is still available.
+
+Individual-window capture remains outside the v1 scope.
 
 ---
 
@@ -150,6 +208,8 @@ If the original display is unavailable, Clip should fall back gracefully and all
 The **Fullscreen** preset records an entire display.
 
 If multiple displays are connected, the user selects the display before recording.
+
+Fullscreen includes the display's menu bar and Dock. Clip's own windows, popovers, overlays, and sounds are excluded from every capture mode.
 
 ---
 
@@ -163,6 +223,8 @@ Display 2 — 2560 × 1440
 ```
 
 Selecting a display prepares it as the capture target.
+
+Selecting a display does not immediately begin recording. The user starts the countdown with the Record button, Return key, or configured global shortcut.
 
 
 ---
@@ -186,7 +248,7 @@ Default:
 1
 ```
 
-The countdown can be disabled in settings.
+The countdown is visual and silent. Settings offers Off, 1, 3, and 5 seconds.
 
 ---
 
@@ -197,7 +259,11 @@ While recording:
 - The Clip menu-bar icon changes to indicate an active recording.
 - The elapsed recording time is visible in the menu-bar popover.
 - The app remains usable without showing a floating controller over the recording.
-- The selected capture border is hidden or reduced to a subtle indicator outside the recorded pixels.
+- For Capture Area, the selected rectangle remains visible as a clear,
+  click-through border while recording.
+- The rest of the screen is no longer dimmed once recording begins.
+- The border is a Clip-owned, capture-excluded overlay and therefore does not
+  appear in the resulting video.
 
 The menu-bar popover changes to:
 
@@ -218,11 +284,13 @@ Option + Command + P   Pause or resume
 Escape                 Cancel before recording begins
 ```
 
-All shortcuts must be configurable.
+The three global shortcuts for Capture, Finish, and Pause or Resume are configurable. Contextual keyboard controls inside Capture Mode remain fixed.
 
 ---
 
 # Recording controls
+
+Clip has no hard recording-duration limit. It is optimized for short clips and should support recordings of at least 30 minutes, stopping early only when capture cannot safely continue.
 
 ## Pause and resume
 
@@ -244,7 +312,7 @@ Finishing the recording stops capture and opens the preview window.
 
 Canceling during a recording discards the recording after a brief confirmation when meaningful content has already been captured.
 
-Very short accidental recordings may be discarded immediately.
+Recordings three seconds long or shorter may be discarded immediately. Longer recordings require confirmation.
 
 ---
 
@@ -263,9 +331,15 @@ The most recently selected audio configuration is remembered.
 
 Clip must clearly communicate when additional macOS permissions are required.
 
-Potential microphone input selection can initially use the system default input device.
+The MVP uses the current system-default microphone input device. Settings may show its name as read-only status.
 
 Explicit microphone-device selection may be added later.
+
+When both microphone and system audio are enabled, the managed recording master
+retains the two source tracks independently. Drag, Copy, and Save As exports mix
+them into one broadly compatible AAC audio track. If an audio source becomes
+unavailable, video recording continues with the remaining sources and Clip
+reports the change.
 
 ---
 
@@ -278,15 +352,25 @@ The default recording configuration is:
 - MP4 container.
 - H.264 video.
 - 30 frames per second.
-- Native capture resolution where practical.
+- Native H.264-compatible capture dimensions derived from the selected pixel
+  area; there is no fixed 1,080p or 4K capture envelope.
 - Hardware-accelerated encoding.
+- A high-fidelity H.264 master rate of 0.22 bits per pixel per frame with an
+  8 Mbps floor and no preset-level upper clamp, so its rate continues scaling
+  with native pixel count and cadence for a later Crisp export.
+- SDR Rec.709 color for predictable sharing compatibility.
 - Cursor visible.
 - No audio unless enabled.
 - No webcam.
 - No click animations.
 - No keystroke overlay.
 
-An optional 60 FPS mode is available in settings or export preferences.
+An optional 60 FPS capture mode is available in settings. Export never creates
+interpolated frames: Compact caps output at 30 FPS, Crisp preserves every
+source sample and its presentation timing when the source's nominal frame rate
+does not exceed the requested rate, and Smallest may reduce it. Frame
+decimation runs only when a preset's requested output rate is lower than the
+source nominal rate.
 
 ---
 
@@ -310,30 +394,42 @@ When recording stops, Clip opens a compact floating preview window.
 
 The preview contains:
 
-- Video playback.
+- Video playback in a top preview surface that acts as the exported-file drag source.
 - Play and pause.
 - Current time.
 - Total duration.
-- A simple timeline.
+- A simple timeline below the video preview.
 - Trim handles for the beginning and end.
+- An editable filename.
 - File-size estimate.
 - Export preset.
-- Primary Copy Video action.
+- A **Remove audio** switch when the recording contains audio.
+- Delete, Retake, Save As, and Copy actions below the timeline and export details.
+
+Dragging the video preview drags the current trimmed and exported MP4 as a file. The timeline itself remains dedicated to seeking and trimming and is not the file drag source.
+
+The file-size estimate updates immediately when the trim, export preset,
+Smallest target, or Remove audio choice changes. It uses the managed source's
+observed size and duration when available, together with its dimensions, frame
+rate, selected audio presence, and the native exporter's effective bitrate
+plan. It is explicitly labeled as an estimate rather than a guaranteed
+maximum, and a silent estimate excludes the configured audio allowance.
 
 Example:
 
 ```text
 ┌─────────────────────────────────────┐
 │                                     │
-│            Video preview            │
+│      Video preview · drag file       │
 │                                     │
 ├─────────────────────────────────────┤
 │ |◀──────────────────────────────▶|  │
 │ 00:02                         00:24  │
 │                                     │
+│ clip-20260717-104218.mp4             │
 │ Compact · approximately 5.8 MB      │
 │                                     │
-│ Delete    Save As…    Copy Video    │
+│ Delete   Retake   Save As…   Copy   │
 └─────────────────────────────────────┘
 ```
 
@@ -349,6 +445,19 @@ The MVP editor supports:
 - Restoring the original trim.
 - Retaking the recording.
 - Deleting the recording.
+- Renaming the recording and exported file.
+- Removing or restoring all recorded audio for playback and exported files.
+- Dragging the video preview to another application as an MP4 file.
+
+Retake reuses the previous target, audio, and countdown settings. Clip keeps the previous recording until the replacement succeeds, then discards the old draft.
+
+**Remove audio** is a non-destructive, per-recording Preview/export choice. It
+is Off by default for both new recordings and history created before the field
+existed. Turning it On mutes Preview playback immediately, removes the audio
+allowance from the size estimate, and makes Drag, Copy, and Save As produce an
+MP4 with no audio track. Turning it Off restores playback and exported audio.
+The choice persists through Done, sharing, History, Preview reopen, and app
+relaunch. It never removes or rewrites audio in the managed recording master.
 
 The MVP does not support:
 
@@ -360,23 +469,30 @@ The MVP does not support:
 - Zoom effects.
 - Transitions.
 - Speed changes.
-- Audio editing.
+- Audio-level, per-source, or timeline audio editing.
 - Multi-track editing.
 
 ---
 
-# Export
+# Export and sharing
 
-## Primary action: Copy Video
+Clip has two equally supported sharing actions: dragging the video preview and selecting **Copy**. There is no automatic-copy-after-stopping feature or setting.
 
-The primary action is **Copy Video**.
+## Drag video
 
-When selected, Clip:
+Dragging the top video preview supplies an MP4 file using the current trim,
+export preset, editable filename, and Remove audio choice. The file can be
+dropped into Finder or another application that accepts file drags.
+
+## Copy
+
+When **Copy** is selected, Clip:
 
 1. Applies the selected trim.
 2. Encodes or remuxes the recording as needed.
-3. Produces a compact MP4.
-4. Places the resulting file on the macOS clipboard.
+3. Applies the recording's current Remove audio choice and produces a compact
+   MP4, with no audio track when removal is selected.
+4. Places the resulting file URL on the macOS clipboard.
 5. Shows a completion confirmation.
 
 Example:
@@ -385,7 +501,7 @@ Example:
 ✓ Video copied — 5.8 MB
 ```
 
-The user should then be able to paste the video directly into:
+The user should then be able to paste the video directly into applications that accept copied files, including:
 
 - Slack.
 - GitHub issues and pull requests.
@@ -396,19 +512,34 @@ The user should then be able to paste the video directly into:
 - Finder.
 - Other applications that accept copied files.
 
+Clip considers the operation successful when it has written a valid, readable MP4 file to the pasteboard. macOS does not tell Clip whether a different application later accepted or rejected a paste.
+
 ---
 
 ## Save As
 
-The user can save the exported recording to a chosen location.
+The user can save the exported recording to a chosen location. Save As uses the
+same trim, preset, filename, and Remove audio choice as Drag and Copy.
 
-The default filename format may be:
+The default filename format is:
 
 ```text
-Clip 2026-07-17 at 10.42.18.mp4
+clip-20260717-104218.mp4
 ```
 
-The filename should be editable before saving.
+The filename is editable in Preview and History. The `.mp4` extension is preserved automatically. Save As creates an independent external file that Clip never removes through history cleanup.
+
+The default format is editable in Export Settings. It supports the
+case-sensitive fixed-width tokens `YYYY`, `MM`, `DD`, `HH`, `mm`, and `ss`,
+shows a live example, and rejects formats that could produce an unsafe path or
+invalid MP4 filename. Existing settings created before this option migrate to
+the default format above.
+
+Save As always uses the standard macOS Save panel. Choosing a destination such
+as Downloads grants Clip access to that exact output URL through the App
+Sandbox Powerbox; Clip must not fail merely because the destination is outside
+its container, and it must not request broad permanent access to the parent
+folder. Canceling the panel makes no filesystem change.
 
 ---
 
@@ -421,6 +552,15 @@ After export or save, the user can reveal the file in Finder.
 # Export presets
 
 Clip exposes simple presets instead of technical bitrate controls.
+
+For Compact and Crisp, Clip atomically reuses a full-range managed master when
+it already has the exact requested geometry and frame rate, compatible H.264
+Rec.709 video, and audio tracks compatible with the current export choice.
+Compact additionally requires the source video rate to fit its rate envelope;
+Crisp treats fidelity as the priority and does not reject reuse merely because
+the source rate is above its nominal plan. This avoids a second lossy H.264
+generation. Trimming, resizing, frame-rate reduction, audio mixing, or removing
+existing audio requires the native transcode path instead.
 
 ## Compact
 
@@ -436,11 +576,13 @@ Designed for:
 
 Behavior:
 
-- 30 FPS.
+- Preserves source dimensions inside a 1,920 × 1,080 pixel envelope.
+- Preserves the captured frame rate up to 30 FPS.
 - H.264.
-- Small file size.
+- Uses 0.055 bits per pixel per frame, clamped between 1.5 Mbps and 6 Mbps.
+- Explicitly prefers the macOS hardware H.264 encoder.
 - Preserves readable UI text.
-- May slightly reduce resolution for unusually large captures.
+- Reduces captures larger than Full HD for predictable sharing size.
 
 ---
 
@@ -450,9 +592,16 @@ Designed for recordings where fine interface detail matters.
 
 Behavior:
 
-- Higher bitrate.
-- Preserves native resolution more aggressively.
-- Optional 60 FPS.
+- Preserves the managed master's exact encoded width and height. Portrait,
+  square, ultrawide, 5K, and other arbitrary selection aspect ratios are not
+  fitted into a fixed landscape or 4K envelope.
+- Preserves the captured frame rate up to 60 FPS without interpolation.
+- Uses 0.20 bits per pixel per frame with an 8 Mbps floor. Bitrate continues
+  scaling with the source pixel count and frame rate instead of hitting a
+  preset-level ceiling.
+- Reuses a compatible untrimmed master byte-for-byte instead of introducing a
+  second lossy encode.
+- Explicitly prefers the macOS hardware H.264 encoder.
 - Larger output file.
 
 ---
@@ -478,6 +627,8 @@ Custom
 
 Exact target-size encoding may be introduced after the initial release if it requires a two-pass export process.
 
+The v1 targets are soft, approximate targets rather than strict limits. Custom accepts values from 1 MB through 500 MB.
+
 ---
 
 # Recent recordings
@@ -489,14 +640,17 @@ The menu-bar popover shows recent recordings:
 ```text
 Recent Recordings
 
-Checkout validation      3.8 MB
-Dashboard filters        7.1 MB
-Mobile navigation        2.4 MB
+clip-20260717-104218      3.8 MB
+dashboard-filters        7.1 MB
+mobile-navigation        2.4 MB
 ```
+
+New recordings use the timestamp filename by default. The user may rename them in Preview or History.
 
 Each recording supports:
 
 - Preview.
+- Rename.
 - Copy.
 - Save.
 - Reveal in Finder.
@@ -520,32 +674,47 @@ Retention options:
 
 Clip should clearly show how much storage its history is using.
 
+## History storage model
+
+- A history item is created when a recording successfully stops.
+- Clip keeps the managed original plus non-destructive trim, preset, filename,
+  and per-recording Remove audio metadata.
+- Copy and drag create managed temporary exports.
+- Save As creates an independent external file that Clip never deletes.
+- Retention and Clear History remove only Clip-managed files.
+- Cleanup age is based on recording creation time.
+- The history location is fixed under Application Support and can be revealed but not relocated.
+- **Keep original recording after export** defaults to On. When Off, Clip replaces the managed master with the trimmed exported result after a successful export.
+- **Do not retain recordings after export** removes the history item after successful Copy, drag, or Save As while keeping clipboard and drag temporary files available long enough for their receiving application to consume them.
+
 ---
 
 # Settings
 
 The settings window contains the following sections.
 
+The first presentation explicitly selects **General** and must render every visible label,
+control, and current value immediately. Opening Settings must not depend on leaving and
+returning focus to complete SwiftUI layout or drawing.
+
 ## General
 
 - Launch Clip at login.
 - Show Clip in Dock.
+- Default capture mode.
+- Remember last selected area.
 - Global keyboard shortcuts.
-- Countdown duration.
-- Recording history retention.
-- Default save location.
 
 ---
 
 ## Recording
 
-- Default capture mode.
-- Remember last selected area.
 - Frame rate: 30 or 60 FPS.
+- Countdown duration.
 - Show cursor.
 - Default microphone state.
 - Default system-audio state.
-- Default microphone input.
+- Current system-default microphone name, shown read-only.
 
 ---
 
@@ -553,19 +722,19 @@ The settings window contains the following sections.
 
 - Default export preset.
 - Default filename format.
-- Automatically copy after stopping.
 - Automatically close preview after copying.
 - Keep original recording after export.
 - Maximum target file size for Smallest mode.
+- Default Save As location.
 
 ---
 
 ## Storage
 
-- Recording-history location.
+- Recording-history location, shown read-only with Reveal in Finder.
 - Current storage usage.
 - Clear recording history.
-- Automatic cleanup policy.
+- Recording history retention and automatic cleanup policy.
 
 ---
 
@@ -576,9 +745,27 @@ A dedicated permissions section shows status for:
 - Screen Recording.
 - Microphone.
 - System Audio, where applicable.
-- Accessibility, only if a future feature requires it.
 
 Each permission should include a button that opens the relevant macOS System Settings page.
+
+## Initial defaults
+
+- Launch at login: Off.
+- Show in Dock: Off.
+- Capture mode: Capture Area.
+- Remember Last Area: On.
+- Frame rate: 30 FPS.
+- Show cursor: On.
+- Microphone: Off.
+- System audio: Off.
+- Countdown: a silent 3 seconds, with Off, 1, 3, and 5-second choices.
+- History retention: 7 days.
+- Export preset: Compact.
+- Automatically close preview after Copy: Off.
+- Keep original after export: On.
+- Default Save As location: `~/Movies`.
+- Filename format: `clip-YYYYMMDD-HHmmss.mp4`.
+- Appearance: the current macOS light or dark appearance.
 
 ---
 
@@ -591,7 +778,7 @@ On first launch, Clip displays a short onboarding flow.
 Explain what Clip does.
 
 ```text
-Record a selected area of your screen and copy a compact video in seconds.
+Record a selected area of your screen, then drag or copy a compact video in seconds.
 ```
 
 ## Step 2
@@ -606,7 +793,7 @@ Optionally explain microphone and system-audio permissions.
 
 Offer to configure the global shortcut and launch-at-login preference.
 
-The application must use a permanent bundle identifier and stable development signature from the beginning so macOS permissions remain consistent across builds.
+The application uses the permanent bundle identifier `com.tomaslejdung.clip`. The owner's local release is signed with the Apple Development certificate from free Personal Team `FJ2BS65H3F`; a paid Apple Developer membership is not required for this local-only workflow. This gives rebuilds a stable macOS privacy identity. Permission-free CI may still use ad-hoc signing, but those builds can require fresh approvals whenever their code identity changes.
 
 ---
 
@@ -621,9 +808,13 @@ Clip must handle the following cases gracefully:
 - Available disk space becomes low.
 - Encoding fails.
 - The application quits unexpectedly.
-- The selected clipboard destination rejects the file.
+- Clip cannot place a valid, readable MP4 file URL on the clipboard.
 - A recording contains no frames.
 - Audio and video input become unavailable.
+
+When a display disappears, disk space becomes critical, or capture fails, Clip should safely finalize and preserve playable material where possible. Interrupted recordings should be recovered on the next launch where technically possible. Protected or DRM-controlled screen and audio content may remain unavailable by macOS design.
+
+Clip may offer troubleshooting when another application does not accept a paste or drop, but it cannot observe or report that destination application's result.
 
 Error messages should explain what happened and what the user can do next.
 
@@ -636,12 +827,15 @@ Raw technical errors should be available through a details or logs view but not 
 Clip should target:
 
 - Menu-bar popover opening instantly.
-- Capture Mode appearing in under 300 milliseconds.
+- Capture Mode appearing with p95 latency under 300 milliseconds.
 - Recording beginning immediately after the countdown.
 - Minimal CPU use while idle.
 - Hardware-accelerated capture and encoding.
-- Preview available shortly after recording stops.
-- Compact exports usually completing in under two seconds for short recordings.
+- Preview available in under one second after recording stops.
+- Compact exports usually completing in under two seconds for a 30-second, 1440 × 900, 30 FPS fixture on the development Mac.
+- Trim timing accurate to within one frame.
+- Audio and video synchronization within 50 milliseconds, including across pause and resume.
+- A ten-minute real recording soak test plus longer synthetic state and writer tests.
 - Stable long-running menu-bar behavior.
 - No noticeable interference with the application being demonstrated.
 
@@ -664,25 +858,18 @@ Any future telemetry must be optional and transparent.
 
 ---
 
-# Accessibility
-
-Clip should support:
-
-- VoiceOver labels.
-- Full keyboard navigation.
-- Sufficient contrast.
-- Reduced-motion preference.
-- Adjustable shortcut bindings.
-- Clear focus states.
-- Menu items that can be activated without using the mouse.
-
----
-
 # Technology stack
 
 ## Language
 
-- Swift 6.
+- Swift 6 language mode using Apple Swift 6.3.3.
+
+## Target platform
+
+- Xcode 26.6, build 17F113.
+- macOS 15.0 or later deployment target.
+- Apple Silicon (`arm64`).
+- Version 1.0.0.
 
 ## User interface
 
@@ -716,16 +903,38 @@ Used for:
 ## Video and audio
 
 - AVFoundation.
-- AVAssetWriter.
+- AVAssetWriter for MP4 muxing and AAC audio encoding.
 - AVPlayer.
-- AVAssetExportSession where suitable.
-- VideoToolbox where more direct hardware-encoding control is required.
+- VideoToolbox for direct H.264 master encoding and native export controls.
+- Native H.264/AAC encoding only; Clip does not bundle or invoke FFmpeg or another media binary.
+
+### Capture-quality contract
+
+- Capture Area and Capture App rectangles are snapped to the display's physical-pixel grid. One exact even-sized geometry is used for the ScreenCaptureKit source rectangle, stream output, H.264 encoder, History metadata, and MP4 dimensions.
+- Every complete incoming video pixel buffer is checked against the configured width and height before encoding. A mismatch stops with a visible recording error; Clip never silently rescales a capture frame.
+- Raw ScreenCaptureKit pixel buffers are transient. They are submitted directly to a `VTCompressionSession`; Clip retains at most the latest frame in memory for bounded cadence repair and stores only compressed H.264 MP4 media.
+- The live master encoder uses H.264 High profile, `RealTime = true`, quality `0.98`, quality-over-speed priority, the resolution/FPS-derived average bitrate as a soft target, no hard data-rate limit, no frame reordering, and a two-second keyframe interval.
+- Hardware H.264 is required when VideoToolbox supports the exact native dimensions. If Apple's hardware encoder rejects an oversized native display mode such as 5K, Clip uses VideoToolbox's native software H.264 encoder rather than downscaling or adding a bundled dependency.
+- AVAssetWriter receives VideoToolbox's compressed H.264 samples through a passthrough input and only muxes them with native AAC audio into MP4; it does not perform another video encode.
+- Brief encoder or muxer pressure is bounded and queued. Sustained pressure or a VideoToolbox-dropped frame ends capture with an error instead of silently creating a cadence gap.
+- A short complete-frame delivery gap above two and no more than three nominal frame intervals is bridged with one held copy of the prior frame at the next nominal timestamp. Every original sample timestamp and duration remains unchanged; longer ordinary gaps remain native variable-frame-rate timing, while an excessive first-post-resume gap is a visible error.
+
+### Export-quality contract
+
+- An unchanged full-duration Crisp export with compatible audio reuses the managed master byte-for-byte.
+- A Crisp export that requires trim, audio mixing/removal, resize, or cadence work is encoded offline with quality `0.98`, frame reordering enabled, a soft average-bitrate target, and no hard data-rate limit.
+- Compact is encoded offline at quality `0.85`, within the existing 1920 × 1080 and 30 FPS envelope, with a soft average-bitrate target and no hard data-rate limit.
+- Smallest remains size-constrained: offline average-bitrate encoding plus a one-second hard data-rate limit with ten percent burst headroom.
+- Trim, resize, frame-rate reduction, audio mixing, and audio removal are applied in one export generation.
+- Durable per-recording 30/60 FPS capture metadata is the cadence ceiling. Exact sample timestamps are preserved when no reduction is required; a measured variable rate such as 28.29 FPS is never rounded down into an accidental 28 FPS export.
+- Before Compact or Crisp export, Preview says `Quality based — size varies`; after a successful share it shows the actual file size. Smallest continues to show its target-based estimate.
 
 ## Persistence
 
-- UserDefaults for user preferences.
-- JSON metadata for the initial recording-history index.
-- Files stored under the appropriate Application Support or Caches directories.
+- Versioned JSON under Application Support for user preferences, with atomic replacement and backward-compatible defaults.
+- Versioned JSON metadata for the initial recording-history index.
+- Managed recording masters and metadata under Application Support.
+- Temporary clipboard, drag, and intermediate export files under Caches.
 
 SQLite is not required for the MVP unless the recording-history model grows significantly.
 
@@ -733,37 +942,38 @@ SQLite is not required for the MVP unless the recording-history model grows sign
 
 - Swift Package Manager.
 
-External dependencies should be kept to a minimum.
+There are no third-party runtime dependencies in the MVP. Test-only dependencies should also be avoided unless they materially improve deterministic verification.
 
 ## Development environment
 
 - Source editing can be done in Codex, Cursor, VS Code, Zed, or another editor.
-- Xcode and Apple command-line tools remain installed for SDKs, signing, building, and distribution.
+- Xcode 26.6 and Apple command-line tools provide the macOS 26.5 SDK, Swift 6.3.3, local signing, building, and DMG creation.
 - The project should support command-line builds.
+
+## Security configuration
+
+- App Sandbox enabled.
+- Hardened Runtime enabled.
+- Entitlements limited to the capabilities Clip actually uses, including microphone input and user-selected file access.
+- No Accessibility permission is requested.
 
 
 ---
 
 # Distribution
 
-Clip will be distributed as a proper signed macOS application.
+Clip is a local personal application, not a public or App Store release.
 
-Primary distribution:
+The distribution artifact is:
 
 ```text
 Clip.dmg
 ```
 
-or:
-
-```text
-Clip.zip
-```
-
 Installation:
 
 ```text
-Download
+Open Clip.dmg
 →
 Move Clip.app to Applications
 →
@@ -774,21 +984,16 @@ Grant Screen Recording permission
 
 Release requirements:
 
-- Permanent bundle identifier.
-- Apple Development signing during development.
-- Developer ID Application signing for release.
+- Permanent bundle identifier `com.tomaslejdung.clip`.
+- Local Apple Development signing with Personal Team `FJ2BS65H3F`, preserving one privacy identity across rebuilds.
 - Hardened Runtime.
-- Apple notarization.
-- Stapled notarization ticket.
-- Testing on a separate Mac or clean user account.
+- App Sandbox.
+- A DMG containing a launchable `Clip.app` with an Applications shortcut.
+- Mount, copy, launch, record, export, drag, clipboard, and remount smoke testing on the development Mac.
 
-Homebrew is optional.
+The DMG is Apple Development signed for local use, not Developer ID signed or notarized. If the artifact later receives a quarantine attribute through download, messaging, or AirDrop, macOS may require a one-time **Open Anyway** approval in Privacy & Security.
 
-A later Homebrew Cask may allow:
-
-```bash
-brew install --cask clip
-```
+Mac App Store distribution, a public release, Homebrew, Developer ID signing, and notarization are outside the current scope.
 
 The main source repository should simply be named:
 
@@ -800,12 +1005,31 @@ A separate Homebrew tap can be added later if needed.
 
 ---
 
+# Testing strategy and platform limitations
+
+- All automated tests run locally on the development Mac; no CI service or separate test machine is required.
+- Unit, integration, state-machine, media, and UI tests use injected services and deterministic synthetic frames and audio where practical.
+- `--ui-scenario=<name>` fixtures are honored only with `--ui-testing`. They use isolated defaults and storage plus inert permission, audio, capture, display, pasteboard, shortcut, and external-AppKit actions; they never request privacy access or enter the real-capture lane.
+- Deterministic launch fixtures cover onboarding, the populated menu-bar popover and displays, denied permissions, recording, paused recording, Preview, History, Settings, and a representative failure surface. Their UI-automation assertions compile in the permission-free suite but execute only after an explicit visible-pointer-control opt-in.
+- Real ScreenCaptureKit, microphone, system-audio, clipboard, drag, Save As, history, and DMG smoke tests run on the development Mac.
+- The owner performs the required one-time Screen Recording, System Audio, and Microphone approvals. Test runs after approval should be unattended.
+- Multi-display topology, display disconnection, and deterministic loopback-audio cases are simulated when the necessary hardware is unavailable.
+- There is no automated Slack, GitHub, Linear, Discord, Messages, or Mail integration suite. A local receiver and Finder validate file drag and clipboard contracts; an agent-driven check in an explicitly authorized application may be performed without sending content.
+- There is no dedicated accessibility or human subjective visual-quality audit for this personal local release. Deterministic screen-content fidelity is automated with small text, one-pixel rules, saturated edges, scrolling, and 30/60 FPS motion.
+- Automated capture/master acceptance requires no scaling, master luma SSIM of at least 0.985 with at least 95% edge retention, Crisp SSIM of at least 0.98 with at least 92% edge retention, non-resized Compact SSIM of at least 0.96 with at least 85% edge retention, and no video gap beyond two frame intervals.
+- A fresh-account privacy grant cannot be automated through supported macOS behavior.
+- Clipboard and drag temporary files must remain available long enough for receiving applications to consume them and therefore cannot be removed immediately after export.
+- The two-second export goal applies only to the defined performance fixture, not arbitrary native-resolution 5K/60 FPS recordings.
+
+---
+
 # MVP feature list
 
 ## Included in version 1.0
 
 - Native menu-bar application.
 - Capture Area mode.
+- Capture App mode for all visible windows of the clicked application on the selected display.
 - Last Area preset.
 - Fullscreen capture.
 - Per-display capture.
@@ -824,17 +1048,23 @@ A separate Homebrew tap can be added later if needed.
 - Floating preview.
 - Playback.
 - Trim beginning and end.
+- Editable timestamp-based filename.
+- Rename in Preview and History.
+- Non-destructive Remove audio in Preview, persisted for History and exports.
 - Compact MP4 export.
 - Crisp export preset.
 - Smallest export preset.
-- Copy video file to clipboard.
+- Drag the exported MP4 from the video preview.
+- Explicit Copy button that places the MP4 file on the clipboard.
 - Save As.
 - Reveal in Finder.
 - Recent local recording history.
 - Automatic history cleanup.
 - Launch at login.
 - Permission onboarding.
-- Signed and notarized distribution.
+- Local launchable DMG distribution.
+
+The release-critical path is: install and launch from DMG → select → record → preview → trim → drag or copy. Other included items remain planned for v1 and should be completed where feasible, but they do not prevent validating the core workflow incrementally.
 
 ---
 
@@ -851,10 +1081,12 @@ Potential later additions:
 - Blur regions.
 - Simple annotations.
 - Automatic maximum-file-size encoding.
-- Drag-and-drop export from the preview.
+- Explicit microphone-device selection.
 - Optional upload destinations.
 - Homebrew Cask.
 - Automatic application updates.
+- Universal Intel support and native Intel validation.
+- Developer ID signing, notarization, and public distribution.
 
 These features should only be added if they support the core workflow without turning Clip into a general-purpose video editor.
 
@@ -873,6 +1105,7 @@ Clip will not initially provide:
 - Collaboration.
 - Comments.
 - Hosted video links.
+- Mac App Store distribution.
 - AI features.
 - Transcription.
 - Automatic zoom effects.
@@ -906,13 +1139,33 @@ Clip
 clip
 ```
 
+## Version
+
+```text
+1.0.0
+```
+
+## Bundle identifier
+
+```text
+com.tomaslejdung.clip
+```
+
+## Copyright
+
+```text
+Copyright © 2026 Tomas Lejdung. All rights reserved.
+```
+
+The local release uses free Personal Team ID `FJ2BS65H3F`. It is not a Developer ID or App Store release.
+
 ## Positioning
 
 > Quick screen recordings for sharing your work.
 
 ## Core promise
 
-> Select, record, copy, paste.
+> Select, record, trim, drag or copy.
 
 ## Primary audience
 
@@ -942,15 +1195,16 @@ clip
 - Create Clip.app.
 - Add the menu-bar icon.
 - Set the permanent bundle identifier.
-- Establish stable signing.
+- Establish stable local Apple Development signing, an ad-hoc CI fallback, and the sandbox entitlements.
 - Request and retain Screen Recording permission.
-- Produce a signed and notarized test release.
+- Produce and launch a test DMG on the development Mac.
 
 ## Phase 2 — Capture
 
 - Enumerate displays.
 - Implement fullscreen recording.
 - Implement rectangular selection.
+- Implement application selection and all-visible-window application capture.
 - Add Last Area.
 - Write H.264 MP4 output.
 - Add recording controls.
@@ -960,7 +1214,10 @@ clip
 - Build the preview window.
 - Add playback.
 - Add start and end trimming.
-- Add Copy Video.
+- Add editable filenames and rename.
+- Add non-destructive Remove audio playback/export state.
+- Make the top video preview the exported-file drag source.
+- Add Copy.
 - Add Save As.
 - Add export presets.
 
@@ -975,9 +1232,8 @@ clip
 
 - Improve multi-display behavior.
 - Add launch at login.
-- Complete accessibility.
 - Improve error handling.
 - Optimize file size and export performance.
-- Prepare the public release.
+- Produce and verify the local launchable DMG.
 
 This specification is narrow enough for a strong first release while leaving clear room for later improvements.
