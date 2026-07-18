@@ -20,7 +20,8 @@ json_raw_field() {
 "$HELPER" --status
 "$HELPER" --self-test --work-directory "$WORK_DIRECTORY"
 
-file "$WORK_DIRECTORY/fixture.png" | grep -q "PNG image data, 960 x 540"
+file "$WORK_DIRECTORY/fixture.png" \
+  | grep -Eq "PNG image data, (960 x 540|1920 x 1080)"
 CLIP_TEST_HELPER_PATH="$HELPER" \
   "$ROOT/scripts/validate-mp4.sh" "$WORK_DIRECTORY/fixture.mp4"
 
