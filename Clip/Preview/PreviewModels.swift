@@ -80,6 +80,12 @@ struct PreviewRecording: Equatable, Sendable, Identifiable {
     var filename: RecordingFilename
     var trimRange: TrimRange
     var exportConfiguration: ExportConfiguration
+    /// The current user-selected quality ladder used when Preview creates an
+    /// export request. These values are intentionally independent.
+    let exportQualities: ExportQualitySettings
+    /// The Crisp quality used to encode the managed master. Crisp source reuse
+    /// is valid only when the requested quality still matches this value.
+    let sourceVideoQualityPercent: Int
     var exportAudioPreference: ExportAudioPreference
     var approximateExportByteCount: Int64?
     let retakePlan: PreviewRetakePlan?
@@ -94,6 +100,8 @@ struct PreviewRecording: Equatable, Sendable, Identifiable {
         filename: RecordingFilename,
         trimRange: TrimRange,
         exportConfiguration: ExportConfiguration,
+        exportQualities: ExportQualitySettings = .defaults,
+        sourceVideoQualityPercent: Int = ExportQualitySettings.defaults.crisp,
         exportAudioPreference: ExportAudioPreference = .keepAudio,
         approximateExportByteCount: Int64? = nil,
         retakePlan: PreviewRetakePlan? = nil
@@ -115,6 +123,8 @@ struct PreviewRecording: Equatable, Sendable, Identifiable {
         self.filename = filename
         self.trimRange = trimRange
         self.exportConfiguration = exportConfiguration
+        self.exportQualities = exportQualities
+        self.sourceVideoQualityPercent = sourceVideoQualityPercent
         self.exportAudioPreference = exportAudioPreference
         self.approximateExportByteCount = approximateExportByteCount
         self.retakePlan = retakePlan
@@ -138,6 +148,10 @@ struct PreviewExportRequest: Equatable, Sendable {
     let filename: RecordingFilename
     let trimRange: TrimRange
     let configuration: ExportConfiguration
+    /// User-facing whole-number quality (1...100) selected for this export.
+    let videoQualityPercent: Int
+    /// Whole-number quality used for the managed master, when it was captured.
+    let sourceVideoQualityPercent: Int
     let audioPreference: ExportAudioPreference
 
     init(
@@ -147,6 +161,8 @@ struct PreviewExportRequest: Equatable, Sendable {
         filename: RecordingFilename,
         trimRange: TrimRange,
         configuration: ExportConfiguration,
+        videoQualityPercent: Int,
+        sourceVideoQualityPercent: Int,
         audioPreference: ExportAudioPreference
     ) {
         self.recordingID = recordingID
@@ -155,6 +171,8 @@ struct PreviewExportRequest: Equatable, Sendable {
         self.filename = filename
         self.trimRange = trimRange
         self.configuration = configuration
+        self.videoQualityPercent = videoQualityPercent
+        self.sourceVideoQualityPercent = sourceVideoQualityPercent
         self.audioPreference = audioPreference
     }
 }
@@ -258,26 +276,9 @@ struct PreviewFileDragItem: Transferable, Identifiable, Sendable {
     }
 }
 
-enum PreviewSmallestTargetSelection: String, CaseIterable, Identifiable, Sendable {
-    case tenMegabytes
-    case twentyFiveMegabytes
-    case custom
-
-    var id: Self { self }
-
-    var title: String {
-        switch self {
-        case .tenMegabytes:
-            "10 MB (approx.)"
-        case .twentyFiveMegabytes:
-            "25 MB (approx.)"
-        case .custom:
-            "Custom"
-        }
-    }
-}
-
 extension ExportPreset {
+    static let previewOrder: [Self] = [.crisp, .compact, .smallest]
+
     var previewTitle: String {
         switch self {
         case .compact:
@@ -317,7 +318,7 @@ extension PreviewRecording {
                 audioConfiguration: .systemAudioOnly,
                 filename: RecordingFilename(validating: "clip-20260717-104218.mp4"),
                 trimRange: TrimRange(startTime: 2, endTime: duration),
-                exportConfiguration: .compact,
+                exportConfiguration: .crisp,
                 approximateExportByteCount: 5_800_000
             )
         } catch {

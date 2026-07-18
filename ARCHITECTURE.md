@@ -9,7 +9,7 @@ This document records the implementation shape behind [spec.md](spec.md). The pr
 - SwiftUI for menu-bar, onboarding, settings, Preview, recording status, and History
 - AppKit for status-item/window coordination and multi-display capture overlays
 - ScreenCaptureKit for display pixels, cursor, system audio, and microphone delivery
-- AVFoundation/VideoToolbox for H.264/AAC recording, controlled exports, playback, inspection, and synthetic media tests
+- AVFoundation/VideoToolbox for hardware H.264/HEVC master recording, H.264/AAC exports, playback, inspection, and synthetic media tests
 - App Sandbox and Hardened Runtime; no Accessibility entitlement or third-party runtime
 - Apple Development-signed local `Clip.dmg` using free Personal Team `FJ2BS65H3F`; ad-hoc fallback for permission-free CI; no App Store, Developer ID, or notarization pipeline
 
@@ -17,7 +17,7 @@ This document records the implementation shape behind [spec.md](spec.md). The pr
 
 `Packages/ClipCore` is the platform-independent product domain. It owns validated settings, capture geometry, filenames, history metadata/retention, and the recording state machine. It has no AppKit or ScreenCaptureKit dependency.
 
-`Packages/ClipMedia` owns native media mechanics: ScreenCaptureKit discovery/capture, sample retiming, direct VideoToolbox H.264 encoding, AVAssetWriter passthrough MP4 muxing/AAC encoding, AVAssetReader/Writer export, media inspection, and deterministic synthetic media tests.
+`Packages/ClipMedia` owns native media mechanics: ScreenCaptureKit discovery/capture, sample retiming, direct VideoToolbox H.264/HEVC hardware encoding, AVAssetWriter passthrough MP4 muxing/AAC encoding, AVAssetReader/Writer H.264 export, media inspection, and deterministic synthetic media tests.
 
 `Clip` is the macOS application target. It adapts AppKit/SwiftUI events to ClipCore commands and ClipMedia services. `ApplicationCoordinator` is the main-actor composition root; filesystem/history and export work live in actors so UI state never owns raw file mutation.
 
@@ -32,9 +32,9 @@ flowchart LR
     C --> D["Silent countdown"]
     D --> E["ScreenCaptureKit session"]
     E --> F["Native-size BGRA pixel buffer"]
-    F --> G["Direct VideoToolbox H.264"]
+    F --> G["Direct hardware H.264 or HEVC"]
     G --> H["AVAssetWriter MP4 mux"]
-    H --> I["H.264 MP4 managed master"]
+    H --> I["Native-size MP4 managed master"]
     I --> J["Atomic history metadata"]
     J --> K["Preview: play, trim, rename"]
     K --> L["Controlled H.264/AAC export cache"]
@@ -51,15 +51,15 @@ Every ScreenRecorder session carries a UUID. Callbacks are accepted only while t
 
 Area and application geometry is aligned once to the display's physical-pixel grid. The aligned source rectangle and its even pixel dimensions are then reused by ScreenCaptureKit, the encoder, History, and MP4 metadata. Every complete incoming pixel buffer must match those dimensions exactly; a mismatch is terminal rather than an invitation to silently rescale.
 
-Capture submits each transient ScreenCaptureKit BGRA pixel buffer directly to a VideoToolbox H.264 High-profile compression session. The live policy is real-time quality `0.98`, quality-over-speed priority, resolution/FPS-scaled soft average bitrate, no hard rate cap, no frame reordering, and a two-second GOP. AVAssetWriter's video input is passthrough: it receives the already-compressed sample and only muxes it with AAC into the Rec.709 MP4. Hardware encoding is selected for supported dimensions; VideoToolbox's native software encoder preserves exact oversized modes such as 5K when Apple hardware cannot accept them. Raw frames are never persisted; only the latest pixel buffer is retained transiently so one short two-to-three-interval scheduling gap can be bridged with a held frame without moving any original timestamp.
+Capture submits each transient ScreenCaptureKit BGRA pixel buffer directly to a VideoToolbox hardware compression session. The live policy prefers H.264 High profile and falls back to HEVC Main profile only when hardware H.264 rejects the exact native dimensions, such as this Mac's 5120-pixel-wide display. Both paths preserve the exact geometry and use real-time encoding at the current Crisp quality setting (default `98`, normalized to `0.98`), quality-over-speed priority, no average bitrate or hard data-rate limit, no frame reordering, and a two-second GOP. Software encoding is never used for live capture. AVAssetWriter's video input is passthrough: it receives the already-compressed sample and only muxes it with AAC into the Rec.709 MP4. Raw frames are never persisted; only the latest pixel buffer is retained transiently so one short two-to-three-interval scheduling gap can be bridged with a held frame without moving any original timestamp.
 
 Video encoder/muxer pressure is absorbed by a small bounded queue. A sustained stall or VideoToolbox frame drop is surfaced as a recording failure, so the master cannot acquire silent timing holes. System and microphone audio may be separate tracks in the managed master so a disappearing source does not require destructive editing.
 
-The sharing exporter uses AVAssetReader and AVAssetWriter rather than opaque export presets. An eligible full-duration Crisp operation byte-copies the quality master. Other Crisp work uses offline VideoToolbox quality `0.98`; Compact uses `0.85` inside its 1080p/30 envelope. Both keep bitrate as a soft target and omit hard data-rate limits. Smallest remains constrained ABR with a one-second hard cap at ten percent headroom. Offline encodes use `RealTime = false`, prioritize quality, and permit frame reordering. Multiple input audio tracks are mixed into one AAC output track, and trim/resize/cadence/audio changes happen in that same generation. A complete temporary sibling is atomically published, so concurrent or failed exports cannot expose a partial destination.
+The sharing exporter uses AVAssetReader and AVAssetWriter rather than opaque export presets. Crisp, Compact, and Smallest are independent quality rungs whose Settings values are normalized from 1–100 for VideoToolbox; Reset restores `98`, `90`, and `85`. Every rung produces H.264, preserves the source's exact encoded geometry and durable capture cadence, and uses the same 128 kbps AAC export policy. Hardware-supported H.264 receives the normalized quality directly. Apple's oversized software H.264 encoder rejects that property, so those exact-size exports map the same setting to a resolution/FPS-scaled soft average bitrate; no path sets a hard data-rate limit or target size. Offline encodes use `RealTime = false`, prioritize quality, and permit frame reordering. An eligible full-duration Crisp operation byte-copies a compatible H.264 master recorded at the requested Crisp quality; an HEVC master and every other incompatible Crisp request transcode to H.264, while Compact and Smallest always take the offline quality path. Multiple input audio tracks are mixed into one AAC output track, and trim/audio changes happen in that same generation. A complete temporary sibling is atomically published, so concurrent or failed exports cannot expose a partial destination.
 
-The durable capture setting—not a rounded nominal observation—is the 30/60 FPS ceiling. This keeps a 28.29 FPS variable-rate master from being converted to 28 FPS and preserves exact sample timing whenever the chosen preset does not reduce cadence.
+The durable capture setting—not a rounded nominal observation—is the 30/60 FPS ceiling. This keeps a 28.29 FPS variable-rate master from being converted to 28 FPS and preserves exact eligible sample timing for every preset.
 
-The source master is never edited by trim controls or Remove audio. Cache identity includes recording ID, trim, preset, approximate target, filename, and the per-recording audio preference, so audible and silent exports cannot collide. Save As stages a complete copy inside Clip's managed cache, then writes or atomically replaces only the exact URL authorized by `NSSavePanel`; it never creates an unauthorized temporary sibling in an external folder.
+The source master is never edited by trim controls or Remove audio. Cache identity includes recording ID, trim, preset, the selected quality value, filename, and the per-recording audio preference, so exports from different quality settings and audible/silent exports cannot collide. Save As stages a complete copy inside Clip's managed cache, then writes or atomically replaces only the exact URL authorized by `NSSavePanel`; it never creates an unauthorized temporary sibling in an external folder.
 
 ## Storage ownership
 
@@ -67,7 +67,7 @@ Preferences are versioned JSON under Application Support. History is a versioned
 
 Clipboard, promised-drag, and intermediate exports live under Caches and intentionally outlive the immediate operation so another application can consume them. Save As outputs are external user files and are never owned or removed by Clip.
 
-When Keep Original is Off, the successful export is installed atomically at the same managed path and its intrinsic duration, dimensions, frame rate, byte count, and full trim are rebased together. When Do Not Retain is selected, history metadata is removed after a successful share; physical cleanup is coordinated with any open Preview/file consumer and crash leftovers are handled by ownership-aware launch reconciliation.
+When Keep Original is Off, the successful export is installed atomically at the same managed path and its intrinsic duration, dimensions, frame rate, byte count, encoded quality, and full trim are rebased together. Managed-master quality is stored separately from the original capture snapshot, so later Crisp reuse checks stay accurate without changing Retake settings. When Do Not Retain is selected, history metadata is removed after a successful share; physical cleanup is coordinated with any open Preview/file consumer and crash leftovers are handled by ownership-aware launch reconciliation.
 
 ## Permission model
 

@@ -24,26 +24,25 @@ setting.
   media needed by Preview is ready; it deliberately does not claim to measure
   AppKit window drawing or a real ScreenCaptureKit stream stop.
 - **Compact export** runs the real `NativeAssetExporter` with the Compact
-  configuration, validates every output's duration, dimensions, frame rate,
-  codec, and readability, and includes the atomic publication path.
+  default quality `90` configuration, validates every output's duration,
+  native dimensions, durable frame-rate ceiling, codec, and readability, and
+  includes the atomic publication path. Compact always exercises the offline
+  quality path; only an eligible Crisp request may reuse source bytes.
 
-Compact avoids another lossy encode only when an untrimmed source already
-satisfies every output constraint: one H.264 video track, exact target
-dimensions, source FPS no higher than the target, actual data rate no higher
-than the target, Rec.709 color metadata, and at most one compatible 48 kHz
-stereo AAC track. Two audio tracks always take the mixing/transcode path. The
-temporary copied MP4 is inspected before it is atomically published.
+At its hardware-supported fixture dimensions, the benchmark leaves
+`AverageBitRate` and `DataRateLimits` unset and does not resize or decimate the
+fixture. Exact oversized exports have a separate regression for the native
+software-H.264 soft-rate fallback. The exported MP4 is inspected before it is
+atomically published.
 
 ## Development Mac result
 
-Measured 2026-07-17 in a Swift 6.3.3 Release build on an Apple M3 Max with
-64 GB memory and macOS 26.5.2:
+The 2026-07-18 Release run on the development Mac passed both targets:
 
-| Metric | Samples | Median | Maximum | Target | Result |
-| --- | --- | ---: | ---: | ---: | --- |
-| Preview media readiness | 130.83, 116.39, 126.10 ms | 126.10 ms | 130.83 ms | < 1,000 ms | Pass |
-| Compact export | 4.10, 2.67, 2.25, 2.08, 1.97 ms | 2.25 ms | 4.10 ms | < 2,000 ms | Pass |
+- Preview media readiness: `44.69`/`45.72`/`45.81` ms min/median/max, target below `1,000` ms.
+- Compact-90 offline export: `1,671.29`/`1,674.66`/`1,740.53` ms min/median/max, target below `2,000` ms.
 
-The checked policy and integration coverage includes positive reuse plus
-rejection for trimming, resizing, FPS reduction, and two-track audio mixing.
-The complete `ClipMedia` suite passed 37/37 after this measurement work.
+The Compact samples were real native 1,440 × 900 at 30 FPS quality transcodes,
+not source reuse. Machine-readable evidence is in
+`.build/performance/latest.json`. The 2026-07-17 Compact timings measured the
+superseded export policy and are retained only as historical context.

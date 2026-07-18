@@ -1363,6 +1363,8 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
             filename: item.filename,
             trimRange: item.trimRange,
             exportConfiguration: item.exportConfiguration,
+            exportQualities: dependencies.settings.settings.exportQualities,
+            sourceVideoQualityPercent: item.managedMasterVideoQualityPercent,
             exportAudioPreference: item.exportAudioPreference,
             approximateExportByteCount: item.managedByteCount,
             retakePlan: retakePlan
@@ -1416,6 +1418,7 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
                 return await Self.registerPreviewShare(
                     id: request.recordingID,
                     outputURL: outputURL,
+                    videoQualityPercent: request.videoQualityPercent,
                     preferences: preferences,
                     previewSession: session,
                     history: history
@@ -1430,6 +1433,7 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
                 return await Self.registerPreviewShare(
                     id: request.recordingID,
                     outputURL: outputURL,
+                    videoQualityPercent: request.videoQualityPercent,
                     preferences: preferences,
                     previewSession: session,
                     history: history,
@@ -1444,6 +1448,7 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
                 return await Self.registerPreviewShare(
                     id: request.recordingID,
                     outputURL: outputURL,
+                    videoQualityPercent: request.videoQualityPercent,
                     preferences: preferences,
                     previewSession: session,
                     history: history
@@ -1642,6 +1647,11 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
         let sourceURL = try await dependencies.history.masterURL(for: item.id)
         let inMemorySettings = sessionSettingsByRecordingID[item.id]
             ?? activeCaptureSettings
+        let retakePlan = PreviewRetakePlan(
+            historyItem: item,
+            currentSettings: dependencies.settings.settings,
+            inMemorySessionSettings: inMemorySettings
+        )
         let replacement = try PreviewRecording(
             id: item.id,
             sourceURL: sourceURL,
@@ -1652,13 +1662,11 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
             filename: item.filename,
             trimRange: item.trimRange,
             exportConfiguration: item.exportConfiguration,
+            exportQualities: dependencies.settings.settings.exportQualities,
+            sourceVideoQualityPercent: item.managedMasterVideoQualityPercent,
             exportAudioPreference: item.exportAudioPreference,
             approximateExportByteCount: item.managedByteCount,
-            retakePlan: PreviewRetakePlan(
-                historyItem: item,
-                currentSettings: dependencies.settings.settings,
-                inMemorySessionSettings: inMemorySettings
-            )
+            retakePlan: retakePlan
         )
         let replacementSession = try await dependencies.history.beginPreviewSession(id: item.id)
         let history = dependencies.history
@@ -1729,6 +1737,7 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
     private nonisolated static func registerPreviewShare(
         id: RecordingID,
         outputURL: URL,
+        videoQualityPercent: Int,
         preferences: SharePreferences,
         previewSession: ManagedHistoryPreviewSession,
         history: ManagedHistoryRepository,
@@ -1740,6 +1749,7 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
                 exportedFileURL: outputURL,
                 retentionPolicy: preferences.retentionPolicy,
                 keepOriginalAfterExport: preferences.keepOriginalAfterExport,
+                exportedVideoQualityPercent: videoQualityPercent,
                 previewSession: previewSession
             )
             return PreviewShareOutcome(
@@ -1765,6 +1775,7 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
     private nonisolated static func registerHistoryShare(
         id: RecordingID,
         outputURL: URL,
+        videoQualityPercent: Int,
         preferences: SharePreferences,
         history: ManagedHistoryRepository
     ) async -> HistoryShareOutcome {
@@ -1774,7 +1785,8 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
                 id: id,
                 exportedFileURL: outputURL,
                 retentionPolicy: preferences.retentionPolicy,
-                keepOriginalAfterExport: preferences.keepOriginalAfterExport
+                keepOriginalAfterExport: preferences.keepOriginalAfterExport,
+                exportedVideoQualityPercent: videoQualityPercent
             )
             return HistoryShareOutcome(
                 refreshedIndex: try await history.load(),
@@ -1884,23 +1896,33 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
             preview: { [weak self] item in try await self?.presentPreview(item) },
             copy: { item in
                 let preferences = SharePreferences(settings: settingsModel.settings)
-                let request = try await Self.exportRequest(for: item, history: history)
+                let request = try await Self.exportRequest(
+                    for: item,
+                    history: history,
+                    exportQualities: settingsModel.settings.exportQualities
+                )
                 let outputURL = try await exports.export(request)
                 try pasteboard.placeFile(at: outputURL)
                 return await Self.registerHistoryShare(
                     id: item.id,
                     outputURL: outputURL,
+                    videoQualityPercent: request.videoQualityPercent,
                     preferences: preferences,
                     history: history
                 )
             },
             save: { item in
                 let preferences = SharePreferences(settings: settingsModel.settings)
-                let request = try await Self.exportRequest(for: item, history: history)
+                let request = try await Self.exportRequest(
+                    for: item,
+                    history: history,
+                    exportQualities: settingsModel.settings.exportQualities
+                )
                 guard let outputURL = try await sharing.saveAs(request) else { return nil }
                 return await Self.registerHistoryShare(
                     id: item.id,
                     outputURL: outputURL,
+                    videoQualityPercent: request.videoQualityPercent,
                     preferences: preferences,
                     history: history
                 )
@@ -1929,7 +1951,8 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
 
     private nonisolated static func exportRequest(
         for item: RecordingHistoryItem,
-        history: ManagedHistoryRepository
+        history: ManagedHistoryRepository,
+        exportQualities: ExportQualitySettings
     ) async throws -> PreviewExportRequest {
         PreviewExportRequest(
             recordingID: item.id,
@@ -1938,6 +1961,8 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
             filename: item.filename,
             trimRange: item.trimRange,
             configuration: item.exportConfiguration,
+            videoQualityPercent: exportQualities.quality(for: item.exportConfiguration.preset),
+            sourceVideoQualityPercent: item.managedMasterVideoQualityPercent,
             audioPreference: item.exportAudioPreference
         )
     }

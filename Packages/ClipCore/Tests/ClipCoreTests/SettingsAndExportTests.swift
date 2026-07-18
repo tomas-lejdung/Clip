@@ -21,7 +21,11 @@ struct SettingsAndExportTests {
         #expect(settings.audio == .none)
         #expect(settings.countdown == .threeSeconds)
         #expect(settings.historyRetention == .sevenDays)
-        #expect(settings.exportConfiguration == .compact)
+        #expect(settings.exportConfiguration == .crisp)
+        #expect(settings.exportQualities == .defaults)
+        #expect(settings.exportQualities.crisp == 98)
+        #expect(settings.exportQualities.compact == 90)
+        #expect(settings.exportQualities.smallest == 85)
         #expect(settings.defaultFilenameTemplate == .default)
         #expect(!settings.automaticallyClosePreviewAfterCopy)
         #expect(settings.keepOriginalAfterExport)
@@ -106,7 +110,12 @@ struct SettingsAndExportTests {
         var settings = ClipSettings.defaults(
             homeDirectory: URL(fileURLWithPath: "/tmp/home", isDirectory: true)
         )
-        settings.exportConfiguration = .smallest10MB
+        settings.exportConfiguration = .smallest
+        settings.exportQualities = ExportQualitySettings(
+            crisp: 97,
+            compact: 88,
+            smallest: 72
+        )
         settings.audio = .microphoneAndSystemAudio
         settings.frameRate = .sixty
         settings.mostRecentCaptureMode = .fullscreen
@@ -191,45 +200,71 @@ struct SettingsAndExportTests {
         #expect(decoded.captureModeForNextInvocation == .lastArea)
     }
 
-    @Test("Smallest size targets expose decimal upload byte counts")
-    func smallestTargets() throws {
-        #expect(SmallestSizeTarget.tenMegabytes.megabytes == 10)
-        #expect(SmallestSizeTarget.tenMegabytes.targetByteCount == 10_000_000)
-        #expect(SmallestSizeTarget.twentyFiveMegabytes.targetByteCount == 25_000_000)
-        #expect(try SmallestSizeTarget(customMegabytes: 1).targetByteCount == 1_000_000)
-        #expect(try SmallestSizeTarget(customMegabytes: 500).targetByteCount == 500_000_000)
+    @Test("Settings without export qualities use the product defaults")
+    func settingsWithoutExportQualitiesUseDefaults() throws {
+        let settings = ClipSettings.defaults(
+            homeDirectory: URL(fileURLWithPath: "/tmp/home", isDirectory: true)
+        )
+        let encoded = try JSONEncoder().encode(settings)
+        var object = try #require(
+            JSONSerialization.jsonObject(with: encoded) as? [String: Any]
+        )
+        object.removeValue(forKey: "exportQualities")
+
+        let decoded = try JSONDecoder().decode(
+            ClipSettings.self,
+            from: JSONSerialization.data(withJSONObject: object)
+        )
+
+        #expect(decoded.exportQualities == .defaults)
     }
 
-    @Test("Custom Smallest targets reject values outside 1 through 500 MB")
-    func smallestTargetBounds() {
-        #expect(throws: SmallestSizeTargetError.customTargetOutOfRange(0)) {
-            try SmallestSizeTarget(customMegabytes: 0)
-        }
-        #expect(throws: SmallestSizeTargetError.customTargetOutOfRange(501)) {
-            try SmallestSizeTarget(customMegabytes: 501)
-        }
+    @Test("Export qualities are independent whole-number settings")
+    func independentExportQualities() throws {
+        let qualities = ExportQualitySettings(crisp: 42, compact: 99, smallest: 17)
+
+        #expect(ExportQualitySettings.validRange == 1...100)
+        #expect(qualities.quality(for: .crisp) == 42)
+        #expect(qualities.quality(for: .compact) == 99)
+        #expect(qualities.quality(for: .smallest) == 17)
+        #expect(qualities.normalizedQuality(for: .crisp) == 0.42)
+        #expect(qualities.normalizedQuality(for: .compact) == 0.99)
+        #expect(qualities.normalizedQuality(for: .smallest) == 0.17)
+        #expect(try jsonRoundTrip(qualities) == qualities)
+    }
+
+    @Test("Legacy capture snapshots use the default Crisp quality")
+    func legacyCaptureSnapshotQuality() throws {
+        let snapshot = CaptureSessionSnapshot(
+            frameRate: .thirty,
+            showCursor: true,
+            audio: .none,
+            countdown: .off,
+            crispQuality: 73
+        )
+        let encoded = try JSONEncoder().encode(snapshot)
+        var object = try #require(
+            JSONSerialization.jsonObject(with: encoded) as? [String: Any]
+        )
+        object.removeValue(forKey: "crispQuality")
+
+        let decoded = try JSONDecoder().decode(
+            CaptureSessionSnapshot.self,
+            from: JSONSerialization.data(withJSONObject: object)
+        )
+
+        #expect(decoded.crispQuality == ExportQualitySettings.defaults.crisp)
     }
 
     @Test("Every export configuration is Codable")
     func exportRoundTrips() throws {
-        let custom = try SmallestSizeTarget(customMegabytes: 42)
         let configurations: [ExportConfiguration] = [
             .compact,
             .crisp,
-            .smallest10MB,
-            .smallest25MB,
-            ExportConfiguration(preset: .smallest, smallestSizeTarget: custom),
+            .smallest,
         ]
         for configuration in configurations {
             #expect(try jsonRoundTrip(configuration) == configuration)
-        }
-    }
-
-    @Test("Decoding enforces custom target bounds")
-    func invalidSmallestTargetJSON() {
-        let data = Data(#"{"kind":"custom","megabytes":999}"#.utf8)
-        #expect(throws: DecodingError.self) {
-            try JSONDecoder().decode(SmallestSizeTarget.self, from: data)
         }
     }
 }

@@ -490,7 +490,7 @@ struct ApplicationDirectoriesTests {
         #expect(fixedSettings.audio == .none)
         #expect(fixedSettings.countdown == .oneSecond)
         #expect(fixedSettings.historyRetention == .indefinitely)
-        #expect(fixedSettings.exportConfiguration == .compact)
+        #expect(fixedSettings.exportConfiguration == .crisp)
         #expect(!fixedSettings.automaticallyClosePreviewAfterCopy)
         #expect(fixedSettings.keepOriginalAfterExport)
         #expect(!fixedSettings.launchAtLogin)
@@ -969,13 +969,15 @@ struct ApplicationDirectoriesTests {
             filename: try RecordingFilename(validating: "clip-cache.mp4"),
             trimRange: try TrimRange(startTime: 0, endTime: 21.598),
             configuration: .crisp,
+            videoQualityPercent: 98,
+            sourceVideoQualityPercent: 98,
             audioPreference: .keepAudio
         )
 
         let key = await coordinator.cacheKey(for: request)
 
-        #expect(PreviewExportCoordinator.cacheSchemaVersion == 3)
-        #expect(key == "v3-0-21598-crisp-30fps-audio")
+        #expect(PreviewExportCoordinator.cacheSchemaVersion == 4)
+        #expect(key == "v4-0-21598-crisp-q98-sourceq98-30fps-audio")
         #expect(key != "0-21598-crisp")
     }
 
@@ -993,6 +995,8 @@ struct ApplicationDirectoriesTests {
             filename: try RecordingFilename(validating: "variable-rate.mp4"),
             trimRange: try TrimRange(startTime: 0, endTime: 12),
             configuration: .crisp,
+            videoQualityPercent: 98,
+            sourceVideoQualityPercent: 98,
             audioPreference: .keepAudio
         )
         let inspection = MediaInspection(
@@ -1012,6 +1016,10 @@ struct ApplicationDirectoriesTests {
         )
 
         #expect(configuration.framesPerSecond == 30)
+        #expect(configuration.width == 1_920)
+        #expect(configuration.height == 1_080)
+        #expect(configuration.videoQuality == 0.98)
+        #expect(configuration.sourceVideoQuality == 0.98)
     }
 
     @MainActor

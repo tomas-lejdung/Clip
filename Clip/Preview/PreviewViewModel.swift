@@ -1,6 +1,5 @@
 @preconcurrency import AVFoundation
 import ClipCore
-import ClipMedia
 import Combine
 import Foundation
 import OSLog
@@ -43,8 +42,6 @@ final class PreviewViewModel: ObservableObject {
     @Published private(set) var currentTime: TimeInterval
     @Published private(set) var selectedPreset: ExportPreset
     @Published private(set) var exportAudioPreference: ExportAudioPreference
-    @Published private(set) var smallestTargetSelection: PreviewSmallestTargetSelection
-    @Published private(set) var customTargetMegabytes: Int
     @Published private(set) var operation: PreviewOperation?
     @Published private(set) var statusMessage: String?
     @Published private(set) var lastSharedFileURL: URL?
@@ -67,18 +64,6 @@ final class PreviewViewModel: ObservableObject {
         currentTime = recording.trimRange.startTime
         selectedPreset = recording.exportConfiguration.preset
         exportAudioPreference = recording.exportAudioPreference
-
-        switch recording.exportConfiguration.smallestSizeTarget {
-        case .tenMegabytes:
-            smallestTargetSelection = .tenMegabytes
-            customTargetMegabytes = 25
-        case .twentyFiveMegabytes:
-            smallestTargetSelection = .twentyFiveMegabytes
-            customTargetMegabytes = 25
-        case let .custom(megabytes):
-            smallestTargetSelection = .custom
-            customTargetMegabytes = megabytes
-        }
 
         player = AVPlayer(url: recording.sourceURL)
         player.actionAtItemEnd = .pause
@@ -106,51 +91,15 @@ final class PreviewViewModel: ObservableObject {
         return "Enter a valid filename without folders or control characters."
     }
 
-    var estimatedOutputSize: MediaExportSizeEstimate {
-        let configuration = MediaExportConfigurationFactory.make(
-            preset: mediaPreset,
-            sourceWidth: recording.pixelSize.width,
-            sourceHeight: recording.pixelSize.height,
-            sourceFramesPerSecond: recording.frameRate.framesPerSecond,
-            duration: selectedTrimDuration,
-            approximateTargetMegabytes: selectedPreset == .smallest
-                ? Double(resolvedSmallestTarget.megabytes)
-                : nil,
-            includesAudio: hasRecordedAudio && exportAudioPreference.includesAudio
-        )
-        return MediaExportSizeEstimator.estimate(
-            configuration: configuration,
-            duration: selectedTrimDuration,
-            includesAudio: hasRecordedAudio && exportAudioPreference.includesAudio,
-            sourceByteCount: recording.approximateExportByteCount,
-            sourceDuration: recording.duration,
-            sourceIncludesAudio: hasRecordedAudio
-        )
-    }
-
     var outputSizeDescription: String {
-        if selectedPreset != .smallest {
-            guard let lastExportedByteCount else {
-                return "Quality based — size varies"
-            }
-            let size = ByteCountFormatter.string(
-                fromByteCount: lastExportedByteCount,
-                countStyle: .file
-            )
-            return "Actual output: \(size)"
+        guard let lastExportedByteCount else {
+            return "Quality based — size varies"
         }
-
         let size = ByteCountFormatter.string(
-            fromByteCount: estimatedOutputSize.byteCount,
+            fromByteCount: lastExportedByteCount,
             countStyle: .file
         )
-        return "Estimated output: \(size) · \(resolvedSmallestTarget.megabytes) MB target"
-    }
-
-    /// Kept as a source-compatible alias for callers that predate the
-    /// quality-based Compact and Crisp presentation.
-    var estimatedOutputSizeDescription: String {
-        outputSizeDescription
+        return "Actual output: \(size)"
     }
 
     var dragItem: PreviewFileDragItem? {
@@ -183,19 +132,6 @@ final class PreviewViewModel: ObservableObject {
 
     func selectPreset(_ preset: ExportPreset) {
         selectedPreset = preset
-        lastExportedByteCount = nil
-        statusMessage = nil
-    }
-
-    func selectSmallestTarget(_ selection: PreviewSmallestTargetSelection) {
-        smallestTargetSelection = selection
-        lastExportedByteCount = nil
-        statusMessage = nil
-    }
-
-    func setCustomTargetMegabytes(_ megabytes: Int) {
-        customTargetMegabytes = min(max(megabytes, SmallestSizeTarget.customRange.lowerBound),
-                                    SmallestSizeTarget.customRange.upperBound)
         lastExportedByteCount = nil
         statusMessage = nil
     }
@@ -450,32 +386,6 @@ final class PreviewViewModel: ObservableObject {
         try? RecordingFilename(validating: filenameText)
     }
 
-    private var resolvedSmallestTarget: SmallestSizeTarget {
-        switch smallestTargetSelection {
-        case .tenMegabytes:
-            .tenMegabytes
-        case .twentyFiveMegabytes:
-            .twentyFiveMegabytes
-        case .custom:
-            (try? SmallestSizeTarget(customMegabytes: customTargetMegabytes)) ?? .twentyFiveMegabytes
-        }
-    }
-
-    private var selectedTrimDuration: TimeInterval {
-        max(trimEnd - trimStart, 0)
-    }
-
-    private var mediaPreset: MediaExportPreset {
-        switch selectedPreset {
-        case .compact:
-            .compact
-        case .crisp:
-            .crisp
-        case .smallest:
-            .smallest
-        }
-    }
-
     private func makeExportRequest() -> PreviewExportRequest? {
         guard let filename = validatedFilename,
               let trimRange = try? TrimRange(startTime: trimStart, endTime: trimEnd) else {
@@ -487,10 +397,9 @@ final class PreviewViewModel: ObservableObject {
             captureFrameRate: recording.frameRate,
             filename: filename,
             trimRange: trimRange,
-            configuration: ExportConfiguration(
-                preset: selectedPreset,
-                smallestSizeTarget: resolvedSmallestTarget
-            ),
+            configuration: ExportConfiguration(preset: selectedPreset),
+            videoQualityPercent: recording.exportQualities.quality(for: selectedPreset),
+            sourceVideoQualityPercent: recording.sourceVideoQualityPercent,
             audioPreference: exportAudioPreference
         )
     }
@@ -582,16 +491,6 @@ final class PreviewViewModel: ObservableObject {
         selectedPreset = replacement.exportConfiguration.preset
         exportAudioPreference = replacement.exportAudioPreference
         player.isMuted = !replacement.exportAudioPreference.includesAudio
-
-        switch replacement.exportConfiguration.smallestSizeTarget {
-        case .tenMegabytes:
-            smallestTargetSelection = .tenMegabytes
-        case .twentyFiveMegabytes:
-            smallestTargetSelection = .twentyFiveMegabytes
-        case let .custom(megabytes):
-            smallestTargetSelection = .custom
-            customTargetMegabytes = megabytes
-        }
 
         seek(to: replacement.trimRange.startTime)
     }

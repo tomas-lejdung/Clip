@@ -23,7 +23,7 @@ actor PreviewExportCoordinator {
     static let staleExportLifetime: TimeInterval = 7 * 24 * 60 * 60
     /// Bump whenever encoding or reuse semantics change so an export created by
     /// an older build cannot mask a fidelity/cadence fix in a newer build.
-    static let cacheSchemaVersion = 3
+    static let cacheSchemaVersion = 4
 
     private let exportsDirectory: URL
     private let exporter: any MediaExporting
@@ -138,16 +138,13 @@ actor PreviewExportCoordinator {
         for request: PreviewExportRequest,
         inspection: MediaInspection
     ) -> MediaExportConfiguration {
-        let approximateTarget = request.configuration.preset == .smallest
-            ? Double(request.configuration.smallestSizeTarget.megabytes)
-            : nil
         return MediaExportConfigurationFactory.make(
             preset: mediaPreset(for: request.configuration.preset),
             sourceWidth: inspection.width,
             sourceHeight: inspection.height,
             sourceFramesPerSecond: request.captureFrameRate.framesPerSecond,
-            duration: request.trimRange.duration,
-            approximateTargetMegabytes: approximateTarget,
+            videoQualityPercent: request.videoQualityPercent,
+            sourceVideoQualityPercent: request.sourceVideoQualityPercent,
             includesAudio: request.audioPreference.includesAudio
         )
     }
@@ -155,13 +152,11 @@ actor PreviewExportCoordinator {
     func cacheKey(for request: PreviewExportRequest) -> String {
         let start = Int64((request.trimRange.startTime * 1_000).rounded())
         let end = Int64((request.trimRange.endTime * 1_000).rounded())
-        let target = request.configuration.preset == .smallest
-            ? "-\(request.configuration.smallestSizeTarget.megabytes)mb"
-            : ""
         let audio = request.audioPreference.includesAudio ? "audio" : "silent"
         let frameRate = request.captureFrameRate.framesPerSecond
         return "v\(Self.cacheSchemaVersion)-\(start)-\(end)"
-            + "-\(request.configuration.preset.rawValue)\(target)"
+            + "-\(request.configuration.preset.rawValue)-q\(request.videoQualityPercent)"
+            + "-sourceq\(request.sourceVideoQualityPercent)"
             + "-\(frameRate)fps-\(audio)"
     }
 

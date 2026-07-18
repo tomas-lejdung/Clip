@@ -38,7 +38,7 @@ struct NativeQualityPipelineTests {
             to: qualityURL,
             frameCount: frameCount,
             framesPerSecond: framesPerSecond,
-            videoBitRate: comparisonBitRate
+            videoQuality: 0.98
         )
         try await writeFormerABROnlyMaster(
             to: formerABRURL,
@@ -118,17 +118,19 @@ struct NativeQualityPipelineTests {
         #expect(quality.averageEdgeRetention >= 0.95)
     }
 
-    @Test("Crisp reuse is byte-identical and Crisp/Compact transcodes meet quality floors")
+    @Test("Crisp reuse and q98/q90/q85 transcodes meet native quality floors")
     func exportPresetsMeetScreenContentQualityFloors() async throws {
         let sourceURL = qualityTemporaryURL(named: "quality-source")
         let reusedCrispURL = qualityTemporaryURL(named: "quality-crisp-reuse")
-        let transcodedCrispURL = qualityTemporaryURL(named: "quality-crisp-trimmed")
+        let transcodedCrispURL = qualityTemporaryURL(named: "quality-crisp-transcoded")
         let compactURL = qualityTemporaryURL(named: "quality-compact")
+        let smallestURL = qualityTemporaryURL(named: "quality-smallest")
         defer {
             try? FileManager.default.removeItem(at: sourceURL)
             try? FileManager.default.removeItem(at: reusedCrispURL)
             try? FileManager.default.removeItem(at: transcodedCrispURL)
             try? FileManager.default.removeItem(at: compactURL)
+            try? FileManager.default.removeItem(at: smallestURL)
         }
 
         let framesPerSecond = 30
@@ -146,7 +148,8 @@ struct NativeQualityPipelineTests {
             sourceWidth: sourceInspection.width,
             sourceHeight: sourceInspection.height,
             sourceFramesPerSecond: framesPerSecond,
-            duration: sourceInspection.duration
+            videoQuality: 0.98,
+            sourceVideoQuality: 0.98
         )
 
         _ = try await NativeAssetExporter().export(
@@ -157,20 +160,21 @@ struct NativeQualityPipelineTests {
         )
         #expect(try Data(contentsOf: reusedCrispURL) == sourceBytes)
 
-        // A real trim deliberately disables source reuse and measures a second
-        // native H.264 generation. This prevents the Crisp score from being a
-        // tautology while the byte-equality assertion above guards reuse.
-        let trimStartFrame = 6
-        let trimFrameCount = 24
-        let trimRange = CMTimeRange(
-            start: CMTime(value: CMTimeValue(trimStartFrame), timescale: 30),
-            duration: CMTime(value: CMTimeValue(trimFrameCount), timescale: 30)
+        // Unknown source quality deliberately disables reuse so q98 is measured
+        // as a second full-range H.264 generation on the same frames as q90/q85.
+        let transcodedCrisp = MediaExportConfigurationFactory.make(
+            preset: .crisp,
+            sourceWidth: sourceInspection.width,
+            sourceHeight: sourceInspection.height,
+            sourceFramesPerSecond: framesPerSecond,
+            videoQuality: 0.98,
+            sourceVideoQuality: nil
         )
         _ = try await NativeAssetExporter().export(
             sourceURL: sourceURL,
             destinationURL: transcodedCrispURL,
-            timeRange: trimRange,
-            configuration: crisp
+            timeRange: nil,
+            configuration: transcodedCrisp
         )
 
         let compact = MediaExportConfigurationFactory.make(
@@ -178,7 +182,8 @@ struct NativeQualityPipelineTests {
             sourceWidth: sourceInspection.width,
             sourceHeight: sourceInspection.height,
             sourceFramesPerSecond: framesPerSecond,
-            duration: sourceInspection.duration
+            videoQuality: 0.90,
+            sourceVideoQuality: 0.98
         )
         #expect(compact.width == sourceInspection.width)
         #expect(compact.height == sourceInspection.height)
@@ -189,45 +194,87 @@ struct NativeQualityPipelineTests {
             configuration: compact
         )
 
+        let smallest = MediaExportConfigurationFactory.make(
+            preset: .smallest,
+            sourceWidth: sourceInspection.width,
+            sourceHeight: sourceInspection.height,
+            sourceFramesPerSecond: framesPerSecond,
+            videoQuality: 0.85,
+            sourceVideoQuality: 0.98
+        )
+        _ = try await NativeAssetExporter().export(
+            sourceURL: sourceURL,
+            destinationURL: smallestURL,
+            timeRange: nil,
+            configuration: smallest
+        )
+
         let crispInspection = try await MediaInspector.inspect(transcodedCrispURL)
         let compactInspection = try await MediaInspector.inspect(compactURL)
+        let smallestInspection = try await MediaInspector.inspect(smallestURL)
         let crispFormat = try await inspectQualityVideoFormat(transcodedCrispURL)
         let compactFormat = try await inspectQualityVideoFormat(compactURL)
+        let smallestFormat = try await inspectQualityVideoFormat(smallestURL)
         let crispFrames = try await QualityMediaDecoder.decodeVideo(transcodedCrispURL)
         let compactFrames = try await QualityMediaDecoder.decodeVideo(compactURL)
-        let crispReferences = Array(
-            sourceFrames.dropFirst(trimStartFrame).prefix(trimFrameCount)
-        ).map(\.luma)
+        let smallestFrames = try await QualityMediaDecoder.decodeVideo(smallestURL)
         let crispQuality = ScreenContentQualityMetrics.aggregate(
-            references: crispReferences,
+            references: sourceFrames.map(\.luma),
             candidates: crispFrames.map(\.luma)
         )
         let compactQuality = ScreenContentQualityMetrics.aggregate(
             references: sourceFrames.map(\.luma),
             candidates: compactFrames.map(\.luma)
         )
+        let smallestQuality = ScreenContentQualityMetrics.aggregate(
+            references: sourceFrames.map(\.luma),
+            candidates: smallestFrames.map(\.luma)
+        )
 
         #expect(crispInspection.videoCodec == kCMVideoCodecType_H264)
         #expect(compactInspection.videoCodec == kCMVideoCodecType_H264)
+        #expect(smallestInspection.videoCodec == kCMVideoCodecType_H264)
         #expect(crispFormat.h264ProfileIDC == 100)
         #expect(compactFormat.h264ProfileIDC == 100)
+        #expect(smallestFormat.h264ProfileIDC == 100)
         #expect(crispFormat.hasRec709Description)
         #expect(compactFormat.hasRec709Description)
+        #expect(smallestFormat.hasRec709Description)
         #expect(crispInspection.width == QualityFixture.width)
         #expect(crispInspection.height == QualityFixture.height)
         #expect(compactInspection.width == QualityFixture.width)
         #expect(compactInspection.height == QualityFixture.height)
+        #expect(smallestInspection.width == QualityFixture.width)
+        #expect(smallestInspection.height == QualityFixture.height)
         #expect(try Data(contentsOf: compactURL) != sourceBytes)
-        #expect(abs(crispInspection.duration - trimRange.duration.seconds) <= 1.0 / 30.0)
+        #expect(try Data(contentsOf: smallestURL) != sourceBytes)
+        #expect(abs(crispInspection.duration - sourceInspection.duration) <= 1.0 / 30.0)
         #expect(maximumTimestampGap(crispFrames) <= (2.0 / 30.0) + 0.001)
         #expect(maximumTimestampGap(compactFrames) <= (2.0 / 30.0) + 0.001)
 
-        #expect(crispQuality.comparedFrameCount >= trimFrameCount - 1)
+        #expect(crispQuality.comparedFrameCount == frameCount)
         #expect(crispQuality.averageLumaSSIM >= 0.98)
         #expect(crispQuality.averageEdgeRetention >= 0.92)
         #expect(compactQuality.comparedFrameCount == frameCount)
         #expect(compactQuality.averageLumaSSIM >= 0.96)
         #expect(compactQuality.averageEdgeRetention >= 0.85)
+        #expect(smallestQuality.comparedFrameCount == frameCount)
+        #expect(smallestQuality.averageLumaSSIM >= 0.94)
+        #expect(smallestQuality.averageEdgeRetention >= 0.80)
+        #expect(maximumTimestampGap(smallestFrames) <= (2.0 / Double(framesPerSecond)) + 0.001)
+
+        print(
+            "Quality ladder fixture: "
+                + "q98 SSIM=\(crispQuality.averageLumaSSIM) "
+                + "edges=\(crispQuality.averageEdgeRetention) "
+                + "bytes=\(crispInspection.fileSize); "
+                + "q90 SSIM=\(compactQuality.averageLumaSSIM) "
+                + "edges=\(compactQuality.averageEdgeRetention) "
+                + "bytes=\(compactInspection.fileSize); "
+                + "q85 SSIM=\(smallestQuality.averageLumaSSIM) "
+                + "edges=\(smallestQuality.averageEdgeRetention) "
+                + "bytes=\(smallestInspection.fileSize)"
+        )
     }
 }
 
@@ -272,20 +319,16 @@ private func writeQualityMaster(
     to outputURL: URL,
     frameCount: Int,
     framesPerSecond: Int,
-    videoBitRate: Int? = nil
+    videoQuality: Double = 0.98
 ) async throws -> [LumaFrame] {
-    var configuration = RecordingConfiguration(
+    let configuration = RecordingConfiguration(
         width: QualityFixture.width,
         height: QualityFixture.height,
         framesPerSecond: framesPerSecond,
+        videoQuality: videoQuality,
         showsCursor: false,
         audioMode: .off
     )
-    // Recordings use this configuration's normal quality plan. Keeping the
-    // explicit assignment makes a future accidental test-only low-rate
-    // override visible in review.
-    configuration.videoBitRate = videoBitRate
-        ?? max(configuration.videoBitRate, 8_000_000)
     #expect(configuration.width == QualityFixture.width)
     #expect(configuration.height == QualityFixture.height)
 

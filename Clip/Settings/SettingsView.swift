@@ -265,40 +265,36 @@ struct SettingsView: View {
     private var export: some View {
         Form {
             Picker("Default preset", selection: exportPresetBinding) {
-                Text("Compact").tag(ExportPreset.compact)
                 Text("Crisp").tag(ExportPreset.crisp)
+                Text("Compact").tag(ExportPreset.compact)
                 Text("Smallest").tag(ExportPreset.smallest)
             }
-            if model.settings.exportConfiguration.preset == .smallest {
-                Picker("Approximate target", selection: smallestTargetBinding) {
-                    Text("10 MB").tag(SettingsSmallestTargetSelection.tenMegabytes)
-                    Text("25 MB").tag(SettingsSmallestTargetSelection.twentyFiveMegabytes)
-                    Text("Custom").tag(SettingsSmallestTargetSelection.custom)
-                }
-                if smallestTargetBinding.wrappedValue == .custom {
-                    LabeledContent("Custom target") {
-                        HStack(spacing: 8) {
-                            TextField(
-                                "Megabytes",
-                                value: customSmallestMegabytesBinding,
-                                format: .number
-                            )
-                            .multilineTextAlignment(.trailing)
-                            .frame(width: 64)
-                            Stepper(
-                                "",
-                                value: customSmallestMegabytesBinding,
-                                in: SmallestSizeTarget.customRange
-                            )
-                            .labelsHidden()
-                            Text("MB")
-                                .foregroundStyle(.secondary)
-                        }
+
+            Section("Video quality") {
+                exportQualityRow(
+                    "Crisp",
+                    preset: .crisp,
+                    accessibilityIdentifier: "clip.settings.export.quality.crisp"
+                )
+                exportQualityRow(
+                    "Compact",
+                    preset: .compact,
+                    accessibilityIdentifier: "clip.settings.export.quality.compact"
+                )
+                exportQualityRow(
+                    "Smallest",
+                    preset: .smallest,
+                    accessibilityIdentifier: "clip.settings.export.quality.smallest"
+                )
+                Text("Each preset uses its own H.264 quality value from 1 through 100. File size varies with the recording.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Button("Reset Quality Defaults") {
+                    Task { @MainActor in
+                        await model.update { $0.exportQualities = .defaults }
                     }
-                    Text("Choose any target from 1 MB through 500 MB. The result is approximate.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
                 }
+                .accessibilityIdentifier("clip.settings.export.quality.reset")
             }
             Section("File names") {
                 LabeledContent("Default filename format") {
@@ -580,29 +576,20 @@ struct SettingsView: View {
         )
     }
 
-    private var smallestTargetBinding: Binding<SettingsSmallestTargetSelection> {
+    private func exportQualityBinding(for preset: ExportPreset) -> Binding<Int> {
         Binding(
-            get: {
-                switch model.settings.exportConfiguration.smallestSizeTarget {
-                case .tenMegabytes: .tenMegabytes
-                case .twentyFiveMegabytes: .twentyFiveMegabytes
-                case .custom: .custom
-                }
-            },
-            set: { selection in
+            get: { model.settings.exportQualities.quality(for: preset) },
+            set: { requestedQuality in
+                let quality = requestedQuality.clamped(to: ExportQualitySettings.validRange)
                 Task { @MainActor in
                     await model.update { settings in
-                        switch selection {
-                        case .tenMegabytes:
-                            settings.exportConfiguration.smallestSizeTarget = .tenMegabytes
-                        case .twentyFiveMegabytes:
-                            settings.exportConfiguration.smallestSizeTarget = .twentyFiveMegabytes
-                        case .custom:
-                            let megabytes = settings.exportConfiguration.smallestSizeTarget.megabytes
-                                .clamped(to: SmallestSizeTarget.customRange)
-                            if let target = try? SmallestSizeTarget(customMegabytes: megabytes) {
-                                settings.exportConfiguration.smallestSizeTarget = target
-                            }
+                        switch preset {
+                        case .crisp:
+                            settings.exportQualities.crisp = quality
+                        case .compact:
+                            settings.exportQualities.compact = quality
+                        case .smallest:
+                            settings.exportQualities.smallest = quality
                         }
                     }
                 }
@@ -610,20 +597,22 @@ struct SettingsView: View {
         )
     }
 
-    private var customSmallestMegabytesBinding: Binding<Int> {
-        Binding(
-            get: { model.settings.exportConfiguration.smallestSizeTarget.megabytes },
-            set: { requestedValue in
-                let megabytes = requestedValue.clamped(to: SmallestSizeTarget.customRange)
-                Task { @MainActor in
-                    await model.update { settings in
-                        if let target = try? SmallestSizeTarget(customMegabytes: megabytes) {
-                            settings.exportConfiguration.smallestSizeTarget = target
-                        }
-                    }
-                }
+    private func exportQualityRow(
+        _ title: LocalizedStringKey,
+        preset: ExportPreset,
+        accessibilityIdentifier: String
+    ) -> some View {
+        let binding = exportQualityBinding(for: preset)
+        return LabeledContent(title) {
+            HStack(spacing: 8) {
+                TextField("Quality", value: binding, format: .number)
+                    .multilineTextAlignment(.trailing)
+                    .frame(width: 48)
+                    .accessibilityIdentifier(accessibilityIdentifier)
+                Stepper("", value: binding, in: ExportQualitySettings.validRange)
+                    .labelsHidden()
             }
-        )
+        }
     }
 
     private var validatedFilenameTemplate: RecordingFilenameTemplate? {
@@ -751,12 +740,6 @@ struct SettingsView: View {
             countStyle: .file
         )
     }
-}
-
-private enum SettingsSmallestTargetSelection: Hashable {
-    case tenMegabytes
-    case twentyFiveMegabytes
-    case custom
 }
 
 private extension Comparable {

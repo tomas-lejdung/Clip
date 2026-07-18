@@ -328,7 +328,7 @@ struct AppLaunchConfiguration: Equatable, Sendable {
         settings.audio = realCaptureAudioConfiguration ?? .none
         settings.countdown = .oneSecond
         settings.historyRetention = realCaptureOverrides.historyRetention ?? .indefinitely
-        settings.exportConfiguration = .compact
+        settings.exportConfiguration = .crisp
         settings.automaticallyClosePreviewAfterCopy = false
         settings.keepOriginalAfterExport = true
         if let defaultSaveDirectory = realCaptureOverrides.defaultSaveDirectory {

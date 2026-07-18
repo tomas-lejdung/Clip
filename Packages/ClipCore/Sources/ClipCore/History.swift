@@ -196,6 +196,10 @@ public struct RecordingHistoryItem: Codable, Equatable, Sendable, Identifiable {
     public private(set) var recordingDuration: TimeInterval
     public private(set) var pixelSize: PixelSize
     public private(set) var frameRate: CaptureFrameRate
+    /// Quality used to encode the MP4 currently owned as the managed master.
+    /// This is separate from `captureSessionSnapshot`, which must continue to
+    /// describe the original capture inputs used by Retake.
+    public private(set) var managedMasterVideoQualityPercent: Int
     public let audioConfiguration: AudioConfiguration
     public let captureTarget: CaptureTarget
     /// Exact capture inputs for Retake. Older history files decode this as nil
@@ -216,6 +220,7 @@ public struct RecordingHistoryItem: Codable, Equatable, Sendable, Identifiable {
         recordingDuration: TimeInterval,
         pixelSize: PixelSize,
         frameRate: CaptureFrameRate,
+        managedMasterVideoQualityPercent: Int? = nil,
         audioConfiguration: AudioConfiguration,
         captureTarget: CaptureTarget,
         captureSessionSnapshot: CaptureSessionSnapshot? = nil,
@@ -245,6 +250,9 @@ public struct RecordingHistoryItem: Codable, Equatable, Sendable, Identifiable {
         self.recordingDuration = recordingDuration
         self.pixelSize = pixelSize
         self.frameRate = frameRate
+        self.managedMasterVideoQualityPercent = managedMasterVideoQualityPercent
+            ?? captureSessionSnapshot?.crispQuality
+            ?? ExportQualitySettings.defaults.crisp
         self.audioConfiguration = audioConfiguration
         self.captureTarget = captureTarget
         self.captureSessionSnapshot = captureSessionSnapshot
@@ -295,6 +303,7 @@ public struct RecordingHistoryItem: Codable, Equatable, Sendable, Identifiable {
         with managedMaster: ManagedRecordingFile,
         byteCount: Int64,
         mediaMetadata: RecordingMediaMetadata,
+        videoQualityPercent: Int,
         at date: Date
     ) throws {
         try validateUpdateDate(date)
@@ -307,6 +316,7 @@ public struct RecordingHistoryItem: Codable, Equatable, Sendable, Identifiable {
         recordingDuration = mediaMetadata.duration
         pixelSize = mediaMetadata.pixelSize
         frameRate = mediaMetadata.frameRate
+        managedMasterVideoQualityPercent = videoQualityPercent
         trimRange = fullTrimRange
         updatedAt = date
         lastExportedAt = date
@@ -328,6 +338,7 @@ public struct RecordingHistoryItem: Codable, Equatable, Sendable, Identifiable {
         case recordingDuration
         case pixelSize
         case frameRate
+        case managedMasterVideoQualityPercent
         case audioConfiguration
         case captureTarget
         case captureSessionSnapshot
@@ -350,6 +361,10 @@ public struct RecordingHistoryItem: Codable, Equatable, Sendable, Identifiable {
                 recordingDuration: container.decode(TimeInterval.self, forKey: .recordingDuration),
                 pixelSize: container.decode(PixelSize.self, forKey: .pixelSize),
                 frameRate: container.decode(CaptureFrameRate.self, forKey: .frameRate),
+                managedMasterVideoQualityPercent: container.decodeIfPresent(
+                    Int.self,
+                    forKey: .managedMasterVideoQualityPercent
+                ),
                 audioConfiguration: container.decode(AudioConfiguration.self, forKey: .audioConfiguration),
                 captureTarget: container.decode(CaptureTarget.self, forKey: .captureTarget),
                 captureSessionSnapshot: container.decodeIfPresent(

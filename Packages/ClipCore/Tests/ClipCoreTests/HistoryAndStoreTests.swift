@@ -64,7 +64,15 @@ struct HistoryMetadataTests {
 
     @Test("History item mutations retain edits and rebase replacement media metadata")
     func historyMutations() throws {
-        var item = try makeHistoryItem()
+        let captureSnapshot = CaptureSessionSnapshot(
+            frameRate: .thirty,
+            showCursor: true,
+            audio: .none,
+            countdown: .threeSeconds,
+            crispQuality: 98
+        )
+        var item = try makeHistoryItem(captureSessionSnapshot: captureSnapshot)
+        #expect(item.managedMasterVideoQualityPercent == 98)
         try item.rename(to: "dashboard-filters.mp4", at: Date(timeIntervalSince1970: 1_001))
         #expect(item.filename.fileName == "dashboard-filters.mp4")
 
@@ -88,6 +96,7 @@ struct HistoryMetadataTests {
                 pixelSize: PixelSize(width: 960, height: 540),
                 frameRate: .sixty
             ),
+            videoQualityPercent: 85,
             at: Date(timeIntervalSince1970: 1_005)
         )
         #expect(item.managedMaster == replacement)
@@ -98,6 +107,8 @@ struct HistoryMetadataTests {
         #expect(item.trimRange == expectedFullTrim)
         #expect(item.pixelSize == expectedPixelSize)
         #expect(item.frameRate == .sixty)
+        #expect(item.managedMasterVideoQualityPercent == 85)
+        #expect(item.captureSessionSnapshot?.crispQuality == 98)
         #expect(item.lastExportedAt == Date(timeIntervalSince1970: 1_005))
         #expect(item.updatedAt == Date(timeIntervalSince1970: 1_005))
     }
@@ -123,6 +134,7 @@ struct HistoryMetadataTests {
                     pixelSize: PixelSize(width: 640, height: 360),
                     frameRate: .thirty
                 ),
+                videoQualityPercent: 85,
                 at: Date(timeIntervalSince1970: 1_001)
             )
         }
@@ -141,7 +153,8 @@ struct HistoryMetadataTests {
             frameRate: .sixty,
             showCursor: false,
             audio: .microphoneAndSystemAudio,
-            countdown: .fiveSeconds
+            countdown: .fiveSeconds,
+            crispQuality: 73
         )
         var item = try makeHistoryItem(captureSessionSnapshot: snapshot)
         try item.setTrimRange(
@@ -154,6 +167,7 @@ struct HistoryMetadataTests {
         )
         #expect(try jsonRoundTrip(item) == item)
         #expect(try jsonRoundTrip(item).exportAudioPreference == .removeAudio)
+        #expect(try jsonRoundTrip(item).managedMasterVideoQualityPercent == 73)
     }
 
     @Test("Capture session snapshots restore only capture inputs")
@@ -164,11 +178,17 @@ struct HistoryMetadataTests {
         current.showInDock = true
         current.historyRetention = .thirtyDays
         current.exportConfiguration = .crisp
+        current.exportQualities = ExportQualitySettings(
+            crisp: 41,
+            compact: 37,
+            smallest: 29
+        )
         let snapshot = CaptureSessionSnapshot(
             frameRate: .sixty,
             showCursor: false,
             audio: .microphoneAndSystemAudio,
-            countdown: .fiveSeconds
+            countdown: .fiveSeconds,
+            crispQuality: 73
         )
 
         let restored = snapshot.applying(to: current)
@@ -180,6 +200,9 @@ struct HistoryMetadataTests {
         #expect(restored.showInDock == current.showInDock)
         #expect(restored.historyRetention == current.historyRetention)
         #expect(restored.exportConfiguration == current.exportConfiguration)
+        #expect(restored.exportQualities.crisp == 73)
+        #expect(restored.exportQualities.compact == 37)
+        #expect(restored.exportQualities.smallest == 29)
         #expect(try jsonRoundTrip(snapshot) == snapshot)
     }
 

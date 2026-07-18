@@ -9,6 +9,7 @@ enum ManagedHistoryRepositoryError: Error, Equatable, Sendable {
     case managedDestinationAlreadyExists(URL)
     case unsupportedHistorySchema(found: Int, expected: Int)
     case exportedFileRequiredToReplaceOriginal
+    case exportedVideoQualityRequiredToReplaceOriginal
     case exportedMediaMetadataInvalid(URL)
     case managedPathEscapedRecordingsDirectory(String)
     case managedMasterRollbackFailed(URL)
@@ -40,7 +41,7 @@ struct FinalizedRecordingImport: Sendable {
         audioConfiguration: AudioConfiguration,
         captureTarget: ClipCore.CaptureTarget,
         captureSessionSnapshot: CaptureSessionSnapshot? = nil,
-        exportConfiguration: ExportConfiguration = .compact
+        exportConfiguration: ExportConfiguration = .crisp
     ) {
         self.id = id
         self.sourceURL = sourceURL
@@ -153,7 +154,12 @@ actor ManagedHistoryRepository {
 
     private enum DeferredFinalization: Sendable {
         case remove(item: RecordingHistoryItem, masterURL: URL)
-        case replace(stagedURL: URL, metadata: RecordingMediaMetadata, exportedAt: Date)
+        case replace(
+            stagedURL: URL,
+            metadata: RecordingMediaMetadata,
+            videoQualityPercent: Int,
+            exportedAt: Date
+        )
     }
 
     init(
@@ -288,11 +294,12 @@ actor ManagedHistoryRepository {
                 cleanupFailure: removeManagedFileIfPresent(at: masterURL)
             )
 
-        case let .replace(stagedURL, metadata, exportedAt):
+        case let .replace(stagedURL, metadata, videoQualityPercent, exportedAt):
             let item = try finalizeDeferredReplacement(
                 id: session.recordingID,
                 stagedURL: stagedURL,
                 metadata: metadata,
+                videoQualityPercent: videoQualityPercent,
                 exportedAt: exportedAt
             )
             result = ManagedHistoryPreviewCloseResult(
@@ -453,7 +460,7 @@ actor ManagedHistoryRepository {
             cachedIndex = candidate
         }
         if hasActivePreview {
-            if case let .replace(stagedURL, _, _) = deferredFinalizations[id] {
+            if case let .replace(stagedURL, _, _, _) = deferredFinalizations[id] {
                 _ = removeManagedFileIfPresent(at: stagedURL)
             }
             deferredFinalizations[id] = .remove(item: removedItem, masterURL: masterURL)
@@ -501,6 +508,7 @@ actor ManagedHistoryRepository {
         exportedFileURL: URL?,
         retentionPolicy: HistoryRetentionPolicy,
         keepOriginalAfterExport: Bool,
+        exportedVideoQualityPercent: Int? = nil,
         exportedMediaMetadata: RecordingMediaMetadata? = nil,
         previewSession: ManagedHistoryPreviewSession? = nil
     ) async throws -> ManagedHistoryExportResult {
@@ -573,7 +581,7 @@ actor ManagedHistoryRepository {
                 cachedIndex = candidate
             }
             if shouldDefer {
-                if case let .replace(stagedURL, _, _) = deferredFinalizations[id] {
+                if case let .replace(stagedURL, _, _, _) = deferredFinalizations[id] {
                     _ = removeManagedFileIfPresent(at: stagedURL)
                 }
                 deferredFinalizations[id] = .remove(item: item, masterURL: oldMasterURL)
@@ -590,17 +598,22 @@ actor ManagedHistoryRepository {
             guard let exportedFileURL, let replacementMetadata else {
                 throw ManagedHistoryRepositoryError.exportedFileRequiredToReplaceOriginal
             }
+            guard let exportedVideoQualityPercent else {
+                throw ManagedHistoryRepositoryError
+                    .exportedVideoQualityRequiredToReplaceOriginal
+            }
             if shouldDefer {
                 let stagedURL = try stageDeferredReplacement(
                     id: id,
                     exportedFileURL: exportedFileURL
                 )
-                if case let .replace(previousStagedURL, _, _) = deferredFinalizations[id] {
+                if case let .replace(previousStagedURL, _, _, _) = deferredFinalizations[id] {
                     _ = removeManagedFileIfPresent(at: previousStagedURL)
                 }
                 deferredFinalizations[id] = .replace(
                     stagedURL: stagedURL,
                     metadata: replacementMetadata,
+                    videoQualityPercent: exportedVideoQualityPercent,
                     exportedAt: exportDate
                 )
                 return ManagedHistoryExportResult(
@@ -621,6 +634,7 @@ actor ManagedHistoryRepository {
                 with: item.managedMaster,
                 byteCount: exportedByteCount,
                 mediaMetadata: replacementMetadata,
+                videoQualityPercent: exportedVideoQualityPercent,
                 at: exportDate
             )
             candidate.upsert(item)
@@ -713,6 +727,7 @@ actor ManagedHistoryRepository {
         id: RecordingID,
         stagedURL: URL,
         metadata: RecordingMediaMetadata,
+        videoQualityPercent: Int,
         exportedAt: Date
     ) throws -> RecordingHistoryItem {
         var candidate = try loadedIndex()
@@ -725,6 +740,7 @@ actor ManagedHistoryRepository {
             with: item.managedMaster,
             byteCount: exportedByteCount,
             mediaMetadata: metadata,
+            videoQualityPercent: videoQualityPercent,
             at: exportedAt
         )
         candidate.upsert(item)

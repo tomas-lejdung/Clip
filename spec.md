@@ -350,14 +350,16 @@ reports the change.
 The default recording configuration is:
 
 - MP4 container.
-- H.264 video.
+- Hardware H.264 video when the selected native dimensions are supported;
+  otherwise an exact-size hardware HEVC managed master. Shared exports remain
+  H.264.
 - 30 frames per second.
-- Native H.264-compatible capture dimensions derived from the selected pixel
-  area; there is no fixed 1,080p or 4K capture envelope.
+- Native capture dimensions derived from the selected pixel area; there is no
+  fixed 1,080p or 4K capture envelope.
 - Hardware-accelerated encoding.
-- A high-fidelity H.264 master rate of 0.22 bits per pixel per frame with an
-  8 Mbps floor and no preset-level upper clamp, so its rate continues scaling
-  with native pixel count and cadence for a later Crisp export.
+- A quality-based master using the current Crisp quality setting. The
+  default user-facing value is `98`, passed to VideoToolbox as `0.98`; Clip
+  does not set an average bitrate or hard data-rate limit.
 - SDR Rec.709 color for predictable sharing compatibility.
 - Cursor visible.
 - No audio unless enabled.
@@ -365,12 +367,9 @@ The default recording configuration is:
 - No click animations.
 - No keystroke overlay.
 
-An optional 60 FPS capture mode is available in settings. Export never creates
-interpolated frames: Compact caps output at 30 FPS, Crisp preserves every
-source sample and its presentation timing when the source's nominal frame rate
-does not exceed the requested rate, and Smallest may reduce it. Frame
-decimation runs only when a preset's requested output rate is lower than the
-source nominal rate.
+An optional 60 FPS capture mode is available in settings. Every export preset
+preserves the recording's durable capture cadence and exact eligible sample
+timing; export never interpolates or deliberately decimates frames.
 
 ---
 
@@ -401,19 +400,17 @@ The preview contains:
 - A simple timeline below the video preview.
 - Trim handles for the beginning and end.
 - An editable filename.
-- File-size estimate.
+- Quality-based size status.
 - Export preset.
 - A **Remove audio** switch when the recording contains audio.
 - Delete, Retake, Save As, and Copy actions below the timeline and export details.
 
 Dragging the video preview drags the current trimmed and exported MP4 as a file. The timeline itself remains dedicated to seeking and trimming and is not the file drag source.
 
-The file-size estimate updates immediately when the trim, export preset,
-Smallest target, or Remove audio choice changes. It uses the managed source's
-observed size and duration when available, together with its dimensions, frame
-rate, selected audio presence, and the native exporter's effective bitrate
-plan. It is explicitly labeled as an estimate rather than a guaranteed
-maximum, and a silent estimate excludes the configured audio allowance.
+Before export, Preview says `Quality based — size varies` for every preset.
+After a successful Drag, Copy, or Save As operation, it shows the actual output
+size. Changing trim, preset, quality, or Remove audio clears the prior result
+until the next export; Clip does not present a predicted or guaranteed size.
 
 Example:
 
@@ -427,7 +424,7 @@ Example:
 │ 00:02                         00:24  │
 │                                     │
 │ clip-20260717-104218.mp4             │
-│ Compact · approximately 5.8 MB      │
+│ Crisp · Quality based — size varies │
 │                                     │
 │ Delete   Retake   Save As…   Copy   │
 └─────────────────────────────────────┘
@@ -454,8 +451,8 @@ Retake reuses the previous target, audio, and countdown settings. Clip keeps the
 **Remove audio** is a non-destructive, per-recording Preview/export choice. It
 is Off by default for both new recordings and history created before the field
 existed. Turning it On mutes Preview playback immediately, removes the audio
-allowance from the size estimate, and makes Drag, Copy, and Save As produce an
-MP4 with no audio track. Turning it Off restores playback and exported audio.
+track from Drag, Copy, and Save As output. Turning it Off restores playback and
+exported audio.
 The choice persists through Done, sharing, History, Preview reopen, and app
 relaunch. It never removes or rewrites audio in the managed recording master.
 
@@ -551,20 +548,30 @@ After export or save, the user can reveal the file in Finder.
 
 # Export presets
 
-Clip exposes simple presets instead of technical bitrate controls.
+Clip exposes three independently configurable quality presets instead of
+bitrate, resolution, frame-rate, or target-size controls. Every preset keeps the
+managed master's native encoded dimensions, aspect ratio, durable capture
+cadence, H.264 High profile, Rec.709 color, and 128 kbps AAC export policy. The
+only user-controlled video-encoding parameter is quality. Hardware H.264
+receives that normalized value directly. For exact dimensions outside Apple's
+hardware H.264 envelope, its native software H.264 encoder does not support a
+quality property, so Clip maps the same value to a resolution/FPS-scaled soft
+average bitrate. It never adds a hard data-rate limit or target file size.
 
-For Compact and Crisp, Clip atomically reuses a full-range managed master when
-it already has the exact requested geometry and frame rate, compatible H.264
-Rec.709 video, and audio tracks compatible with the current export choice.
-Compact additionally requires the source video rate to fit its rate envelope;
-Crisp treats fidelity as the priority and does not reject reuse merely because
-the source rate is above its nominal plan. This avoids a second lossy H.264
-generation. Trimming, resizing, frame-rate reduction, audio mixing, or removing
-existing audio requires the native transcode path instead.
+Settings presents each value as an independent integer from 1 through 100 and
+passes it to VideoToolbox on its normalized 0 through 1 scale. Clip does not
+reorder or constrain the three values. **Reset Quality Defaults** restores
+Crisp `98`, Compact `90`, and Smallest `85`.
+
+An unchanged, full-duration Crisp export may atomically reuse the managed
+master byte-for-byte when its recorded quality and audio layout already match
+the requested output. Trimming, changing Crisp quality, audio mixing, or
+removing existing audio requires the native offline transcode path. Compact and
+Smallest are offline quality-based exports rather than source-reuse modes.
 
 ## Compact
 
-Default preset.
+Middle quality rung for ordinary sharing.
 
 Designed for:
 
@@ -576,13 +583,13 @@ Designed for:
 
 Behavior:
 
-- Preserves source dimensions inside a 1,920 × 1,080 pixel envelope.
-- Preserves the captured frame rate up to 30 FPS.
-- H.264.
-- Uses 0.055 bits per pixel per frame, clamped between 1.5 Mbps and 6 Mbps.
-- Explicitly prefers the macOS hardware H.264 encoder.
-- Preserves readable UI text.
-- Reduces captures larger than Full HD for predictable sharing size.
+- Preserves the managed master's native dimensions and durable cadence.
+- Uses H.264 High profile at the independently configurable quality value;
+  default `90` (`0.90` internally).
+- Uses direct VideoToolbox quality when hardware H.264 supports the exact
+  dimensions; otherwise uses the native software encoder's derived soft
+  average-bitrate fallback without a hard limit.
+- Uses offline quality-oriented encoding.
 
 ---
 
@@ -590,44 +597,38 @@ Behavior:
 
 Designed for recordings where fine interface detail matters.
 
+Default preset.
+
 Behavior:
 
-- Preserves the managed master's exact encoded width and height. Portrait,
-  square, ultrawide, 5K, and other arbitrary selection aspect ratios are not
-  fitted into a fixed landscape or 4K envelope.
-- Preserves the captured frame rate up to 60 FPS without interpolation.
-- Uses 0.20 bits per pixel per frame with an 8 Mbps floor. Bitrate continues
-  scaling with the source pixel count and frame rate instead of hitting a
-  preset-level ceiling.
+- Preserves the managed master's native dimensions and durable cadence.
+- Uses H.264 High profile at the independently configurable quality value;
+  default `98` (`0.98` internally).
+- Uses direct VideoToolbox quality when hardware H.264 supports the exact
+  dimensions; otherwise uses the native software encoder's derived soft
+  average-bitrate fallback without a hard limit.
 - Reuses a compatible untrimmed master byte-for-byte instead of introducing a
   second lossy encode.
-- Explicitly prefers the macOS hardware H.264 encoder.
-- Larger output file.
+- Otherwise uses offline quality-oriented encoding.
 
 ---
 
 ## Smallest
 
-Designed for strict upload limits.
+Lowest default quality rung for smaller ordinary sharing files.
 
 Behavior:
 
-- Lower bitrate.
-- May reduce dimensions.
-- May reduce frame rate.
-- Can target a maximum approximate size.
+- Preserves the managed master's native dimensions and durable cadence.
+- Uses H.264 High profile at the independently configurable quality value;
+  default `85` (`0.85` internally).
+- Uses direct VideoToolbox quality when hardware H.264 supports the exact
+  dimensions; otherwise uses the native software encoder's derived soft
+  average-bitrate fallback without a hard limit or target file size.
+- Uses offline quality-oriented encoding.
 
-Initial target options:
-
-```text
-10 MB
-25 MB
-Custom
-```
-
-Exact target-size encoding may be introduced after the initial release if it requires a two-pass export process.
-
-The v1 targets are soft, approximate targets rather than strict limits. Custom accepts values from 1 MB through 500 MB.
+Smallest is a relative preset name, not a promise that an export will fit a
+particular upload limit. Content complexity determines the resulting size.
 
 ---
 
@@ -684,7 +685,7 @@ Clip should clearly show how much storage its history is using.
 - Retention and Clear History remove only Clip-managed files.
 - Cleanup age is based on recording creation time.
 - The history location is fixed under Application Support and can be revealed but not relocated.
-- **Keep original recording after export** defaults to On. When Off, Clip replaces the managed master with the trimmed exported result after a successful export.
+- **Keep original recording after export** defaults to On. When Off, Clip replaces the managed master with the trimmed exported result after a successful export and records that replacement's quality separately from the original Retake settings.
 - **Do not retain recordings after export** removes the history item after successful Copy, drag, or Save As while keeping clipboard and drag temporary files available long enough for their receiving application to consume them.
 
 ---
@@ -721,10 +722,12 @@ returning focus to complete SwiftUI layout or drawing.
 ## Export
 
 - Default export preset.
+- Independent integer quality values from 1 through 100 for Crisp, Compact,
+  and Smallest.
+- Reset Quality Defaults, restoring `98`, `90`, and `85` respectively.
 - Default filename format.
 - Automatically close preview after copying.
 - Keep original recording after export.
-- Maximum target file size for Smallest mode.
 - Default Save As location.
 
 ---
@@ -760,7 +763,8 @@ Each permission should include a button that opens the relevant macOS System Set
 - System audio: Off.
 - Countdown: a silent 3 seconds, with Off, 1, 3, and 5-second choices.
 - History retention: 7 days.
-- Export preset: Compact.
+- Export preset: Crisp.
+- Export qualities: Crisp `98`, Compact `90`, Smallest `85`.
 - Automatically close preview after Copy: Off.
 - Keep original after export: On.
 - Default Save As location: `~/Movies`.
@@ -832,7 +836,7 @@ Clip should target:
 - Minimal CPU use while idle.
 - Hardware-accelerated capture and encoding.
 - Preview available in under one second after recording stops.
-- Compact exports usually completing in under two seconds for a 30-second, 1440 × 900, 30 FPS fixture on the development Mac.
+- Always-offline Compact-90 exports usually completing in under two seconds for a 30-second, 1440 × 900, 30 FPS fixture on the development Mac.
 - Trim timing accurate to within one frame.
 - Audio and video synchronization within 50 milliseconds, including across pause and resume.
 - A ten-minute real recording soak test plus longer synthetic state and writer tests.
@@ -905,29 +909,48 @@ Used for:
 - AVFoundation.
 - AVAssetWriter for MP4 muxing and AAC audio encoding.
 - AVPlayer.
-- VideoToolbox for direct H.264 master encoding and native export controls.
-- Native H.264/AAC encoding only; Clip does not bundle or invoke FFmpeg or another media binary.
+- VideoToolbox for direct hardware H.264/HEVC master encoding and native H.264
+  export controls.
+- Native hardware H.264/HEVC master encoding and H.264/AAC sharing only; Clip
+  does not bundle or invoke FFmpeg or another media binary.
 
 ### Capture-quality contract
 
-- Capture Area and Capture App rectangles are snapped to the display's physical-pixel grid. One exact even-sized geometry is used for the ScreenCaptureKit source rectangle, stream output, H.264 encoder, History metadata, and MP4 dimensions.
+- Capture Area and Capture App rectangles are snapped to the display's physical-pixel grid. One exact even-sized geometry is used for the ScreenCaptureKit source rectangle, stream output, video encoder, History metadata, and MP4 dimensions.
 - Every complete incoming video pixel buffer is checked against the configured width and height before encoding. A mismatch stops with a visible recording error; Clip never silently rescales a capture frame.
-- Raw ScreenCaptureKit pixel buffers are transient. They are submitted directly to a `VTCompressionSession`; Clip retains at most the latest frame in memory for bounded cadence repair and stores only compressed H.264 MP4 media.
-- The live master encoder uses H.264 High profile, `RealTime = true`, quality `0.98`, quality-over-speed priority, the resolution/FPS-derived average bitrate as a soft target, no hard data-rate limit, no frame reordering, and a two-second keyframe interval.
-- Hardware H.264 is required when VideoToolbox supports the exact native dimensions. If Apple's hardware encoder rejects an oversized native display mode such as 5K, Clip uses VideoToolbox's native software H.264 encoder rather than downscaling or adding a bundled dependency.
-- AVAssetWriter receives VideoToolbox's compressed H.264 samples through a passthrough input and only muxes them with native AAC audio into MP4; it does not perform another video encode.
+- Raw ScreenCaptureKit pixel buffers are transient. They are submitted directly to a `VTCompressionSession`; Clip retains at most the latest frame in memory for bounded cadence repair and stores only compressed H.264 or HEVC MP4 media.
+- The live master encoder uses H.264 High or HEVC Main profile,
+  `RealTime = true`, the current Crisp quality setting (default `0.98`),
+  quality-over-speed priority, no average bitrate or hard data-rate limit, no
+  frame reordering, and a two-second keyframe interval.
+- Clip requires hardware encoding for live capture. It prefers H.264 when
+  VideoToolbox supports the exact native dimensions and falls back to
+  exact-size hardware HEVC when H.264 rejects an oversized mode such as a
+  5,120-pixel-wide display. Clip never uses a software encoder for real-time
+  capture and never downscales this fallback.
+- AVAssetWriter receives VideoToolbox's compressed H.264 or HEVC samples through a passthrough input and only muxes them with native AAC audio into MP4; it does not perform another video encode.
 - Brief encoder or muxer pressure is bounded and queued. Sustained pressure or a VideoToolbox-dropped frame ends capture with an error instead of silently creating a cadence gap.
 - A short complete-frame delivery gap above two and no more than three nominal frame intervals is bridged with one held copy of the prior frame at the next nominal timestamp. Every original sample timestamp and duration remains unchanged; longer ordinary gaps remain native variable-frame-rate timing, while an excessive first-post-resume gap is a visible error.
 
 ### Export-quality contract
 
-- An unchanged full-duration Crisp export with compatible audio reuses the managed master byte-for-byte.
-- A Crisp export that requires trim, audio mixing/removal, resize, or cadence work is encoded offline with quality `0.98`, frame reordering enabled, a soft average-bitrate target, and no hard data-rate limit.
-- Compact is encoded offline at quality `0.85`, within the existing 1920 × 1080 and 30 FPS envelope, with a soft average-bitrate target and no hard data-rate limit.
-- Smallest remains size-constrained: offline average-bitrate encoding plus a one-second hard data-rate limit with ten percent burst headroom.
-- Trim, resize, frame-rate reduction, audio mixing, and audio removal are applied in one export generation.
-- Durable per-recording 30/60 FPS capture metadata is the cadence ceiling. Exact sample timestamps are preserved when no reduction is required; a measured variable rate such as 28.29 FPS is never rounded down into an accidental 28 FPS export.
-- Before Compact or Crisp export, Preview says `Quality based — size varies`; after a successful share it shows the actual file size. Smallest continues to show its target-based estimate.
+- An unchanged full-duration Crisp export with compatible audio reuses a
+  compatible H.264 managed master byte-for-byte. An HEVC managed master is
+  transcoded offline so every shared export remains H.264.
+- Crisp, Compact, and Smallest otherwise encode offline with their independent
+  Settings quality values (defaults `0.98`, `0.90`, and `0.85`), frame
+  reordering enabled, and no hard data-rate limit. Hardware-supported H.264
+  uses VideoToolbox quality directly. Exact oversized software H.264 maps the
+  same quality value to a soft average bitrate because Apple's encoder rejects
+  the quality property at those dimensions.
+- All three presets preserve native dimensions and the durable per-recording
+  30/60 FPS cadence ceiling. Exact eligible sample timestamps are preserved; a
+  measured variable rate such as 28.29 FPS is never rounded down into an
+  accidental 28 FPS export.
+- Trim, audio mixing, and audio removal are applied in one export generation.
+- Every transcoded export uses the same 128 kbps AAC policy when audio is kept.
+- Before every export, Preview says `Quality based — size varies`; after a
+  successful share it shows the actual file size.
 
 ## Persistence
 
@@ -1016,7 +1039,11 @@ A separate Homebrew tap can be added later if needed.
 - Multi-display topology, display disconnection, and deterministic loopback-audio cases are simulated when the necessary hardware is unavailable.
 - There is no automated Slack, GitHub, Linear, Discord, Messages, or Mail integration suite. A local receiver and Finder validate file drag and clipboard contracts; an agent-driven check in an explicitly authorized application may be performed without sending content.
 - There is no dedicated accessibility or human subjective visual-quality audit for this personal local release. Deterministic screen-content fidelity is automated with small text, one-pixel rules, saturated edges, scrolling, and 30/60 FPS motion.
-- Automated capture/master acceptance requires no scaling, master luma SSIM of at least 0.985 with at least 95% edge retention, Crisp SSIM of at least 0.98 with at least 92% edge retention, non-resized Compact SSIM of at least 0.96 with at least 85% edge retention, and no video gap beyond two frame intervals.
+- Automated acceptance at the default `98`/`90`/`85` values requires no
+  scaling, master luma SSIM of at least 0.985 with at least 95% edge retention,
+  Crisp SSIM of at least 0.98 with at least 92% edge retention, Compact-90 SSIM
+  of at least 0.96 with at least 85% edge retention, and no video gap beyond
+  two frame intervals.
 - A fresh-account privacy grant cannot be automated through supported macOS behavior.
 - Clipboard and drag temporary files must remain available long enough for receiving applications to consume them and therefore cannot be removed immediately after export.
 - The two-second export goal applies only to the defined performance fixture, not arbitrary native-resolution 5K/60 FPS recordings.

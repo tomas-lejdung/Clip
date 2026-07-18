@@ -53,17 +53,20 @@ public struct CaptureSessionSnapshot: Codable, Equatable, Hashable, Sendable {
     public let showCursor: Bool
     public let audio: AudioConfiguration
     public let countdown: CountdownDuration
+    public let crispQuality: Int
 
     public init(
         frameRate: CaptureFrameRate,
         showCursor: Bool,
         audio: AudioConfiguration,
-        countdown: CountdownDuration
+        countdown: CountdownDuration,
+        crispQuality: Int = ExportQualitySettings.defaults.crisp
     ) {
         self.frameRate = frameRate
         self.showCursor = showCursor
         self.audio = audio
         self.countdown = countdown
+        self.crispQuality = crispQuality
     }
 
     public init(settings: ClipSettings) {
@@ -71,7 +74,8 @@ public struct CaptureSessionSnapshot: Codable, Equatable, Hashable, Sendable {
             frameRate: settings.frameRate,
             showCursor: settings.showCursor,
             audio: settings.audio,
-            countdown: settings.countdown
+            countdown: settings.countdown,
+            crispQuality: settings.exportQualities.crisp
         )
     }
 
@@ -83,7 +87,35 @@ public struct CaptureSessionSnapshot: Codable, Equatable, Hashable, Sendable {
         result.showCursor = showCursor
         result.audio = audio
         result.countdown = countdown
+        result.exportQualities.crisp = crispQuality
         return result
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case frameRate
+        case showCursor
+        case audio
+        case countdown
+        case crispQuality
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        frameRate = try container.decode(CaptureFrameRate.self, forKey: .frameRate)
+        showCursor = try container.decode(Bool.self, forKey: .showCursor)
+        audio = try container.decode(AudioConfiguration.self, forKey: .audio)
+        countdown = try container.decode(CountdownDuration.self, forKey: .countdown)
+        crispQuality = try container.decodeIfPresent(Int.self, forKey: .crispQuality)
+            ?? ExportQualitySettings.defaults.crisp
+    }
+
+    public func encode(to encoder: any Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(frameRate, forKey: .frameRate)
+        try container.encode(showCursor, forKey: .showCursor)
+        try container.encode(audio, forKey: .audio)
+        try container.encode(countdown, forKey: .countdown)
+        try container.encode(crispQuality, forKey: .crispQuality)
     }
 }
 
@@ -256,6 +288,7 @@ public struct ClipSettings: Codable, Equatable, Sendable {
     public var countdown: CountdownDuration
     public var historyRetention: HistoryRetentionPolicy
     public var exportConfiguration: ExportConfiguration
+    public var exportQualities: ExportQualitySettings
     public var defaultFilenameTemplate: RecordingFilenameTemplate
     public var automaticallyClosePreviewAfterCopy: Bool
     public var keepOriginalAfterExport: Bool
@@ -275,6 +308,7 @@ public struct ClipSettings: Codable, Equatable, Sendable {
         countdown: CountdownDuration,
         historyRetention: HistoryRetentionPolicy,
         exportConfiguration: ExportConfiguration,
+        exportQualities: ExportQualitySettings = .defaults,
         defaultFilenameTemplate: RecordingFilenameTemplate = .default,
         automaticallyClosePreviewAfterCopy: Bool,
         keepOriginalAfterExport: Bool,
@@ -293,6 +327,7 @@ public struct ClipSettings: Codable, Equatable, Sendable {
         self.countdown = countdown
         self.historyRetention = historyRetention
         self.exportConfiguration = exportConfiguration
+        self.exportQualities = exportQualities
         self.defaultFilenameTemplate = defaultFilenameTemplate
         self.automaticallyClosePreviewAfterCopy = automaticallyClosePreviewAfterCopy
         self.keepOriginalAfterExport = keepOriginalAfterExport
@@ -312,7 +347,8 @@ public struct ClipSettings: Codable, Equatable, Sendable {
             audio: .none,
             countdown: .threeSeconds,
             historyRetention: .sevenDays,
-            exportConfiguration: .compact,
+            exportConfiguration: .crisp,
+            exportQualities: .defaults,
             defaultFilenameTemplate: .default,
             automaticallyClosePreviewAfterCopy: false,
             keepOriginalAfterExport: true,
@@ -340,6 +376,7 @@ public struct ClipSettings: Codable, Equatable, Sendable {
         case countdown
         case historyRetention
         case exportConfiguration
+        case exportQualities
         case defaultFilenameTemplate
         case automaticallyClosePreviewAfterCopy
         case keepOriginalAfterExport
@@ -385,6 +422,10 @@ public struct ClipSettings: Codable, Equatable, Sendable {
             ExportConfiguration.self,
             forKey: .exportConfiguration
         )
+        exportQualities = try container.decodeIfPresent(
+            ExportQualitySettings.self,
+            forKey: .exportQualities
+        ) ?? .defaults
         defaultFilenameTemplate = try container.decodeIfPresent(
             RecordingFilenameTemplate.self,
             forKey: .defaultFilenameTemplate
@@ -415,6 +456,7 @@ public struct ClipSettings: Codable, Equatable, Sendable {
         try container.encode(countdown, forKey: .countdown)
         try container.encode(historyRetention, forKey: .historyRetention)
         try container.encode(exportConfiguration, forKey: .exportConfiguration)
+        try container.encode(exportQualities, forKey: .exportQualities)
         try container.encode(defaultFilenameTemplate, forKey: .defaultFilenameTemplate)
         try container.encode(
             automaticallyClosePreviewAfterCopy,

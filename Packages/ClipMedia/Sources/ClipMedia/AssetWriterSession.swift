@@ -277,7 +277,7 @@ public final class AssetWriterSession: @unchecked Sendable {
     public let outputURL: URL
 
     private let writer: AVAssetWriter
-    private let encoder: VideoToolboxH264Encoder
+    private let encoder: VideoToolboxVideoEncoder
     private let systemAudioInput: AVAssetWriterInput?
     private let microphoneInput: AVAssetWriterInput?
     private let defaultFrameDuration: CMTime
@@ -342,7 +342,7 @@ public final class AssetWriterSession: @unchecked Sendable {
             2.0 / Double(configuration.framesPerSecond)
         )
         do {
-            encoder = try VideoToolboxH264Encoder(
+            encoder = try VideoToolboxVideoEncoder(
                 configuration: .liveMaster(recording: configuration)
             )
         } catch {
@@ -393,7 +393,7 @@ public final class AssetWriterSession: @unchecked Sendable {
             }
             // AVAssetWriter cannot add a passthrough input after it starts.
             // Starting is therefore deferred until VideoToolbox returns the
-            // first compressed sample and its H.264 format description.
+            // first compressed sample and its video format description.
             hasStarted = true
         }
     }
@@ -770,7 +770,7 @@ public final class AssetWriterSession: @unchecked Sendable {
                 }
                 guard hasStartedWriting, let videoInput else {
                     throw AssetWriterSessionError.finishFailed(
-                        "The H.264 encoder produced no video samples."
+                        "The video encoder produced no video samples."
                     )
                 }
                 videoInput.markAsFinished()
@@ -954,7 +954,7 @@ public final class AssetWriterSession: @unchecked Sendable {
                     if videoInput == nil {
                         guard let formatDescription = CMSampleBufferGetFormatDescription(sample) else {
                             throw AssetWriterSessionError.appendFailed(
-                                "VideoToolbox returned H.264 without a format description."
+                                "VideoToolbox returned compressed video without a format description."
                             )
                         }
                         let input = AVAssetWriterInput(
@@ -972,7 +972,7 @@ public final class AssetWriterSession: @unchecked Sendable {
                         guard writer.startWriting() else {
                             throw AssetWriterSessionError.cannotStartWriting(
                                 writer.error?.localizedDescription
-                                    ?? "AVAssetWriter rejected the compressed H.264 stream."
+                                    ?? "AVAssetWriter rejected the compressed video stream."
                             )
                         }
                         hasStartedWriting = true
@@ -997,7 +997,7 @@ public final class AssetWriterSession: @unchecked Sendable {
                     guard videoInput.append(sample) else {
                         throw AssetWriterSessionError.appendFailed(
                             writer.error?.localizedDescription
-                                ?? "AVAssetWriterInput rejected compressed H.264."
+                                ?? "AVAssetWriterInput rejected compressed video."
                         )
                     }
                     return .ready
@@ -1010,7 +1010,7 @@ public final class AssetWriterSession: @unchecked Sendable {
                 return false
             case .timedOut:
                 throw AssetWriterSessionError.appendFailed(
-                    "The MP4 muxer could not keep up with the H.264 encoder."
+                    "The MP4 muxer could not keep up with the video encoder."
                 )
             }
         }
@@ -1019,24 +1019,24 @@ public final class AssetWriterSession: @unchecked Sendable {
 
     private static func encoderErrorDescription(_ error: Error) -> String {
         switch error {
-        case let error as VideoToolboxH264Encoder.EncoderError:
+        case let error as VideoToolboxVideoEncoder.EncoderError:
             switch error {
             case let .cannotCreate(status):
-                return "The hardware H.264 encoder could not be created (\(status))."
+                return "A hardware video encoder could not be created for this resolution (\(status))."
             case let .cannotSetProperty(name, status):
-                return "The hardware H.264 encoder rejected \(name) (\(status))."
+                return "The hardware video encoder rejected \(name) (\(status))."
             case let .cannotPrepare(status):
-                return "The hardware H.264 encoder could not prepare (\(status))."
+                return "The hardware video encoder could not prepare (\(status))."
             case let .rejectedFrame(status):
-                return "The hardware H.264 encoder rejected a screen frame (\(status))."
+                return "The hardware video encoder rejected a screen frame (\(status))."
             case .droppedFrame:
-                return "The hardware H.264 encoder dropped a screen frame."
+                return "The hardware video encoder dropped a screen frame."
             case .missingCompressedSample:
-                return "The hardware H.264 encoder returned no compressed frame."
+                return "The hardware video encoder returned no compressed frame."
             case .backpressureExceeded:
-                return "The hardware H.264 encoder could not keep up with capture."
+                return "The hardware video encoder could not keep up with capture."
             case let .cannotComplete(status):
-                return "The hardware H.264 encoder could not finish (\(status))."
+                return "The hardware video encoder could not finish (\(status))."
             }
         default:
             return error.localizedDescription
@@ -1054,7 +1054,7 @@ extension AssetWriterSessionError: LocalizedError {
              let .finishFailed(message):
             return message
         case .cannotAddVideoInput:
-            return "The MP4 writer could not accept compressed H.264 video."
+            return "The MP4 writer could not accept compressed video."
         case .cannotAddSystemAudioInput:
             return "The MP4 writer could not accept system audio."
         case .cannotAddMicrophoneInput:

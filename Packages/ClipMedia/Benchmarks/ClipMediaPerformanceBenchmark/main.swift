@@ -76,7 +76,8 @@ private enum ClipMediaPerformanceBenchmark {
             sourceWidth: sourceInspection.width,
             sourceHeight: sourceInspection.height,
             sourceFramesPerSecond: Int(sourceInspection.nominalFramesPerSecond.rounded()),
-            duration: sourceInspection.duration
+            videoQuality: 0.90,
+            sourceVideoQuality: 0.98
         )
 
         var exportSamples: [Double] = []

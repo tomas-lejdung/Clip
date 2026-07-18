@@ -3,11 +3,67 @@
 import Foundation
 @preconcurrency import VideoToolbox
 
-/// A direct, quality-oriented VideoToolbox H.264 encoder for live screen
-/// capture. Raw ScreenCaptureKit pixel buffers enter here and compressed
-/// CMSampleBuffers leave here; no AVFoundation video encoder sits between the
-/// capture pixels and the MP4 muxer.
-final class VideoToolboxH264Encoder: @unchecked Sendable {
+enum VideoToolboxVideoCodec: CaseIterable, Equatable, Sendable {
+    case h264
+    case hevc
+
+    /// Prefer the broadly compatible codec whenever the hardware accepts the
+    /// exact capture geometry. HEVC is the native-pixel hardware fallback for
+    /// display modes whose dimensions exceed Apple's H.264 encoder limits.
+    static let liveHardwarePreference: [VideoToolboxVideoCodec] = [.h264, .hevc]
+
+    var codecType: CMVideoCodecType {
+        switch self {
+        case .h264: kCMVideoCodecType_H264
+        case .hevc: kCMVideoCodecType_HEVC
+        }
+    }
+
+    var profileLevel: CFString {
+        switch self {
+        case .h264: kVTProfileLevel_H264_High_AutoLevel
+        case .hevc: kVTProfileLevel_HEVC_Main_AutoLevel
+        }
+    }
+}
+
+enum VideoToolboxHardwareCodecSelection<Value> {
+    case selected(codec: VideoToolboxVideoCodec, value: Value)
+    case unavailable(lastStatus: OSStatus)
+}
+
+/// Selects the first exact-geometry hardware encoder while retaining the value
+/// created by the successful attempt. Production therefore never probes and
+/// then recreates a session across a capability race; tests can exercise the
+/// same ordered decision with inert values.
+enum VideoToolboxHardwareCodecSelector {
+    static var hardwareOnlyEncoderSpecification: [CFString: Any] {
+        [
+            kVTVideoEncoderSpecification_EnableHardwareAcceleratedVideoEncoder: true,
+            kVTVideoEncoderSpecification_RequireHardwareAcceleratedVideoEncoder: true,
+        ]
+    }
+
+    static func select<Value>(
+        preference: [VideoToolboxVideoCodec] = VideoToolboxVideoCodec.liveHardwarePreference,
+        attempt: (VideoToolboxVideoCodec) -> (status: OSStatus, value: Value?)
+    ) -> VideoToolboxHardwareCodecSelection<Value> {
+        var lastStatus = kVTVideoEncoderNotAvailableNowErr
+        for codec in preference {
+            let result = attempt(codec)
+            lastStatus = result.status
+            if result.status == noErr, let value = result.value {
+                return .selected(codec: codec, value: value)
+            }
+        }
+        return .unavailable(lastStatus: lastStatus)
+    }
+}
+
+/// A direct, quality-oriented VideoToolbox encoder for live screen capture.
+/// Raw ScreenCaptureKit pixel buffers enter here and compressed samples leave
+/// here; no AVFoundation video encoder sits between capture and the MP4 muxer.
+final class VideoToolboxVideoEncoder: @unchecked Sendable {
     enum EncoderError: Error, Equatable, Sendable {
         case cannotCreate(OSStatus)
         case cannotSetProperty(name: String, status: OSStatus)
@@ -23,19 +79,16 @@ final class VideoToolboxH264Encoder: @unchecked Sendable {
         let width: Int
         let height: Int
         let framesPerSecond: Int
-        let averageBitRate: Int
         let quality: Double
         let isRealTime: Bool
         let allowsFrameReordering: Bool
         let prioritizesEncodingSpeedOverQuality: Bool
         let maximumKeyFrameInterval: Int
-        let hardDataRateLimitBytesPerSecond: Int?
 
         init(
             width: Int,
             height: Int,
             framesPerSecond: Int,
-            averageBitRate: Int,
             quality: Double = 0.98,
             isRealTime: Bool = true,
             allowsFrameReordering: Bool = false
@@ -43,13 +96,11 @@ final class VideoToolboxH264Encoder: @unchecked Sendable {
             self.width = width
             self.height = height
             self.framesPerSecond = framesPerSecond
-            self.averageBitRate = averageBitRate
             self.quality = quality
             self.isRealTime = isRealTime
             self.allowsFrameReordering = allowsFrameReordering
             prioritizesEncodingSpeedOverQuality = false
             maximumKeyFrameInterval = framesPerSecond * 2
-            hardDataRateLimitBytesPerSecond = nil
         }
 
         static func liveMaster(
@@ -59,14 +110,14 @@ final class VideoToolboxH264Encoder: @unchecked Sendable {
                 width: configuration.width,
                 height: configuration.height,
                 framesPerSecond: configuration.framesPerSecond,
-                averageBitRate: configuration.videoBitRate,
-                quality: 0.98,
+                quality: configuration.videoQuality,
                 isRealTime: true,
                 allowsFrameReordering: false
             )
         }
     }
 
+    let codec: VideoToolboxVideoCodec
     private let session: VTCompressionSession
     private let condition = NSCondition()
     private let sessionOperationLock = NSLock()
@@ -91,13 +142,6 @@ final class VideoToolboxH264Encoder: @unchecked Sendable {
         maximumPendingFrameCount = 6
         backpressureTimeout = 2.0 / Double(configuration.framesPerSecond)
 
-        let hardwareRequiredSpecification: [CFString: Any] = [
-            kVTVideoEncoderSpecification_EnableHardwareAcceleratedVideoEncoder: true,
-            kVTVideoEncoderSpecification_RequireHardwareAcceleratedVideoEncoder: true,
-        ]
-        let hardwarePreferredSpecification: [CFString: Any] = [
-            kVTVideoEncoderSpecification_EnableHardwareAcceleratedVideoEncoder: true,
-        ]
         let imageBufferAttributes: [CFString: Any] = [
             kCVPixelBufferPixelFormatTypeKey: kCVPixelFormatType_32BGRA,
             kCVPixelBufferWidthKey: configuration.width,
@@ -106,15 +150,16 @@ final class VideoToolboxH264Encoder: @unchecked Sendable {
         ]
 
         func createSession(
-            specification: [CFString: Any],
+            codec: VideoToolboxVideoCodec,
             output: inout VTCompressionSession?
         ) -> OSStatus {
             VTCompressionSessionCreate(
                 allocator: kCFAllocatorDefault,
                 width: Int32(configuration.width),
                 height: Int32(configuration.height),
-                codecType: kCMVideoCodecType_H264,
-                encoderSpecification: specification as CFDictionary,
+                codecType: codec.codecType,
+                encoderSpecification: VideoToolboxHardwareCodecSelector
+                    .hardwareOnlyEncoderSpecification as CFDictionary,
                 imageBufferAttributes: imageBufferAttributes as CFDictionary,
                 compressedDataAllocator: kCFAllocatorDefault,
                 outputCallback: nil,
@@ -123,31 +168,27 @@ final class VideoToolboxH264Encoder: @unchecked Sendable {
             )
         }
 
-        var createdSession: VTCompressionSession?
-        var usesNativeSoftwareFallback = false
-        var createStatus = createSession(
-            specification: hardwareRequiredSpecification,
-            output: &createdSession
-        )
-        if createStatus != noErr || createdSession == nil {
-            // Apple Silicon's hardware H.264 encoder does not accept every
-            // native display size (notably some 5K modes). Preserve exact
-            // pixels with VideoToolbox's native software fallback rather than
-            // downscaling the recording or failing fullscreen capture.
-            createdSession = nil
-            usesNativeSoftwareFallback = true
-            createStatus = createSession(
-                specification: hardwarePreferredSpecification,
-                output: &createdSession
-            )
+        let selection = VideoToolboxHardwareCodecSelector.select { codec in
+            var candidate: VTCompressionSession?
+            let status = createSession(codec: codec, output: &candidate)
+            if status != noErr, let failedCandidate = candidate {
+                VTCompressionSessionInvalidate(failedCandidate)
+                candidate = nil
+            }
+            return (status, candidate)
         }
-        guard createStatus == noErr, let createdSession else {
-            throw EncoderError.cannotCreate(createStatus)
+        let selectedCodec: VideoToolboxVideoCodec
+        let createdSession: VTCompressionSession
+        switch selection {
+        case let .selected(codec, session):
+            selectedCodec = codec
+            createdSession = session
+        case let .unavailable(lastStatus):
+            throw EncoderError.cannotCreate(lastStatus)
         }
+        codec = selectedCodec
         session = createdSession
-        firstOutputTimeout = usesNativeSoftwareFallback
-            ? 5.0
-            : max(backpressureTimeout, 0.5)
+        firstOutputTimeout = max(backpressureTimeout, 0.5)
 
         do {
             try set(
@@ -157,27 +198,20 @@ final class VideoToolboxH264Encoder: @unchecked Sendable {
             )
             try set(
                 kVTCompressionPropertyKey_ProfileLevel,
-                value: kVTProfileLevel_H264_High_AutoLevel,
+                value: selectedCodec.profileLevel,
                 name: "ProfileLevel"
             )
             try set(
                 kVTCompressionPropertyKey_Quality,
                 value: NSNumber(value: configuration.quality),
-                name: "Quality",
-                allowsUnsupportedProperty: usesNativeSoftwareFallback
+                name: "Quality"
             )
             try set(
                 kVTCompressionPropertyKey_PrioritizeEncodingSpeedOverQuality,
                 value: configuration.prioritizesEncodingSpeedOverQuality
                     ? kCFBooleanTrue
                     : kCFBooleanFalse,
-                name: "PrioritizeEncodingSpeedOverQuality",
-                allowsUnsupportedProperty: usesNativeSoftwareFallback
-            )
-            try set(
-                kVTCompressionPropertyKey_AverageBitRate,
-                value: NSNumber(value: configuration.averageBitRate),
-                name: "AverageBitRate"
+                name: "PrioritizeEncodingSpeedOverQuality"
             )
             try set(
                 kVTCompressionPropertyKey_ExpectedFrameRate,
@@ -279,9 +313,8 @@ final class VideoToolboxH264Encoder: @unchecked Sendable {
     /// passthrough format before audio callbacks are accepted.
     func waitForFirstOutput() throws {
         // Hardware-session warm-up is a one-time cost rather than sustained
-        // overload. Native software H.264 can also retain its first frame for
-        // look-ahead until another frame arrives, so explicitly complete the
-        // sole pending first frame if the ordinary warm-up window expires.
+        // overload. Explicitly complete the sole pending first frame if the
+        // ordinary warm-up window expires.
         let deadline = Date(timeIntervalSinceNow: min(firstOutputTimeout, 0.5))
         let shouldForceFirstFrame = try condition.withLock { () throws -> Bool in
             while compressedSamples.isEmpty,

@@ -177,7 +177,7 @@ struct PreviewView: View {
                             set: { value in viewModel.selectPreset(value) }
                         )
                     ) {
-                        ForEach(ExportPreset.allCases, id: \.self) { preset in
+                        ForEach(ExportPreset.previewOrder, id: \.self) { preset in
                             Text(preset.previewTitle).tag(preset)
                         }
                     }
@@ -220,56 +220,6 @@ struct PreviewView: View {
                     .foregroundStyle(.red)
             }
 
-            if viewModel.selectedPreset == .smallest {
-                HStack(spacing: 10) {
-                    Text("Approximate target")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-
-                    Picker(
-                        "Approximate target",
-                        selection: Binding(
-                            get: { viewModel.smallestTargetSelection },
-                            set: { value in viewModel.selectSmallestTarget(value) }
-                        )
-                    ) {
-                        ForEach(PreviewSmallestTargetSelection.allCases) { target in
-                            Text(target.title).tag(target)
-                        }
-                    }
-                    .labelsHidden()
-                    .frame(width: 170)
-
-                    if viewModel.smallestTargetSelection == .custom {
-                        TextField(
-                            "MB",
-                            value: Binding(
-                                get: { viewModel.customTargetMegabytes },
-                                set: { value in
-                                    viewModel.setCustomTargetMegabytes(value)
-                                }
-                            ),
-                            format: .number
-                        )
-                        .frame(width: 60)
-                        .textFieldStyle(.roundedBorder)
-
-                        Stepper(
-                            "MB",
-                            value: Binding(
-                                get: { viewModel.customTargetMegabytes },
-                                set: { value in
-                                    viewModel.setCustomTargetMegabytes(value)
-                                }
-                            ),
-                            in: 1...500
-                        )
-                        .labelsHidden()
-                    }
-
-                    Spacer()
-                }
-            }
         }
     }
 

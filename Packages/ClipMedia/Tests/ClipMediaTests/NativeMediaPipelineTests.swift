@@ -53,7 +53,8 @@ struct NativeMediaPipelineTests {
             sourceWidth: source.width,
             sourceHeight: source.height,
             sourceFramesPerSecond: 30,
-            duration: source.duration
+            videoQuality: 0.90,
+            sourceVideoQuality: 0.98
         )
 
         _ = try await NativeAssetExporter().export(
@@ -92,7 +93,8 @@ struct NativeMediaPipelineTests {
             sourceWidth: source.width,
             sourceHeight: source.height,
             sourceFramesPerSecond: 30,
-            duration: source.duration
+            videoQuality: 0.98,
+            sourceVideoQuality: 0.98
         )
 
         _ = try await NativeAssetExporter().export(
@@ -104,6 +106,48 @@ struct NativeMediaPipelineTests {
 
         #expect(try Data(contentsOf: exportURL) == Data(contentsOf: sourceURL))
         #expect(try await MediaInspector.inspect(exportURL) == source)
+    }
+
+    @Test("Crisp transcodes an HEVC master to H.264 instead of reusing source bytes")
+    func transcodesHEVCMasterToH264ForCrisp() async throws {
+        let sourceURL = temporaryURL(named: "crisp-hevc-source")
+        let exportURL = temporaryURL(named: "crisp-hevc-output")
+        defer {
+            try? FileManager.default.removeItem(at: sourceURL)
+            try? FileManager.default.removeItem(at: exportURL)
+        }
+
+        try await writeSyntheticHEVCVideo(
+            to: sourceURL,
+            width: 640,
+            height: 360,
+            frameCount: 12,
+            framesPerSecond: 30
+        )
+        let source = try await MediaInspector.inspect(sourceURL)
+        #expect(source.videoCodec == kCMVideoCodecType_HEVC)
+
+        let configuration = MediaExportConfigurationFactory.make(
+            preset: .crisp,
+            sourceWidth: source.width,
+            sourceHeight: source.height,
+            sourceFramesPerSecond: 30,
+            videoQuality: 0.98,
+            sourceVideoQuality: 0.98
+        )
+        _ = try await NativeAssetExporter().export(
+            sourceURL: sourceURL,
+            destinationURL: exportURL,
+            timeRange: nil,
+            configuration: configuration
+        )
+
+        let exported = try await MediaInspector.inspect(exportURL)
+        #expect(exported.videoCodec == kCMVideoCodecType_H264)
+        #expect(exported.width == source.width)
+        #expect(exported.height == source.height)
+        #expect(abs(exported.nominalFramesPerSecond - source.nominalFramesPerSecond) <= 0.1)
+        #expect(try Data(contentsOf: exportURL) != Data(contentsOf: sourceURL))
     }
 
     @Test("Crisp reuses a compatible VFR master below its rounded FPS ceiling")
@@ -124,7 +168,8 @@ struct NativeMediaPipelineTests {
             sourceWidth: source.width,
             sourceHeight: source.height,
             sourceFramesPerSecond: roundedCeiling,
-            duration: source.duration
+            videoQuality: 0.98,
+            sourceVideoQuality: 0.98
         )
 
         _ = try await NativeAssetExporter().export(
@@ -138,14 +183,15 @@ struct NativeMediaPipelineTests {
         #expect(try await MediaInspector.inspect(exportURL) == source)
     }
 
-    @Test("Compatible reuse rejects trim, dimension, FPS, and audio transforms")
+    @Test("Compatible reuse rejects quality, trim, dimension, FPS, and audio transforms")
     func compatibleReusePolicyRejectsRequiredTransforms() {
         let configuration = MediaExportConfiguration(
             preset: .compact,
             width: 1_440,
             height: 900,
             framesPerSecond: 30,
-            videoBitRate: 2_500_000,
+            videoQuality: 0.90,
+            sourceVideoQuality: 0.98,
             audioBitRate: 128_000
         )
         let eligible = CompatibleSourceReuseFacts(
@@ -155,7 +201,6 @@ struct NativeMediaPipelineTests {
             width: 1_440,
             height: 900,
             framesPerSecond: 30,
-            videoDataRate: 2_000_000,
             hasRec709ColorDescription: true,
             audioTrackCount: 0,
             audioCodec: nil,
@@ -167,13 +212,17 @@ struct NativeMediaPipelineTests {
 
         var crispConfiguration = configuration
         crispConfiguration.preset = .crisp
+        #expect(!CompatibleSourceReusePolicy.canReuse(eligible, for: crispConfiguration))
+        crispConfiguration.videoQuality = 0.98
         #expect(CompatibleSourceReusePolicy.canReuse(eligible, for: crispConfiguration))
 
-        var nearBoundaryCrisp = eligible
-        nearBoundaryCrisp.videoDataRate = 14_858_059
-        crispConfiguration.videoBitRate = 14_844_960
-        #expect(CompatibleSourceReusePolicy.canReuse(nearBoundaryCrisp, for: crispConfiguration))
-        #expect(!CompatibleSourceReusePolicy.canReuse(nearBoundaryCrisp, for: configuration))
+        var unknownSourceQuality = crispConfiguration
+        unknownSourceQuality.sourceVideoQuality = nil
+        #expect(!CompatibleSourceReusePolicy.canReuse(eligible, for: unknownSourceQuality))
+
+        var hevcMaster = eligible
+        hevcMaster.videoCodec = kCMVideoCodecType_HEVC
+        #expect(!CompatibleSourceReusePolicy.canReuse(hevcMaster, for: crispConfiguration))
 
         var trimmed = eligible
         trimmed.isFullRange = false
@@ -223,50 +272,40 @@ struct NativeMediaPipelineTests {
         #expect(!CompatibleSourceReusePolicy.canReuse(audibleSource, for: silentConfiguration))
     }
 
-    @Test("Offline presets use the approved VideoToolbox quality and rate controls")
+    @Test("Offline presets use native controls supported by their H.264 encoder")
     func offlineVideoEncodingPolicies() throws {
         let compact = MediaExportConfiguration(
             preset: .compact,
             width: 1_920,
             height: 1_080,
             framesPerSecond: 30,
-            videoBitRate: 4_000_000
+            videoQuality: 0.90
         )
         let crisp = MediaExportConfiguration(
             preset: .crisp,
-            width: 2_560,
-            height: 1_440,
-            framesPerSecond: 60,
-            videoBitRate: 12_000_000
+            width: 1_920,
+            height: 1_080,
+            framesPerSecond: 30,
+            videoQuality: 0.98
         )
         let smallest = MediaExportConfiguration(
             preset: .smallest,
             width: 1_920,
             height: 1_080,
-            framesPerSecond: 24,
-            videoBitRate: 2_000_000,
-            approximateTargetBytes: 10_000_000
+            framesPerSecond: 30,
+            videoQuality: 0.85
         )
 
-        let compactPolicy = NativeVideoEncodingPolicy(
-            configuration: compact,
-            effectiveBitRate: compact.videoBitRate
-        )
-        let crispPolicy = NativeVideoEncodingPolicy(
-            configuration: crisp,
-            effectiveBitRate: crisp.videoBitRate
-        )
-        let smallestPolicy = NativeVideoEncodingPolicy(
-            configuration: smallest,
-            effectiveBitRate: smallest.videoBitRate
-        )
+        let compactPolicy = NativeVideoEncodingPolicy(configuration: compact)
+        let crispPolicy = NativeVideoEncodingPolicy(configuration: crisp)
+        let smallestPolicy = NativeVideoEncodingPolicy(configuration: smallest)
 
-        #expect(compactPolicy.quality == 0.85)
-        #expect(compactPolicy.hardDataRateLimitBytesPerSecond == nil)
+        #expect(compactPolicy.quality == 0.90)
         #expect(crispPolicy.quality == 0.98)
-        #expect(crispPolicy.hardDataRateLimitBytesPerSecond == nil)
-        #expect(smallestPolicy.quality == nil)
-        #expect(smallestPolicy.hardDataRateLimitBytesPerSecond == 275_000)
+        #expect(smallestPolicy.quality == 0.85)
+        #expect(compactPolicy.rateControl == .quality(0.90))
+        #expect(crispPolicy.rateControl == .quality(0.98))
+        #expect(smallestPolicy.rateControl == .quality(0.85))
         for policy in [compactPolicy, crispPolicy, smallestPolicy] {
             #expect(!policy.isRealTime)
             #expect(!policy.prioritizesEncodingSpeedOverQuality)
@@ -275,34 +314,27 @@ struct NativeMediaPipelineTests {
 
         let exporter = NativeAssetExporter()
         let compactProperties = try #require(
-            exporter.videoSettings(
-                configuration: compact,
-                effectiveBitRate: compact.videoBitRate
-            )[AVVideoCompressionPropertiesKey] as? [String: Any]
+            exporter.videoSettings(configuration: compact)[AVVideoCompressionPropertiesKey]
+                as? [String: Any]
         )
         let crispProperties = try #require(
-            exporter.videoSettings(
-                configuration: crisp,
-                effectiveBitRate: crisp.videoBitRate
-            )[AVVideoCompressionPropertiesKey] as? [String: Any]
+            exporter.videoSettings(configuration: crisp)[AVVideoCompressionPropertiesKey]
+                as? [String: Any]
         )
         let smallestProperties = try #require(
-            exporter.videoSettings(
-                configuration: smallest,
-                effectiveBitRate: smallest.videoBitRate
-            )[AVVideoCompressionPropertiesKey] as? [String: Any]
+            exporter.videoSettings(configuration: smallest)[AVVideoCompressionPropertiesKey]
+                as? [String: Any]
         )
 
-        #expect(compactProperties[AVVideoAverageBitRateKey] as? Int == 4_000_000)
-        #expect(compactProperties[kVTCompressionPropertyKey_Quality as String] as? Double == 0.85)
+        #expect(compactProperties[AVVideoAverageBitRateKey] == nil)
+        #expect(compactProperties[kVTCompressionPropertyKey_Quality as String] as? Double == 0.90)
         #expect(compactProperties[kVTCompressionPropertyKey_DataRateLimits as String] == nil)
-        #expect(crispProperties[AVVideoAverageBitRateKey] as? Int == 12_000_000)
+        #expect(crispProperties[AVVideoAverageBitRateKey] == nil)
         #expect(crispProperties[kVTCompressionPropertyKey_Quality as String] as? Double == 0.98)
         #expect(crispProperties[kVTCompressionPropertyKey_DataRateLimits as String] == nil)
-        #expect(
-            smallestProperties[kVTCompressionPropertyKey_DataRateLimits as String] as? [Int]
-                == [275_000, 1]
-        )
+        #expect(smallestProperties[AVVideoAverageBitRateKey] == nil)
+        #expect(smallestProperties[kVTCompressionPropertyKey_Quality as String] as? Double == 0.85)
+        #expect(smallestProperties[kVTCompressionPropertyKey_DataRateLimits as String] == nil)
         for properties in [compactProperties, crispProperties, smallestProperties] {
             #expect(properties[kVTCompressionPropertyKey_RealTime as String] as? Bool == false)
             #expect(
@@ -312,6 +344,93 @@ struct NativeMediaPipelineTests {
             )
             #expect(properties[AVVideoAllowFrameReorderingKey] as? Bool == true)
         }
+
+        let compactEncoderSpecification = try #require(
+            exporter.videoSettings(configuration: compact)[AVVideoEncoderSpecificationKey]
+                as? [String: Any]
+        )
+        #expect(
+            compactEncoderSpecification[
+                kVTVideoEncoderSpecification_EnableHardwareAcceleratedVideoEncoder as String
+            ] as? Bool == true
+        )
+        #expect(
+            compactEncoderSpecification[
+                kVTVideoEncoderSpecification_RequireHardwareAcceleratedVideoEncoder as String
+            ] as? Bool == true
+        )
+
+        let oversizedCompact = MediaExportConfiguration(
+            preset: .compact,
+            width: 5_120,
+            height: 1_440,
+            framesPerSecond: 30,
+            videoQuality: 0.90
+        )
+        let oversizedCrisp = MediaExportConfiguration(
+            preset: .crisp,
+            width: 5_120,
+            height: 1_440,
+            framesPerSecond: 30,
+            videoQuality: 0.98
+        )
+        let oversizedSmallest = MediaExportConfiguration(
+            preset: .smallest,
+            width: 5_120,
+            height: 1_440,
+            framesPerSecond: 30,
+            videoQuality: 0.85
+        )
+        let oversizedPolicies = [
+            NativeVideoEncodingPolicy(configuration: oversizedCrisp),
+            NativeVideoEncodingPolicy(configuration: oversizedCompact),
+            NativeVideoEncodingPolicy(configuration: oversizedSmallest),
+        ]
+        #expect(oversizedPolicies[0].rateControl == .averageBitRate(65_292_771))
+        #expect(oversizedPolicies[1].rateControl == .averageBitRate(46_476_056))
+        #expect(oversizedPolicies[2].rateControl == .averageBitRate(36_999_880))
+
+        let oversizedConfigurations = [
+            oversizedCrisp,
+            oversizedCompact,
+            oversizedSmallest,
+        ]
+        for configuration in oversizedConfigurations {
+            let settings = exporter.videoSettings(configuration: configuration)
+            #expect(settings[AVVideoWidthKey] as? Int == 5_120)
+            #expect(settings[AVVideoHeightKey] as? Int == 1_440)
+
+            let properties = try #require(
+                settings[AVVideoCompressionPropertiesKey] as? [String: Any]
+            )
+            #expect(properties[AVVideoAverageBitRateKey] as? Int != nil)
+            #expect(properties[kVTCompressionPropertyKey_Quality as String] == nil)
+            #expect(
+                properties[
+                    kVTCompressionPropertyKey_PrioritizeEncodingSpeedOverQuality as String
+                ] == nil
+            )
+            #expect(properties[kVTCompressionPropertyKey_DataRateLimits as String] == nil)
+
+            let encoderSpecification = try #require(
+                settings[AVVideoEncoderSpecificationKey] as? [String: Any]
+            )
+            #expect(
+                encoderSpecification[
+                    kVTVideoEncoderSpecification_EnableHardwareAcceleratedVideoEncoder as String
+                ] as? Bool == true
+            )
+            #expect(
+                encoderSpecification[
+                    kVTVideoEncoderSpecification_RequireHardwareAcceleratedVideoEncoder as String
+                ] == nil
+            )
+        }
+
+        #expect(NativeH264HardwareGeometry.supports(width: 4_096, height: 2_304))
+        #expect(NativeH264HardwareGeometry.supports(width: 2_304, height: 4_096))
+        #expect(!NativeH264HardwareGeometry.supports(width: 5_120, height: 1_440))
+        #expect(!NativeH264HardwareGeometry.supports(width: 4_096, height: 2_306))
     }
 
     @Test("The writer produces playable H.264 across a two-hour synthetic timestamp span")
@@ -746,7 +865,7 @@ struct NativeMediaPipelineTests {
         }
 
         #expect(messages.count == 8)
-        #expect(Set(messages) == ["The H.264 encoder produced no video samples."])
+        #expect(Set(messages) == ["The video encoder produced no video samples."])
         #expect(!FileManager.default.fileExists(atPath: outputURL.path))
     }
 
@@ -838,10 +957,40 @@ struct NativeMediaPipelineTests {
         #expect(inspection.duration < 0.2)
     }
 
-    @Test("Crisp writes and exports a native 5K 60 FPS H.264 asset")
-    func preservesNativeFiveKSixtyFPS() async throws {
-        let sourceURL = temporaryURL(named: "native-5k60-source")
-        let exportURL = temporaryURL(named: "native-5k60-crisp")
+    @Test("Live capture sustains exact 5120 x 1440 at 30 FPS using hardware HEVC fallback")
+    func sustainsNativeUltrawideHEVCFallback() async throws {
+        let sourceURL = temporaryURL(named: "native-ultrawide-hevc-source")
+        defer { try? FileManager.default.removeItem(at: sourceURL) }
+
+        let width = 5_120
+        let height = 1_440
+        let framesPerSecond = 30
+        let frameCount = 60
+        try await writePacedSyntheticVideo(
+            to: sourceURL,
+            width: width,
+            height: height,
+            frameCount: frameCount,
+            framesPerSecond: framesPerSecond
+        )
+
+        let source = try await MediaInspector.inspect(sourceURL)
+        #expect(source.videoCodec == kCMVideoCodecType_HEVC)
+        #expect(source.width == width)
+        #expect(source.height == height)
+        #expect(abs(source.nominalFramesPerSecond - Double(framesPerSecond)) <= 0.1)
+        #expect(try await countVideoSamples(in: sourceURL) == frameCount)
+        let presentationTimes = try await videoPresentationTimes(in: sourceURL)
+        let maximumGap = zip(presentationTimes, presentationTimes.dropFirst())
+            .map { $1 - $0 }
+            .max() ?? 0
+        #expect(maximumGap <= (2.0 / Double(framesPerSecond)) + 0.001)
+    }
+
+    @Test("Crisp converts an exact-size 5K HEVC live master to H.264")
+    func exportsNativeFiveKHEVCMasterAsH264() async throws {
+        let sourceURL = temporaryURL(named: "native-5k60-hevc-source")
+        let exportURL = temporaryURL(named: "native-5k60-h264-crisp")
         defer {
             try? FileManager.default.removeItem(at: sourceURL)
             try? FileManager.default.removeItem(at: exportURL)
@@ -859,7 +1008,7 @@ struct NativeMediaPipelineTests {
         )
 
         let source = try await MediaInspector.inspect(sourceURL)
-        #expect(source.videoCodec == kCMVideoCodecType_H264)
+        #expect(source.videoCodec == kCMVideoCodecType_HEVC)
         #expect(source.width == width)
         #expect(source.height == height)
         #expect(abs(source.nominalFramesPerSecond - Double(framesPerSecond)) <= 0.1)
@@ -869,12 +1018,9 @@ struct NativeMediaPipelineTests {
             sourceWidth: source.width,
             sourceHeight: source.height,
             sourceFramesPerSecond: framesPerSecond,
-            duration: source.duration
+            videoQuality: 0.98,
+            sourceVideoQuality: 0.98
         )
-        #expect(configuration.width == width)
-        #expect(configuration.height == height)
-        #expect(configuration.framesPerSecond == framesPerSecond)
-
         _ = try await NativeAssetExporter().export(
             sourceURL: sourceURL,
             destinationURL: exportURL,
@@ -888,6 +1034,7 @@ struct NativeMediaPipelineTests {
         #expect(exported.height == height)
         #expect(abs(exported.nominalFramesPerSecond - Double(framesPerSecond)) <= 0.1)
         #expect(try await countVideoSamples(in: exportURL) == 3)
+        #expect(try Data(contentsOf: exportURL) != Data(contentsOf: sourceURL))
     }
 
     @Test("Crisp preserves decoded frame order and visual fidelity")
@@ -914,7 +1061,8 @@ struct NativeMediaPipelineTests {
             sourceWidth: source.width,
             sourceHeight: source.height,
             sourceFramesPerSecond: 30,
-            duration: source.duration
+            videoQuality: 0.98,
+            sourceVideoQuality: 0.98
         )
         _ = try await NativeAssetExporter().export(
             sourceURL: sourceURL,
@@ -955,17 +1103,17 @@ struct NativeMediaPipelineTests {
         )
     }
 
-    @Test("Crisp preserves irregular source timing while lower-FPS export decimates")
-    func preservesVariableFrameTimingUnlessPresetLowersFrameRate() async throws {
+    @Test("Every quality preset preserves irregular source timing")
+    func preservesVariableFrameTimingForEveryPreset() async throws {
         let sourceURL = temporaryURL(named: "vfr-source")
         let crispURL = temporaryURL(named: "vfr-crisp")
-        let resizedCrispURL = temporaryURL(named: "vfr-resized-crisp")
-        let lowerFPSURL = temporaryURL(named: "vfr-lower-fps")
+        let compactURL = temporaryURL(named: "vfr-compact")
+        let smallestURL = temporaryURL(named: "vfr-smallest")
         defer {
             try? FileManager.default.removeItem(at: sourceURL)
             try? FileManager.default.removeItem(at: crispURL)
-            try? FileManager.default.removeItem(at: resizedCrispURL)
-            try? FileManager.default.removeItem(at: lowerFPSURL)
+            try? FileManager.default.removeItem(at: compactURL)
+            try? FileManager.default.removeItem(at: smallestURL)
         }
 
         try await writeIrregularSyntheticVideo(to: sourceURL)
@@ -985,7 +1133,8 @@ struct NativeMediaPipelineTests {
             sourceWidth: source.width,
             sourceHeight: source.height,
             sourceFramesPerSecond: 30,
-            duration: trimRange.duration.seconds
+            videoQuality: 0.98,
+            sourceVideoQuality: 0.98
         )
         _ = try await NativeAssetExporter().export(
             sourceURL: sourceURL,
@@ -1003,50 +1152,52 @@ struct NativeMediaPipelineTests {
             #expect(abs(crispTimes[index] - sourceTimes[index]) <= 0.001)
         }
 
-        let resizedCrispConfiguration = MediaExportConfiguration(
-            preset: .crisp,
-            width: source.width / 2,
-            height: source.height / 2,
+        let compactConfiguration = MediaExportConfiguration(
+            preset: .compact,
+            width: source.width,
+            height: source.height,
             framesPerSecond: 30,
-            videoBitRate: crispConfiguration.videoBitRate,
+            videoQuality: 0.90,
+            sourceVideoQuality: 0.98,
             audioBitRate: crispConfiguration.audioBitRate
         )
         _ = try await NativeAssetExporter().export(
             sourceURL: sourceURL,
-            destinationURL: resizedCrispURL,
+            destinationURL: compactURL,
             timeRange: trimRange,
-            configuration: resizedCrispConfiguration
+            configuration: compactConfiguration
         )
 
-        let resizedCrispTimes = try await videoPresentationTimes(in: resizedCrispURL)
-        #expect(resizedCrispTimes.count == sourceTimes.count)
-        for index in 0..<min(resizedCrispTimes.count, sourceTimes.count) {
-            #expect(abs(resizedCrispTimes[index] - sourceTimes[index]) <= 0.001)
+        let compactTimes = try await videoPresentationTimes(in: compactURL)
+        #expect(compactTimes.count == sourceTimes.count)
+        for index in 0..<min(compactTimes.count, sourceTimes.count) {
+            #expect(abs(compactTimes[index] - sourceTimes[index]) <= 0.001)
         }
 
-        let lowerFPSConfiguration = MediaExportConfiguration(
-            preset: .compact,
+        let smallestConfiguration = MediaExportConfiguration(
+            preset: .smallest,
             width: source.width,
             height: source.height,
-            framesPerSecond: 15,
-            videoBitRate: 1_000_000,
+            framesPerSecond: 30,
+            videoQuality: 0.85,
+            sourceVideoQuality: 0.98,
             audioBitRate: 128_000
         )
         _ = try await NativeAssetExporter().export(
             sourceURL: sourceURL,
-            destinationURL: lowerFPSURL,
+            destinationURL: smallestURL,
             timeRange: trimRange,
-            configuration: lowerFPSConfiguration
+            configuration: smallestConfiguration
         )
 
-        let lowerFPSTimes = try await videoPresentationTimes(in: lowerFPSURL)
-        #expect(lowerFPSTimes.count < crispTimes.count)
-        for pair in zip(lowerFPSTimes, lowerFPSTimes.dropFirst()) {
-            #expect(pair.1 - pair.0 >= (1.0 / 15.0) - 0.001)
+        let smallestTimes = try await videoPresentationTimes(in: smallestURL)
+        #expect(smallestTimes.count == sourceTimes.count)
+        for index in 0..<min(smallestTimes.count, sourceTimes.count) {
+            #expect(abs(smallestTimes[index] - sourceTimes[index]) <= 0.001)
         }
     }
 
-    @Test("Native export applies trim, dimensions, frame-rate cap, and Rec.709 H.264")
+    @Test("Native export applies trim while preserving dimensions, cadence, and Rec.709 H.264")
     func exportsConfiguredTrimmedMP4() async throws {
         let sourceURL = temporaryURL(named: "source")
         let exportURL = temporaryURL(named: "trimmed")
@@ -1066,10 +1217,11 @@ struct NativeMediaPipelineTests {
         let sourceBytes = try Data(contentsOf: sourceURL)
         let configuration = MediaExportConfiguration(
             preset: .crisp,
-            width: 160,
-            height: 90,
-            framesPerSecond: 12,
-            videoBitRate: 400_000,
+            width: 320,
+            height: 180,
+            framesPerSecond: 30,
+            videoQuality: 0.98,
+            sourceVideoQuality: 0.98,
             audioBitRate: 64_000
         )
 
@@ -1093,12 +1245,11 @@ struct NativeMediaPipelineTests {
         #expect(exported.width == configuration.width)
         #expect(exported.height == configuration.height)
         #expect(exported.videoCodec == kCMVideoCodecType_H264)
-        #expect(exported.nominalFramesPerSecond <= Double(configuration.framesPerSecond) + 0.1)
-        #expect(exported.nominalFramesPerSecond >= Double(configuration.framesPerSecond) - 0.1)
+        #expect(abs(exported.nominalFramesPerSecond - 30) <= 0.1)
         let frameCount = try await countVideoSamples(in: exportURL)
-        #expect(frameCount >= 5)
-        #expect(frameCount <= 7)
-        #expect(abs(exported.duration - 0.5) <= (1.0 / 12.0))
+        #expect(frameCount >= 14)
+        #expect(frameCount <= 16)
+        #expect(abs(exported.duration - 0.5) <= (1.0 / 30.0))
         #expect(try await hasRec709VideoDescription(exportURL))
     }
 
@@ -1121,7 +1272,7 @@ struct NativeMediaPipelineTests {
             width: source.width,
             height: source.height,
             framesPerSecond: 30,
-            videoBitRate: 1_000_000,
+            videoQuality: 0.98,
             audioBitRate: 64_000
         )
         _ = try await NativeAssetExporter().export(
@@ -1162,7 +1313,7 @@ struct NativeMediaPipelineTests {
             width: source.width,
             height: source.height,
             framesPerSecond: 30,
-            videoBitRate: 1_000_000,
+            videoQuality: 0.98,
             audioBitRate: 64_000,
             includesAudio: true
         )
@@ -1248,7 +1399,7 @@ struct NativeMediaPipelineTests {
                 width: source.width,
                 height: source.height,
                 framesPerSecond: 30,
-                videoBitRate: 1_000_000,
+                videoQuality: 0.98,
                 audioBitRate: 64_000
             )
         )
@@ -1355,7 +1506,7 @@ struct NativeMediaPipelineTests {
                 width: source.width,
                 height: source.height,
                 framesPerSecond: 30,
-                videoBitRate: 1_000_000,
+                videoQuality: 0.98,
                 audioBitRate: 64_000
             )
         )
@@ -1414,15 +1565,15 @@ struct NativeMediaPipelineTests {
         #expect(abs(inspection.duration - 1) <= (1.0 / 30.0))
     }
 
-    @Test("Quality export size may vary while Smallest constrains complex video")
-    func constrainsVideoBitRateAndSoftTarget() async throws {
+    @Test("Quality rungs preserve source format without a target-size contract")
+    func qualityRungsPreserveSourceFormat() async throws {
         let sourceURL = temporaryURL(named: "complex-source")
-        let highURL = temporaryURL(named: "high-bitrate")
-        let targetedURL = temporaryURL(named: "soft-target")
+        let crispURL = temporaryURL(named: "quality-crisp")
+        let smallestURL = temporaryURL(named: "quality-smallest")
         defer {
             try? FileManager.default.removeItem(at: sourceURL)
-            try? FileManager.default.removeItem(at: highURL)
-            try? FileManager.default.removeItem(at: targetedURL)
+            try? FileManager.default.removeItem(at: crispURL)
+            try? FileManager.default.removeItem(at: smallestURL)
         }
 
         try await writeSyntheticVideo(
@@ -1434,49 +1585,44 @@ struct NativeMediaPipelineTests {
             pattern: .complex
         )
 
-        let highConfiguration = MediaExportConfiguration(
-            // Compact uses this rate as a soft target alongside quality .85;
-            // it deliberately has no hard data-rate ceiling.
-            preset: .compact,
+        let crispConfiguration = MediaExportConfiguration(
+            preset: .crisp,
             width: 320,
             height: 180,
             framesPerSecond: 30,
-            videoBitRate: 1_500_000
+            videoQuality: 0.98
         )
-        let softTargetBytes: Int64 = 150_000
-        let targetedConfiguration = MediaExportConfiguration(
+        let smallestConfiguration = MediaExportConfiguration(
             preset: .smallest,
             width: 320,
             height: 180,
             framesPerSecond: 30,
-            videoBitRate: 1_500_000,
-            approximateTargetBytes: softTargetBytes
+            videoQuality: 0.85
         )
 
-        async let highExport = NativeAssetExporter().export(
+        async let crispExport = NativeAssetExporter().export(
             sourceURL: sourceURL,
-            destinationURL: highURL,
+            destinationURL: crispURL,
             timeRange: nil,
-            configuration: highConfiguration
+            configuration: crispConfiguration
         )
-        async let targetedExport = NativeAssetExporter().export(
+        async let smallestExport = NativeAssetExporter().export(
             sourceURL: sourceURL,
-            destinationURL: targetedURL,
+            destinationURL: smallestURL,
             timeRange: nil,
-            configuration: targetedConfiguration
+            configuration: smallestConfiguration
         )
-        _ = try await (highExport, targetedExport)
+        _ = try await (crispExport, smallestExport)
 
-        let high = try await MediaInspector.inspect(highURL)
-        let targeted = try await MediaInspector.inspect(targetedURL)
-        let highDataRate = try await firstEstimatedDataRate(in: highURL, mediaType: .video)
-        let targetedDataRate = try await firstEstimatedDataRate(
-            in: targetedURL,
-            mediaType: .video
-        )
-        #expect(targetedDataRate < highDataRate)
-        #expect(targeted.fileSize < high.fileSize)
-        #expect(targeted.fileSize <= Int64(Double(softTargetBytes) * 1.35))
+        let crisp = try await MediaInspector.inspect(crispURL)
+        let smallest = try await MediaInspector.inspect(smallestURL)
+        for inspection in [crisp, smallest] {
+            #expect(inspection.width == 320)
+            #expect(inspection.height == 180)
+            #expect(abs(inspection.nominalFramesPerSecond - 30) <= 0.1)
+            #expect(inspection.videoCodec == kCMVideoCodecType_H264)
+        }
+        #expect(try Data(contentsOf: crispURL) != Data(contentsOf: smallestURL))
     }
 
     @Test("Concurrent exports atomically publish complete files at one destination")
@@ -1500,17 +1646,17 @@ struct NativeMediaPipelineTests {
 
         let small = MediaExportConfiguration(
             preset: .compact,
-            width: 160,
-            height: 90,
-            framesPerSecond: 15,
-            videoBitRate: 300_000
+            width: 320,
+            height: 180,
+            framesPerSecond: 30,
+            videoQuality: 0.85
         )
         let large = MediaExportConfiguration(
             preset: .crisp,
             width: 320,
             height: 180,
             framesPerSecond: 30,
-            videoBitRate: 1_000_000
+            videoQuality: 0.98
         )
 
         async let first = NativeAssetExporter().export(
@@ -1531,10 +1677,8 @@ struct NativeMediaPipelineTests {
 
         let final = try await MediaInspector.inspect(destinationURL)
         #expect(final.videoCodec == kCMVideoCodecType_H264)
-        #expect(
-            (final.width == small.width && final.height == small.height)
-                || (final.width == large.width && final.height == large.height)
-        )
+        #expect(final.width == 320)
+        #expect(final.height == 180)
         #expect(try Data(contentsOf: sourceURL) == sourceBytes)
 
         let siblingNames = try FileManager.default.contentsOfDirectory(
@@ -1566,10 +1710,10 @@ struct NativeMediaPipelineTests {
         try destinationBytes.write(to: destinationURL)
         let configuration = MediaExportConfiguration(
             preset: .compact,
-            width: 160,
-            height: 90,
-            framesPerSecond: 15,
-            videoBitRate: 300_000
+            width: 320,
+            height: 180,
+            framesPerSecond: 30,
+            videoQuality: 0.90
         )
 
         await #expect(throws: NativeAssetExporterError.invalidTimeRange) {
@@ -1600,6 +1744,7 @@ struct NativeMediaPipelineTests {
 private enum SyntheticFramePattern {
     case flat
     case complex
+    case animatedScreen
 }
 
 private func writeSyntheticVideo(
@@ -1634,6 +1779,130 @@ private func writeSyntheticVideo(
         try appendWithRetry(sample, to: writer)
     }
     _ = try await writer.finish()
+}
+
+private func writePacedSyntheticVideo(
+    to outputURL: URL,
+    width: Int,
+    height: Int,
+    frameCount: Int,
+    framesPerSecond: Int
+) async throws {
+    let writer = try AssetWriterSession(
+        outputURL: outputURL,
+        configuration: RecordingConfiguration(
+            width: width,
+            height: height,
+            framesPerSecond: framesPerSecond,
+            videoQuality: 0.98,
+            showsCursor: false,
+            audioMode: .off
+        )
+    )
+    try writer.start()
+
+    for frameIndex in 0..<frameCount {
+        if frameIndex > 0 {
+            try await Task.sleep(for: .milliseconds(33))
+        }
+        try appendWithRetry(
+            makeVideoSample(
+                width: width,
+                height: height,
+                frameIndex: frameIndex,
+                framesPerSecond: framesPerSecond,
+                pattern: .animatedScreen
+            ),
+            to: writer
+        )
+    }
+    _ = try await writer.finish()
+}
+
+private func writeSyntheticHEVCVideo(
+    to outputURL: URL,
+    width: Int,
+    height: Int,
+    frameCount: Int,
+    framesPerSecond: Int
+) async throws {
+    let writer = try AVAssetWriter(outputURL: outputURL, fileType: .mp4)
+    let input = AVAssetWriterInput(
+        mediaType: .video,
+        outputSettings: [
+            AVVideoCodecKey: AVVideoCodecType.hevc,
+            AVVideoWidthKey: width,
+            AVVideoHeightKey: height,
+            AVVideoEncoderSpecificationKey: [
+                kVTVideoEncoderSpecification_EnableHardwareAcceleratedVideoEncoder as String: true,
+            ],
+            AVVideoColorPropertiesKey: [
+                AVVideoColorPrimariesKey: AVVideoColorPrimaries_ITU_R_709_2,
+                AVVideoTransferFunctionKey: AVVideoTransferFunction_ITU_R_709_2,
+                AVVideoYCbCrMatrixKey: AVVideoYCbCrMatrix_ITU_R_709_2,
+            ],
+            AVVideoCompressionPropertiesKey: [
+                AVVideoExpectedSourceFrameRateKey: framesPerSecond,
+                AVVideoMaxKeyFrameIntervalKey: framesPerSecond * 2,
+                AVVideoProfileLevelKey: kVTProfileLevel_HEVC_Main_AutoLevel as String,
+                AVVideoAllowFrameReorderingKey: true,
+                kVTCompressionPropertyKey_RealTime as String: false,
+                kVTCompressionPropertyKey_PrioritizeEncodingSpeedOverQuality as String: false,
+                kVTCompressionPropertyKey_Quality as String: 0.98,
+            ],
+        ]
+    )
+    input.expectsMediaDataInRealTime = false
+    guard writer.canAdd(input) else {
+        throw SyntheticMediaError.cannotAddWriterInput
+    }
+    writer.add(input)
+    let adaptor = AVAssetWriterInputPixelBufferAdaptor(
+        assetWriterInput: input,
+        sourcePixelBufferAttributes: [
+            kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
+            kCVPixelBufferWidthKey as String: width,
+            kCVPixelBufferHeightKey as String: height,
+            kCVPixelBufferIOSurfacePropertiesKey as String: [:] as CFDictionary,
+        ]
+    )
+    guard writer.startWriting() else {
+        throw SyntheticMediaError.cannotStartWriter
+    }
+    writer.startSession(atSourceTime: .zero)
+
+    for frameIndex in 0..<frameCount {
+        for _ in 0..<2_000 where !input.isReadyForMoreMediaData {
+            try await Task.sleep(for: .milliseconds(1))
+        }
+        guard input.isReadyForMoreMediaData else {
+            writer.cancelWriting()
+            throw SyntheticMediaError.writerBackPressureTimeout
+        }
+        let sample = try makeVideoSample(
+            width: width,
+            height: height,
+            frameIndex: frameIndex,
+            framesPerSecond: framesPerSecond
+        )
+        guard let pixelBuffer = CMSampleBufferGetImageBuffer(sample),
+              adaptor.append(
+                pixelBuffer,
+                withPresentationTime: CMTime(
+                    value: CMTimeValue(frameIndex),
+                    timescale: CMTimeScale(framesPerSecond)
+                )
+              ) else {
+            writer.cancelWriting()
+            throw SyntheticMediaError.writerAppendFailed
+        }
+    }
+
+    input.markAsFinished()
+    await writer.finishWriting()
+    guard writer.status == .completed else {
+        throw SyntheticMediaError.writerFinishFailed
+    }
 }
 
 private func writeSyntheticVideoWithAudio(to outputURL: URL) async throws {
@@ -1753,7 +2022,7 @@ private func assertSingleAudioSourcePipeline(
             width: source.width,
             height: source.height,
             framesPerSecond: framesPerSecond,
-            videoBitRate: 1_000_000,
+            videoQuality: 0.98,
             audioBitRate: 64_000
         )
     )
@@ -1887,6 +2156,29 @@ private func makeVideoSample(
                     bytes[offset + 2] = UInt8(truncatingIfNeeded: seed >> 16)
                     bytes[offset + 3] = 255
                 }
+            }
+        case .animatedScreen:
+            memset(baseAddress, 24, bytesPerRow * height)
+            let bytes = baseAddress.assumingMemoryBound(to: UInt8.self)
+            let barWidth = max(16, width / 64)
+            let barStart = (frameIndex * max(1, width / 120)) % width
+            for y in 0..<height {
+                for xOffset in 0..<barWidth {
+                    let x = (barStart + xOffset) % width
+                    let offset = (y * bytesPerRow) + (x * 4)
+                    bytes[offset] = 64
+                    bytes[offset + 1] = 208
+                    bytes[offset + 2] = 255
+                    bytes[offset + 3] = 255
+                }
+            }
+            let lineY = (frameIndex * 7) % height
+            for x in 0..<width {
+                let offset = (lineY * bytesPerRow) + (x * 4)
+                bytes[offset] = 255
+                bytes[offset + 1] = 255
+                bytes[offset + 2] = 255
+                bytes[offset + 3] = 255
             }
         }
     }
@@ -2253,6 +2545,10 @@ private enum SyntheticMediaError: Error {
     case cannotFillBlockBuffer(OSStatus)
     case cannotAddReaderOutput
     case cannotStartReader
+    case cannotAddWriterInput
+    case cannotStartWriter
+    case writerAppendFailed
+    case writerFinishFailed
     case readerFailed
     case writerBackPressureTimeout
     case missingVideoTrack

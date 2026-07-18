@@ -355,6 +355,33 @@ struct LivePlatformServicesTests {
     }
 
     @MainActor
+    @Test("Capture master uses the configured Crisp quality")
+    func captureUsesConfiguredCrispQuality() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let recorder = FakeScreenRecorder(finishBehavior: .returnOutput)
+        let service = NativeCaptureService(
+            recordingsDirectory: directory,
+            capacityProvider: { _ in Int64.max },
+            recorderFactory: { eventHandler in
+                recorder.eventHandler = eventHandler
+                return recorder
+            }
+        )
+        var settings = ClipSettings.defaults(homeDirectory: directory)
+        settings.exportQualities.crisp = 73
+
+        try await service.prepare(try captureTarget(named: "quality-display"))
+        try await service.start(recordingID: RecordingID(), settings: settings)
+
+        #expect(recorder.lastRequest?.configuration.videoQuality == 0.73)
+        await service.cancel()
+    }
+
+    @MainActor
     @Test("A zero-frame finish removes output and recovery metadata")
     func zeroFrameFinishCleansCaptureFiles() async throws {
         let directory = FileManager.default.temporaryDirectory

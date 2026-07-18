@@ -33,8 +33,8 @@ public protocol MediaExporting: Sendable {
 /// A controlled, native AVFoundation transcode pipeline.
 ///
 /// Unlike `AVAssetExportSession` presets, this pipeline applies every value in
-/// `MediaExportConfiguration`: video dimensions, frame cadence, H.264 quality
-/// and rate policy, AAC bitrate, and the optional soft file-size target. Source
+/// `MediaExportConfiguration`: native video dimensions and cadence, H.264
+/// quality, and AAC bitrate. Source
 /// files are opened read-only. A complete MP4 is first written beside the
 /// destination and then atomically renamed into place, so a failed or
 /// concurrent export never makes a partially written destination visible.
@@ -67,6 +67,7 @@ public struct NativeAssetExporter: MediaExporting {
         guard let videoTrack = videoTracks.first else {
             throw NativeAssetExporterError.missingVideoTrack
         }
+        try await validateSourceFormat(videoTrack, configuration: configuration)
         let sourceAudioTracks = try await asset.loadTracks(withMediaType: .audio)
         let exportedAudioTracks = configuration.includesAudio ? sourceAudioTracks : []
 
@@ -124,13 +125,11 @@ public struct NativeAssetExporter: MediaExporting {
         async let naturalSizeValue = videoTrack.load(.naturalSize)
         async let transformValue = videoTrack.load(.preferredTransform)
         async let frameRateValue = videoTrack.load(.nominalFrameRate)
-        async let dataRateValue = videoTrack.load(.estimatedDataRate)
         async let descriptionsValue = videoTrack.load(.formatDescriptions)
-        let (naturalSize, transform, frameRate, dataRate, descriptions) = try await (
+        let (naturalSize, transform, frameRate, descriptions) = try await (
             naturalSizeValue,
             transformValue,
             frameRateValue,
-            dataRateValue,
             descriptionsValue
         )
         let displayedSize = naturalSize.applying(transform)
@@ -143,7 +142,6 @@ public struct NativeAssetExporter: MediaExporting {
             width: Int(abs(displayedSize.width).rounded()),
             height: Int(abs(displayedSize.height).rounded()),
             framesPerSecond: Double(frameRate),
-            videoDataRate: Double(dataRate),
             hasRec709ColorDescription: videoDescription.map(hasRec709Description) ?? false,
             audioTrackCount: audioTracks.count,
             audioCodec: nil,
@@ -206,6 +204,32 @@ public struct NativeAssetExporter: MediaExporting {
                 == (kCVImageBufferYCbCrMatrix_ITU_R_709_2 as String)
     }
 
+    private func validateSourceFormat(
+        _ videoTrack: AVAssetTrack,
+        configuration: MediaExportConfiguration
+    ) async throws {
+        async let naturalSizeValue = videoTrack.load(.naturalSize)
+        async let transformValue = videoTrack.load(.preferredTransform)
+        async let frameRateValue = videoTrack.load(.nominalFrameRate)
+        let (naturalSize, transform, frameRate) = try await (
+            naturalSizeValue,
+            transformValue,
+            frameRateValue
+        )
+        let displayedSize = naturalSize.applying(transform)
+        let sourceWidth = Int(abs(displayedSize.width).rounded())
+        let sourceHeight = Int(abs(displayedSize.height).rounded())
+        let sourceFramesPerSecond = Double(frameRate)
+
+        guard sourceWidth == configuration.width,
+              sourceHeight == configuration.height,
+              sourceFramesPerSecond.isFinite,
+              sourceFramesPerSecond > 0,
+              sourceFramesPerSecond <= Double(configuration.framesPerSecond) + 0.1 else {
+            throw NativeAssetExporterError.invalidConfiguration
+        }
+    }
+
     private func transcode(
         asset: AVAsset,
         videoTrack: AVAssetTrack,
@@ -214,11 +238,6 @@ public struct NativeAssetExporter: MediaExporting {
         timeRange: CMTimeRange,
         configuration: MediaExportConfiguration
     ) async throws {
-        let sourceNominalFramesPerSecond = Double(try await videoTrack.load(.nominalFrameRate))
-        let shouldLimitFrameRate = sourceNominalFramesPerSecond.isFinite
-            && sourceNominalFramesPerSecond
-                > Double(configuration.framesPerSecond) + 0.1
-
         let reader: AVAssetReader
         do {
             reader = try AVAssetReader(asset: asset)
@@ -230,8 +249,7 @@ public struct NativeAssetExporter: MediaExporting {
         let videoOutput = try await makeVideoOutput(
             track: videoTrack,
             timeRange: timeRange,
-            configuration: configuration,
-            shouldLimitFrameRate: shouldLimitFrameRate
+            configuration: configuration
         )
         guard reader.canAdd(videoOutput) else {
             throw NativeAssetExporterError.cannotAddReaderOutput("video")
@@ -254,17 +272,9 @@ public struct NativeAssetExporter: MediaExporting {
         }
         writer.shouldOptimizeForNetworkUse = true
 
-        let effectiveVideoBitRate = MediaExportSizeEstimator.effectiveVideoBitRate(
-            configuration: configuration,
-            duration: timeRange.duration.seconds,
-            includesAudio: audioOutput != nil
-        )
         let videoInput = AVAssetWriterInput(
             mediaType: .video,
-            outputSettings: videoSettings(
-                configuration: configuration,
-                effectiveBitRate: effectiveVideoBitRate
-            )
+            outputSettings: videoSettings(configuration: configuration)
         )
         videoInput.expectsMediaDataInRealTime = false
         guard writer.canAdd(videoInput) else {
@@ -309,9 +319,7 @@ public struct NativeAssetExporter: MediaExporting {
                 videoInput: videoInput,
                 audioOutput: audioOutput,
                 audioInput: audioInput,
-                sourceStart: timeRange.start,
-                shouldLimitFrameRate: shouldLimitFrameRate,
-                maximumFramesPerSecond: configuration.framesPerSecond
+                sourceStart: timeRange.start
             )
             writer.endSession(atSourceTime: timeRange.duration)
             await writer.finishWriting()
@@ -344,16 +352,10 @@ public struct NativeAssetExporter: MediaExporting {
         videoInput: AVAssetWriterInput,
         audioOutput: AVAssetReaderAudioMixOutput?,
         audioInput: AVAssetWriterInput?,
-        sourceStart: CMTime,
-        shouldLimitFrameRate: Bool,
-        maximumFramesPerSecond: Int
+        sourceStart: CMTime
     ) async throws {
         var videoFinished = false
         var audioFinished = audioOutput == nil
-        var lastVideoPresentationTime: CMTime?
-        let minimumVideoFrameDuration = shouldLimitFrameRate
-            ? CMTime(value: 1, timescale: CMTimeScale(maximumFramesPerSecond))
-            : nil
 
         while !videoFinished || !audioFinished {
             try Task.checkCancellation()
@@ -372,27 +374,11 @@ public struct NativeAssetExporter: MediaExporting {
             if !videoFinished, videoInput.isReadyForMoreMediaData {
                 if let sample = videoOutput.copyNextSampleBuffer() {
                     let retimed = try sample.retimed(relativeTo: sourceStart)
-                    let presentationTime = CMSampleBufferGetPresentationTimeStamp(retimed)
-                    let mayAppend: Bool
-                    if let lastVideoPresentationTime, let minimumVideoFrameDuration {
-                        // Allow half a millisecond for rational-timescale rounding.
-                        let tolerance = CMTime(value: 1, timescale: 2_000)
-                        mayAppend = presentationTime + tolerance
-                            >= lastVideoPresentationTime + minimumVideoFrameDuration
-                    } else {
-                        // Preserve every source sample, including legitimate
-                        // VFR/jittered samples closer together than the nominal
-                        // cadence, unless this preset actually lowers source FPS.
-                        mayAppend = true
-                    }
-                    if mayAppend {
-                        guard videoInput.append(retimed) else {
-                            throw NativeAssetExporterError.exportFailed(
-                                writer.error?.localizedDescription
-                                    ?? "H.264 encoder rejected a frame"
-                            )
-                        }
-                        lastVideoPresentationTime = presentationTime
+                    guard videoInput.append(retimed) else {
+                        throw NativeAssetExporterError.exportFailed(
+                            writer.error?.localizedDescription
+                                ?? "H.264 encoder rejected a frame"
+                        )
                     }
                 } else {
                     videoInput.markAsFinished()
@@ -428,8 +414,7 @@ public struct NativeAssetExporter: MediaExporting {
     private func makeVideoOutput(
         track: AVAssetTrack,
         timeRange: CMTimeRange,
-        configuration: MediaExportConfiguration,
-        shouldLimitFrameRate: Bool
+        configuration: MediaExportConfiguration
     ) async throws -> AVAssetReaderOutput {
         async let naturalSizeValue = track.load(.naturalSize)
         async let preferredTransformValue = track.load(.preferredTransform)
@@ -444,11 +429,9 @@ public struct NativeAssetExporter: MediaExporting {
             kCVPixelBufferIOSurfacePropertiesKey as String: [:] as [String: Any],
         ]
 
-        // Region captures have identity orientation and Compact preserves their
-        // dimensions when they already fit inside 1080p. Avoiding a no-op video
-        // composition here removes a full compositor pass while retaining the
-        // controlled H.264 transcode, frame-rate limiting, trim, and bitrate.
-        // Rotated or resized sources continue through the composition path.
+        // Region captures have identity orientation and preserve their native
+        // dimensions. Avoiding a no-op compositor pass retains exact source
+        // sample timing. Rotated sources continue through the composition path.
         if preferredTransform.isIdentity,
            Int(naturalSize.width.rounded()) == configuration.width,
            Int(naturalSize.height.rounded()) == configuration.height {
@@ -469,14 +452,10 @@ public struct NativeAssetExporter: MediaExporting {
             value: 1,
             timescale: CMTimeScale(configuration.framesPerSecond)
         )
-        if !shouldLimitFrameRate {
-            // Derive composition requests from the source track so resizing or
-            // orientation correction preserves its exact VFR sample cadence.
-            // A fixed frameDuration here would turn (for example) a 28.29 FPS
-            // screen recording into a synthetic 30 FPS schedule even though
-            // the selected export does not request a frame-rate reduction.
-            videoComposition.sourceTrackIDForFrameTiming = track.trackID
-        }
+        // Derive composition requests from the source track so orientation
+        // correction preserves exact VFR sample cadence. A fixed synthetic
+        // schedule would corrupt durable source timing such as 28.29 FPS.
+        videoComposition.sourceTrackIDForFrameTiming = track.trackID
 
         let instruction = AVMutableVideoCompositionInstruction()
         instruction.timeRange = timeRange
@@ -533,40 +512,44 @@ public struct NativeAssetExporter: MediaExporting {
         return output
     }
 
-    func videoSettings(
-        configuration: MediaExportConfiguration,
-        effectiveBitRate: Int
-    ) -> [String: Any] {
-        let policy = NativeVideoEncodingPolicy(
-            configuration: configuration,
-            effectiveBitRate: effectiveBitRate
-        )
+    func videoSettings(configuration: MediaExportConfiguration) -> [String: Any] {
+        let policy = NativeVideoEncodingPolicy(configuration: configuration)
         var compressionProperties: [String: Any] = [
-            AVVideoAverageBitRateKey: effectiveBitRate,
             AVVideoExpectedSourceFrameRateKey: configuration.framesPerSecond,
             AVVideoMaxKeyFrameIntervalKey: configuration.framesPerSecond * 2,
             AVVideoProfileLevelKey: AVVideoProfileLevelH264HighAutoLevel,
             AVVideoAllowFrameReorderingKey: policy.allowsFrameReordering,
             kVTCompressionPropertyKey_RealTime as String: policy.isRealTime,
-            kVTCompressionPropertyKey_PrioritizeEncodingSpeedOverQuality as String:
-                policy.prioritizesEncodingSpeedOverQuality,
         ]
-        if let quality = policy.quality {
-            compressionProperties[kVTCompressionPropertyKey_Quality as String] = quality
-        }
-        if let hardDataRateLimit = policy.hardDataRateLimitBytesPerSecond {
-            compressionProperties[kVTCompressionPropertyKey_DataRateLimits as String] = [
-                hardDataRateLimit,
-                1,
-            ]
+        var encoderSpecification: [String: Any] = [
+            kVTVideoEncoderSpecification_EnableHardwareAcceleratedVideoEncoder as String: true,
+        ]
+        switch policy.rateControl {
+        case let .quality(value):
+            // Quality and quality-over-speed are supported by Apple's hardware
+            // H.264 encoder. Requiring hardware prevents AVFoundation from
+            // silently selecting a software encoder that rejects these keys
+            // with an uncaught Objective-C exception.
+            encoderSpecification[
+                kVTVideoEncoderSpecification_RequireHardwareAcceleratedVideoEncoder as String
+            ] = true
+            compressionProperties[kVTCompressionPropertyKey_Quality as String] = value
+            compressionProperties[
+                kVTCompressionPropertyKey_PrioritizeEncodingSpeedOverQuality as String
+            ] = false
+
+        case let .averageBitRate(bitsPerSecond):
+            // Apple's native software H.264 encoder is required beyond the
+            // hardware geometry envelope. It exposes AverageBitRate but not
+            // Quality or PrioritizeEncodingSpeedOverQuality, so keep the exact
+            // dimensions and use a soft rate target without a hard limit.
+            compressionProperties[AVVideoAverageBitRateKey] = bitsPerSecond
         }
         return [
             AVVideoCodecKey: AVVideoCodecType.h264,
             AVVideoWidthKey: configuration.width,
             AVVideoHeightKey: configuration.height,
-            AVVideoEncoderSpecificationKey: [
-                kVTVideoEncoderSpecification_EnableHardwareAcceleratedVideoEncoder as String: true,
-            ],
+            AVVideoEncoderSpecificationKey: encoderSpecification,
             AVVideoColorPropertiesKey: [
                 AVVideoColorPrimariesKey: AVVideoColorPrimaries_ITU_R_709_2,
                 AVVideoTransferFunctionKey: AVVideoTransferFunction_ITU_R_709_2,
@@ -623,9 +606,12 @@ public struct NativeAssetExporter: MediaExporting {
               configuration.width.isMultiple(of: 2),
               configuration.height.isMultiple(of: 2),
               (1...240).contains(configuration.framesPerSecond),
-              configuration.videoBitRate > 0,
-              configuration.audioBitRate > 0,
-              configuration.approximateTargetBytes.map({ $0 > 0 }) ?? true else {
+              configuration.videoQuality.isFinite,
+              (0...1).contains(configuration.videoQuality),
+              configuration.sourceVideoQuality.map({
+                  $0.isFinite && (0...1).contains($0)
+              }) ?? true,
+              configuration.audioBitRate > 0 else {
             throw NativeAssetExporterError.invalidConfiguration
         }
     }
@@ -644,7 +630,6 @@ struct CompatibleSourceReuseFacts: Equatable {
     var width: Int
     var height: Int
     var framesPerSecond: Double
-    var videoDataRate: Double
     var hasRec709ColorDescription: Bool
     var audioTrackCount: Int
     var audioCodec: FourCharCode?
@@ -659,6 +644,9 @@ enum CompatibleSourceReusePolicy {
         for configuration: MediaExportConfiguration
     ) -> Bool {
         guard configuration.preset == .crisp,
+              configuration.sourceVideoQuality.map({
+                  abs($0 - configuration.videoQuality) <= 1e-9
+              }) == true,
               facts.isFullRange,
               facts.videoTrackCount == 1,
               facts.videoCodec == kCMVideoCodecType_H264,
@@ -691,44 +679,66 @@ enum CompatibleSourceReusePolicy {
     }
 }
 
-/// VideoToolbox policy for a single offline export generation. Compact and
-/// Crisp retain their resolution/FPS-derived average bitrate as a soft target,
-/// but quality is the primary control and no hard byte-rate limit is installed.
-/// Smallest keeps constrained ABR and allows ten percent burst headroom so the
-/// encoder can preserve difficult frames without drifting far from its target.
+/// VideoToolbox policy for a single offline export generation. Hardware H.264
+/// consumes the selected quality directly. Exact oversized software H.264
+/// maps that same value to its supported soft average-rate control; neither
+/// path installs a hard data-rate limit.
 struct NativeVideoEncodingPolicy: Equatable, Sendable {
-    static let smallestHardLimitHeadroom = 1.10
+    enum RateControl: Equatable, Sendable {
+        case quality(Double)
+        case averageBitRate(Int)
+    }
 
-    let quality: Double?
-    let hardDataRateLimitBytesPerSecond: Int?
+    let quality: Double
     let isRealTime: Bool
     let prioritizesEncodingSpeedOverQuality: Bool
     let allowsFrameReordering: Bool
+    let rateControl: RateControl
 
-    init(
-        configuration: MediaExportConfiguration,
-        effectiveBitRate: Int
-    ) {
-        switch configuration.preset {
-        case .compact:
-            quality = 0.85
-            hardDataRateLimitBytesPerSecond = nil
-        case .crisp:
-            quality = 0.98
-            hardDataRateLimitBytesPerSecond = nil
-        case .smallest:
-            quality = nil
-            hardDataRateLimitBytesPerSecond = max(
-                1,
-                Int(
-                    (Double(effectiveBitRate)
-                        * Self.smallestHardLimitHeadroom / 8).rounded(.up)
-                )
-            )
-        }
+    init(configuration: MediaExportConfiguration) {
+        quality = configuration.videoQuality
         isRealTime = false
         prioritizesEncodingSpeedOverQuality = false
         allowsFrameReordering = true
+        if NativeH264HardwareGeometry.supports(
+            width: configuration.width,
+            height: configuration.height
+        ) {
+            rateControl = .quality(configuration.videoQuality)
+        } else {
+            rateControl = .averageBitRate(
+                Self.softwareAverageBitRate(configuration: configuration)
+            )
+        }
+    }
+
+    /// Maps Clip's 1...100 quality ladder to the only supported native control
+    /// on Apple's oversized software H.264 encoder. The curve gives the upper
+    /// rungs progressively more bits for fine screen text while remaining a
+    /// soft average target; VideoToolbox is free to vary the actual file size.
+    private static func softwareAverageBitRate(
+        configuration: MediaExportConfiguration
+    ) -> Int {
+        let pixelRate = Double(configuration.width)
+            * Double(configuration.height)
+            * Double(configuration.framesPerSecond)
+        let qualityCurve = 0.0005 + (0.3195 * pow(configuration.videoQuality, 4))
+        let target = pixelRate * qualityCurve
+        return Int(min(target.rounded(), Double(Int.max)))
+    }
+}
+
+/// Apple's hardware H.264 path on the supported Apple-Silicon baseline accepts
+/// up to a 4,096-pixel coded side and the 4,096x2,304 luma-sample envelope.
+/// Larger exact geometries use the native software H.264 export fallback.
+enum NativeH264HardwareGeometry {
+    static let maximumCodedDimension = 4_096
+    static let maximumLumaSamples = 4_096 * 2_304
+
+    static func supports(width: Int, height: Int) -> Bool {
+        guard width > 0, height > 0 else { return false }
+        return max(width, height) <= maximumCodedDimension
+            && width <= maximumLumaSamples / height
     }
 }
 

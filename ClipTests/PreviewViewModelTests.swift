@@ -236,7 +236,7 @@ struct PreviewViewModelTests {
         #expect(sharedURL.lastPathComponent == model.filenameText)
     }
 
-    @Test("Trim, rename, and Smallest options form one exact drag/export request")
+    @Test("Trim, rename, and quality preset form one exact drag/export request")
     func dragRequestUsesCurrentEdits() throws {
         let model = PreviewViewModel(recording: .demo(), actions: makeActions())
 
@@ -244,8 +244,6 @@ struct PreviewViewModelTests {
         model.updateTrimStart(3.25)
         model.updateTrimEnd(18.5)
         model.selectPreset(.smallest)
-        model.selectSmallestTarget(.custom)
-        model.setCustomTargetMegabytes(42)
 
         let request = try #require(model.dragItem?.request)
         let expectedTrim = try TrimRange(startTime: 3.25, endTime: 18.5)
@@ -254,45 +252,14 @@ struct PreviewViewModelTests {
         #expect(request.captureFrameRate == .thirty)
         #expect(request.filename.fileName == "dashboard-filters.mp4")
         #expect(request.trimRange == expectedTrim)
-        #expect(request.configuration.preset == .smallest)
-        #expect(request.configuration.smallestSizeTarget == .custom(megabytes: 42))
-        #expect(model.estimatedOutputSizeDescription.contains("Estimated output:"))
-        #expect(model.estimatedOutputSizeDescription.contains("42 MB target"))
+        #expect(request.configuration == ExportConfiguration(preset: .smallest))
+        #expect(request.videoQualityPercent == 85)
+        #expect(request.sourceVideoQualityPercent == 98)
+        #expect(model.outputSizeDescription == "Quality based — size varies")
     }
 
-    @Test("Estimated output size responds to trim, preset, and Smallest target")
-    func estimatedOutputSizeTracksCurrentControls() {
-        // Exercise the deterministic encoder rate plan in isolation. Tests
-        // below cover the content-calibrated estimate used when History knows
-        // the managed master's real byte count.
-        var recording = PreviewRecording.demo()
-        recording.approximateExportByteCount = nil
-        let model = PreviewViewModel(recording: recording, actions: makeActions())
-
-        let fullCompact = model.estimatedOutputSize
-        model.updateTrimEnd(13)
-        let halfCompact = model.estimatedOutputSize
-        #expect(halfCompact.byteCount * 2 == fullCompact.byteCount)
-
-        model.selectPreset(.crisp)
-        let halfCrisp = model.estimatedOutputSize
-        #expect(halfCrisp.byteCount > halfCompact.byteCount * 3)
-        #expect(halfCrisp.width == 1_440)
-        #expect(halfCrisp.height == 900)
-
-        model.resetTrim()
-        model.selectPreset(.smallest)
-        model.selectSmallestTarget(.tenMegabytes)
-        let tenMegabyteTarget = model.estimatedOutputSize
-        model.selectSmallestTarget(.custom)
-        model.setCustomTargetMegabytes(42)
-        let customTarget = model.estimatedOutputSize
-        #expect(customTarget.byteCount > tenMegabyteTarget.byteCount)
-        #expect(model.estimatedOutputSizeDescription.contains("42 MB target"))
-    }
-
-    @Test("Estimated output uses managed frame rate, audio, and arbitrary pixel geometry")
-    func estimatedOutputSizeUsesManagedMediaMetadata() throws {
+    @Test("Every preset uses its independent configured quality")
+    func presetQualityUsesCurrentSettings() throws {
         let duration: TimeInterval = 12
         let recording = try PreviewRecording(
             id: RecordingID(UUID(uuidString: "60606060-6060-6060-6060-606060606060")!),
@@ -303,20 +270,23 @@ struct PreviewViewModelTests {
             audioConfiguration: .systemAudioOnly,
             filename: RecordingFilename(validating: "clip-estimate.mp4"),
             trimRange: .full(recordingDuration: duration),
-            exportConfiguration: .crisp
+            exportConfiguration: .crisp,
+            exportQualities: ExportQualitySettings(crisp: 99, compact: 72, smallest: 13),
+            sourceVideoQualityPercent: 94
         )
         let model = PreviewViewModel(recording: recording, actions: makeActions())
-        let estimate = model.estimatedOutputSize
 
-        #expect(estimate.width == 2_222)
-        #expect(estimate.height == 666)
-        #expect(estimate.framesPerSecond == 60)
-        #expect(estimate.effectiveAudioBitRate == 192_000)
+        #expect(model.dragItem?.request.videoQualityPercent == 99)
         #expect(model.dragItem?.request.captureFrameRate == .sixty)
+        #expect(model.dragItem?.request.sourceVideoQualityPercent == 94)
+        model.selectPreset(.compact)
+        #expect(model.dragItem?.request.videoQualityPercent == 72)
+        model.selectPreset(.smallest)
+        #expect(model.dragItem?.request.videoQualityPercent == 13)
     }
 
-    @Test("Remove audio mutes Preview, excludes audio from estimates, and can be restored")
-    func audioExportPreferenceControlsPreviewAndEstimate() throws {
+    @Test("Remove audio mutes Preview and changes the export request")
+    func audioExportPreferenceControlsPreviewAndRequest() throws {
         let duration: TimeInterval = 12
         let recording = try PreviewRecording(
             id: RecordingID(UUID(uuidString: "70707070-7070-7070-7070-707070707070")!),
@@ -331,25 +301,19 @@ struct PreviewViewModelTests {
         )
         let model = PreviewViewModel(recording: recording, actions: makeActions())
 
-        let audibleEstimate = model.estimatedOutputSize
         #expect(model.hasRecordedAudio)
         #expect(!model.isAudioRemoved)
         #expect(!model.player.isMuted)
-        #expect(audibleEstimate.effectiveAudioBitRate > 0)
         #expect(model.dragItem?.request.audioPreference == .keepAudio)
 
         model.setAudioRemoved(true)
-        let silentEstimate = model.estimatedOutputSize
         #expect(model.isAudioRemoved)
         #expect(model.player.isMuted)
-        #expect(silentEstimate.effectiveAudioBitRate == 0)
-        #expect(silentEstimate.byteCount < audibleEstimate.byteCount)
         #expect(model.dragItem?.request.audioPreference == .removeAudio)
 
         model.setAudioRemoved(false)
         #expect(!model.isAudioRemoved)
         #expect(!model.player.isMuted)
-        #expect(model.estimatedOutputSize == audibleEstimate)
         #expect(model.dragItem?.request.audioPreference == .keepAudio)
     }
 
@@ -627,7 +591,7 @@ struct PreviewViewModelTests {
             pixelSize: PixelSize(width: 960, height: 540),
             filename: RecordingFilename(validating: "failed-retake.mp4"),
             trimRange: .full(recordingDuration: 7),
-            exportConfiguration: .smallest10MB
+            exportConfiguration: ExportConfiguration(preset: .smallest)
         )
         let actions = makeActions(retake: { _ in
             PreviewRetakeResult(

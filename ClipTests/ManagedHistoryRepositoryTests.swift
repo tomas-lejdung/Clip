@@ -310,6 +310,7 @@ struct ManagedHistoryRepositoryTests {
             exportedFileURL: export,
             retentionPolicy: .sevenDays,
             keepOriginalAfterExport: false,
+            exportedVideoQualityPercent: 85,
             exportedMediaMetadata: replacementMetadata
         )
         let replacementURL = try await environment.repository.masterURL(for: replaced.id)
@@ -322,6 +323,7 @@ struct ManagedHistoryRepositoryTests {
         #expect(replaceResult.retainedItem?.trimRange == expectedReplacementTrim)
         #expect(replaceResult.retainedItem?.pixelSize == replacementMetadata.pixelSize)
         #expect(replaceResult.retainedItem?.frameRate == .sixty)
+        #expect(replaceResult.retainedItem?.managedMasterVideoQualityPercent == 85)
         #expect(replaceResult.retainedItem?.managedMaster == replaced.managedMaster)
         #expect(replaceResult.removedItem == nil)
 
@@ -370,6 +372,7 @@ struct ManagedHistoryRepositoryTests {
             exportedFileURL: masterURL,
             retentionPolicy: .indefinitely,
             keepOriginalAfterExport: false,
+            exportedVideoQualityPercent: 98,
             exportedMediaMetadata: metadata
         )
 
@@ -487,7 +490,14 @@ struct ManagedHistoryRepositoryTests {
             makeRequest(
                 sourceURL: source,
                 id: UUID(uuidString: "20202020-2020-2020-2020-202020202020")!,
-                duration: 10
+                duration: 10,
+                captureSessionSnapshot: CaptureSessionSnapshot(
+                    frameRate: .thirty,
+                    showCursor: true,
+                    audio: .none,
+                    countdown: .threeSeconds,
+                    crispQuality: 98
+                )
             )
         )
         let masterURL = try await environment.repository.masterURL(for: item.id)
@@ -508,6 +518,7 @@ struct ManagedHistoryRepositoryTests {
             exportedFileURL: firstExport,
             retentionPolicy: .indefinitely,
             keepOriginalAfterExport: false,
+            exportedVideoQualityPercent: 90,
             exportedMediaMetadata: firstMetadata,
             previewSession: session
         )
@@ -516,6 +527,7 @@ struct ManagedHistoryRepositoryTests {
             exportedFileURL: latestExport,
             retentionPolicy: .indefinitely,
             keepOriginalAfterExport: false,
+            exportedVideoQualityPercent: 85,
             exportedMediaMetadata: latestMetadata,
             previewSession: session
         )
@@ -530,6 +542,8 @@ struct ManagedHistoryRepositoryTests {
         #expect(rebasedItem.recordingDuration == latestMetadata.duration)
         #expect(rebasedItem.pixelSize == latestMetadata.pixelSize)
         #expect(rebasedItem.frameRate == latestMetadata.frameRate)
+        #expect(rebasedItem.managedMasterVideoQualityPercent == 85)
+        #expect(rebasedItem.captureSessionSnapshot?.crispQuality == 98)
         let expectedFullTrim = try TrimRange.full(recordingDuration: 4)
         #expect(rebasedItem.trimRange == expectedFullTrim)
         #expect(try Data(contentsOf: firstExport) == Data("first-export".utf8))

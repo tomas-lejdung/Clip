@@ -214,6 +214,7 @@ final class NativeCaptureService: CaptureServicing {
             width: preparedTarget.outputWidth,
             height: preparedTarget.outputHeight,
             framesPerSecond: settings.frameRate.framesPerSecond,
+            videoQualityPercent: settings.exportQualities.crisp,
             showsCursor: settings.showCursor,
             audioMode: Self.audioMode(for: settings.audio)
         )

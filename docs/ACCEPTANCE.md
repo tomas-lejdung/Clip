@@ -23,15 +23,21 @@ The objective, permission-free quality gate is separate and can be run alone:
 ```
 
 It renders deterministic small bitmap text, physical one-pixel lines,
-saturated edges, scrolling, and cadence-relative 30/60 FPS motion. It decodes
-the real master, trimmed Crisp, and non-resized Compact H.264 outputs and
-enforces luma SSIM/edge-retention floors of 0.985/95%, 0.98/92%, and 0.96/85%
-respectively, plus native dimensions, High profile Rec.709, bounded timestamps,
-and byte-identical eligible Crisp reuse. A test-only A/B baseline also requires
-the quality-0.98 master to materially outperform the former ABR-only settings.
-The native writer tests also prove that bounded held-frame cadence repair keeps
-all original timestamps as an exact subsequence while leaving long sparse VFR
-timelines untouched.
+saturated edges, scrolling, and cadence-relative 30/60 FPS motion. At the
+default quality settings, it decodes the real quality-98 master, a forced
+quality-98 Crisp transcode, and Compact-90 H.264 outputs and enforces luma SSIM/edge-retention floors of
+0.985/95%, 0.98/92%, and 0.96/85% respectively. It also requires native
+dimensions, durable cadence, High-profile Rec.709 video, bounded timestamps,
+Compact output distinct from its source, and byte-identical eligible Crisp
+reuse. Policy tests cover the Smallest-85 rung, independent 1–100 settings and
+the `98`/`90`/`85` reset values, while inspecting encoder properties to ensure
+hardware quality paths omit bitrate limits and the exact oversized native
+software-H.264 fallback uses only its quality-derived soft average bitrate,
+never a hard data-rate limit.
+A test-only A/B baseline still requires the quality-0.98 master to materially
+outperform the former ABR-only settings. The native writer tests also prove
+that bounded held-frame cadence repair keeps all original timestamps as an
+exact subsequence while leaving long sparse VFR timelines untouched.
 
 The complete permission-free release gate is `./scripts/verify-release.sh`.
 App-hosted unit tests detect XCTest injection and suppress normal production

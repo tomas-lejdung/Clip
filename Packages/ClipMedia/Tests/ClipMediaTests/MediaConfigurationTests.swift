@@ -4,322 +4,95 @@ import Testing
 
 @Suite("Media export configuration")
 struct MediaConfigurationTests {
-    @Test("Recording dimensions are H.264-safe even values")
-    func evenDimensions() {
-        let configuration = RecordingConfiguration(width: 1_441, height: 901)
+    @Test("Recording preserves pixel-aligned dimensions and caller quality")
+    func recordingConfiguration() {
+        let configuration = RecordingConfiguration(
+            width: 1_441,
+            height: 901,
+            framesPerSecond: 60,
+            videoQuality: 0.93
+        )
+
         #expect(configuration.width == 1_440)
         #expect(configuration.height == 900)
-        #expect(configuration.videoBitRate == 8_553_600)
-    }
-
-    @Test("Capture master bitrate continues to scale for a later Crisp export")
-    func highFidelityCaptureMaster() {
-        let configuration = RecordingConfiguration(
-            width: 3_840,
-            height: 2_160,
-            framesPerSecond: 60
-        )
-
-        #expect(configuration.videoBitRate == 109_486_080)
-    }
-
-    @Test("Compact uses the Full HD, 30 FPS, 6 Mbps envelope")
-    func compactCaps() {
-        let configuration = MediaExportConfigurationFactory.make(
-            preset: .compact,
-            sourceWidth: 5_120,
-            sourceHeight: 2_880,
-            sourceFramesPerSecond: 60,
-            duration: 30
-        )
-        #expect(configuration.width == 1_920)
-        #expect(configuration.height == 1_080)
-        #expect(configuration.framesPerSecond == 30)
-        #expect(configuration.videoBitRate == 3_421_440)
-    }
-
-    @Test("Crisp preserves detail with native dimensions, 60 FPS, and a much higher rate")
-    func crispPreservesFrameRate() {
-        let configuration = MediaExportConfigurationFactory.make(
-            preset: .crisp,
-            sourceWidth: 2_560,
-            sourceHeight: 1_440,
-            sourceFramesPerSecond: 60,
-            duration: 30
-        )
-        #expect(configuration.width == 2_560)
-        #expect(configuration.height == 1_440)
         #expect(configuration.framesPerSecond == 60)
-        #expect(configuration.videoBitRate == 44_236_800)
-        #expect(configuration.audioBitRate == 192_000)
+        #expect(configuration.videoQuality == 0.93)
     }
 
-    @Test("Crisp stays materially above Compact for a common interface recording")
-    func crispIsMateriallyHigherQuality() {
-        let compact = MediaExportConfigurationFactory.make(
+    @Test("Percent quality conversion is exact on the settings scale")
+    func qualityPercentConversion() {
+        #expect(MediaVideoQuality.normalized(percent: 98) == 0.98)
+        #expect(MediaVideoQuality.normalized(percent: 90) == 0.90)
+        #expect(MediaVideoQuality.normalized(percent: 85) == 0.85)
+        #expect(MediaVideoQuality.percent(normalized: 0.98) == 98)
+
+        let recording = RecordingConfiguration(
+            width: 1_920,
+            height: 1_080,
+            videoQualityPercent: 91
+        )
+        #expect(recording.videoQuality == 0.91)
+    }
+
+    @Test("Every preset preserves native geometry and durable cadence")
+    func presetsPreserveSourceFormat() {
+        for preset in MediaExportPreset.allCases {
+            let configuration = MediaExportConfigurationFactory.make(
+                preset: preset,
+                sourceWidth: 5_120,
+                sourceHeight: 2_880,
+                sourceFramesPerSecond: 60,
+                videoQuality: 0.87,
+                sourceVideoQuality: 0.98
+            )
+
+            #expect(configuration.width == 5_120)
+            #expect(configuration.height == 2_880)
+            #expect(configuration.framesPerSecond == 60)
+            #expect(configuration.videoQuality == 0.87)
+            #expect(configuration.sourceVideoQuality == 0.98)
+            #expect(configuration.audioBitRate == 128_000)
+        }
+    }
+
+    @Test("Factory does not impose preset quality values")
+    func qualityIsCallerProvided() {
+        let requestedQualities: [(MediaExportPreset, Int)] = [
+            (.crisp, 98),
+            (.compact, 90),
+            (.smallest, 85),
+        ]
+
+        for (preset, percent) in requestedQualities {
+            let configuration = MediaExportConfigurationFactory.make(
+                preset: preset,
+                sourceWidth: 2_560,
+                sourceHeight: 1_440,
+                sourceFramesPerSecond: 30,
+                videoQualityPercent: percent,
+                sourceVideoQualityPercent: 98
+            )
+            #expect(configuration.videoQuality == Double(percent) / 100)
+            #expect(configuration.width == 2_560)
+            #expect(configuration.height == 1_440)
+            #expect(configuration.framesPerSecond == 30)
+            #expect(configuration.audioBitRate == 128_000)
+        }
+    }
+
+    @Test("Direct export configuration never silently rounds geometry")
+    func directConfigurationKeepsExactGeometry() {
+        let configuration = MediaExportConfiguration(
             preset: .compact,
-            sourceWidth: 1_440,
-            sourceHeight: 900,
-            sourceFramesPerSecond: 30,
-            duration: 30
-        )
-        let crisp = MediaExportConfigurationFactory.make(
-            preset: .crisp,
-            sourceWidth: 1_440,
-            sourceHeight: 900,
-            sourceFramesPerSecond: 30,
-            duration: 30
+            width: 1_441,
+            height: 901,
+            framesPerSecond: 29,
+            videoQuality: 0.90
         )
 
-        #expect(compact.width == crisp.width)
-        #expect(compact.height == crisp.height)
-        #expect(compact.videoBitRate == 2_138_400)
-        #expect(crisp.videoBitRate == 8_000_000)
-        #expect(crisp.videoBitRate >= compact.videoBitRate * 3)
-    }
-
-    @Test("Crisp preserves arbitrary native geometry and pixel-scaled bitrate")
-    func crispPreservesArbitraryNativeGeometry() {
-        let fiveK = MediaExportConfigurationFactory.make(
-            preset: .crisp,
-            sourceWidth: 5_120,
-            sourceHeight: 2_880,
-            sourceFramesPerSecond: 60,
-            duration: 30
-        )
-
-        let portrait = MediaExportConfigurationFactory.make(
-            preset: .crisp,
-            sourceWidth: 720,
-            sourceHeight: 5_120,
-            sourceFramesPerSecond: 30,
-            duration: 30
-        )
-        let ultrawide = MediaExportConfigurationFactory.make(
-            preset: .crisp,
-            sourceWidth: 6_000,
-            sourceHeight: 800,
-            sourceFramesPerSecond: 30,
-            duration: 30
-        )
-
-        #expect(fiveK.width == 5_120)
-        #expect(fiveK.height == 2_880)
-        #expect(fiveK.framesPerSecond == 60)
-        #expect(fiveK.videoBitRate == 176_947_200)
-
-        #expect(portrait.width == 720)
-        #expect(portrait.height == 5_120)
-        #expect(portrait.videoBitRate == 22_118_400)
-
-        #expect(ultrawide.width == 6_000)
-        #expect(ultrawide.height == 800)
-        #expect(ultrawide.videoBitRate == 28_800_000)
-    }
-
-    @Test("Smallest clamps custom targets")
-    func smallestTargetClamping() {
-        let low = MediaExportConfigurationFactory.make(
-            preset: .smallest,
-            sourceWidth: 1_920,
-            sourceHeight: 1_080,
-            sourceFramesPerSecond: 30,
-            duration: 60,
-            approximateTargetMegabytes: -10
-        )
-        let high = MediaExportConfigurationFactory.make(
-            preset: .smallest,
-            sourceWidth: 1_920,
-            sourceHeight: 1_080,
-            sourceFramesPerSecond: 30,
-            duration: 60,
-            approximateTargetMegabytes: 900
-        )
-        #expect(low.approximateTargetBytes == 1_000_000)
-        #expect(high.approximateTargetBytes == 500_000_000)
-        #expect(low.framesPerSecond == 24)
-    }
-
-    @Test("Size estimate follows effective stream rates and selected duration")
-    func outputSizeEstimateFollowsRateAndDuration() {
-        let configuration = MediaExportConfigurationFactory.make(
-            preset: .compact,
-            sourceWidth: 1_440,
-            sourceHeight: 900,
-            sourceFramesPerSecond: 30,
-            duration: 10
-        )
-        let full = MediaExportSizeEstimator.estimate(
-            configuration: configuration,
-            duration: 10,
-            includesAudio: false
-        )
-        let half = MediaExportSizeEstimator.estimate(
-            configuration: configuration,
-            duration: 5,
-            includesAudio: false
-        )
-
-        #expect(full.effectiveVideoBitRate == 2_138_400)
-        #expect(full.effectiveAudioBitRate == 0)
-        #expect(full.estimatedContainerBitRate == 21_384)
-        #expect(full.byteCount == 2_699_730)
-        #expect(half.byteCount * 2 == full.byteCount)
-        #expect(full.width == 1_440)
-        #expect(full.height == 900)
-        #expect(full.framesPerSecond == 30)
-    }
-
-    @Test("Size estimate includes one encoded AAC track when source has audio")
-    func outputSizeEstimateIncludesAudio() {
-        let configuration = MediaExportConfigurationFactory.make(
-            preset: .compact,
-            sourceWidth: 1_440,
-            sourceHeight: 900,
-            sourceFramesPerSecond: 30,
-            duration: 10
-        )
-        let silent = MediaExportSizeEstimator.estimate(
-            configuration: configuration,
-            duration: 10,
-            includesAudio: false
-        )
-        let withAudio = MediaExportSizeEstimator.estimate(
-            configuration: configuration,
-            duration: 10,
-            includesAudio: true
-        )
-
-        #expect(withAudio.effectiveAudioBitRate == 128_000)
-        #expect(withAudio.byteCount > silent.byteCount)
-    }
-
-    @Test("Size estimate is calibrated by the managed master's observed size")
-    func outputSizeEstimateUsesObservedSourceRate() {
-        let configuration = MediaExportConfigurationFactory.make(
-            preset: .crisp,
-            sourceWidth: 2_480,
-            sourceHeight: 1_202,
-            sourceFramesPerSecond: 30,
-            duration: 44.423333
-        )
-
-        let full = MediaExportSizeEstimator.estimate(
-            configuration: configuration,
-            duration: 44.423333,
-            includesAudio: true,
-            sourceByteCount: 6_764_697,
-            sourceDuration: 44.423333
-        )
-        let half = MediaExportSizeEstimator.estimate(
-            configuration: configuration,
-            duration: 22.2116665,
-            includesAudio: true,
-            sourceByteCount: 6_764_697,
-            sourceDuration: 44.423333
-        )
-        let withoutAudio = MediaExportSizeEstimator.estimate(
-            configuration: configuration,
-            duration: 44.423333,
-            includesAudio: false,
-            sourceByteCount: 6_764_697,
-            sourceDuration: 44.423333,
-            sourceIncludesAudio: true
-        )
-
-        #expect(full.byteCount == 6_764_697)
-        #expect(half.byteCount == 3_382_349)
-        #expect(withoutAudio.byteCount == 5_698_537)
-        #expect(full.effectiveVideoBitRate > 15_000_000)
-    }
-
-    @Test("Invalid or unavailable source observations preserve the rate-plan estimate")
-    func outputSizeEstimateFallsBackToRatePlan() {
-        let configuration = MediaExportConfigurationFactory.make(
-            preset: .compact,
-            sourceWidth: 1_440,
-            sourceHeight: 900,
-            sourceFramesPerSecond: 30,
-            duration: 10
-        )
-        let baseline = MediaExportSizeEstimator.estimate(
-            configuration: configuration,
-            duration: 10,
-            includesAudio: false
-        )
-        let invalid = MediaExportSizeEstimator.estimate(
-            configuration: configuration,
-            duration: 10,
-            includesAudio: false,
-            sourceByteCount: 1_000,
-            sourceDuration: 0
-        )
-
-        #expect(invalid == baseline)
-    }
-
-    @Test("Crisp estimate follows a compatible master even above its nominal rate plan")
-    func crispEstimateUsesHigherObservedSourceSize() {
-        let configuration = MediaExportConfigurationFactory.make(
-            preset: .crisp,
-            sourceWidth: 2_028,
-            sourceHeight: 1_220,
-            sourceFramesPerSecond: 30,
-            duration: 21.598333
-        )
-        let planned = MediaExportSizeEstimator.estimate(
-            configuration: configuration,
-            duration: 21.598333,
-            includesAudio: true
-        )
-        let observedSourceBytes = planned.byteCount + 2_000_000
-        let calibrated = MediaExportSizeEstimator.estimate(
-            configuration: configuration,
-            duration: 21.598333,
-            includesAudio: true,
-            sourceByteCount: observedSourceBytes,
-            sourceDuration: 21.598333,
-            sourceIncludesAudio: true
-        )
-
-        #expect(calibrated.byteCount == observedSourceBytes)
-        #expect(calibrated.byteCount > planned.byteCount)
-    }
-
-    @Test("Smallest estimate uses the exporter's soft target limiter and bitrate caps")
-    func smallestEstimateUsesEffectiveRate() {
-        let attainable = MediaExportConfigurationFactory.make(
-            preset: .smallest,
-            sourceWidth: 1_920,
-            sourceHeight: 1_080,
-            sourceFramesPerSecond: 30,
-            duration: 60,
-            approximateTargetMegabytes: 10
-        )
-        let attainableEstimate = MediaExportSizeEstimator.estimate(
-            configuration: attainable,
-            duration: 60,
-            includesAudio: true
-        )
-
-        let capped = MediaExportConfigurationFactory.make(
-            preset: .smallest,
-            sourceWidth: 1_920,
-            sourceHeight: 1_080,
-            sourceFramesPerSecond: 30,
-            duration: 1,
-            approximateTargetMegabytes: 10
-        )
-        let cappedEstimate = MediaExportSizeEstimator.estimate(
-            configuration: capped,
-            duration: 1,
-            includesAudio: true
-        )
-
-        #expect(attainableEstimate.byteCount == 9_999_998)
-        #expect(attainableEstimate.effectiveVideoBitRate == 1_221_333)
-        #expect(cappedEstimate.effectiveVideoBitRate == 6_000_000)
-        #expect(cappedEstimate.byteCount < 1_000_000)
+        #expect(configuration.width == 1_441)
+        #expect(configuration.height == 901)
+        #expect(configuration.framesPerSecond == 29)
     }
 }
 

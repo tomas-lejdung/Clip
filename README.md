@@ -173,7 +173,9 @@ macOS Powerbox; no broad folder permission is required.
 Settings exposes the resolved history directory, current default microphone, retention policy, and relevant Privacy & Security pages.
 
 Export Settings also provides a validated default filename format using
-`YYYY`, `MM`, `DD`, `HH`, `mm`, and `ss` tokens with a live example.
+`YYYY`, `MM`, `DD`, `HH`, `mm`, and `ss` tokens with a live example. Its three
+independent video-quality controls accept whole numbers from 1 through 100;
+Reset Quality Defaults restores Crisp `98`, Compact `90`, and Smallest `85`.
 
 ## Automated acceptance design
 
@@ -185,27 +187,33 @@ Sending content to Slack, GitHub, Linear, Discord, Messages, or Mail is not part
 
 Export dimensions are derived from the actual recording and always preserve
 its aspect ratio. Masters are encoded directly from ScreenCaptureKit pixel
-buffers by VideoToolbox at quality `0.98`; AVAssetWriter only muxes the already
-compressed H.264 with AAC into MP4. Capture rectangles are physical-pixel
-aligned and every frame must match the configured dimensions, so no hidden
-capture-to-master resize can blur text. One transient prior frame can bridge a
-single short ScreenCaptureKit scheduling miss; original timestamps remain
-unchanged and static/sparse variable-frame-rate timing is not expanded.
+buffers by VideoToolbox at the current Crisp quality setting, default `98`
+(`0.98` internally). Clip prefers exact-size hardware H.264 and uses
+exact-size hardware HEVC for a managed master only when H.264 cannot represent
+an oversized native display mode; Copy, drag, and Save As outputs remain H.264.
+AVAssetWriter only muxes the already compressed video with AAC into MP4.
+Capture rectangles are physical-pixel aligned and every
+frame must match the configured dimensions, so no hidden capture-to-master
+resize can blur text. One transient prior frame can bridge a single short
+ScreenCaptureKit scheduling miss; original timestamps remain unchanged and
+static/sparse variable-frame-rate timing is not expanded.
 
-**Compact** uses offline quality `0.85`, fits large recordings within a
-1,920 × 1,080 envelope, and caps output at 30 FPS. **Crisp** byte-reuses an
-eligible unchanged master; when a conversion is required it uses offline
-quality `0.98` while preserving the master's exact even width, height, and
-captured cadence up to 60 FPS—including portrait, ultrawide, and 5K regions.
-Both use bitrate only as a soft target. **Smallest** remains target-oriented
-ABR with a bounded rate limit. “1080p” and “4K” are envelopes, not forced
-output formats.
+**Crisp**, **Compact**, and **Smallest** are a quality ladder with independent
+Settings defaults of `98`, `90`, and `85`. All three preserve the master's
+native even dimensions and durable captured cadence, use H.264 High-profile
+Rec.709 video and the same 128 kbps AAC policy. Hardware H.264 uses the selected
+VideoToolbox quality directly. Exact oversized exports retain native dimensions
+through Apple's software H.264 encoder, which requires a quality-derived soft
+average bitrate; no path sets a hard data-rate limit or target file size.
+Offline exports prioritize quality and permit frame reordering. The settings
+are intentionally independent; Clip does not enforce their ordering.
 
-Because quality-based H.264 size depends on screen content, Preview shows
-“Quality based — size varies” for Compact and Crisp before export and the
-actual size afterward. Smallest alone shows a target-based estimate. Remove
-audio is applied in the same export generation and never changes the managed
-master.
+An eligible unchanged Crisp export byte-reuses the source master. Crisp
+transcodes when trim, changed quality, audio mixing, or audio removal makes
+reuse incompatible; Compact and Smallest are always offline quality-based
+exports. Preview shows “Quality based — size varies” before every export and
+the actual size afterward. Remove audio is applied in the same export
+generation and never changes the managed master.
 
 ## Icon assets
 

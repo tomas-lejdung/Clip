@@ -619,7 +619,10 @@ final class ClipLaunchTests: XCTestCase {
         XCTAssertTrue(report.valid, report.failure ?? "The fullscreen managed master was rejected.")
         XCTAssertEqual(report.videoTrackCount, 1)
         XCTAssertEqual(report.audioTrackCount, 0, "The audio-disabled flow unexpectedly recorded audio.")
-        XCTAssertEqual(report.videoCodec, "avc1")
+        XCTAssertTrue(
+            ["avc1", "hvc1", "hev1"].contains(report.videoCodec ?? ""),
+            "Fullscreen capture did not use a supported hardware master codec."
+        )
         XCTAssertEqual(report.width, selectedDimensions.width - (selectedDimensions.width % 2))
         XCTAssertEqual(report.height, selectedDimensions.height - (selectedDimensions.height % 2))
         XCTAssertGreaterThan(report.durationSeconds, 3)
@@ -646,7 +649,7 @@ final class ClipLaunchTests: XCTestCase {
         let captureDescription = """
         Clip fullscreen flow passed.
         Captured content: the complete selected display containing ClipTestHelper's harmless animated checkerboard, yellow calibration border, eight color bars, moving MOTION tile, scrolling/timecode text, cursor target, and the local MP4 receiver window.
-        Managed master: \(report.width)x\(report.height) H.264 MP4, \(String(format: "%.3f", report.durationSeconds)) seconds, \(String(format: "%.3f", report.nominalFramesPerSecond)) nominal FPS, \(report.fileSizeBytes) bytes, \(report.videoTrackCount) video / \(report.audioTrackCount) audio tracks.
+        Managed master: \(report.width)x\(report.height) \(report.videoCodec ?? "unknown codec") MP4, \(String(format: "%.3f", report.durationSeconds)) seconds, \(String(format: "%.3f", report.nominalFramesPerSecond)) nominal FPS, \(report.fileSizeBytes) bytes, \(report.videoTrackCount) video / \(report.audioTrackCount) audio tracks.
         Decoded evidence: \(report.decodedVideoFrameCount) inspected frames, \(report.deterministicFixtureFrameCount) fixture matches, \(report.deterministicFixtureColorFamilyCount) calibration color families.
         Preview: filename, video surface, timeline, playback, Copy, and Done controls were present; playback entered the playing state.
         """
