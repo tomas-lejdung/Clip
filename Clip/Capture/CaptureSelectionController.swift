@@ -323,26 +323,68 @@ private final class CaptureRegionOutlineView: NSView {
     }
 }
 
+/// A transparent selection window still needs a nontransparent composited pixel
+/// at every point where it owns pointer input. WindowServer performs that test
+/// before AppKit asks any descendant view to participate in `hitTest(_:)`.
 @MainActor
-private final class CaptureSelectionPanel: NSPanel {
+final class CaptureSelectionHitSurfaceView: NSView {
+    /// One alpha byte is visually indistinguishable from clear, while remaining
+    /// nonzero after the window backing store is quantized to eight-bit alpha.
+    static let opacity: CGFloat = 1.0 / 255.0
+
+    override var isOpaque: Bool { false }
+    override var mouseDownCanMoveWindow: Bool { false }
+
+    init(contentView: CaptureSelectionOverlayView) {
+        super.init(frame: CGRect(origin: .zero, size: contentView.frame.size))
+        contentView.frame = bounds
+        contentView.autoresizingMask = [.width, .height]
+        addSubview(contentView)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) is not supported")
+    }
+
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
+        true
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        super.draw(dirtyRect)
+        NSColor(deviceWhite: 0, alpha: Self.opacity).setFill()
+        dirtyRect.fill()
+    }
+}
+
+@MainActor
+final class CaptureSelectionPanel: NSPanel {
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { true }
 
-    init(screen: NSScreen, contentView: CaptureSelectionOverlayView) {
+    convenience init(screen: NSScreen, contentView: CaptureSelectionOverlayView) {
+        self.init(frame: screen.frame, contentView: contentView)
+    }
+
+    init(frame: CGRect, contentView: CaptureSelectionOverlayView) {
         super.init(
-            contentRect: CGRect(origin: .zero, size: screen.frame.size),
+            contentRect: CGRect(origin: .zero, size: frame.size),
             styleMask: [.borderless],
             backing: .buffered,
             defer: false
         )
 
-        setFrame(screen.frame, display: false)
-        self.contentView = contentView
+        setFrame(frame, display: false)
+        self.contentView = CaptureSelectionHitSurfaceView(contentView: contentView)
         backgroundColor = .clear
         isOpaque = false
         hasShadow = false
         hidesOnDeactivate = false
         isReleasedWhenClosed = false
+        ignoresMouseEvents = false
+        isMovable = false
+        isMovableByWindowBackground = false
         acceptsMouseMovedEvents = true
         animationBehavior = .none
         level = NSWindow.Level(rawValue: NSWindow.Level.screenSaver.rawValue - 1)

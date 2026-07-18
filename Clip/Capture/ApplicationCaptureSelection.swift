@@ -312,6 +312,82 @@ final class ApplicationCaptureSelectionController {
 }
 
 @MainActor
+final class ApplicationCaptureConfirmationView: NSVisualEffectView {
+    let titleLabel = NSTextField(labelWithString: "")
+    let detailLabel = NSTextField(labelWithString: "")
+    let recordButton = NSButton()
+    let cancelButton = NSButton()
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+
+        material = .hudWindow
+        blendingMode = .withinWindow
+        state = .active
+        wantsLayer = true
+        layer?.cornerRadius = 12
+        layer?.borderWidth = 1
+        layer?.borderColor = NSColor.white.withAlphaComponent(0.16).cgColor
+        setAccessibilityIdentifier("clip.capture.application.toolbar")
+
+        titleLabel.font = .systemFont(ofSize: 17, weight: .semibold)
+        titleLabel.alignment = .center
+        titleLabel.lineBreakMode = .byTruncatingTail
+        titleLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+
+        detailLabel.font = .systemFont(ofSize: 11)
+        detailLabel.textColor = .secondaryLabelColor
+        detailLabel.alignment = .center
+        detailLabel.lineBreakMode = .byTruncatingTail
+        detailLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+
+        recordButton.title = String(localized: "Record App")
+        recordButton.bezelStyle = .rounded
+        recordButton.controlSize = .large
+        recordButton.keyEquivalent = "\r"
+        recordButton.setAccessibilityIdentifier("clip.capture.application.record")
+
+        cancelButton.title = String(localized: "Cancel")
+        cancelButton.bezelStyle = .rounded
+        cancelButton.controlSize = .large
+        cancelButton.keyEquivalent = "\u{1b}"
+        cancelButton.setAccessibilityIdentifier("clip.capture.application.cancel")
+
+        let buttons = NSStackView(views: [cancelButton, recordButton])
+        buttons.orientation = .horizontal
+        buttons.alignment = .centerY
+        buttons.distribution = .fillEqually
+        buttons.spacing = 8
+
+        let content = NSStackView(views: [titleLabel, detailLabel, buttons])
+        content.translatesAutoresizingMaskIntoConstraints = false
+        content.orientation = .vertical
+        content.alignment = .centerX
+        content.distribution = .fill
+        content.spacing = 7
+        addSubview(content)
+
+        NSLayoutConstraint.activate([
+            content.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 12),
+            content.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -12),
+            content.topAnchor.constraint(equalTo: topAnchor, constant: 12),
+            content.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -12),
+            // Give each text field a real full-width AppKit cell. Centering an
+            // intrinsic-width label only centers glyphs inside that short cell.
+            titleLabel.leadingAnchor.constraint(equalTo: content.leadingAnchor),
+            titleLabel.trailingAnchor.constraint(equalTo: content.trailingAnchor),
+            detailLabel.leadingAnchor.constraint(equalTo: content.leadingAnchor),
+            detailLabel.trailingAnchor.constraint(equalTo: content.trailingAnchor),
+        ])
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) is not supported")
+    }
+}
+
+@MainActor
 private final class ApplicationCaptureSelectionOverlayView: NSView {
     typealias ActivationHandler = @MainActor @Sendable (String) -> Void
     typealias CompletionHandler = @MainActor @Sendable (SelectedCaptureApplication) -> Void
@@ -322,11 +398,7 @@ private final class ApplicationCaptureSelectionOverlayView: NSView {
     private let onActivate: ActivationHandler
     private let onComplete: CompletionHandler
     private let onCancel: CancellationHandler
-    private let toolbar = NSVisualEffectView()
-    private let titleLabel = NSTextField(labelWithString: "")
-    private let detailLabel = NSTextField(labelWithString: "")
-    private let recordButton = NSButton()
-    private let cancelButton = NSButton()
+    private let toolbar = ApplicationCaptureConfirmationView(frame: .zero)
     private var trackingArea: NSTrackingArea?
     private var isActiveDisplay: Bool
     private var hoveredBundleIdentifier: String?
@@ -393,8 +465,14 @@ private final class ApplicationCaptureSelectionOverlayView: NSView {
             addCursorRect(segment.rectangleInDisplayPoints, cursor: .pointingHand)
         }
         if !toolbar.isHidden {
-            addCursorRect(convert(recordButton.bounds, from: recordButton), cursor: .pointingHand)
-            addCursorRect(convert(cancelButton.bounds, from: cancelButton), cursor: .pointingHand)
+            addCursorRect(
+                convert(toolbar.recordButton.bounds, from: toolbar.recordButton),
+                cursor: .pointingHand
+            )
+            addCursorRect(
+                convert(toolbar.cancelButton.bounds, from: toolbar.cancelButton),
+                cursor: .pointingHand
+            )
         }
     }
 
@@ -489,63 +567,20 @@ private final class ApplicationCaptureSelectionOverlayView: NSView {
     }
 
     private func setupToolbar() {
-        toolbar.material = .hudWindow
-        toolbar.blendingMode = .withinWindow
-        toolbar.state = .active
-        toolbar.wantsLayer = true
-        toolbar.layer?.cornerRadius = 12
-        toolbar.layer?.borderWidth = 1
-        toolbar.layer?.borderColor = NSColor.white.withAlphaComponent(0.16).cgColor
         toolbar.isHidden = true
-        toolbar.setAccessibilityIdentifier("clip.capture.application.toolbar")
-
-        titleLabel.font = .systemFont(ofSize: 17, weight: .semibold)
-        titleLabel.alignment = .center
-        titleLabel.lineBreakMode = .byTruncatingTail
-        titleLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-
-        detailLabel.font = .systemFont(ofSize: 11)
-        detailLabel.textColor = .secondaryLabelColor
-        detailLabel.alignment = .center
-
-        recordButton.title = String(localized: "Record App")
-        recordButton.bezelStyle = .rounded
-        recordButton.controlSize = .large
-        recordButton.target = self
-        recordButton.action = #selector(recordPressed(_:))
-        recordButton.keyEquivalent = "\r"
-        recordButton.setAccessibilityIdentifier("clip.capture.application.record")
-
-        cancelButton.title = String(localized: "Cancel")
-        cancelButton.bezelStyle = .rounded
-        cancelButton.controlSize = .large
-        cancelButton.target = self
-        cancelButton.action = #selector(cancelPressed(_:))
-        cancelButton.keyEquivalent = "\u{1b}"
-        cancelButton.setAccessibilityIdentifier("clip.capture.application.cancel")
-
-        let buttons = NSStackView(views: [cancelButton, recordButton])
-        buttons.orientation = .horizontal
-        buttons.alignment = .centerY
-        buttons.distribution = .fillEqually
-        buttons.spacing = 8
-
-        let stack = NSStackView(views: [titleLabel, detailLabel, buttons])
-        stack.orientation = .vertical
-        stack.alignment = .centerX
-        stack.distribution = .fill
-        stack.spacing = 7
-        stack.edgeInsets = NSEdgeInsets(top: 12, left: 12, bottom: 12, right: 12)
-        stack.frame = toolbar.bounds
-        stack.autoresizingMask = [.width, .height]
-        toolbar.addSubview(stack)
+        toolbar.recordButton.target = self
+        toolbar.recordButton.action = #selector(recordPressed(_:))
+        toolbar.cancelButton.target = self
+        toolbar.cancelButton.action = #selector(cancelPressed(_:))
         addSubview(toolbar)
     }
 
     private func updatePresentation() {
         if let selection = currentSelection, isActiveDisplay {
-            titleLabel.stringValue = selection.applicationName
-            detailLabel.stringValue = String(localized: "All visible windows on this display")
+            toolbar.titleLabel.stringValue = selection.applicationName
+            toolbar.detailLabel.stringValue = String(
+                localized: "All visible windows on this display"
+            )
             toolbar.isHidden = false
         } else {
             toolbar.isHidden = true

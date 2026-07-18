@@ -48,11 +48,11 @@ review of that new build remain pending.
 Current quality-ladder and ultrawide-fallback evidence completed on 2026-07-18:
 
 - `./scripts/typecheck.sh` passed the complete strict Swift 6 source/package/localization audit, ClipCore 80/80, ClipMedia 73/73, and app/test compilation and link.
-- The current merged runs passed ClipCore 80/80, ClipMedia 73/73, and hosted Xcode ClipTests 153/153 with 0 failures. The ordinary hosted lane records one expected skip for the opt-in Settings snapshot generator; its dedicated pointer-free invocation passed separately and produced all ten PNGs. Neither lane requested privacy permissions, ran UI automation, or moved the pointer.
+- The current merged runs passed ClipCore 80/80, ClipMedia 73/73, and 166 hosted Xcode ClipTests with 0 failures. The ordinary hosted lane records one expected skip for the opt-in Settings snapshot generator; its dedicated pointer-free invocation passed separately and produced all ten PNGs. Neither lane requested privacy permissions, ran UI automation, or moved the pointer.
 - A paced exact-size 5,120 x 1,440 at 30 FPS live regression encoded all 60 animated frames through the hardware HEVC fallback with bounded cadence. A separate 5,120 x 2,880 HEVC-master regression exported exact-size H.264 successfully through the native software encoder and verified the quality-derived soft-rate policy without a hard data-rate limit.
 - The native quality acceptance encoded and decoded the deterministic fine-detail fixture. Quality `98`, `90`, and `70` measured SSIM `0.9999985631`, `0.9999682113`, and `0.9987684765`; each measured `100%` edge retention. The same suite passed native geometry/cadence, H.264 High, Rec.709, 30/60 FPS timing, audio, trim, Pause/Resume, hardware quality controls, and byte-identical eligible Crisp reuse.
 - The revised Release benchmark passed Preview media readiness with `44.69`/`45.72`/`45.81` ms min/median/max and a real native 1,440 x 900 at 30 FPS Compact-90 offline transcode with `1,671.29`/`1,674.66`/`1,740.53` ms min/median/max. Both remain below their 1,000 ms and 2,000 ms targets; machine-readable evidence is in `.build/performance/latest.json`.
-- The current `.build/Clip.dmg` is 2,238,555 bytes with SHA-256 `3ac547c5457abe77e1f3b5b7d3d5d710af2c72b819da76b2e5dbeccfe77de71d`. Read-only mounting and verification passed its certificate signature, designated requirement, sandbox entitlements, Hardened Runtime, production resources, and Applications shortcut. The installed `/Applications/Clip.app` executable exactly matches the packaged Release executable at SHA-256 `685ed1adf2853038ee39561370c835d175d6c8f687949a8b4ec38e88868c38ef` and launched successfully.
+- The current `.build/Clip.dmg` is 2,378,101 bytes with SHA-256 `73e4534faf04f46145b9bd40ada101f782c156f1f34fd77036514cf7e74dfae6`. Read-only mounting and verification passed its certificate signature, designated requirement, sandbox entitlements, Hardened Runtime, production resources, and Applications shortcut. The installed `/Applications/Clip.app` executable exactly matches the packaged Release executable at SHA-256 `4e651dd557196bdc2534aaeb6516504d7dd9e1495288722bc8881b2d36437f26` and launched successfully.
 - The Settings visual audit rendered General, Recording, Export, Storage, and Permissions at both top and fully-scrolled bottom. Export reached its exact 228-point bottom offset; the other four tabs fit without vertical overflow.
 - The focused Settings presentation suite passed 3/3 after adding the extensionless filename editor round trip; the dedicated visual lane passed and regenerated all ten current screenshots.
 - `git diff --check`, the project audit, and searches for obsolete target-size and hard data-rate controls passed.
@@ -74,7 +74,7 @@ Permission-gated evidence and remaining checks:
 - `scripts/run-real-capture-acceptance.sh --allow-permission-prompts-and-pointer-control` selects and executes exactly one real UI test rather than silently skipping it. Its explicit opt-in and startup warning state that XCTest drives the visible macOS pointer. The latest pointer-driven run remains the superseded ad-hoc Debug failure (0 passed, 1 failed, 0 skipped) and was stopped by owner choice. The stable-signed installed app instead completed the no-pointer production ScreenCaptureKit acceptance described below.
 - The enhanced Capture Area lane and the focused Fullscreen lane are compiled but have not run. Capture Area validates the managed master and both drag/Copy exports against the fixture's exact backing-pixel dimensions and visual fingerprint. Fullscreen validates a display-sized hardware H.264/HEVC master, decoded fixture pixels/colors, Preview presentation, and AVPlayer playback, and attaches a capture description plus Preview screenshot to its xcresult.
 - Controlled stable-identity ScreenCaptureKit acceptance passed the prior build at both 30 and optional 60 FPS with H.264 High/AAC, Rec.709, Pause/Resume, decoded fine-detail motion, Preview generation, a byte-identical private-pasteboard Copy, copy re-decode/evaluation, bounded cadence, A/V endpoint checks, and complete artifact cleanup. The packaged `/Applications/Clip.app` passed its 30 FPS lane with a 40 ms maximum video gap; the same pre-ladder source passed the optional 60 FPS lane with a 23.33 ms maximum gap. These results prove the native engine baseline but must be repeated for the new source before release.
-- The current stable-signed DMG and installed app are the same executable and designated requirement. The new installed process launched successfully without UI automation; the owner still performs the ordinary fullscreen workflow review manually.
+- The current stable-signed DMG and installed app are the same executable and designated requirement. The owner manually verified that drawing an area and dragging anywhere in its interior moves the selection without passing input through. The ordinary fullscreen workflow review remains manual.
 - Real microphone/system-audio modes, physical display/device cases, idle/menu-bar stability, and the ten-minute real recording soak remain unverified.
 
 ## Feature board
@@ -229,7 +229,7 @@ Evidence:
 
 Evidence:
 
-- Passing ClipCore geometry tests cover display clamping, normalized Last Area restoration, application targets, and missing-display fallback. The executed app suite covers smooth draft/finalization geometry, pointer/keyboard behavior, toolbar placement, physical pixel scaling, Capture App hit-testing/unions, persistence, and display identity.
+- Passing ClipCore geometry tests cover display clamping, normalized Last Area restoration, application targets, and missing-display fallback. The focused 22/22 selection suite orders the real production panel and proves through WindowServer mouse-down routing that five interior points remain owned by Clip, while also covering view-level movement, first-click activation, toolbar fallback, and both Capture App confirmation labels. The full panel uses a visually invisible one-alpha-byte backing hit surface, explicitly accepts mouse events, and cannot move as window background. The owner then confirmed the complete draw-then-interior-drag gesture manually in the installed signed Release.
 - Physical multi-display overlay behavior, ScreenCaptureKit/AppKit mapping, UI exclusion, and p95 latency remain real-Mac checks.
 
 ### REC-01 — Recording engine and controls
@@ -324,6 +324,9 @@ Evidence:
 - [x] Cache and invalidate exports when trim, preset, selected quality, or filename changes.
 - [x] Cache and invalidate independently for kept-audio and silent exports.
 - [x] Make dragging the top video preview supply the current exported MP4 file.
+- [x] Preserve the edited MP4 filename for Finder drops and advertise the
+  resulting `public.file-url` alongside the MPEG-4 promise for browser upload
+  targets, with one lazy single-flight export across both representations.
 - [x] Implement the explicit Copy button using a readable MP4 file URL on `NSPasteboard`.
 - [x] Make Drag, Copy, and Save As honor Remove audio and emit no audio track when selected without changing the managed master.
 - [x] Implement Save As with default location `~/Movies`, editable filename, and an `NSSavePanel` Powerbox grant for the exact chosen destination.
@@ -336,7 +339,7 @@ Evidence:
 Evidence:
 
 - The merged baseline ClipMedia and hosted ClipTests runs cover independent `98`/`90`/`70` default quality values, caller-owned 1–100 settings, native dimensions/cadence, hardware quality control, Compact/Smallest transcoding, Crisp quality-compatible reuse, trim, Rec.709, 128 kbps AAC, silent export, cache-key invalidation, atomic publication, and source/destination preservation. The subsequent ultrawide regression covers exact-size hardware HEVC capture and the software H.264 soft-rate fallback required for shared output.
-- Executed Preview/Save tests cover exact trim/preset/name export requests, lazy promised-file drag, explicit Copy with the exact exported size in its confirmation, Save cancellation, exact-URL creation/replacement, balanced security scope, Reveal, post-share warnings, and temporary-file/history ownership. Actual promised-file drag and sandboxed Save-panel interaction remain part of the current-build real-Mac pass.
+- Executed Preview/Save tests cover exact trim/preset/name export requests, lazy promised-file drag, its exact suggested filename, simultaneous MPEG-4 and `public.file-url` representations, single-flight success/failure reporting, explicit Copy with the exact exported size in its confirmation, Save cancellation, exact-URL creation/replacement, balanced security scope, Reveal, post-share warnings, and temporary-file/history ownership. Actual cross-application drag and sandboxed Save-panel interaction remain part of the current-build real-Mac pass.
 
 ### HIS-01 — History and managed storage
 
@@ -350,6 +353,12 @@ Evidence:
 - [x] Persist the per-recording Remove audio preference through Done, sharing, History reopen, and app relaunch, with legacy metadata defaulting to keep audio.
 - [x] Show recent recordings in the menu-bar popover and a fuller History view.
 - [x] Support Preview, Rename, Copy, Save, Reveal in Finder, and Delete actions.
+- [x] Present native Recordings and Exports tabs, replace the crowded row icon
+  strip with native grouped Preview/Copy controls and an indicator-free
+  ellipsis menu, and show every linked live export as a row chip.
+- [x] Inventory only Copy/drag-published cache files, exclude Save As staging,
+  show deleted-source exports as dangling, and support Reveal, individual
+  Delete, and Delete All independently from recording retention.
 - [x] Persist renames and use them for drag, Copy, and Save As.
 - [x] Implement 1-day, 7-day, 30-day, indefinite, and do-not-retain-after-export policies.
 - [x] Base cleanup on recording creation time and run it at launch plus periodically.
@@ -361,6 +370,11 @@ Evidence:
 
 - All 80 ClipCore tests pass, including Codable round trips and legacy migration for the per-recording audio export preference. Repository tests cover import/rename/delete, Preview pins, Remove audio persistence across repository reconstruction, deferred replacement, atomic external saves, cleanup, reconciliation, and interrupted-item adoption.
 - The app-owned repository tests now execute under normal `xcodebuild test`; installed-app History persistence remains a real-Mac check.
+- The focused History workflow passed 9/9 tests. Four managed-export ownership
+  tests passed durable relaunch inventory, Save As exclusion, per-file
+  deletion/purge, traversal/symlink/corrupt-manifest rejection, and seven-day
+  publication-marker cleanup. The complete permission-free Swift 6 gate also
+  passed ClipCore 80/80 and ClipMedia 73/73 after these changes.
 
 ### ERR-01 — Recovery, errors, and performance
 
@@ -467,7 +481,7 @@ Evidence:
 
 Evidence:
 
-- A clean stable-signed `scripts/package-dmg.sh` Release build and `scripts/verify-dmg.sh` read-only verification produced the current `.build/Clip.dmg`: 2,238,555 bytes, SHA-256 `3ac547c5457abe77e1f3b5b7d3d5d710af2c72b819da76b2e5dbeccfe77de71d`.
+- A clean stable-signed `scripts/package-dmg.sh` Release build and `scripts/verify-dmg.sh` read-only verification produced the current `.build/Clip.dmg`: 2,378,101 bytes, SHA-256 `73e4534faf04f46145b9bd40ada101f782c156f1f34fd77036514cf7e74dfae6`.
 - The mounted artifact contains the arm64 app and Applications symlink, production resources and privacy descriptions, Apple Development certificate `BA37BFFD2BD1C29A995682647428847DBC6A83B3`, Team ID `FJ2BS65H3F`, a stable certificate-based designated requirement, Hardened Runtime, and required sandbox entitlements.
-- `/Applications/Clip.app` now contains the same verified Release executable, SHA-256 `685ed1adf2853038ee39561370c835d175d6c8f687949a8b4ec38e88868c38ef`, and launched successfully. Manual and permission-backed capture review remain open.
+- `/Applications/Clip.app` now contains the same verified Release executable, SHA-256 `4e651dd557196bdc2534aaeb6516504d7dd9e1495288722bc8881b2d36437f26`, and launched successfully. Manual Capture Area interior movement passed; broader permission-backed capture review remains open.
 - The permission-free release wrapper now writes ad-hoc verification images to `.build/Clip-permission-free.dmg`, preventing a CI-style verification run from overwriting the stable-signed `.build/Clip.dmg` and its privacy identity.

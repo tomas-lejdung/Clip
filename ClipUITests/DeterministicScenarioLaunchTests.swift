@@ -86,9 +86,37 @@ final class DeterministicScenarioLaunchTests: XCTestCase {
         try withScenario("history") { app in
             XCTAssertTrue(app.otherElements["clip.uiScenario.history"].waitForExistence(timeout: 5))
             XCTAssertTrue(app.otherElements["clip.history"].exists)
-            XCTAssertTrue(app.otherElements["clip.history.list"].exists)
-            XCTAssertTrue(app.buttons["clip.history.refresh"].exists)
-            XCTAssertTrue(app.buttons["clip.history.clearAll"].exists)
+            XCTAssertTrue(app.otherElements["clip.history.recordings.list"].exists)
+            XCTAssertTrue(app.buttons["clip.history.recordings.refresh"].exists)
+            XCTAssertTrue(app.buttons["clip.history.recordings.clearAll"].exists)
+            XCTAssertTrue(
+                app.buttons.matching(
+                    NSPredicate(format: "identifier ENDSWITH '.preview'")
+                ).firstMatch.exists
+            )
+            XCTAssertTrue(
+                app.buttons.matching(
+                    NSPredicate(format: "identifier ENDSWITH '.more'")
+                ).firstMatch.exists
+            )
+        }
+    }
+
+    @MainActor
+    func testHistoryExportsScenario() throws {
+        try withScenario("history-exports") { app in
+            XCTAssertTrue(
+                app.otherElements["clip.uiScenario.history-exports"]
+                    .waitForExistence(timeout: 5)
+            )
+            XCTAssertTrue(app.otherElements["clip.history.exports.list"].exists)
+            XCTAssertTrue(app.buttons["clip.history.exports.refresh"].exists)
+            XCTAssertTrue(app.buttons["clip.history.exports.deleteAll"].exists)
+            XCTAssertTrue(
+                app.descendants(matching: .any).matching(
+                    NSPredicate(format: "identifier ENDSWITH '.sourceDeleted'")
+                ).firstMatch.exists
+            )
         }
     }
 

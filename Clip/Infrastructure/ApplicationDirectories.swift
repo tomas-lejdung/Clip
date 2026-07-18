@@ -18,6 +18,7 @@ enum DeterministicUIScenario: String, CaseIterable, Equatable, Sendable {
     case paused
     case preview
     case history
+    case historyExports = "history-exports"
     case settings
     case settingsRecording = "settings-recording"
     case settingsExport = "settings-export"

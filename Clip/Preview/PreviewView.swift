@@ -104,7 +104,9 @@ struct PreviewView: View {
         .accessibilityIdentifier("clip.preview.video")
 
         if let dragItem = viewModel.dragItem {
-            surface.draggable(dragItem) {
+            surface.onDrag {
+                dragItem.makeItemProvider()
+            } preview: {
                 Label(viewModel.filenameText, systemImage: "film")
                     .lineLimit(1)
                     .padding(10)

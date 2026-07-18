@@ -1414,22 +1414,13 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
                 let preferences = await currentSharePreferences()
                 let session = await context.currentSession()
                 try await Self.persist(request, session: session, in: history)
-                let outputURL = try await exports.export(request)
-                return await Self.registerPreviewShare(
-                    id: request.recordingID,
-                    outputURL: outputURL,
-                    videoQualityPercent: request.videoQualityPercent,
-                    preferences: preferences,
-                    previewSession: session,
-                    history: history
+                let publication = try await exports.exportForPublication(request)
+                let outputURL = publication.outputURL
+                let publicationWarning = await Self.publishManagedExport(
+                    request,
+                    lease: publication,
+                    through: exports
                 )
-            },
-            copy: { request in
-                let preferences = currentSharePreferences()
-                let session = await context.currentSession()
-                try await Self.persist(request, session: session, in: history)
-                let outputURL = try await exports.export(request)
-                try pasteboard.placeFile(at: outputURL)
                 return await Self.registerPreviewShare(
                     id: request.recordingID,
                     outputURL: outputURL,
@@ -1437,7 +1428,35 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
                     preferences: preferences,
                     previewSession: session,
                     history: history,
-                    shouldClosePreview: preferences.closePreviewAfterCopy
+                    priorWarning: publicationWarning
+                )
+            },
+            copy: { request in
+                let preferences = currentSharePreferences()
+                let session = await context.currentSession()
+                try await Self.persist(request, session: session, in: history)
+                let publication = try await exports.exportForPublication(request)
+                let outputURL = publication.outputURL
+                do {
+                    try pasteboard.placeFile(at: outputURL)
+                } catch {
+                    await exports.cancelPublication(publication)
+                    throw error
+                }
+                let publicationWarning = await Self.publishManagedExport(
+                    request,
+                    lease: publication,
+                    through: exports
+                )
+                return await Self.registerPreviewShare(
+                    id: request.recordingID,
+                    outputURL: outputURL,
+                    videoQualityPercent: request.videoQualityPercent,
+                    preferences: preferences,
+                    previewSession: session,
+                    history: history,
+                    shouldClosePreview: preferences.closePreviewAfterCopy,
+                    priorWarning: publicationWarning
                 )
             },
             save: { request in
@@ -1741,7 +1760,8 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
         preferences: SharePreferences,
         previewSession: ManagedHistoryPreviewSession,
         history: ManagedHistoryRepository,
-        shouldClosePreview: Bool = false
+        shouldClosePreview: Bool = false,
+        priorWarning: String? = nil
     ) async -> PreviewShareOutcome {
         do {
             let result = try await history.registerSuccessfulExport(
@@ -1756,7 +1776,8 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
                 outputURL: outputURL,
                 historyDisposition: result.disposition,
                 sourceFinalizationDeferred: result.finalizationDeferred,
-                shouldClosePreview: shouldClosePreview
+                shouldClosePreview: shouldClosePreview,
+                postShareWarning: priorWarning
             )
         } catch {
             ClipLog.storage.error(
@@ -1767,7 +1788,10 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
                 historyDisposition: .keepOriginal,
                 sourceFinalizationDeferred: false,
                 shouldClosePreview: shouldClosePreview,
-                postShareWarning: postShareHistoryWarning()
+                postShareWarning: combinedPostShareWarning(
+                    priorWarning,
+                    postShareHistoryWarning()
+                )
             )
         }
     }
@@ -1777,7 +1801,9 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
         outputURL: URL,
         videoQualityPercent: Int,
         preferences: SharePreferences,
-        history: ManagedHistoryRepository
+        history: ManagedHistoryRepository,
+        exportInventory: ManagedExportInventory? = nil,
+        priorWarning: String? = nil
     ) async -> HistoryShareOutcome {
         let outputByteCount = ShareCompletionFormatting.fileByteCount(at: outputURL)
         do {
@@ -1790,7 +1816,9 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
             )
             return HistoryShareOutcome(
                 refreshedIndex: try await history.load(),
-                outputByteCount: outputByteCount
+                exportInventory: exportInventory,
+                outputByteCount: outputByteCount,
+                postShareWarning: priorWarning
             )
         } catch {
             ClipLog.storage.error(
@@ -1798,9 +1826,50 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
             )
             return HistoryShareOutcome(
                 refreshedIndex: nil,
+                exportInventory: exportInventory,
                 outputByteCount: outputByteCount,
-                postShareWarning: postShareHistoryWarning()
+                postShareWarning: combinedPostShareWarning(
+                    priorWarning,
+                    postShareHistoryWarning()
+                )
             )
+        }
+    }
+
+    /// Copy and promised drag have already succeeded by the time the durable
+    /// Exports marker is written. Inventory bookkeeping therefore becomes an
+    /// inline warning rather than falsely failing a usable external share.
+    private nonisolated static func publishManagedExport(
+        _ request: PreviewExportRequest,
+        lease: ManagedExportPublicationLease,
+        through exports: PreviewExportCoordinator
+    ) async -> String? {
+        do {
+            try await exports.markPublished(request, lease: lease)
+            return nil
+        } catch {
+            ClipLog.storage.error(
+                "Post-share Exports registration failed; the shared MP4 remains usable"
+            )
+            return String(
+                localized: "Clip couldn’t add the shared MP4 to Exports. The file is still available."
+            )
+        }
+    }
+
+    private nonisolated static func combinedPostShareWarning(
+        _ first: String?,
+        _ second: String?
+    ) -> String? {
+        switch (first, second) {
+        case let (first?, second?) where first != second:
+            "\(first) \(second)"
+        case let (first?, _):
+            first
+        case let (_, second?):
+            second
+        case (nil, nil):
+            nil
         }
     }
 
@@ -1859,8 +1928,33 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
         Task { @MainActor [weak self] in
             guard let self else { return }
             do {
-                let index = try await dependencies.history.load()
-                let viewModel = HistoryViewModel(index: index, actions: makeHistoryActions())
+                let history = dependencies.history
+                let exports = dependencies.exports
+                async let loadedIndex = history.load()
+                let exportInventory: ManagedExportInventory
+                let exportInventoryAlert: HistoryAlert?
+                do {
+                    exportInventory = try await exports.inventory()
+                    exportInventoryAlert = nil
+                } catch {
+                    exportInventory = .empty
+                    let details = UserFacingErrorPresentation.details(for: error)
+                    ClipLog.storage.error(
+                        "History opened without its Exports inventory: \(details.technicalDescription, privacy: .private)"
+                    )
+                    exportInventoryAlert = .error(
+                        id: UUID(),
+                        title: "Couldn’t Load Exports",
+                        message: "Recordings are still available. Refresh History to try loading exports again."
+                    )
+                }
+                let index = try await loadedIndex
+                let viewModel = HistoryViewModel(
+                    index: index,
+                    exportInventory: exportInventory,
+                    actions: makeHistoryActions()
+                )
+                viewModel.alert = exportInventoryAlert
                 let window = NSWindow(
                     contentRect: CGRect(x: 0, y: 0, width: 860, height: 560),
                     styleMask: [.titled, .closable, .miniaturizable, .resizable],
@@ -1901,14 +1995,27 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
                     history: history,
                     exportQualities: settingsModel.settings.exportQualities
                 )
-                let outputURL = try await exports.export(request)
-                try pasteboard.placeFile(at: outputURL)
+                let publication = try await exports.exportForPublication(request)
+                let outputURL = publication.outputURL
+                do {
+                    try pasteboard.placeFile(at: outputURL)
+                } catch {
+                    await exports.cancelPublication(publication)
+                    throw error
+                }
+                let publicationWarning = await Self.publishManagedExport(
+                    request,
+                    lease: publication,
+                    through: exports
+                )
                 return await Self.registerHistoryShare(
                     id: item.id,
                     outputURL: outputURL,
                     videoQualityPercent: request.videoQualityPercent,
                     preferences: preferences,
-                    history: history
+                    history: history,
+                    exportInventory: try? await exports.inventory(),
+                    priorWarning: publicationWarning
                 )
             },
             save: { item in
@@ -1945,6 +2052,19 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
                     _ = try await history.delete(id: item.id)
                 }
                 return try await history.load()
+            },
+            refreshExports: { try await exports.inventory() },
+            revealExport: { export in
+                guard FileManager.default.isReadableFile(atPath: export.url.path) else {
+                    throw PreviewExportCoordinatorError.managedExportNotFound(export.id)
+                }
+                NSWorkspace.shared.activateFileViewerSelecting([export.url])
+            },
+            deleteExport: { id in
+                try await exports.deleteExport(id: id)
+            },
+            purgeExports: {
+                try await exports.deleteAllPublishedExports()
             }
         )
     }

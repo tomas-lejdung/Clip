@@ -917,6 +917,9 @@ struct ApplicationDirectoriesTests {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
         defer { try? FileManager.default.removeItem(at: root) }
+        let foreignRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: foreignRoot) }
 
         let recordingDirectory = root.appendingPathComponent(
             UUID().uuidString.lowercased(),
@@ -932,6 +935,29 @@ struct ApplicationDirectoriesTests {
             )
             try Data("mp4".utf8).write(to: directory.appendingPathComponent("clip.mp4"))
         }
+        let foreignCache = foreignRoot.appendingPathComponent("foreign-cache", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: foreignCache,
+            withIntermediateDirectories: true
+        )
+        let foreignFile = foreignCache.appendingPathComponent("outside.mp4")
+        try Data("foreign".utf8).write(to: foreignFile)
+        let linkedRecording = root.appendingPathComponent(
+            UUID().uuidString.lowercased(),
+            isDirectory: true
+        )
+        try FileManager.default.createSymbolicLink(
+            at: linkedRecording,
+            withDestinationURL: foreignRoot
+        )
+        let linkedCache = recordingDirectory.appendingPathComponent(
+            "linked-cache",
+            isDirectory: true
+        )
+        try FileManager.default.createSymbolicLink(
+            at: linkedCache,
+            withDestinationURL: foreignCache
+        )
 
         let now = Date(timeIntervalSince1970: 2_000_000)
         let staleDate = now.addingTimeInterval(-PreviewExportCoordinator.staleExportLifetime - 1)
@@ -953,6 +979,306 @@ struct ApplicationDirectoriesTests {
         #expect(!FileManager.default.fileExists(atPath: oldCache.path))
         #expect(FileManager.default.fileExists(atPath: recentCache.path))
         #expect(FileManager.default.fileExists(atPath: unknownDirectory.path))
+        #expect(FileManager.default.fileExists(atPath: foreignFile.path))
+    }
+
+    @Test("Managed export inventory durably lists only Copy and drag publications")
+    func managedExportInventoryExcludesSaveAsStaging() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let publishedAt = Date(timeIntervalSince1970: 2_100_000_000)
+        let coordinator = PreviewExportCoordinator(
+            exportsDirectory: root,
+            now: { publishedAt }
+        )
+        let recordingID = RecordingID(
+            UUID(uuidString: "21212121-3434-5656-7878-909090909090")!
+        )
+        let copied = try managedExportRequest(
+            recordingID: recordingID,
+            filename: "copied-demo.mp4",
+            preset: .crisp,
+            qualityPercent: 98
+        )
+        let saveAsStaging = try managedExportRequest(
+            recordingID: recordingID,
+            filename: "saved-externally.mp4",
+            preset: .compact,
+            qualityPercent: 90
+        )
+        let copiedURL = try await writeManagedExportFixture(
+            copied,
+            byteCount: 37,
+            exportsRoot: root,
+            coordinator: coordinator
+        )
+        let saveAsURL = try await writeManagedExportFixture(
+            saveAsStaging,
+            byteCount: 19,
+            exportsRoot: root,
+            coordinator: coordinator
+        )
+
+        let copiedLease = try await coordinator.beginPublication(copied, outputURL: copiedURL)
+        let published = try await coordinator.markPublished(copied, lease: copiedLease)
+        #expect(published.recordingID == recordingID)
+        #expect(published.filename.fileName == "copied-demo.mp4")
+        #expect(published.byteCount == 37)
+        #expect(published.createdAt == publishedAt)
+        #expect(published.preset == .crisp)
+        #expect(published.qualityPercent == 98)
+
+        let inventory = try await coordinator.inventory()
+        #expect(inventory.items == [published])
+        #expect(inventory.totalByteCount == 37)
+        #expect(FileManager.default.fileExists(atPath: saveAsURL.path))
+
+        // Publication is durable and does not depend on the originating actor
+        // instance or an in-memory History item.
+        let relaunched = PreviewExportCoordinator(exportsDirectory: root)
+        #expect(try await relaunched.inventory() == inventory)
+    }
+
+    @Test("Deleting and purging exports preserve siblings and unlisted staging files")
+    func managedExportDeletionIsSurgicallyOwned() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let coordinator = PreviewExportCoordinator(exportsDirectory: root)
+        let recordingID = RecordingID(
+            UUID(uuidString: "31313131-4343-5656-7878-909090909090")!
+        )
+        let first = try managedExportRequest(
+            recordingID: recordingID,
+            filename: "first-name.mp4",
+            preset: .crisp,
+            qualityPercent: 98
+        )
+        let renamed = try managedExportRequest(
+            recordingID: recordingID,
+            filename: "renamed-copy.mp4",
+            preset: .crisp,
+            qualityPercent: 98
+        )
+        let staging = try managedExportRequest(
+            recordingID: recordingID,
+            filename: "save-as-stage.mp4",
+            preset: .crisp,
+            qualityPercent: 98
+        )
+        let firstURL = try await writeManagedExportFixture(
+            first,
+            byteCount: 11,
+            exportsRoot: root,
+            coordinator: coordinator
+        )
+        let renamedURL = try await writeManagedExportFixture(
+            renamed,
+            byteCount: 13,
+            exportsRoot: root,
+            coordinator: coordinator
+        )
+        let stagingURL = try await writeManagedExportFixture(
+            staging,
+            byteCount: 17,
+            exportsRoot: root,
+            coordinator: coordinator
+        )
+        let firstLease = try await coordinator.beginPublication(first, outputURL: firstURL)
+        let firstRecord = try await coordinator.markPublished(first, lease: firstLease)
+        let renamedLease = try await coordinator.beginPublication(renamed, outputURL: renamedURL)
+        let renamedRecord = try await coordinator.markPublished(renamed, lease: renamedLease)
+
+        let afterOneDelete = try await coordinator.deleteExport(id: firstRecord.id)
+        #expect(afterOneDelete.items.map(\.id) == [renamedRecord.id])
+        #expect(afterOneDelete.totalByteCount == 13)
+        #expect(!FileManager.default.fileExists(atPath: firstURL.path))
+        #expect(FileManager.default.fileExists(atPath: renamedURL.path))
+        #expect(FileManager.default.fileExists(atPath: stagingURL.path))
+
+        let afterPurge = try await coordinator.deleteAllPublishedExports()
+        #expect(afterPurge == .empty)
+        #expect(!FileManager.default.fileExists(atPath: renamedURL.path))
+        #expect(FileManager.default.fileExists(atPath: stagingURL.path))
+    }
+
+    @Test("Managed export ownership rejects traversal, symlinks, and corrupt manifests")
+    func managedExportInventoryFailsClosed() async throws {
+        let parent = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let root = parent.appendingPathComponent("Exports", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: parent) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let coordinator = PreviewExportCoordinator(exportsDirectory: root)
+        let recordingID = RecordingID(
+            UUID(uuidString: "41414141-4343-5656-7878-909090909090")!
+        )
+        let outsideURL = parent.appendingPathComponent("outside.mp4")
+        try Data("outside".utf8).write(to: outsideURL)
+
+        do {
+            _ = try await coordinator.deleteExport(
+                id: ManagedExportID(
+                    rawValue: "\(recordingID.description)/../outside.mp4"
+                )
+            )
+            Issue.record("A crafted export ID must not escape the cache root")
+        } catch {
+            #expect(FileManager.default.fileExists(atPath: outsideURL.path))
+        }
+
+        let linked = try managedExportRequest(
+            recordingID: recordingID,
+            filename: "linked.mp4",
+            preset: .compact,
+            qualityPercent: 90
+        )
+        let key = await coordinator.cacheKey(for: linked)
+        let linkedURL = root
+            .appendingPathComponent(recordingID.description, isDirectory: true)
+            .appendingPathComponent(key, isDirectory: true)
+            .appendingPathComponent(linked.filename.fileName)
+        try FileManager.default.createDirectory(
+            at: linkedURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try FileManager.default.createSymbolicLink(at: linkedURL, withDestinationURL: outsideURL)
+        do {
+            _ = try await coordinator.beginPublication(linked, outputURL: linkedURL)
+            Issue.record("A symlink must not become a managed export")
+        } catch {
+            #expect(try await coordinator.inventory() == .empty)
+        }
+
+        try FileManager.default.removeItem(at: linkedURL)
+        try Data("private staging".utf8).write(to: linkedURL)
+        let manifestURL = linkedURL.deletingLastPathComponent()
+            .appendingPathComponent(".clip-published-exports-v1.json")
+        try Data("not-json".utf8).write(to: manifestURL)
+        #expect(try await coordinator.inventory() == .empty)
+        #expect(FileManager.default.fileExists(atPath: linkedURL.path))
+        #expect(FileManager.default.fileExists(atPath: manifestURL.path))
+    }
+
+    @Test("A publication manifest renews stale-cache lifetime and is cleaned with its cache")
+    func publishedExportMarkerParticipatesInStaleCleanup() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let now = Date(timeIntervalSince1970: 2_200_000_000)
+        let coordinator = PreviewExportCoordinator(exportsDirectory: root, now: { now })
+        let request = try managedExportRequest(
+            recordingID: RecordingID(
+                UUID(uuidString: "51515151-4343-5656-7878-909090909090")!
+            ),
+            filename: "renewed.mp4",
+            preset: .smallest,
+            qualityPercent: 70
+        )
+        let outputURL = try await writeManagedExportFixture(
+            request,
+            byteCount: 23,
+            exportsRoot: root,
+            coordinator: coordinator
+        )
+        let lease = try await coordinator.beginPublication(request, outputURL: outputURL)
+        _ = try await coordinator.markPublished(request, lease: lease)
+        let cacheDirectory = outputURL.deletingLastPathComponent()
+        let manifestURL = cacheDirectory.appendingPathComponent(
+            ".clip-published-exports-v1.json"
+        )
+        let cutoff = now.addingTimeInterval(-PreviewExportCoordinator.staleExportLifetime)
+        let staleDate = cutoff.addingTimeInterval(-1)
+        try FileManager.default.setAttributes(
+            [.modificationDate: staleDate],
+            ofItemAtPath: outputURL.path
+        )
+        try FileManager.default.setAttributes(
+            [.modificationDate: staleDate],
+            ofItemAtPath: cacheDirectory.path
+        )
+        try FileManager.default.setAttributes(
+            [.modificationDate: now],
+            ofItemAtPath: manifestURL.path
+        )
+
+        // A recent hidden publication manifest keeps a reused old cache alive.
+        #expect(try await coordinator.removeStaleExports(olderThan: cutoff) == 0)
+        #expect(FileManager.default.fileExists(atPath: cacheDirectory.path))
+
+        try FileManager.default.setAttributes(
+            [.modificationDate: staleDate],
+            ofItemAtPath: manifestURL.path
+        )
+        #expect(try await coordinator.removeStaleExports(olderThan: cutoff) == 1)
+        #expect(!FileManager.default.fileExists(atPath: cacheDirectory.path))
+        #expect(!FileManager.default.fileExists(atPath: manifestURL.path))
+    }
+
+    @Test("Publication leases block cleanup until cancellation or their bounded timeout")
+    func publicationLeaseClosesExportToMarkerCleanupRace() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let initialNow = Date(timeIntervalSince1970: 2_300_000_000)
+        let clock = PublicationLeaseTestClock(initialNow)
+        let coordinator = PreviewExportCoordinator(
+            exportsDirectory: root,
+            now: { clock.value }
+        )
+        let recordingID = RecordingID(
+            UUID(uuidString: "61616161-4343-5656-7878-909090909090")!
+        )
+        let cutoff = initialNow.addingTimeInterval(
+            -PreviewExportCoordinator.staleExportLifetime
+        )
+        let staleDate = cutoff.addingTimeInterval(-1)
+
+        let cancelledRequest = try managedExportRequest(
+            recordingID: recordingID,
+            filename: "cancelled-copy.mp4",
+            preset: .crisp,
+            qualityPercent: 98
+        )
+        let cancelledURL = try await writeManagedExportFixture(
+            cancelledRequest,
+            byteCount: 29,
+            exportsRoot: root,
+            coordinator: coordinator
+        )
+        try makeExportFixtureStale(cancelledURL, at: staleDate)
+        let cancelledLease = try await coordinator.beginPublication(
+            cancelledRequest,
+            outputURL: cancelledURL
+        )
+
+        #expect(try await coordinator.removeStaleExports(olderThan: cutoff) == 0)
+        #expect(FileManager.default.fileExists(atPath: cancelledURL.path))
+        await coordinator.cancelPublication(cancelledLease)
+        #expect(try await coordinator.removeStaleExports(olderThan: cutoff) == 1)
+        #expect(!FileManager.default.fileExists(atPath: cancelledURL.path))
+
+        let expiredRequest = try managedExportRequest(
+            recordingID: recordingID,
+            filename: "expired-drag.mp4",
+            preset: .compact,
+            qualityPercent: 90
+        )
+        let expiredURL = try await writeManagedExportFixture(
+            expiredRequest,
+            byteCount: 31,
+            exportsRoot: root,
+            coordinator: coordinator
+        )
+        try makeExportFixtureStale(expiredURL, at: staleDate)
+        _ = try await coordinator.beginPublication(expiredRequest, outputURL: expiredURL)
+        clock.value = initialNow.addingTimeInterval(
+            PreviewExportCoordinator.publicationLeaseLifetime + 1
+        )
+
+        #expect(try await coordinator.removeStaleExports(olderThan: cutoff) == 1)
+        #expect(!FileManager.default.fileExists(atPath: expiredURL.path))
     }
 
     @Test("Export cache identity includes the encoding schema version")
@@ -1053,6 +1379,77 @@ struct ApplicationDirectoriesTests {
         #expect(snapshot.operationCount == cycleCount)
         #expect(snapshot.reportedFailureCount == 1)
         #expect(snapshot.durations.allSatisfy { $0 == .seconds(60 * 60) })
+    }
+
+    private func managedExportRequest(
+        recordingID: RecordingID,
+        filename: String,
+        preset: ExportPreset,
+        qualityPercent: Int
+    ) throws -> PreviewExportRequest {
+        PreviewExportRequest(
+            recordingID: recordingID,
+            sourceURL: URL(fileURLWithPath: "/tmp/managed-export-fixture-source.mp4"),
+            captureFrameRate: .thirty,
+            filename: try RecordingFilename(validating: filename),
+            trimRange: try TrimRange(startTime: 0, endTime: 5),
+            configuration: ExportConfiguration(preset: preset),
+            videoQualityPercent: qualityPercent,
+            sourceVideoQualityPercent: 98,
+            audioPreference: .keepAudio
+        )
+    }
+
+    private func writeManagedExportFixture(
+        _ request: PreviewExportRequest,
+        byteCount: Int,
+        exportsRoot: URL,
+        coordinator: PreviewExportCoordinator
+    ) async throws -> URL {
+        let cacheKey = await coordinator.cacheKey(for: request)
+        let outputURL = exportsRoot
+            .appendingPathComponent(request.recordingID.description, isDirectory: true)
+            .appendingPathComponent(cacheKey, isDirectory: true)
+            .appendingPathComponent(request.filename.fileName)
+        try FileManager.default.createDirectory(
+            at: outputURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try Data(repeating: 0x5a, count: byteCount).write(to: outputURL)
+        return outputURL
+    }
+
+    private func makeExportFixtureStale(_ outputURL: URL, at date: Date) throws {
+        try FileManager.default.setAttributes(
+            [.modificationDate: date],
+            ofItemAtPath: outputURL.path
+        )
+        try FileManager.default.setAttributes(
+            [.modificationDate: date],
+            ofItemAtPath: outputURL.deletingLastPathComponent().path
+        )
+    }
+}
+
+private final class PublicationLeaseTestClock: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storedValue: Date
+
+    init(_ value: Date) {
+        storedValue = value
+    }
+
+    var value: Date {
+        get {
+            lock.lock()
+            defer { lock.unlock() }
+            return storedValue
+        }
+        set {
+            lock.lock()
+            storedValue = newValue
+            lock.unlock()
+        }
     }
 }
 

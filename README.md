@@ -164,7 +164,7 @@ display, not merely one window.
 
 ## Local data
 
-Managed masters and the versioned history index live below the app's Application Support container. Temporary drag, clipboard, and export files live in the app's Caches container. **Save As** files are independent and are never deleted by Clip history cleanup.
+Managed masters and the versioned history index live below the app's Application Support container. Temporary drag, clipboard, and export files live in the app's Caches container. The History window's Exports tab lists files actually published by Copy or drag and lets you reveal or delete them; deleting a source recording leaves its exports available there until you purge them or the seven-day cache cleanup expires them. **Save As** files and unpublished Save As intermediates are not listed; the external files are independent and are never deleted by Clip history cleanup.
 
 Save As uses the standard macOS Save panel. Selecting Downloads or another
 sandbox-protected destination gives Clip access to that exact file through the

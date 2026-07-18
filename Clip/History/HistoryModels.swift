@@ -11,12 +11,28 @@ typealias HistoryRenameAction = @MainActor @Sendable (
 ) async throws -> RecordingHistoryIndex
 typealias HistoryDeleteAction = @MainActor @Sendable (RecordingID) async throws -> RecordingHistoryIndex
 typealias HistoryClearAction = @MainActor @Sendable () async throws -> RecordingHistoryIndex
+typealias HistoryExportRefreshAction = @MainActor @Sendable () async throws -> ManagedExportInventory
+typealias HistoryExportItemAction = @MainActor @Sendable (ManagedExportRecord) async throws -> Void
+typealias HistoryExportDeleteAction = @MainActor @Sendable (
+    ManagedExportID
+) async throws -> ManagedExportInventory
+typealias HistoryExportPurgeAction = @MainActor @Sendable () async throws -> ManagedExportInventory
+
+enum HistoryTab: String, CaseIterable, Hashable, Sendable {
+    case recordings
+    case exports
+
+    var accessibilityIdentifier: String {
+        "clip.history.tab.\(rawValue)"
+    }
+}
 
 /// Copy and Save As finish outside the managed-history transaction. Once that
 /// external operation succeeds, a later repository error is a warning rather
 /// than a failed share. A nil index leaves the current UI snapshot untouched.
 struct HistoryShareOutcome: Sendable {
     let refreshedIndex: RecordingHistoryIndex?
+    let exportInventory: ManagedExportInventory?
     /// Byte count of the exact exported MP4 placed on the pasteboard or saved.
     /// Nil only when filesystem metadata could not be read after sharing.
     let outputByteCount: Int64?
@@ -24,10 +40,12 @@ struct HistoryShareOutcome: Sendable {
 
     init(
         refreshedIndex: RecordingHistoryIndex?,
+        exportInventory: ManagedExportInventory? = nil,
         outputByteCount: Int64? = nil,
         postShareWarning: String? = nil
     ) {
         self.refreshedIndex = refreshedIndex
+        self.exportInventory = exportInventory
         self.outputByteCount = outputByteCount
         self.postShareWarning = postShareWarning
     }
@@ -47,6 +65,10 @@ struct HistoryActions: Sendable {
     let rename: HistoryRenameAction
     let delete: HistoryDeleteAction
     let clear: HistoryClearAction
+    let refreshExports: HistoryExportRefreshAction
+    let revealExport: HistoryExportItemAction
+    let deleteExport: HistoryExportDeleteAction
+    let purgeExports: HistoryExportPurgeAction
 
     init(
         refresh: @escaping HistoryRefreshAction,
@@ -56,7 +78,11 @@ struct HistoryActions: Sendable {
         reveal: @escaping HistoryItemAction,
         rename: @escaping HistoryRenameAction,
         delete: @escaping HistoryDeleteAction,
-        clear: @escaping HistoryClearAction
+        clear: @escaping HistoryClearAction,
+        refreshExports: @escaping HistoryExportRefreshAction,
+        revealExport: @escaping HistoryExportItemAction,
+        deleteExport: @escaping HistoryExportDeleteAction,
+        purgeExports: @escaping HistoryExportPurgeAction
     ) {
         self.refresh = refresh
         self.preview = preview
@@ -66,6 +92,10 @@ struct HistoryActions: Sendable {
         self.rename = rename
         self.delete = delete
         self.clear = clear
+        self.refreshExports = refreshExports
+        self.revealExport = revealExport
+        self.deleteExport = deleteExport
+        self.purgeExports = purgeExports
     }
 }
 
@@ -78,6 +108,9 @@ enum HistoryOperation: Equatable, Sendable {
     case renaming(RecordingID)
     case deleting(RecordingID)
     case clearing
+    case revealingExport(ManagedExportID)
+    case deletingExport(ManagedExportID)
+    case purgingExports
 
     var title: String {
         switch self {
@@ -97,6 +130,12 @@ enum HistoryOperation: Equatable, Sendable {
             "Deleting…"
         case .clearing:
             "Clearing History…"
+        case .revealingExport:
+            "Opening Finder…"
+        case .deletingExport:
+            "Deleting Export…"
+        case .purgingExports:
+            "Deleting Exports…"
         }
     }
 
@@ -105,7 +144,17 @@ enum HistoryOperation: Equatable, Sendable {
         case let .previewing(id), let .copying(id), let .saving(id),
              let .revealing(id), let .renaming(id), let .deleting(id):
             id == recordingID
-        case .refreshing, .clearing:
+        case .refreshing, .clearing, .revealingExport, .deletingExport, .purgingExports:
+            false
+        }
+    }
+
+    func involves(_ exportID: ManagedExportID) -> Bool {
+        switch self {
+        case let .revealingExport(id), let .deletingExport(id):
+            id == exportID
+        case .refreshing, .previewing, .copying, .saving, .revealing, .renaming,
+             .deleting, .clearing, .purgingExports:
             false
         }
     }
@@ -120,6 +169,8 @@ enum HistoryAlert: Identifiable, Sendable {
     case error(id: UUID, title: String, message: String)
     case confirmDelete(id: RecordingID, filename: String)
     case confirmClear(id: UUID, recordingCount: Int)
+    case confirmDeleteExport(id: ManagedExportID, filename: String)
+    case confirmPurgeExports(id: UUID, exportCount: Int)
 
     var id: String {
         switch self {
@@ -129,6 +180,10 @@ enum HistoryAlert: Identifiable, Sendable {
             "delete-\(id.description)"
         case let .confirmClear(id, _):
             "clear-\(id.uuidString)"
+        case let .confirmDeleteExport(id, _):
+            "delete-export-\(id.rawValue)"
+        case let .confirmPurgeExports(id, _):
+            "purge-exports-\(id.uuidString)"
         }
     }
 }
@@ -147,6 +202,17 @@ enum HistoryFormatting {
 
     static func bytes(_ byteCount: Int64) -> String {
         ByteCountFormatter.string(fromByteCount: byteCount, countStyle: .file)
+    }
+
+    static func preset(_ preset: ExportPreset) -> String {
+        switch preset {
+        case .crisp:
+            "Crisp"
+        case .compact:
+            "Compact"
+        case .smallest:
+            "Smallest"
+        }
     }
 
     static func audio(
@@ -236,6 +302,54 @@ enum HistoryDemoData {
         }
     }
 
+    static func exports() -> ManagedExportInventory {
+        do {
+            let index = index()
+            guard index.items.count == 3,
+                  let deletedSourceUUID = UUID(
+                      uuidString: "AA71B7F4-D7BE-45E5-90A5-90FC8FD14E26"
+                  ) else {
+                throw DemoDataError.invalidRecordingID("History export fixture")
+            }
+            let baseDate = Date(timeIntervalSince1970: 1_784_270_538)
+            let specifications: [(RecordingID, String, Int64, TimeInterval, ExportPreset, Int)] = [
+                (index.items[0].id, "clip-20260717-104218.mp4", 4_500_000, 7_500, .crisp, 98),
+                (index.items[0].id, "clip-20260717-104218.mp4", 2_800_000, 7_200, .compact, 90),
+                (index.items[0].id, "clip-20260717-104218.mp4", 1_500_000, 6_900, .smallest, 70),
+                (index.items[1].id, "dashboard-filters.mp4", 8_100_000, 3_900, .crisp, 98),
+                (
+                    RecordingID(deletedSourceUUID),
+                    "deleted-source-demo.mp4",
+                    3_200_000,
+                    900,
+                    .compact,
+                    90
+                ),
+            ]
+            let items = try specifications.enumerated().map { offset, specification in
+                let (recordingID, filename, byteCount, age, preset, quality) = specification
+                let cacheKey = "demo-\(offset)-\(preset.rawValue)-q\(quality)"
+                let relativePath = "\(recordingID.description)/\(cacheKey)/\(filename)"
+                return ManagedExportRecord(
+                    id: ManagedExportID(rawValue: relativePath),
+                    recordingID: recordingID,
+                    url: URL(fileURLWithPath: "/tmp/ClipDemo/Exports/\(relativePath)"),
+                    filename: try RecordingFilename(validating: filename),
+                    byteCount: byteCount,
+                    createdAt: baseDate.addingTimeInterval(age),
+                    preset: preset,
+                    qualityPercent: quality
+                )
+            }
+            return ManagedExportInventory(
+                items: items,
+                totalByteCount: items.reduce(0) { $0 + $1.byteCount }
+            )
+        } catch {
+            preconditionFailure("Invalid deterministic History export state: \(error)")
+        }
+    }
+
     private static func makeItem(
         id: String,
         createdAt: Date,
@@ -272,10 +386,12 @@ enum HistoryDemoData {
 @MainActor
 private final class HistoryDemoStore {
     private(set) var index: RecordingHistoryIndex
+    private(set) var exports: ManagedExportInventory
     private let updateDate = Date(timeIntervalSince1970: 1_800_000_000)
 
-    init(index: RecordingHistoryIndex) {
+    init(index: RecordingHistoryIndex, exports: ManagedExportInventory) {
         self.index = index
+        self.exports = exports
     }
 
     func actions() -> HistoryActions {
@@ -286,13 +402,13 @@ private final class HistoryDemoStore {
                 var updatedItem = item
                 try updatedItem.registerSuccessfulExport(at: updateDate)
                 index.upsert(updatedItem)
-                return HistoryShareOutcome(refreshedIndex: index)
+                return HistoryShareOutcome(refreshedIndex: index, exportInventory: exports)
             },
             save: { [self] item in
                 var updatedItem = item
                 try updatedItem.registerSuccessfulExport(at: updateDate)
                 index.upsert(updatedItem)
-                return HistoryShareOutcome(refreshedIndex: index)
+                return HistoryShareOutcome(refreshedIndex: index, exportInventory: exports)
             },
             reveal: { _ in },
             rename: { [self] id, filename in
@@ -308,6 +424,20 @@ private final class HistoryDemoStore {
             clear: { [self] in
                 index = try RecordingHistoryIndex()
                 return index
+            },
+            refreshExports: { [self] in exports },
+            revealExport: { _ in },
+            deleteExport: { [self] id in
+                let items = exports.items.filter { $0.id != id }
+                exports = ManagedExportInventory(
+                    items: items,
+                    totalByteCount: items.reduce(0) { $0 + $1.byteCount }
+                )
+                return exports
+            },
+            purgeExports: { [self] in
+                exports = .empty
+                return exports
             }
         )
     }
@@ -315,7 +445,10 @@ private final class HistoryDemoStore {
 
 extension HistoryActions {
     @MainActor
-    static func demo(for index: RecordingHistoryIndex) -> Self {
-        HistoryDemoStore(index: index).actions()
+    static func demo(
+        for index: RecordingHistoryIndex,
+        exports: ManagedExportInventory = HistoryDemoData.exports()
+    ) -> Self {
+        HistoryDemoStore(index: index, exports: exports).actions()
     }
 }

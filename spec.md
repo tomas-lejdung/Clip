@@ -479,7 +479,11 @@ Clip has two equally supported sharing actions: dragging the video preview and s
 
 Dragging the top video preview supplies an MP4 file using the current trim,
 export preset, editable filename, and Remove audio choice. The file can be
-dropped into Finder or another application that accepts file drags.
+dropped into Finder or another application that accepts file drags. The drag
+payload advertises both the MPEG-4 representation and the resulting local file
+URL so Finder and browser upload targets can consume it directly. Every
+destination receives the current edited filename; macOS must not substitute a
+generic name such as `MPEG-4 movie.mp4`.
 
 ## Copy
 
@@ -657,6 +661,15 @@ Each recording supports:
 - Reveal in Finder.
 - Delete.
 
+The full History window uses native **Recordings** and **Exports** tabs.
+Recordings show any still-live Copy or drag exports linked to that source as
+compact chips below the row; each chip can be revealed in Finder or deleted.
+The Exports tab inventories every still-live Copy and drag export, shows its
+quality, size, and source relationship, and supports Reveal, individual Delete,
+and Delete All. If the source recording has been removed, its export remains in
+the Exports tab with a visible **Source deleted** state and is no longer shown
+under a recording row.
+
 Recordings remain local.
 
 Default retention:
@@ -682,7 +695,12 @@ Clip should clearly show how much storage its history is using.
   and per-recording Remove audio metadata.
 - Copy and drag create managed temporary exports.
 - Save As creates an independent external file that Clip never deletes.
-- Retention and Clear History remove only Clip-managed files.
+- Only exports actually published by Copy or drag appear in the Exports tab;
+  an internal cache file produced while completing Save As is not listed.
+- Recording retention, recording deletion, and Clear History remove managed
+  masters but retain live Copy and drag exports. Those exports can be removed
+  independently from the Exports tab and otherwise expire through the
+  ownership-aware seven-day cache cleanup.
 - Cleanup age is based on recording creation time.
 - The history location is fixed under Application Support and can be revealed but not relocated.
 - **Keep original recording after export** defaults to On. When Off, Clip replaces the managed master with the trimmed exported result after a successful export and records that replacement's quality separately from the original Retake settings.

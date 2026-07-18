@@ -216,14 +216,17 @@ final class DeterministicUIScenarioCoordinator {
                 identifier: scenario.accessibilityIdentifier
             )
 
-        case .history:
+        case .history, .historyExports:
             let index = HistoryDemoData.index()
+            let exports = HistoryDemoData.exports()
             return wrapped(
                 HistoryView(
                     viewModel: HistoryViewModel(
                         index: index,
-                        actions: .demo(for: index)
-                    )
+                        exportInventory: exports,
+                        actions: .demo(for: index, exports: exports)
+                    ),
+                    initialTab: scenario == .historyExports ? .exports : .recordings
                 ),
                 identifier: scenario.accessibilityIdentifier
             )
@@ -291,7 +294,7 @@ final class DeterministicUIScenarioCoordinator {
             NSSize(width: 340, height: 360)
         case .preview:
             NSSize(width: 820, height: 650)
-        case .history:
+        case .history, .historyExports:
             NSSize(width: 860, height: 560)
         case .settings,
              .settingsRecording,
@@ -403,6 +406,7 @@ private extension DeterministicUIScenario {
              .paused,
              .preview,
              .history,
+             .historyExports,
              .failure:
             nil
         }

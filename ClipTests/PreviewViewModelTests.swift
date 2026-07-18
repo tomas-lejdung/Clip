@@ -1,6 +1,7 @@
 import ClipCore
 import Foundation
 import Testing
+import UniformTypeIdentifiers
 @testable import Clip
 
 @MainActor
@@ -415,16 +416,103 @@ struct PreviewViewModelTests {
         let dragItem = try #require(model.dragItem)
         #expect(await probe.requests.isEmpty)
 
-        let outcome = try await dragItem.export(dragItem.request)
+        let outcome = try await dragItem.resolveExport()
         #expect(await probe.requests.count == 1)
         #expect(outcome.outputURL == outputURL)
 
-        dragItem.reportSuccess(outcome)
         #expect(model.sourceFinalizationDeferred)
         #expect(
             model.statusMessage
                 == "Shared lazy-drag.mp4 — optimized original will update when Preview closes"
         )
+    }
+
+    @Test("Drag advertises the exact MP4 name and a browser-compatible file URL")
+    func dragProvidesNamedContentAndFileURLRepresentations() async throws {
+        let exportProbe = PreviewActionProbe()
+        let reportProbe = PreviewDragReportProbe()
+        let model = PreviewViewModel(recording: .demo(), actions: makeActions())
+        model.updateFilename("github-upload")
+        let request = try #require(model.dragItem?.request)
+        let outputURL = URL(fileURLWithPath: "/tmp/github-upload.mp4")
+        let dragItem = PreviewFileDragItem(
+            id: request.recordingID,
+            request: request,
+            export: { request in
+                await exportProbe.appendRequest(request)
+                return PreviewShareOutcome(
+                    outputURL: outputURL,
+                    historyDisposition: .keepOriginal,
+                    sourceFinalizationDeferred: false
+                )
+            },
+            reportFailure: { details in
+                reportProbe.failures.append(details)
+            },
+            reportSuccess: { outcome in
+                reportProbe.successURLs.append(outcome.outputURL)
+            }
+        )
+        let provider = dragItem.makeItemProvider()
+
+        #expect(await exportProbe.requests.isEmpty)
+        #expect(provider.suggestedName == "github-upload.mp4")
+        #expect(provider.registeredTypeIdentifiers.first == UTType.mpeg4Movie.identifier)
+        #expect(provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier))
+        #expect(provider.hasItemConformingToTypeIdentifier(UTType.url.identifier))
+        #expect(provider.canLoadObject(ofClass: URL.self))
+
+        let url = try await loadURLObject(from: provider)
+        let mp4 = try await loadMP4Representation(from: provider)
+        let outcome = try await dragItem.resolveExport()
+
+        #expect(outcome.outputURL == outputURL)
+        #expect(url == outputURL)
+        #expect(mp4.url == outputURL)
+        #expect(mp4.isInPlace)
+        #expect(await exportProbe.requests.count == 1)
+        #expect(reportProbe.successURLs == [outputURL])
+        #expect(reportProbe.failures.isEmpty)
+    }
+
+    @Test("A failed drag reports once when receivers request both representations")
+    func failedDragReportsOnlyOnceAcrossRepresentations() async throws {
+        let exportProbe = PreviewActionProbe()
+        let reportProbe = PreviewDragReportProbe()
+        let model = PreviewViewModel(recording: .demo(), actions: makeActions())
+        let request = try #require(model.dragItem?.request)
+        let dragItem = PreviewFileDragItem(
+            id: request.recordingID,
+            request: request,
+            export: { request in
+                await exportProbe.appendRequest(request)
+                throw PreviewViewModelTestError.exportFailed
+            },
+            reportFailure: { details in
+                reportProbe.failures.append(details)
+            },
+            reportSuccess: { outcome in
+                reportProbe.successURLs.append(outcome.outputURL)
+            }
+        )
+        let provider = dragItem.makeItemProvider()
+
+        do {
+            _ = try await dragItem.resolveExport()
+            Issue.record("The promised MP4 unexpectedly resolved")
+        } catch {
+            // Expected: the content representation owns the original export error.
+        }
+        do {
+            _ = try await loadURLObject(from: provider)
+            Issue.record("The URL-object representation unexpectedly resolved")
+        } catch {
+            // Expected: the second representation reuses the failed promise.
+        }
+
+        #expect(await exportProbe.requests.count == 1)
+        #expect(reportProbe.failures.count == 1)
+        #expect(reportProbe.successURLs.isEmpty)
     }
 
     @Test("Invalid filenames disable drag and block Copy before export starts")
@@ -769,6 +857,45 @@ struct PreviewViewModelTests {
             await Task.yield()
         }
     }
+
+    private func loadURLObject(from provider: NSItemProvider) async throws -> URL {
+        try await withCheckedThrowingContinuation { continuation in
+            _ = provider.loadObject(ofClass: URL.self) { url, error in
+                if let url {
+                    continuation.resume(returning: url)
+                } else {
+                    continuation.resume(
+                        throwing: error ?? PreviewViewModelTestError.missingRepresentation
+                    )
+                }
+            }
+        }
+    }
+
+    private func loadMP4Representation(
+        from provider: NSItemProvider
+    ) async throws -> LoadedMP4Representation {
+        try await withCheckedThrowingContinuation { continuation in
+            _ = provider.loadInPlaceFileRepresentation(
+                forTypeIdentifier: UTType.mpeg4Movie.identifier
+            ) { url, isInPlace, error in
+                if let url {
+                    continuation.resume(
+                        returning: LoadedMP4Representation(url: url, isInPlace: isInPlace)
+                    )
+                } else {
+                    continuation.resume(
+                        throwing: error ?? PreviewViewModelTestError.missingRepresentation
+                    )
+                }
+            }
+        }
+    }
+}
+
+private struct LoadedMP4Representation: Sendable {
+    let url: URL
+    let isInPlace: Bool
 }
 
 private actor PreviewActionProbe {
@@ -795,9 +922,17 @@ private final class PreviewRevealProbe {
     var url: URL?
 }
 
+@MainActor
+private final class PreviewDragReportProbe {
+    var successURLs: [URL] = []
+    var failures: [UserFacingErrorDetails] = []
+}
+
 private enum PreviewViewModelTestError: Error {
     case timedOut
     case commitFailed
+    case exportFailed
+    case missingRepresentation
 }
 
 private enum UserSafePreviewError: LocalizedError {
@@ -841,6 +976,7 @@ struct HistoryViewModelTests {
 
         #expect(model.index.item(id: item.id) == nil)
         #expect(model.items.count == 2)
+        #expect(model.exports == probe.exportInventory.items)
         #expect(model.statusMessage == "✓ Video copied — 5.8 MB")
         #expect(probe.events == ["copy"])
     }
@@ -893,7 +1029,66 @@ struct HistoryViewModelTests {
 
         #expect(model.isEmpty)
         #expect(model.statusMessage == "History cleared")
-        #expect(probe.events == ["delete", "clear"])
+        #expect(probe.events == ["delete", "refreshExports", "clear", "refreshExports"])
+    }
+
+    @Test("Managed exports link to intact sources while dangling exports remain listed")
+    func exportSourceRelationships() throws {
+        let index = HistoryDemoData.index()
+        let inventory = HistoryDemoData.exports()
+        let probe = HistoryActionProbe(index: index, exportInventory: inventory)
+        let model = HistoryViewModel(
+            index: index,
+            exportInventory: inventory,
+            actions: probe.actions()
+        )
+
+        let first = try #require(model.items.first)
+        #expect(model.linkedExports(for: first.id).count == 3)
+        #expect(model.exports.count == 5)
+        #expect(model.exports.filter { model.sourceRecording(for: $0) == nil }.count == 1)
+        #expect(model.exportStorageSummary.contains("5 exports"))
+    }
+
+    @Test("Deleting one export and purging all exports require confirmation")
+    func confirmedExportDestructiveActions() async throws {
+        let inventory = HistoryDemoData.exports()
+        let probe = HistoryActionProbe(
+            index: HistoryDemoData.index(),
+            exportInventory: inventory
+        )
+        let model = HistoryViewModel(
+            index: probe.index,
+            exportInventory: inventory,
+            actions: probe.actions()
+        )
+        let export = try #require(model.exports.first)
+
+        model.requestDelete(export)
+        guard case let .confirmDeleteExport(id, filename) = model.alert else {
+            Issue.record("Expected export delete confirmation")
+            return
+        }
+        #expect(id == export.id)
+        #expect(filename == export.filename.fileName)
+
+        model.confirmDeleteExport(export.id)
+        try await waitUntil { model.operation == nil }
+        #expect(!model.exports.contains { $0.id == export.id })
+        #expect(model.statusMessage == "Export deleted")
+
+        model.requestPurgeExports()
+        guard case let .confirmPurgeExports(_, exportCount) = model.alert else {
+            Issue.record("Expected export purge confirmation")
+            return
+        }
+        #expect(exportCount == inventory.items.count - 1)
+
+        model.confirmPurgeExports()
+        try await waitUntil { model.operation == nil }
+        #expect(model.exportsAreEmpty)
+        #expect(model.statusMessage == "Exports deleted")
+        #expect(probe.events == ["deleteExport", "purgeExports"])
     }
 
     @Test("A busy history action suppresses duplicate item actions")
@@ -972,6 +1167,7 @@ struct HistoryViewModelTests {
 @MainActor
 private final class HistoryActionProbe {
     var index: RecordingHistoryIndex
+    var exportInventory: ManagedExportInventory
     var events: [String] = []
     var removeAfterCopy = false
     var cancelSave = false
@@ -979,8 +1175,12 @@ private final class HistoryActionProbe {
     var copyDelay: Duration?
     var postShareWarning: String?
 
-    init(index: RecordingHistoryIndex) {
+    init(
+        index: RecordingHistoryIndex,
+        exportInventory: ManagedExportInventory = HistoryDemoData.exports()
+    ) {
         self.index = index
+        self.exportInventory = exportInventory
     }
 
     func actions() -> HistoryActions {
@@ -1019,6 +1219,7 @@ private final class HistoryActionProbe {
                 }
                 return HistoryShareOutcome(
                     refreshedIndex: index,
+                    exportInventory: exportInventory,
                     outputByteCount: 5_800_000
                 )
             },
@@ -1060,6 +1261,27 @@ private final class HistoryActionProbe {
                 events.append("clear")
                 index = try RecordingHistoryIndex()
                 return index
+            },
+            refreshExports: { [self] in
+                events.append("refreshExports")
+                return exportInventory
+            },
+            revealExport: { [self] _ in
+                events.append("revealExport")
+            },
+            deleteExport: { [self] id in
+                events.append("deleteExport")
+                let items = exportInventory.items.filter { $0.id != id }
+                exportInventory = ManagedExportInventory(
+                    items: items,
+                    totalByteCount: items.reduce(0) { $0 + $1.byteCount }
+                )
+                return exportInventory
+            },
+            purgeExports: { [self] in
+                events.append("purgeExports")
+                exportInventory = .empty
+                return exportInventory
             }
         )
     }

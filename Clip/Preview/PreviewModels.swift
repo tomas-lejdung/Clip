@@ -1,5 +1,4 @@
 import ClipCore
-import CoreTransferable
 import Foundation
 import UniformTypeIdentifiers
 
@@ -252,26 +251,164 @@ struct PreviewActions: Sendable {
 
 /// A native promised-file payload. Export begins only after a drag receiver asks
 /// for the MP4, avoiding eager work when the user merely clicks the preview.
-struct PreviewFileDragItem: Transferable, Identifiable, Sendable {
+///
+/// The content representation serves native media receivers such as Finder and
+/// Messages. The URL object makes the same managed MP4 visible to upload drop
+/// targets that accept files from Finder but do not consume an MP4 file promise
+/// directly. Both representations resolve through one promise so a receiver
+/// asking for both cannot export or register the share twice.
+struct PreviewFileDragItem: Identifiable, Sendable {
     typealias FailureReporter = @MainActor @Sendable (UserFacingErrorDetails) -> Void
     typealias SuccessReporter = @MainActor @Sendable (PreviewShareOutcome) -> Void
 
     let id: RecordingID
     let request: PreviewExportRequest
-    let export: PreviewExportAction
-    let reportFailure: FailureReporter
-    let reportSuccess: SuccessReporter
+    private let exportPromise: PreviewFileDragExportPromise
 
-    static var transferRepresentation: some TransferRepresentation {
-        FileRepresentation(exportedContentType: .mpeg4Movie) { item in
-            do {
-                let outcome = try await item.export(item.request)
-                await item.reportSuccess(outcome)
-                return SentTransferredFile(outcome.outputURL)
-            } catch {
-                await item.reportFailure(UserFacingErrorPresentation.details(for: error))
-                throw error
+    init(
+        id: RecordingID,
+        request: PreviewExportRequest,
+        export: @escaping PreviewExportAction,
+        reportFailure: @escaping FailureReporter,
+        reportSuccess: @escaping SuccessReporter
+    ) {
+        self.id = id
+        self.request = request
+        exportPromise = PreviewFileDragExportPromise(
+            request: request,
+            export: export,
+            reportFailure: reportFailure,
+            reportSuccess: reportSuccess
+        )
+    }
+
+    func makeItemProvider() -> NSItemProvider {
+        let provider = NSItemProvider()
+        provider.suggestedName = request.filename.fileName
+
+        // Register the native MP4 file representation first so Finder and
+        // media-aware apps receive the highest-fidelity representation they
+        // understand, with Clip's edited filename rather than a generic UTI
+        // description.
+        provider.registerFileRepresentation(
+            forTypeIdentifier: UTType.mpeg4Movie.identifier,
+            fileOptions: [.openInPlace],
+            visibility: .all
+        ) { completion in
+            let progress = Progress(totalUnitCount: 1)
+            let task = Task {
+                do {
+                    let outcome = try await resolveExport()
+                    try Task.checkCancellation()
+                    completion(outcome.outputURL, false, nil)
+                    progress.completedUnitCount = 1
+                } catch {
+                    completion(nil, false, error)
+                }
             }
+            progress.cancellationHandler = { task.cancel() }
+            return progress
+        }
+
+        // A raw public.file-url data representation advertises the UTI but
+        // cannot be loaded as URL/NSURL by AppKit and browser upload targets.
+        // This lazy NSItemProviderWriting object supplies both public.file-url
+        // and public.url, which makes URL-object coercion work while retaining
+        // the same asynchronous single-flight export.
+        provider.registerObject(
+            PreviewLazyFileURLObject(exportPromise: exportPromise),
+            visibility: .all
+        )
+        return provider
+    }
+
+    func resolveExport() async throws -> PreviewShareOutcome {
+        try await exportPromise.resolve()
+    }
+}
+
+private final class PreviewLazyFileURLObject: NSObject, NSItemProviderWriting, @unchecked Sendable {
+    private let exportPromise: PreviewFileDragExportPromise
+
+    init(exportPromise: PreviewFileDragExportPromise) {
+        self.exportPromise = exportPromise
+        super.init()
+    }
+
+    static var writableTypeIdentifiersForItemProvider: [String] {
+        [UTType.fileURL.identifier, UTType.url.identifier]
+    }
+
+    func loadData(
+        withTypeIdentifier _: String,
+        forItemProviderCompletionHandler completionHandler: @escaping @Sendable (
+            Data?,
+            (any Error)?
+        ) -> Void
+    ) -> Progress? {
+        let progress = Progress(totalUnitCount: 1)
+        let task = Task {
+            do {
+                let outcome = try await exportPromise.resolve()
+                try Task.checkCancellation()
+                completionHandler(Data(outcome.outputURL.absoluteString.utf8), nil)
+                progress.completedUnitCount = 1
+            } catch {
+                completionHandler(nil, error)
+            }
+        }
+        progress.cancellationHandler = { task.cancel() }
+        return progress
+    }
+}
+
+private actor PreviewFileDragExportPromise {
+    private let request: PreviewExportRequest
+    private let export: PreviewExportAction
+    private let reportFailure: PreviewFileDragItem.FailureReporter
+    private let reportSuccess: PreviewFileDragItem.SuccessReporter
+    private var resolutionTask: Task<PreviewShareOutcome, any Error>?
+    private var didReportResolution = false
+
+    init(
+        request: PreviewExportRequest,
+        export: @escaping PreviewExportAction,
+        reportFailure: @escaping PreviewFileDragItem.FailureReporter,
+        reportSuccess: @escaping PreviewFileDragItem.SuccessReporter
+    ) {
+        self.request = request
+        self.export = export
+        self.reportFailure = reportFailure
+        self.reportSuccess = reportSuccess
+    }
+
+    func resolve() async throws -> PreviewShareOutcome {
+        let task: Task<PreviewShareOutcome, any Error>
+        if let resolutionTask {
+            task = resolutionTask
+        } else {
+            let request = self.request
+            let export = self.export
+            let newTask = Task {
+                try await export(request)
+            }
+            resolutionTask = newTask
+            task = newTask
+        }
+
+        do {
+            let outcome = try await task.value
+            if !didReportResolution {
+                didReportResolution = true
+                await reportSuccess(outcome)
+            }
+            return outcome
+        } catch {
+            if !didReportResolution {
+                didReportResolution = true
+                await reportFailure(UserFacingErrorPresentation.details(for: error))
+            }
+            throw error
         }
     }
 }

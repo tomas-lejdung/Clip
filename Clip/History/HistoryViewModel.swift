@@ -6,6 +6,7 @@ import OSLog
 @MainActor
 final class HistoryViewModel: ObservableObject {
     @Published private(set) var index: RecordingHistoryIndex
+    @Published private(set) var exportInventory: ManagedExportInventory
     @Published private(set) var operation: HistoryOperation?
     @Published private(set) var statusMessage: String?
     @Published var renameDraft: HistoryRenameDraft?
@@ -14,8 +15,13 @@ final class HistoryViewModel: ObservableObject {
     private let actions: HistoryActions
     private var operationTask: Task<Void, Never>?
 
-    init(index: RecordingHistoryIndex, actions: HistoryActions) {
+    init(
+        index: RecordingHistoryIndex,
+        exportInventory: ManagedExportInventory = .empty,
+        actions: HistoryActions
+    ) {
         self.index = index
+        self.exportInventory = exportInventory
         self.actions = actions
     }
 
@@ -24,27 +30,55 @@ final class HistoryViewModel: ObservableObject {
     }
 
     var items: [RecordingHistoryItem] { index.items }
+    var exports: [ManagedExportRecord] {
+        exportInventory.items.sorted { lhs, rhs in
+            if lhs.createdAt != rhs.createdAt { return lhs.createdAt > rhs.createdAt }
+            return lhs.id.rawValue < rhs.id.rawValue
+        }
+    }
     var isEmpty: Bool { items.isEmpty }
+    var exportsAreEmpty: Bool { exports.isEmpty }
     var isBusy: Bool { operation != nil }
 
-    var storageSummary: String {
+    var recordingStorageSummary: String {
         let count = items.count
         let recordingLabel = count == 1 ? "recording" : "recordings"
         return "\(count) \(recordingLabel) · \(HistoryFormatting.bytes(index.totalManagedByteCount))"
+    }
+
+    var exportStorageSummary: String {
+        let count = exports.count
+        let exportLabel = count == 1 ? "export" : "exports"
+        return "\(count) \(exportLabel) · \(HistoryFormatting.bytes(exportInventory.totalByteCount))"
+    }
+
+    func linkedExports(for recordingID: RecordingID) -> [ManagedExportRecord] {
+        exports.filter { $0.recordingID == recordingID }
+    }
+
+    func sourceRecording(for export: ManagedExportRecord) -> RecordingHistoryItem? {
+        index.item(id: export.recordingID)
     }
 
     func isBusy(_ recordingID: RecordingID) -> Bool {
         operation?.involves(recordingID) ?? false
     }
 
+    func isBusy(_ exportID: ManagedExportID) -> Bool {
+        operation?.involves(exportID) ?? false
+    }
+
     func refresh() {
         guard begin(.refreshing) else { return }
         let refresh = actions.refresh
+        let refreshExports = actions.refreshExports
         operationTask = Task { [weak self] in
             do {
                 let refreshedIndex = try await refresh()
+                let refreshedExports = try await refreshExports()
                 guard !Task.isCancelled else { return }
                 self?.install(refreshedIndex)
+                self?.install(refreshedExports)
                 self?.complete(status: nil)
             } catch is CancellationError {
                 self?.complete(status: nil)
@@ -79,6 +113,9 @@ final class HistoryViewModel: ObservableObject {
                 guard !Task.isCancelled else { return }
                 if let refreshedIndex = outcome.refreshedIndex {
                     self?.install(refreshedIndex)
+                }
+                if let exportInventory = outcome.exportInventory {
+                    self?.install(exportInventory)
                 }
                 self?.complete(
                     status: Self.shareStatus(
@@ -149,6 +186,22 @@ final class HistoryViewModel: ObservableObject {
         }
     }
 
+    func reveal(_ export: ManagedExportRecord) {
+        guard begin(.revealingExport(export.id)) else { return }
+        let revealExport = actions.revealExport
+        operationTask = Task { [weak self] in
+            do {
+                try await revealExport(export)
+                guard !Task.isCancelled else { return }
+                self?.complete(status: nil)
+            } catch is CancellationError {
+                self?.complete(status: nil)
+            } catch {
+                self?.fail(title: "Couldn’t Reveal Export", error: error)
+            }
+        }
+    }
+
     func beginRename(_ item: RecordingHistoryItem) {
         guard !isBusy else { return }
         renameDraft = HistoryRenameDraft(id: item.id, currentFilename: item.filename)
@@ -185,11 +238,15 @@ final class HistoryViewModel: ObservableObject {
         alert = nil
         guard begin(.deleting(id)) else { return }
         let delete = actions.delete
+        let refreshExports = actions.refreshExports
         operationTask = Task { [weak self] in
             do {
                 let updatedIndex = try await delete(id)
                 guard !Task.isCancelled else { return }
                 self?.install(updatedIndex)
+                if let updatedExports = try? await refreshExports(), !Task.isCancelled {
+                    self?.install(updatedExports)
+                }
                 self?.complete(status: "Recording deleted")
             } catch is CancellationError {
                 self?.complete(status: nil)
@@ -208,16 +265,66 @@ final class HistoryViewModel: ObservableObject {
         alert = nil
         guard begin(.clearing) else { return }
         let clear = actions.clear
+        let refreshExports = actions.refreshExports
         operationTask = Task { [weak self] in
             do {
                 let updatedIndex = try await clear()
                 guard !Task.isCancelled else { return }
                 self?.install(updatedIndex)
+                if let updatedExports = try? await refreshExports(), !Task.isCancelled {
+                    self?.install(updatedExports)
+                }
                 self?.complete(status: "History cleared")
             } catch is CancellationError {
                 self?.complete(status: nil)
             } catch {
                 self?.fail(title: "Couldn’t Clear History", error: error)
+            }
+        }
+    }
+
+    func requestDelete(_ export: ManagedExportRecord) {
+        guard !isBusy else { return }
+        alert = .confirmDeleteExport(id: export.id, filename: export.filename.fileName)
+    }
+
+    func confirmDeleteExport(_ id: ManagedExportID) {
+        alert = nil
+        guard begin(.deletingExport(id)) else { return }
+        let deleteExport = actions.deleteExport
+        operationTask = Task { [weak self] in
+            do {
+                let updatedInventory = try await deleteExport(id)
+                guard !Task.isCancelled else { return }
+                self?.install(updatedInventory)
+                self?.complete(status: "Export deleted")
+            } catch is CancellationError {
+                self?.complete(status: nil)
+            } catch {
+                self?.fail(title: "Couldn’t Delete Export", error: error)
+            }
+        }
+    }
+
+    func requestPurgeExports() {
+        guard !isBusy, !exportsAreEmpty else { return }
+        alert = .confirmPurgeExports(id: UUID(), exportCount: exports.count)
+    }
+
+    func confirmPurgeExports() {
+        alert = nil
+        guard begin(.purgingExports) else { return }
+        let purgeExports = actions.purgeExports
+        operationTask = Task { [weak self] in
+            do {
+                let updatedInventory = try await purgeExports()
+                guard !Task.isCancelled else { return }
+                self?.install(updatedInventory)
+                self?.complete(status: "Exports deleted")
+            } catch is CancellationError {
+                self?.complete(status: nil)
+            } catch {
+                self?.fail(title: "Couldn’t Delete Exports", error: error)
             }
         }
     }
@@ -238,6 +345,10 @@ final class HistoryViewModel: ObservableObject {
         if let renameDraft, updatedIndex.item(id: renameDraft.id) == nil {
             self.renameDraft = nil
         }
+    }
+
+    private func install(_ updatedInventory: ManagedExportInventory) {
+        exportInventory = updatedInventory
     }
 
     private func complete(status: String?) {

@@ -1,7 +1,9 @@
+import AppKit
 import ClipCore
 import ClipMedia
 import CoreGraphics
 import Foundation
+import QuartzCore
 import Testing
 @testable import Clip
 
@@ -326,6 +328,61 @@ struct CaptureSelectionAdapterTests {
         #expect(prepared.sourceRect?.maxY == display.localBounds.maxY)
     }
 
+    @MainActor
+    @Test("Capture App confirmation centers both text rows across its padded width")
+    func centersApplicationConfirmationContent() {
+        for width in [260.0, 310.0] {
+            let toolbar = ApplicationCaptureConfirmationView(
+                frame: CGRect(x: 0, y: 0, width: width, height: 116)
+            )
+            toolbar.titleLabel.stringValue = "ChatGPT"
+            toolbar.detailLabel.stringValue = "All visible windows on this display"
+            toolbar.layoutSubtreeIfNeeded()
+
+            let titleFrame = toolbar.convert(
+                toolbar.titleLabel.bounds,
+                from: toolbar.titleLabel
+            )
+            let detailFrame = toolbar.convert(
+                toolbar.detailLabel.bounds,
+                from: toolbar.detailLabel
+            )
+            let titleAlignmentFrame = toolbar.convert(
+                toolbar.titleLabel.alignmentRect(forFrame: toolbar.titleLabel.frame),
+                from: toolbar.titleLabel.superview
+            )
+            let detailAlignmentFrame = toolbar.convert(
+                toolbar.detailLabel.alignmentRect(forFrame: toolbar.detailLabel.frame),
+                from: toolbar.detailLabel.superview
+            )
+            let cancelFrame = toolbar.convert(
+                toolbar.cancelButton.bounds,
+                from: toolbar.cancelButton
+            )
+            let recordFrame = toolbar.convert(
+                toolbar.recordButton.bounds,
+                from: toolbar.recordButton
+            )
+
+            // NSTextField contributes a two-point alignmentRectInset. Verify
+            // its constrained alignment rect reaches the padded content edges
+            // and its visible frame remains centered in the toolbar.
+            #expect(abs(titleAlignmentFrame.minX - 12) < 0.5)
+            #expect(abs(titleAlignmentFrame.maxX - (width - 12)) < 0.5)
+            #expect(abs(detailAlignmentFrame.minX - 12) < 0.5)
+            #expect(abs(detailAlignmentFrame.maxX - (width - 12)) < 0.5)
+            #expect(abs(titleAlignmentFrame.minX - detailAlignmentFrame.minX) < 0.5)
+            #expect(abs(titleAlignmentFrame.maxX - detailAlignmentFrame.maxX) < 0.5)
+            #expect(abs(titleFrame.minX - detailFrame.minX) < 0.5)
+            #expect(abs(titleFrame.maxX - detailFrame.maxX) < 0.5)
+            #expect(abs(titleFrame.midX - toolbar.bounds.midX) < 0.5)
+            #expect(abs(detailFrame.midX - toolbar.bounds.midX) < 0.5)
+            #expect(toolbar.titleLabel.alignment == .center)
+            #expect(toolbar.detailLabel.alignment == .center)
+            #expect(abs(cancelFrame.width - recordFrame.width) < 0.5)
+        }
+    }
+
     @Test("Selection clamping and movement stay entirely on one display")
     func clampsAndMovesSelection() {
         let bounds = CGRect(x: 0, y: 0, width: 800, height: 600)
@@ -345,6 +402,140 @@ struct CaptureSelectionAdapterTests {
         )
         #expect(moved == CGRect(x: 500, y: 0, width: 300, height: 200))
         #expect(bounds.contains(moved))
+    }
+
+    @Test("The area overlay retains interior view-level mouse handling")
+    @MainActor
+    func retainsInteriorSelectionMouseEvents() throws {
+        let bounds = CGRect(x: 0, y: 0, width: 800, height: 600)
+        let original = CGRect(x: 100, y: 100, width: 600, height: 400)
+        let overlay = CaptureSelectionOverlayView(
+            display: makeDisplay(pointSize: bounds.size, pixelSize: bounds.size),
+            mode: .area,
+            initialSelection: original,
+            isActive: true,
+            configuration: CaptureSelectionConfiguration(),
+            onActivate: { _ in },
+            onComplete: { _ in },
+            onCancel: {}
+        )
+        overlay.frame = bounds
+        overlay.layoutSubtreeIfNeeded()
+
+        // Transparent NSViews default to handing mouse-downs to their window.
+        // The overlay must retain the event so its selection interaction owns
+        // an interior drag instead of treating that surface as window chrome.
+        #expect(!overlay.mouseDownCanMoveWindow)
+        #expect(overlay.acceptsFirstMouse(for: nil))
+        #expect(overlay.hitTest(CGPoint(x: 400, y: 350)) === overlay)
+
+        // This large selection has no room for the toolbar on any side, so the
+        // toolbar falls back inside it. Its non-control surface remains a move
+        // target while the native buttons keep their normal handling.
+        #expect(overlay.hitTest(CGPoint(x: 260, y: 115)) === overlay)
+    }
+
+    @Test("WindowServer routes every selected-interior point to the overlay panel")
+    @MainActor
+    func routesSelectedInteriorThroughWindowServer() throws {
+        let screen = try #require(NSScreen.main)
+        let bounds = CGRect(x: 0, y: 0, width: 600, height: 440)
+        let selection = CGRect(x: 150, y: 160, width: 300, height: 180)
+        let overlay = CaptureSelectionOverlayView(
+            display: makeDisplay(pointSize: bounds.size, pixelSize: bounds.size),
+            mode: .area,
+            initialSelection: selection,
+            isActive: true,
+            configuration: CaptureSelectionConfiguration(),
+            onActivate: { _ in },
+            onComplete: { _ in },
+            onCancel: {}
+        )
+        overlay.frame = bounds
+
+        let panel = CaptureSelectionPanel(
+            frame: CGRect(
+                x: screen.visibleFrame.midX - bounds.width / 2,
+                y: screen.visibleFrame.midY - bounds.height / 2,
+                width: bounds.width,
+                height: bounds.height
+            ),
+            contentView: overlay
+        )
+        panel.orderFrontRegardless()
+        defer {
+            panel.orderOut(nil)
+            panel.contentView = nil
+        }
+
+        panel.displayIfNeeded()
+        CATransaction.flush()
+        RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.05))
+
+        #expect(!panel.ignoresMouseEvents)
+        #expect(!panel.isMovable)
+        #expect(!panel.isMovableByWindowBackground)
+        #expect(panel.windowNumber > 0)
+        #expect(panel.isVisible)
+
+        let hitSurface = try #require(
+            panel.contentView as? CaptureSelectionHitSurfaceView
+        )
+        #expect(hitSurface.subviews.contains { $0 === overlay })
+        let bitmap = try #require(
+            hitSurface.bitmapImageRepForCachingDisplay(in: hitSurface.bounds)
+        )
+        hitSurface.cacheDisplay(in: hitSurface.bounds, to: bitmap)
+
+        let center = CGPoint(x: selection.midX, y: selection.midY)
+        let sampleX = Int(center.x * CGFloat(bitmap.pixelsWide) / bounds.width)
+        let sampleY = Int(center.y * CGFloat(bitmap.pixelsHigh) / bounds.height)
+        let interiorColor = try #require(bitmap.colorAt(x: sampleX, y: sampleY))
+
+        // The overlay deliberately leaves the selected content undimmed. Its
+        // panel-level host contributes one alpha byte so that visually clear
+        // content remains part of WindowServer's mouse-down region.
+        #expect(interiorColor.alphaComponent >= (0.9 / 255.0))
+        #expect(interiorColor.alphaComponent <= (1.1 / 255.0))
+
+        // Other concurrently running AppKit tests may temporarily order a
+        // window above this panel. Walk the real WindowServer hit stack rather
+        // than assuming our panel is the frontmost test window. A fully clear
+        // interior would still omit the panel from this stack entirely.
+        func windowServerHitStack(at point: CGPoint) -> [Int] {
+            var result: [Int] = []
+            var belowWindowNumber = 0
+            for _ in 0..<32 {
+                let windowNumber = NSWindow.windowNumber(
+                    at: point,
+                    belowWindowWithWindowNumber: belowWindowNumber
+                )
+                guard windowNumber > 0, !result.contains(windowNumber) else { break }
+                result.append(windowNumber)
+                belowWindowNumber = windowNumber
+            }
+            return result
+        }
+
+        for controlPoint in [
+            CGPoint(x: 20, y: 20),
+            CGPoint(x: selection.minX, y: selection.midY),
+        ] {
+            let screenPoint = panel.convertPoint(toScreen: controlPoint)
+            #expect(windowServerHitStack(at: screenPoint).contains(panel.windowNumber))
+        }
+
+        let interiorPoints = [
+            center,
+            CGPoint(x: selection.minX + 40, y: selection.minY + 40),
+            CGPoint(x: selection.maxX - 40, y: selection.minY + 40),
+            CGPoint(x: selection.minX + 40, y: selection.maxY - 40),
+            CGPoint(x: selection.maxX - 40, y: selection.maxY - 40),
+        ]
+        for point in interiorPoints {
+            let screenPoint = panel.convertPoint(toScreen: point)
+            #expect(windowServerHitStack(at: screenPoint).contains(panel.windowNumber))
+        }
     }
 
     @Test("Pointer creation supports reverse drags and aspect-ratio preservation")

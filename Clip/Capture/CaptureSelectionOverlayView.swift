@@ -35,6 +35,14 @@ final class CaptureSelectionOverlayView: NSView {
     override var acceptsFirstResponder: Bool { true }
     override var isOpaque: Bool { false }
 
+    // Transparent views default to handing mouse-downs to their window. Keep
+    // the event here so the borderless panel cannot swallow interior drags.
+    override var mouseDownCanMoveWindow: Bool { false }
+
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
+        true
+    }
+
     init(
         display: CaptureSelectionDisplay,
         mode: CaptureSelectionPresentationMode,
@@ -106,6 +114,13 @@ final class CaptureSelectionOverlayView: NSView {
         super.resetCursorRects()
         addCursorRect(bounds, cursor: .crosshair)
 
+        // The toolbar can fall back inside a very large selection. Register
+        // its neutral cursor before the selection cursors so that dragging its
+        // non-control surface still advertises the region's move interaction.
+        if !toolbar.isHidden {
+            addCursorRect(toolbar.frame, cursor: .arrow)
+        }
+
         if mode == .area, isActiveDisplay, let selection {
             addCursorRect(selection, cursor: .openHand)
 
@@ -126,13 +141,33 @@ final class CaptureSelectionOverlayView: NSView {
             }
         }
 
-        // Register toolbar cursors last so they win when the fallback toolbar
-        // placement overlaps a very large selection.
+        // Buttons remain the highest-priority targets when the fallback
+        // toolbar overlaps the selection.
         if !toolbar.isHidden {
-            addCursorRect(toolbar.frame, cursor: .arrow)
             addCursorRect(convert(recordButton.bounds, from: recordButton), cursor: .pointingHand)
             addCursorRect(convert(cancelButton.bounds, from: cancelButton), cursor: .pointingHand)
         }
+    }
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        let hitView = super.hitTest(point)
+        guard mode == .area,
+              isActiveDisplay,
+              let selection,
+              selection.contains(point),
+              toolbar.frame.contains(point),
+              let hitView else {
+            return hitView
+        }
+
+        // Preserve native button handling, but let the otherwise inert labels,
+        // stack, and visual-effect background participate in moving a selection
+        // when the toolbar has to be placed over it.
+        if hitView === recordButton || hitView.isDescendant(of: recordButton)
+            || hitView === cancelButton || hitView.isDescendant(of: cancelButton) {
+            return hitView
+        }
+        return self
     }
 
     override func mouseDown(with event: NSEvent) {
