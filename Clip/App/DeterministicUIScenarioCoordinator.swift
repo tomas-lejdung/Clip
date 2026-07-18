@@ -228,7 +228,11 @@ final class DeterministicUIScenarioCoordinator {
                 identifier: scenario.accessibilityIdentifier
             )
 
-        case .settings:
+        case .settings,
+             .settingsRecording,
+             .settingsExport,
+             .settingsStorage,
+             .settingsPermissions:
             let permissions = DeterministicPermissionService(statuses: [
                 .screenRecording: .granted,
                 .microphone: .denied,
@@ -265,7 +269,8 @@ final class DeterministicUIScenarioCoordinator {
                         },
                         revealHistory: {}
                     ),
-                    externalActions: .inert
+                    externalActions: .inert,
+                    initialTab: scenario.settingsTab ?? .general
                 ),
                 identifier: scenario.accessibilityIdentifier
             )
@@ -288,7 +293,11 @@ final class DeterministicUIScenarioCoordinator {
             NSSize(width: 820, height: 650)
         case .history:
             NSSize(width: 860, height: 560)
-        case .settings:
+        case .settings,
+             .settingsRecording,
+             .settingsExport,
+             .settingsStorage,
+             .settingsPermissions:
             SettingsView.contentSize
         case .failure, .menuPopover:
             NSSize(width: 480, height: 280)
@@ -373,6 +382,30 @@ final class DeterministicUIScenarioCoordinator {
 private extension DeterministicUIScenario {
     var accessibilityIdentifier: String {
         "clip.uiScenario.\(rawValue)"
+    }
+
+    var settingsTab: SettingsTab? {
+        switch self {
+        case .settings:
+            .general
+        case .settingsRecording:
+            .recording
+        case .settingsExport:
+            .export
+        case .settingsStorage:
+            .storage
+        case .settingsPermissions:
+            .permissions
+        case .onboarding,
+             .menuPopover,
+             .permissionsDenied,
+             .recording,
+             .paused,
+             .preview,
+             .history,
+             .failure:
+            nil
+        }
     }
 }
 

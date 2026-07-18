@@ -113,7 +113,13 @@ struct SettingsExternalActions: Sendable {
 }
 
 struct SettingsView: View {
-    static let contentSize = CGSize(width: 570, height: 470)
+    static let contentSize = CGSize(width: 640, height: 520)
+
+    static func filenameTemplateEditorText(
+        for template: RecordingFilenameTemplate
+    ) -> String {
+        String(template.format.dropLast(".mp4".count))
+    }
 
     @ObservedObject var model: AppSettingsModel
     @ObservedObject var shortcuts: GlobalShortcutService
@@ -151,35 +157,38 @@ struct SettingsView: View {
         self.storageActions = storageActions
         self.externalActions = externalActions
         _filenameTemplateText = State(
-            initialValue: model.settings.defaultFilenameTemplate.format
+            initialValue: Self.filenameTemplateEditorText(
+                for: model.settings.defaultFilenameTemplate
+            )
         )
         _selectedTab = State(initialValue: initialTab)
     }
 
     var body: some View {
         TabView(selection: $selectedTab) {
-            general
-                .accessibilityIdentifier(SettingsTab.general.accessibilityIdentifier)
-                .tag(SettingsTab.general)
-                .tabItem { Label("General", systemImage: "gearshape") }
-            recording
-                .accessibilityIdentifier(SettingsTab.recording.accessibilityIdentifier)
-                .tag(SettingsTab.recording)
-                .tabItem { Label("Recording", systemImage: "record.circle") }
-            export
-                .accessibilityIdentifier(SettingsTab.export.accessibilityIdentifier)
-                .tag(SettingsTab.export)
-                .tabItem { Label("Export", systemImage: "square.and.arrow.up") }
-            storage
-                .accessibilityIdentifier(SettingsTab.storage.accessibilityIdentifier)
-                .tag(SettingsTab.storage)
-                .tabItem { Label("Storage", systemImage: "externaldrive") }
-            permissionSettings
-                .accessibilityIdentifier(SettingsTab.permissions.accessibilityIdentifier)
-                .tag(SettingsTab.permissions)
-                .tabItem { Label("Permissions", systemImage: "hand.raised") }
+            Tab("General", systemImage: "gearshape", value: SettingsTab.general) {
+                general
+                    .accessibilityIdentifier(SettingsTab.general.accessibilityIdentifier)
+            }
+            Tab("Recording", systemImage: "record.circle", value: SettingsTab.recording) {
+                recording
+                    .accessibilityIdentifier(SettingsTab.recording.accessibilityIdentifier)
+            }
+            Tab("Export", systemImage: "square.and.arrow.up", value: SettingsTab.export) {
+                export
+                    .accessibilityIdentifier(SettingsTab.export.accessibilityIdentifier)
+            }
+            Tab("Storage", systemImage: "externaldrive", value: SettingsTab.storage) {
+                storage
+                    .accessibilityIdentifier(SettingsTab.storage.accessibilityIdentifier)
+            }
+            Tab("Permissions", systemImage: "hand.raised", value: SettingsTab.permissions) {
+                permissionSettings
+                    .accessibilityIdentifier(SettingsTab.permissions.accessibilityIdentifier)
+            }
         }
-        .padding(20)
+        .tabViewStyle(.tabBarOnly)
+        .scenePadding()
         .frame(width: Self.contentSize.width, height: Self.contentSize.height)
         .task {
             await refreshStorageUsage()
@@ -270,7 +279,7 @@ struct SettingsView: View {
                 Text("Smallest").tag(ExportPreset.smallest)
             }
 
-            Section("Video quality") {
+            Section {
                 exportQualityRow(
                     "Crisp",
                     preset: .crisp,
@@ -286,28 +295,35 @@ struct SettingsView: View {
                     preset: .smallest,
                     accessibilityIdentifier: "clip.settings.export.quality.smallest"
                 )
-                Text("Each preset uses its own H.264 quality value from 1 through 100. File size varies with the recording.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
                 Button("Reset Quality Defaults") {
                     Task { @MainActor in
                         await model.update { $0.exportQualities = .defaults }
                     }
                 }
                 .accessibilityIdentifier("clip.settings.export.quality.reset")
+            } header: {
+                Text("Video quality")
+            } footer: {
+                Text("Each preset uses its own H.264 quality value from 1 through 100. File size varies with the recording.")
             }
-            Section("File names") {
+            Section {
                 LabeledContent("Default filename format") {
                     HStack(spacing: 8) {
-                        TextField(
-                            "clip-YYYYMMDD-HHmmss.mp4",
-                            text: $filenameTemplateText
-                        )
-                        .frame(width: 245)
-                        .focused($isFilenameTemplateFocused)
-                        .accessibilityIdentifier("clip.settings.filename-template")
-                        .onSubmit {
-                            applyFilenameTemplate()
+                        HStack(spacing: 5) {
+                            TextField("", text: $filenameTemplateText)
+                                .labelsHidden()
+                                .textFieldStyle(.roundedBorder)
+                                .frame(minWidth: 190, idealWidth: 220, maxWidth: 245)
+                                .focused($isFilenameTemplateFocused)
+                                .accessibilityLabel("Default filename format")
+                                .accessibilityHint("The .mp4 extension is added automatically")
+                                .accessibilityIdentifier("clip.settings.filename-template")
+                                .onSubmit {
+                                    applyFilenameTemplate()
+                                }
+                            Text(verbatim: ".mp4")
+                                .foregroundStyle(.secondary)
+                                .accessibilityIdentifier("clip.settings.filename-extension")
                         }
                         Button("Apply") {
                             applyFilenameTemplate()
@@ -319,9 +335,6 @@ struct SettingsView: View {
                         )
                     }
                 }
-                Text("Tokens: YYYY year, MM month, DD day, HH hour, mm minute, and ss second. They are case-sensitive; .mp4 is added automatically.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
                 if let filenameTemplateValidationMessage {
                     Label(filenameTemplateValidationMessage, systemImage: "exclamationmark.triangle")
                         .font(.caption)
@@ -334,6 +347,10 @@ struct SettingsView: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
+            } header: {
+                Text("File names")
+            } footer: {
+                Text("Tokens: YYYY year, MM month, DD day, HH hour, mm minute, and ss second. They are case-sensitive; .mp4 is added automatically.")
             }
             Toggle(
                 "Close Preview after explicit Copy",
@@ -365,7 +382,7 @@ struct SettingsView: View {
         .formStyle(.grouped)
         .onChange(of: model.settings.defaultFilenameTemplate) { _, template in
             guard !isFilenameTemplateFocused else { return }
-            filenameTemplateText = template.format
+            filenameTemplateText = Self.filenameTemplateEditorText(for: template)
         }
     }
 
@@ -603,15 +620,22 @@ struct SettingsView: View {
         accessibilityIdentifier: String
     ) -> some View {
         let binding = exportQualityBinding(for: preset)
-        return LabeledContent(title) {
+        return LabeledContent {
             HStack(spacing: 8) {
-                TextField("Quality", value: binding, format: .number)
+                TextField("", value: binding, format: .number)
+                    .labelsHidden()
+                    .textFieldStyle(.roundedBorder)
                     .multilineTextAlignment(.trailing)
-                    .frame(width: 48)
+                    .frame(width: 56)
+                    .accessibilityLabel(Text(title))
                     .accessibilityIdentifier(accessibilityIdentifier)
                 Stepper("", value: binding, in: ExportQualitySettings.validRange)
                     .labelsHidden()
             }
+        } label: {
+            Text(title)
+                .lineLimit(1)
+                .fixedSize(horizontal: true, vertical: false)
         }
     }
 
@@ -627,7 +651,7 @@ struct SettingsView: View {
             switch error {
             case .empty:
                 return String(
-                    localized: "Enter a filename format, such as clip-YYYYMMDD-HHmmss.mp4."
+                    localized: "Enter a filename format, such as clip-YYYYMMDD-HHmmss."
                 )
             case .reservedName:
                 return String(localized: "The filename format cannot be “.” or “..”.")
@@ -652,7 +676,7 @@ struct SettingsView: View {
             NSSound.beep()
             return
         }
-        filenameTemplateText = template.format
+        filenameTemplateText = Self.filenameTemplateEditorText(for: template)
         Task { @MainActor in
             await model.update { $0.defaultFilenameTemplate = template }
         }

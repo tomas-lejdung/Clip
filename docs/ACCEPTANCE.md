@@ -29,8 +29,8 @@ quality-98 Crisp transcode, and Compact-90 H.264 outputs and enforces luma SSIM/
 0.985/95%, 0.98/92%, and 0.96/85% respectively. It also requires native
 dimensions, durable cadence, High-profile Rec.709 video, bounded timestamps,
 Compact output distinct from its source, and byte-identical eligible Crisp
-reuse. Policy tests cover the Smallest-85 rung, independent 1–100 settings and
-the `98`/`90`/`85` reset values, while inspecting encoder properties to ensure
+reuse. Policy tests cover the Smallest-70 rung, independent 1–100 settings and
+the `98`/`90`/`70` reset values, while inspecting encoder properties to ensure
 hardware quality paths omit bitrate limits and the exact oversized native
 software-H.264 fallback uses only its quality-derived soft average bitrate,
 never a hard data-rate limit.

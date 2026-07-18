@@ -23,7 +23,7 @@ struct MediaConfigurationTests {
     func qualityPercentConversion() {
         #expect(MediaVideoQuality.normalized(percent: 98) == 0.98)
         #expect(MediaVideoQuality.normalized(percent: 90) == 0.90)
-        #expect(MediaVideoQuality.normalized(percent: 85) == 0.85)
+        #expect(MediaVideoQuality.normalized(percent: 70) == 0.70)
         #expect(MediaVideoQuality.percent(normalized: 0.98) == 98)
 
         let recording = RecordingConfiguration(
@@ -60,7 +60,7 @@ struct MediaConfigurationTests {
         let requestedQualities: [(MediaExportPreset, Int)] = [
             (.crisp, 98),
             (.compact, 90),
-            (.smallest, 85),
+            (.smallest, 70),
         ]
 
         for (preset, percent) in requestedQualities {

@@ -119,6 +119,50 @@ final class DeterministicScenarioLaunchTests: XCTestCase {
     }
 
     @MainActor
+    func testEverySettingsTabVisualAudit() throws {
+        let scenarios: [(scenario: String, title: String, identifier: String)] = [
+            ("settings", "General", "clip.settings.general"),
+            ("settings-recording", "Recording", "clip.settings.recording"),
+            ("settings-export", "Export", "clip.settings.export"),
+            ("settings-storage", "Storage", "clip.settings.storage"),
+            ("settings-permissions", "Permissions", "clip.settings.permissions"),
+        ]
+
+        for scenario in scenarios {
+            try withScenario(scenario.scenario) { app in
+                XCTAssertTrue(
+                    app.otherElements["clip.uiScenario.\(scenario.scenario)"]
+                        .waitForExistence(timeout: 5)
+                )
+                let tab = app.otherElements[scenario.identifier]
+                XCTAssertTrue(
+                    tab.waitForExistence(timeout: 5),
+                    "\(scenario.title) did not launch as the selected Settings tab."
+                )
+
+                retainSettingsScreenshot(
+                    app,
+                    name: "Settings \(scenario.title) — Top"
+                )
+
+                let scrollView = tab.scrollViews.firstMatch.exists
+                    ? tab.scrollViews.firstMatch
+                    : app.scrollViews.firstMatch
+                XCTAssertTrue(
+                    scrollView.waitForExistence(timeout: 2),
+                    "\(scenario.title) did not expose its Settings scroll view."
+                )
+                scrollView.scroll(byDeltaX: 0, deltaY: -10_000)
+
+                retainSettingsScreenshot(
+                    app,
+                    name: "Settings \(scenario.title) — Bottom"
+                )
+            }
+        }
+    }
+
+    @MainActor
     func testFailureScenario() throws {
         try withScenario("failure") { app in
             XCTAssertTrue(app.otherElements["clip.uiScenario.failure"].waitForExistence(timeout: 5))
@@ -137,5 +181,18 @@ final class DeterministicScenarioLaunchTests: XCTestCase {
         app.launch()
         defer { app.terminate() }
         try assertions(app)
+    }
+
+    @MainActor
+    private func retainSettingsScreenshot(
+        _ app: XCUIApplication,
+        name: String
+    ) {
+        let window = app.windows.firstMatch
+        XCTAssertTrue(window.waitForExistence(timeout: 5))
+        let attachment = XCTAttachment(screenshot: window.screenshot())
+        attachment.name = name
+        attachment.lifetime = .keepAlways
+        add(attachment)
     }
 }

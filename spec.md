@@ -561,7 +561,7 @@ average bitrate. It never adds a hard data-rate limit or target file size.
 Settings presents each value as an independent integer from 1 through 100 and
 passes it to VideoToolbox on its normalized 0 through 1 scale. Clip does not
 reorder or constrain the three values. **Reset Quality Defaults** restores
-Crisp `98`, Compact `90`, and Smallest `85`.
+Crisp `98`, Compact `90`, and Smallest `70`.
 
 An unchanged, full-duration Crisp export may atomically reuse the managed
 master byte-for-byte when its recorded quality and audio layout already match
@@ -621,7 +621,7 @@ Behavior:
 
 - Preserves the managed master's native dimensions and durable cadence.
 - Uses H.264 High profile at the independently configurable quality value;
-  default `85` (`0.85` internally).
+  default `70` (`0.70` internally).
 - Uses direct VideoToolbox quality when hardware H.264 supports the exact
   dimensions; otherwise uses the native software encoder's derived soft
   average-bitrate fallback without a hard limit or target file size.
@@ -698,6 +698,13 @@ The first presentation explicitly selects **General** and must render every visi
 control, and current value immediately. Opening Settings must not depend on leaving and
 returning focus to complete SwiftUI layout or drawing.
 
+General, Recording, Export, Storage, and Permissions are presented as an always-visible
+native macOS top tab bar. They must not collapse into a toolbar overflow button at the
+supported initial window size. Clip does not draw a custom segmented selector or glass
+backdrop for these tabs; the system `TabView` supplies the current native appearance,
+including Liquid Glass where macOS applies it. Forms scroll vertically when their contents
+exceed the window; controls and labels remain single-line where practical.
+
 ## General
 
 - Launch Clip at login.
@@ -723,9 +730,12 @@ returning focus to complete SwiftUI layout or drawing.
 
 - Default export preset.
 - Independent integer quality values from 1 through 100 for Crisp, Compact,
-  and Smallest.
-- Reset Quality Defaults, restoring `98`, `90`, and `85` respectively.
-- Default filename format.
+  and Smallest, each shown in a clearly bordered single-line numeric field.
+- Reset Quality Defaults, restoring `98`, `90`, and `70` respectively.
+- Default filename format in a clearly bordered editable field. The editor contains only
+  the filename template stem; a fixed, non-editable `.mp4` suffix is shown beside it and
+  appended automatically. The field's accessible label must not also render as duplicate
+  visible prompt text.
 - Automatically close preview after copying.
 - Keep original recording after export.
 - Default Save As location.
@@ -764,11 +774,12 @@ Each permission should include a button that opens the relevant macOS System Set
 - Countdown: a silent 3 seconds, with Off, 1, 3, and 5-second choices.
 - History retention: 7 days.
 - Export preset: Crisp.
-- Export qualities: Crisp `98`, Compact `90`, Smallest `85`.
+- Export qualities: Crisp `98`, Compact `90`, Smallest `70`.
 - Automatically close preview after Copy: Off.
 - Keep original after export: On.
 - Default Save As location: `~/Movies`.
-- Filename format: `clip-YYYYMMDD-HHmmss.mp4`.
+- Canonical/output filename format: `clip-YYYYMMDD-HHmmss.mp4`; the Settings editor shows
+  `clip-YYYYMMDD-HHmmss` with the protected `.mp4` suffix beside it.
 - Appearance: the current macOS light or dark appearance.
 
 ---
@@ -938,7 +949,7 @@ Used for:
   compatible H.264 managed master byte-for-byte. An HEVC managed master is
   transcoded offline so every shared export remains H.264.
 - Crisp, Compact, and Smallest otherwise encode offline with their independent
-  Settings quality values (defaults `0.98`, `0.90`, and `0.85`), frame
+  Settings quality values (defaults `0.98`, `0.90`, and `0.70`), frame
   reordering enabled, and no hard data-rate limit. Hardware-supported H.264
   uses VideoToolbox quality directly. Exact oversized software H.264 maps the
   same quality value to a soft average bitrate because Apple's encoder rejects
@@ -1033,13 +1044,14 @@ A separate Homebrew tap can be added later if needed.
 - All automated tests run locally on the development Mac; no CI service or separate test machine is required.
 - Unit, integration, state-machine, media, and UI tests use injected services and deterministic synthetic frames and audio where practical.
 - `--ui-scenario=<name>` fixtures are honored only with `--ui-testing`. They use isolated defaults and storage plus inert permission, audio, capture, display, pasteboard, shortcut, and external-AppKit actions; they never request privacy access or enter the real-capture lane.
-- Deterministic launch fixtures cover onboarding, the populated menu-bar popover and displays, denied permissions, recording, paused recording, Preview, History, Settings, and a representative failure surface. Their UI-automation assertions compile in the permission-free suite but execute only after an explicit visible-pointer-control opt-in.
+- Deterministic launch fixtures cover onboarding, the populated menu-bar popover and displays, denied permissions, recording, paused recording, Preview, History, every Settings tab, and a representative failure surface. Their UI-automation assertions compile in the permission-free suite but execute only after an explicit visible-pointer-control opt-in.
+- A pointer-free hosted visual lane renders the production Settings window at the top and fully scrolled bottom of every tab, writes ten PNGs plus scroll-position metadata, and fails if a scrollable form does not reach its bottom.
 - Real ScreenCaptureKit, microphone, system-audio, clipboard, drag, Save As, history, and DMG smoke tests run on the development Mac.
 - The owner performs the required one-time Screen Recording, System Audio, and Microphone approvals. Test runs after approval should be unattended.
 - Multi-display topology, display disconnection, and deterministic loopback-audio cases are simulated when the necessary hardware is unavailable.
 - There is no automated Slack, GitHub, Linear, Discord, Messages, or Mail integration suite. A local receiver and Finder validate file drag and clipboard contracts; an agent-driven check in an explicitly authorized application may be performed without sending content.
 - There is no dedicated accessibility or human subjective visual-quality audit for this personal local release. Deterministic screen-content fidelity is automated with small text, one-pixel rules, saturated edges, scrolling, and 30/60 FPS motion.
-- Automated acceptance at the default `98`/`90`/`85` values requires no
+- Automated acceptance at the default `98`/`90`/`70` values requires no
   scaling, master luma SSIM of at least 0.985 with at least 95% edge retention,
   Crisp SSIM of at least 0.98 with at least 92% edge retention, Compact-90 SSIM
   of at least 0.96 with at least 85% edge retention, and no video gap beyond

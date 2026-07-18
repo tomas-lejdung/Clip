@@ -253,7 +253,7 @@ struct PreviewViewModelTests {
         #expect(request.filename.fileName == "dashboard-filters.mp4")
         #expect(request.trimRange == expectedTrim)
         #expect(request.configuration == ExportConfiguration(preset: .smallest))
-        #expect(request.videoQualityPercent == 85)
+        #expect(request.videoQualityPercent == 70)
         #expect(request.sourceVideoQualityPercent == 98)
         #expect(model.outputSizeDescription == "Quality based — size varies")
     }

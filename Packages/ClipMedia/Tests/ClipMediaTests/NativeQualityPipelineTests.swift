@@ -118,7 +118,7 @@ struct NativeQualityPipelineTests {
         #expect(quality.averageEdgeRetention >= 0.95)
     }
 
-    @Test("Crisp reuse and q98/q90/q85 transcodes meet native quality floors")
+    @Test("Crisp reuse and q98/q90/q70 transcodes meet native quality floors")
     func exportPresetsMeetScreenContentQualityFloors() async throws {
         let sourceURL = qualityTemporaryURL(named: "quality-source")
         let reusedCrispURL = qualityTemporaryURL(named: "quality-crisp-reuse")
@@ -161,7 +161,7 @@ struct NativeQualityPipelineTests {
         #expect(try Data(contentsOf: reusedCrispURL) == sourceBytes)
 
         // Unknown source quality deliberately disables reuse so q98 is measured
-        // as a second full-range H.264 generation on the same frames as q90/q85.
+        // as a second full-range H.264 generation on the same frames as q90/q70.
         let transcodedCrisp = MediaExportConfigurationFactory.make(
             preset: .crisp,
             sourceWidth: sourceInspection.width,
@@ -199,7 +199,7 @@ struct NativeQualityPipelineTests {
             sourceWidth: sourceInspection.width,
             sourceHeight: sourceInspection.height,
             sourceFramesPerSecond: framesPerSecond,
-            videoQuality: 0.85,
+            videoQuality: 0.70,
             sourceVideoQuality: 0.98
         )
         _ = try await NativeAssetExporter().export(
@@ -271,7 +271,7 @@ struct NativeQualityPipelineTests {
                 + "q90 SSIM=\(compactQuality.averageLumaSSIM) "
                 + "edges=\(compactQuality.averageEdgeRetention) "
                 + "bytes=\(compactInspection.fileSize); "
-                + "q85 SSIM=\(smallestQuality.averageLumaSSIM) "
+                + "q70 SSIM=\(smallestQuality.averageLumaSSIM) "
                 + "edges=\(smallestQuality.averageEdgeRetention) "
                 + "bytes=\(smallestInspection.fileSize)"
         )

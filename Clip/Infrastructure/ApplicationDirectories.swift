@@ -19,6 +19,10 @@ enum DeterministicUIScenario: String, CaseIterable, Equatable, Sendable {
     case preview
     case history
     case settings
+    case settingsRecording = "settings-recording"
+    case settingsExport = "settings-export"
+    case settingsStorage = "settings-storage"
+    case settingsPermissions = "settings-permissions"
     case failure
 
     static let argumentPrefix = "--ui-scenario="

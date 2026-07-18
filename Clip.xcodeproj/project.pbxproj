@@ -68,6 +68,7 @@
 		C7A100000000000000000003 /* OnboardingViewModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C7A200000000000000000003 /* OnboardingViewModelTests.swift */; };
 		D9B100000000000000000001 /* PreviewViewModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D9B200000000000000000001 /* PreviewViewModelTests.swift */; };
 		A8D100000000000000000003 /* SettingsPresentationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A8D200000000000000000003 /* SettingsPresentationTests.swift */; };
+		F5B100000000000000000001 /* SettingsVisualSnapshotTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F5B200000000000000000001 /* SettingsVisualSnapshotTests.swift */; };
 		E1B100000000000000000001 /* CaptureRecoveryRecord.swift in Sources */ = {isa = PBXBuildFile; fileRef = E1F100000000000000000001 /* CaptureRecoveryRecord.swift */; };
 		E1B100000000000000000002 /* CaptureRecoveryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E1F100000000000000000002 /* CaptureRecoveryTests.swift */; };
 /* End PBXBuildFile section */
@@ -153,6 +154,7 @@
 		C7A200000000000000000003 /* OnboardingViewModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OnboardingViewModelTests.swift; sourceTree = "<group>"; };
 		D9B200000000000000000001 /* PreviewViewModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PreviewViewModelTests.swift; sourceTree = "<group>"; };
 		A8D200000000000000000003 /* SettingsPresentationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsPresentationTests.swift; sourceTree = "<group>"; };
+		F5B200000000000000000001 /* SettingsVisualSnapshotTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsVisualSnapshotTests.swift; sourceTree = "<group>"; };
 		E1F100000000000000000001 /* CaptureRecoveryRecord.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CaptureRecoveryRecord.swift; sourceTree = "<group>"; };
 		E1F100000000000000000002 /* CaptureRecoveryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CaptureRecoveryTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
@@ -372,6 +374,7 @@
 				C7A200000000000000000003 /* OnboardingViewModelTests.swift */,
 				D9B200000000000000000001 /* PreviewViewModelTests.swift */,
 				A8D200000000000000000003 /* SettingsPresentationTests.swift */,
+				F5B200000000000000000001 /* SettingsVisualSnapshotTests.swift */,
 			);
 			path = ClipTests;
 			sourceTree = "<group>";
@@ -635,6 +638,7 @@
 				C7A100000000000000000003 /* OnboardingViewModelTests.swift in Sources */,
 				D9B100000000000000000001 /* PreviewViewModelTests.swift in Sources */,
 				A8D100000000000000000003 /* SettingsPresentationTests.swift in Sources */,
+				F5B100000000000000000001 /* SettingsVisualSnapshotTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

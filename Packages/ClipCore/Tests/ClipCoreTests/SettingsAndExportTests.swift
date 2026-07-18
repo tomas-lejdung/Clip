@@ -25,7 +25,7 @@ struct SettingsAndExportTests {
         #expect(settings.exportQualities == .defaults)
         #expect(settings.exportQualities.crisp == 98)
         #expect(settings.exportQualities.compact == 90)
-        #expect(settings.exportQualities.smallest == 85)
+        #expect(settings.exportQualities.smallest == 70)
         #expect(settings.defaultFilenameTemplate == .default)
         #expect(!settings.automaticallyClosePreviewAfterCopy)
         #expect(settings.keepOriginalAfterExport)

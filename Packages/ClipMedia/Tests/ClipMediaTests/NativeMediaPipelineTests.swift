@@ -293,7 +293,7 @@ struct NativeMediaPipelineTests {
             width: 1_920,
             height: 1_080,
             framesPerSecond: 30,
-            videoQuality: 0.85
+            videoQuality: 0.70
         )
 
         let compactPolicy = NativeVideoEncodingPolicy(configuration: compact)
@@ -302,10 +302,10 @@ struct NativeMediaPipelineTests {
 
         #expect(compactPolicy.quality == 0.90)
         #expect(crispPolicy.quality == 0.98)
-        #expect(smallestPolicy.quality == 0.85)
+        #expect(smallestPolicy.quality == 0.70)
         #expect(compactPolicy.rateControl == .quality(0.90))
         #expect(crispPolicy.rateControl == .quality(0.98))
-        #expect(smallestPolicy.rateControl == .quality(0.85))
+        #expect(smallestPolicy.rateControl == .quality(0.70))
         for policy in [compactPolicy, crispPolicy, smallestPolicy] {
             #expect(!policy.isRealTime)
             #expect(!policy.prioritizesEncodingSpeedOverQuality)
@@ -333,7 +333,7 @@ struct NativeMediaPipelineTests {
         #expect(crispProperties[kVTCompressionPropertyKey_Quality as String] as? Double == 0.98)
         #expect(crispProperties[kVTCompressionPropertyKey_DataRateLimits as String] == nil)
         #expect(smallestProperties[AVVideoAverageBitRateKey] == nil)
-        #expect(smallestProperties[kVTCompressionPropertyKey_Quality as String] as? Double == 0.85)
+        #expect(smallestProperties[kVTCompressionPropertyKey_Quality as String] as? Double == 0.70)
         #expect(smallestProperties[kVTCompressionPropertyKey_DataRateLimits as String] == nil)
         for properties in [compactProperties, crispProperties, smallestProperties] {
             #expect(properties[kVTCompressionPropertyKey_RealTime as String] as? Bool == false)
@@ -379,7 +379,7 @@ struct NativeMediaPipelineTests {
             width: 5_120,
             height: 1_440,
             framesPerSecond: 30,
-            videoQuality: 0.85
+            videoQuality: 0.70
         )
         let oversizedPolicies = [
             NativeVideoEncodingPolicy(configuration: oversizedCrisp),
@@ -388,7 +388,7 @@ struct NativeMediaPipelineTests {
         ]
         #expect(oversizedPolicies[0].rateControl == .averageBitRate(65_292_771))
         #expect(oversizedPolicies[1].rateControl == .averageBitRate(46_476_056))
-        #expect(oversizedPolicies[2].rateControl == .averageBitRate(36_999_880))
+        #expect(oversizedPolicies[2].rateControl == .averageBitRate(17_078_048))
 
         let oversizedConfigurations = [
             oversizedCrisp,
@@ -1597,7 +1597,7 @@ struct NativeMediaPipelineTests {
             width: 320,
             height: 180,
             framesPerSecond: 30,
-            videoQuality: 0.85
+            videoQuality: 0.70
         )
 
         async let crispExport = NativeAssetExporter().export(

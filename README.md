@@ -175,7 +175,7 @@ Settings exposes the resolved history directory, current default microphone, ret
 Export Settings also provides a validated default filename format using
 `YYYY`, `MM`, `DD`, `HH`, `mm`, and `ss` tokens with a live example. Its three
 independent video-quality controls accept whole numbers from 1 through 100;
-Reset Quality Defaults restores Crisp `98`, Compact `90`, and Smallest `85`.
+Reset Quality Defaults restores Crisp `98`, Compact `90`, and Smallest `70`.
 
 ## Automated acceptance design
 
@@ -199,7 +199,7 @@ ScreenCaptureKit scheduling miss; original timestamps remain unchanged and
 static/sparse variable-frame-rate timing is not expanded.
 
 **Crisp**, **Compact**, and **Smallest** are a quality ladder with independent
-Settings defaults of `98`, `90`, and `85`. All three preserve the master's
+Settings defaults of `98`, `90`, and `70`. All three preserve the master's
 native even dimensions and durable captured cadence, use H.264 High-profile
 Rec.709 video and the same 128 kbps AAC policy. Hardware H.264 uses the selected
 VideoToolbox quality directly. Exact oversized exports retain native dimensions

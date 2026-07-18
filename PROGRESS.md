@@ -48,11 +48,13 @@ review of that new build remain pending.
 Current quality-ladder and ultrawide-fallback evidence completed on 2026-07-18:
 
 - `./scripts/typecheck.sh` passed the complete strict Swift 6 source/package/localization audit, ClipCore 80/80, ClipMedia 73/73, and app/test compilation and link.
-- The final merged runs passed ClipCore 80/80, ClipMedia 73/73, and hosted Xcode ClipTests 153/153 with 0 failures and 0 skips (`.build/Test-Clip-ultrawide-fix.xcresult`). The hosted lane did not launch production, request privacy permissions, run UI automation, or move the pointer.
+- The current merged runs passed ClipCore 80/80, ClipMedia 73/73, and hosted Xcode ClipTests 153/153 with 0 failures. The ordinary hosted lane records one expected skip for the opt-in Settings snapshot generator; its dedicated pointer-free invocation passed separately and produced all ten PNGs. Neither lane requested privacy permissions, ran UI automation, or moved the pointer.
 - A paced exact-size 5,120 x 1,440 at 30 FPS live regression encoded all 60 animated frames through the hardware HEVC fallback with bounded cadence. A separate 5,120 x 2,880 HEVC-master regression exported exact-size H.264 successfully through the native software encoder and verified the quality-derived soft-rate policy without a hard data-rate limit.
-- The native quality acceptance encoded and decoded the deterministic fine-detail fixture. Quality `98`, `90`, and `85` measured SSIM `0.9999985631`, `0.9999682113`, and `0.9998105059`; each measured `100%` edge retention. The same suite passed native geometry/cadence, H.264 High, Rec.709, 30/60 FPS timing, audio, trim, Pause/Resume, hardware quality controls, and byte-identical eligible Crisp reuse.
+- The native quality acceptance encoded and decoded the deterministic fine-detail fixture. Quality `98`, `90`, and `70` measured SSIM `0.9999985631`, `0.9999682113`, and `0.9987684765`; each measured `100%` edge retention. The same suite passed native geometry/cadence, H.264 High, Rec.709, 30/60 FPS timing, audio, trim, Pause/Resume, hardware quality controls, and byte-identical eligible Crisp reuse.
 - The revised Release benchmark passed Preview media readiness with `44.69`/`45.72`/`45.81` ms min/median/max and a real native 1,440 x 900 at 30 FPS Compact-90 offline transcode with `1,671.29`/`1,674.66`/`1,740.53` ms min/median/max. Both remain below their 1,000 ms and 2,000 ms targets; machine-readable evidence is in `.build/performance/latest.json`.
-- The current `.build/Clip.dmg` is 2,235,769 bytes with SHA-256 `5b9bc2e5c12ec02bde77d88c232375ab5961d07f12ebfa6be987538c55c07767`. Read-only mounting and verification passed its certificate signature, designated requirement, sandbox entitlements, Hardened Runtime, production resources, and Applications shortcut. The installed `/Applications/Clip.app` executable exactly matches the packaged Release executable at SHA-256 `477ad5879415b21a5f75c7fa702986a12b3f94f2a5ebff508e3497b10660fbeb` and launched successfully.
+- The current `.build/Clip.dmg` is 2,238,555 bytes with SHA-256 `3ac547c5457abe77e1f3b5b7d3d5d710af2c72b819da76b2e5dbeccfe77de71d`. Read-only mounting and verification passed its certificate signature, designated requirement, sandbox entitlements, Hardened Runtime, production resources, and Applications shortcut. The installed `/Applications/Clip.app` executable exactly matches the packaged Release executable at SHA-256 `685ed1adf2853038ee39561370c835d175d6c8f687949a8b4ec38e88868c38ef` and launched successfully.
+- The Settings visual audit rendered General, Recording, Export, Storage, and Permissions at both top and fully-scrolled bottom. Export reached its exact 228-point bottom offset; the other four tabs fit without vertical overflow.
+- The focused Settings presentation suite passed 3/3 after adding the extensionless filename editor round trip; the dedicated visual lane passed and regenerated all ten current screenshots.
 - `git diff --check`, the project audit, and searches for obsolete target-size and hard data-rate controls passed.
 
 Baseline permission-free evidence completed on 2026-07-17, before the current
@@ -175,7 +177,7 @@ Evidence:
 
 - [x] Build General, Recording, Export, Storage, and Permissions settings sections.
 - [x] Implement every initial default in `spec.md`, including Capture Area, 30 FPS, cursor On, audio Off, three-second countdown, seven-day retention, and Crisp export.
-- [x] Add independent 1–100 Crisp, Compact, and Smallest quality controls with a Reset Quality Defaults action restoring `98`, `90`, and `85`; do not impose ordering constraints.
+- [x] Add independent 1–100 Crisp, Compact, and Smallest quality controls with a Reset Quality Defaults action restoring `98`, `90`, and `70`; do not impose ordering constraints.
 - [x] Run the final settings persistence, rendering, and reset verification after the quality-ladder merge.
 - [x] Implement configurable global Capture, Finish, and Pause/Resume shortcuts without requiring Accessibility access.
 - [x] Detect invalid or conflicting shortcut assignments and allow restoring defaults.
@@ -188,11 +190,16 @@ Evidence:
 - [x] Implement a validated filename format with `YYYY`, `MM`, `DD`, `HH`, `mm`, and `ss` tokens, a live example, and schema migration for existing settings.
 - [x] Persist preferences safely and support future preference migrations.
 - [x] Select General explicitly and present the correctly sized key Settings window so labels and controls render on first open without a focus cycle.
+- [x] Replace the collapsed Settings toolbar-overflow selector with an always-visible native top tab bar.
+- [x] Keep each Video Quality label on one line and give every numeric quality value an explicit bordered editor.
+- [x] Remove the filename field's duplicate visible prompt and give the editable format an explicit bordered editor.
+- [x] Keep the protected `.mp4` suffix outside the filename editor while appending and persisting it automatically.
+- [x] Add direct deterministic launches for all five Settings tabs plus top-and-fully-scrolled-bottom visual snapshots for each tab.
 
 Evidence:
 
 - The 80 passing ClipCore tests cover defaults, Capture App persistence, filename formatting and schema migration, validation, shortcut conflicts, history, migrations, Remove audio persistence and legacy decoding, and the multi-hour 10,000-cycle Pause/Resume state soak. Executed app tests cover filename-template persistence/use, Carbon registration, and security-scoped bookmark restoration.
-- Settings presentation has a deterministic initial-tab/content-size seam, stable control identifiers, inert external actions for scenario launches, and compile-only assertions that require the initial General controls and labels to exist before any focus interaction.
+- Settings presentation has a deterministic initial-tab/content-size seam, stable control identifiers, an extensionless filename editor adapter, inert external actions for scenario launches, and compile-only assertions for every tab. The pointer-free visual lane renders ten top/bottom PNGs; its manifest verifies Export reaches its exact bottom while the other four tabs fit without overflow.
 - Runtime checks for login-item registration, Dock switching, and sandbox bookmark restoration remain in the installed-app pass.
 
 ### CAP-01 — Displays and capture selection
@@ -307,7 +314,7 @@ Evidence:
 
 - [x] Build a native AVFoundation/VideoToolbox export pipeline with no FFmpeg dependency.
 - [x] Apply the selected trim accurately to within one frame.
-- [x] Implement Crisp, Compact, and Smallest as native-dimension, durable-cadence H.264 quality rungs using the independent Settings values (defaults `0.98`, `0.90`, and `0.85`).
+- [x] Implement Crisp, Compact, and Smallest as native-dimension, durable-cadence H.264 quality rungs using the independent Settings values (defaults `0.98`, `0.90`, and `0.70`).
 - [x] Leave bitrate limits unset for the live master and hardware-supported quality exports; for exact oversized software H.264, derive its supported soft average bitrate from the same quality setting without a hard limit or target-size UI.
 - [x] Use the current Crisp quality for live `RealTime = true` master capture and quality-oriented `RealTime = false` encoding for offline exports.
 - [x] Restrict byte-identical source reuse to compatible, full-duration Crisp requests whose recorded and requested quality match; Compact and Smallest always use their offline quality policy.
@@ -328,7 +335,7 @@ Evidence:
 
 Evidence:
 
-- The merged baseline ClipMedia 68/68 and hosted ClipTests 153/153 runs cover independent `98`/`90`/`85` quality values, caller-owned 1–100 settings, native dimensions/cadence, hardware quality control, Compact/Smallest transcoding, Crisp quality-compatible reuse, trim, Rec.709, 128 kbps AAC, silent export, cache-key invalidation, atomic publication, and source/destination preservation. The subsequent ultrawide regression covers exact-size hardware HEVC capture and the software H.264 soft-rate fallback required for shared output.
+- The merged baseline ClipMedia and hosted ClipTests runs cover independent `98`/`90`/`70` default quality values, caller-owned 1–100 settings, native dimensions/cadence, hardware quality control, Compact/Smallest transcoding, Crisp quality-compatible reuse, trim, Rec.709, 128 kbps AAC, silent export, cache-key invalidation, atomic publication, and source/destination preservation. The subsequent ultrawide regression covers exact-size hardware HEVC capture and the software H.264 soft-rate fallback required for shared output.
 - Executed Preview/Save tests cover exact trim/preset/name export requests, lazy promised-file drag, explicit Copy with the exact exported size in its confirmation, Save cancellation, exact-URL creation/replacement, balanced security scope, Reveal, post-share warnings, and temporary-file/history ownership. Actual promised-file drag and sandboxed Save-panel interaction remain part of the current-build real-Mac pass.
 
 ### HIS-01 — History and managed storage
@@ -460,7 +467,7 @@ Evidence:
 
 Evidence:
 
-- A clean stable-signed `scripts/package-dmg.sh` Release build and `scripts/verify-dmg.sh` read-only verification produced the current `.build/Clip.dmg`: 2,233,828 bytes, SHA-256 `d9b2500b927b9380c2e34a17fe170319ecaeae0a1a9ae244152c6e4d16144dbe`.
+- A clean stable-signed `scripts/package-dmg.sh` Release build and `scripts/verify-dmg.sh` read-only verification produced the current `.build/Clip.dmg`: 2,238,555 bytes, SHA-256 `3ac547c5457abe77e1f3b5b7d3d5d710af2c72b819da76b2e5dbeccfe77de71d`.
 - The mounted artifact contains the arm64 app and Applications symlink, production resources and privacy descriptions, Apple Development certificate `BA37BFFD2BD1C29A995682647428847DBC6A83B3`, Team ID `FJ2BS65H3F`, a stable certificate-based designated requirement, Hardened Runtime, and required sandbox entitlements.
-- `/Applications/Clip.app` now contains the same verified Release executable, SHA-256 `4097d8378ade587404da1195936205ef02ee97294140502c96f7cf9d1e193239`. It was not launched, so manual and permission-backed capture review remain open without risking pointer control or an unsolicited privacy prompt.
+- `/Applications/Clip.app` now contains the same verified Release executable, SHA-256 `685ed1adf2853038ee39561370c835d175d6c8f687949a8b4ec38e88868c38ef`, and launched successfully. Manual and permission-backed capture review remain open.
 - The permission-free release wrapper now writes ad-hoc verification images to `.build/Clip-permission-free.dmg`, preventing a CI-style verification run from overwriting the stable-signed `.build/Clip.dmg` and its privacy identity.

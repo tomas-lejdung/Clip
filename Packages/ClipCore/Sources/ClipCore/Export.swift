@@ -10,7 +10,7 @@ public enum ExportPreset: String, CaseIterable, Codable, Hashable, Sendable {
 /// to expose VideoToolbox's fractional representation.
 public struct ExportQualitySettings: Codable, Equatable, Hashable, Sendable {
     public static let validRange = 1...100
-    public static let defaults = Self(crisp: 98, compact: 90, smallest: 85)
+    public static let defaults = Self(crisp: 98, compact: 90, smallest: 70)
 
     public var crisp: Int
     public var compact: Int

@@ -337,7 +337,7 @@
     "Each preset uses its own H.264 quality value from 1 through 100. File size varies with the recording." : {
 
     },
-    "Enter a filename format, such as clip-YYYYMMDD-HHmmss.mp4." : {
+    "Enter a filename format, such as clip-YYYYMMDD-HHmmss." : {
 
     },
     "Enter a valid MP4 filename without folders or control characters." : {
@@ -715,6 +715,9 @@
 
     },
     "The deterministic UI scenario did not receive an isolated state directory." : {
+
+    },
+    "The .mp4 extension is added automatically" : {
 
     },
     "The exported video file is unavailable." : {
