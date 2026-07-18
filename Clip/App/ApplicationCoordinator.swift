@@ -154,6 +154,7 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
     private let menuBarModel = MenuBarPopoverModel()
     private let onboardingStore: OnboardingStore
     private let regionOutlineController = CaptureRegionOutlineController()
+    private let applicationUpdater: any ApplicationUpdateServicing
 
     private var statusItem: NSStatusItem?
     private var selectionController: CaptureSelectionController?
@@ -182,9 +183,11 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
 
     init(
         dependencies: AppDependencies,
+        applicationUpdater: any ApplicationUpdateServicing,
         statusBar: NSStatusBar = .system
     ) {
         self.dependencies = dependencies
+        self.applicationUpdater = applicationUpdater
         self.statusBar = statusBar
         lastAreaStore = LastAreaStore(defaults: dependencies.defaults)
         onboardingStore = OnboardingStore(defaults: dependencies.defaults)
@@ -422,6 +425,7 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
             },
             openHistory: { [weak self] in self?.openHistory() },
             openSettings: { [weak self] in self?.openSettings() },
+            checkForUpdates: { [weak self] in self?.checkForUpdates() },
             quit: { NSApp.terminate(nil) }
         )
         popover.behavior = .transient
@@ -434,6 +438,16 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
         Task { @MainActor [weak self] in
             await self?.refreshMenuBarModel()
         }
+    }
+
+    private func checkForUpdates() {
+        guard !isPreparingForTermination else { return }
+        popover.performClose(nil)
+        guard applicationUpdater.canCheckForUpdates else {
+            NSSound.beep()
+            return
+        }
+        applicationUpdater.checkForUpdates()
     }
 
     private func installRecordingPopover(model: RecordingPresentationModel) {

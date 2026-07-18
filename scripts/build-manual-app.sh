@@ -10,6 +10,7 @@ RESOURCES="$CONTENTS/Resources"
 PARTIAL_INFO="$MANUAL_BUILD/asset-info.plist"
 
 source "$ROOT/scripts/signing-config.sh"
+source "$ROOT/scripts/version-config.sh"
 clip_warn_if_ad_hoc_signing
 
 "$ROOT/scripts/typecheck.sh"
@@ -23,8 +24,8 @@ ditto "$ROOT/Clip/Resources/Info.plist" "$CONTENTS/Info.plist"
 /usr/libexec/PlistBuddy -c "Set :CFBundleExecutable Clip" "$CONTENTS/Info.plist"
 /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier com.tomaslejdung.clip" "$CONTENTS/Info.plist"
 /usr/libexec/PlistBuddy -c "Set :CFBundleName Clip" "$CONTENTS/Info.plist"
-/usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString 1.0.0" "$CONTENTS/Info.plist"
-/usr/libexec/PlistBuddy -c "Set :CFBundleVersion 1" "$CONTENTS/Info.plist"
+/usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $CLIP_MARKETING_VERSION" "$CONTENTS/Info.plist"
+/usr/libexec/PlistBuddy -c "Set :CFBundleVersion $CLIP_BUILD_VERSION" "$CONTENTS/Info.plist"
 /usr/libexec/PlistBuddy -c "Set :LSMinimumSystemVersion 15.0" "$CONTENTS/Info.plist"
 
 xcrun actool "$ROOT/Clip/Resources/Assets.xcassets" \

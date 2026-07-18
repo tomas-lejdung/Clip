@@ -4,6 +4,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DERIVED_DATA="${CLIP_SETTINGS_SNAPSHOT_DERIVED_DATA:-$ROOT/.build/DerivedDataSettingsSnapshots}"
+SOURCE_PACKAGES="${CLIP_SOURCE_PACKAGES_PATH:-$ROOT/.build/SourcePackages}"
 OUTPUT_DIRECTORY="${1:-$ROOT/.build/settings-snapshots}"
 MODULE_CACHE="$ROOT/.build/SettingsSnapshotModuleCache"
 XCTESTRUN_COPY="$DERIVED_DATA/Build/Products/SettingsSnapshots.xctestrun"
@@ -19,6 +20,7 @@ xcodebuild build-for-testing \
   -configuration Debug \
   -destination "platform=macOS,arch=arm64" \
   -derivedDataPath "$DERIVED_DATA" \
+  -clonedSourcePackagesDirPath "$SOURCE_PACKAGES" \
   CODE_SIGNING_ALLOWED=NO \
   -only-testing:ClipTests/SettingsVisualSnapshotTests
 

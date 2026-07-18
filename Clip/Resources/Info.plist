@@ -36,5 +36,13 @@
 	<string>Clip records the area or display that you choose so you can share a screen clip.</string>
 	<key>NSPrincipalClass</key>
 	<string>NSApplication</string>
+	<key>SUEnableAutomaticChecks</key>
+	<true/>
+	<key>SUEnableInstallerLauncherService</key>
+	<true/>
+	<key>SUFeedURL</key>
+	<string>https://tomas-lejdung.github.io/Clip/appcast.xml</string>
+	<key>SUPublicEDKey</key>
+	<string>2f0OM+Z+fTlsmPCPyGNr6ewcQj5emDCZu7faQMia5jU=</string>
 </dict>
 </plist>

@@ -5,6 +5,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DERIVED_DATA="${CLIP_DERIVED_DATA_PATH:-$ROOT/.build/DerivedData}"
 MODULE_CACHE="$ROOT/.build/ModuleCache"
+SOURCE_PACKAGES="${CLIP_SOURCE_PACKAGES_PATH:-$ROOT/.build/SourcePackages}"
 TEST_CONFIGURATION="${CLIP_TEST_CONFIGURATION:-Debug}"
 TEST_SELECTION=(-only-testing:ClipTests)
 REAL_CAPTURE_CONDITION=""
@@ -125,6 +126,7 @@ XCODEBUILD_ARGUMENTS=(
   -configuration "$TEST_CONFIGURATION"
   -destination "platform=macOS,arch=arm64"
   -derivedDataPath "$DERIVED_DATA"
+  -clonedSourcePackagesDirPath "$SOURCE_PACKAGES"
   CODE_SIGNING_ALLOWED=YES
   CODE_SIGN_IDENTITY="$CLIP_CODE_SIGN_IDENTITY"
   # Hosted tests use `@testable import Clip`. Debug enables this by default;

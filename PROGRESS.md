@@ -95,6 +95,7 @@ Permission-gated evidence and remaining checks:
 | TST-01 | Quality | `IN_PROGRESS` | Codex | Deterministic automated test harness | FND-01 |
 | TST-02 | Quality | `BLOCKED` | Codex | Real-Mac acceptance suite | CAP-01, REC-01, AUD-01, EXP-01, HIS-01, TST-01 |
 | REL-01 | Release | `IN_PROGRESS` | Codex | Local DMG and final handoff | APP-01, PER-01, SET-01, ERR-01, TST-02 |
+| UPD-01 | Release | `IN_PROGRESS` | Codex | GitHub Releases application updates | APP-01, REL-01 |
 
 ## Card checklists
 
@@ -485,3 +486,50 @@ Evidence:
 - The mounted artifact contains the arm64 app and Applications symlink, production resources and privacy descriptions, Apple Development certificate `BA37BFFD2BD1C29A995682647428847DBC6A83B3`, Team ID `FJ2BS65H3F`, a stable certificate-based designated requirement, Hardened Runtime, and required sandbox entitlements.
 - `/Applications/Clip.app` now contains the same verified Release executable, SHA-256 `4e651dd557196bdc2534aaeb6516504d7dd9e1495288722bc8881b2d36437f26`, and launched successfully. Manual Capture Area interior movement passed; broader permission-backed capture review remains open.
 - The permission-free release wrapper now writes ad-hoc verification images to `.build/Clip-permission-free.dmg`, preventing a CI-style verification run from overwriting the stable-signed `.build/Clip.dmg` and its privacy identity.
+
+### UPD-01 — GitHub Releases application updates
+
+- Status: `IN_PROGRESS`
+- Lane: Release
+- Owner: Codex
+
+- [x] Pin Sparkle 2 through Swift Package Manager and embed its runtime in the Clip target.
+- [x] Configure the GitHub Pages appcast, EdDSA public key, automatic checks,
+  sandboxed installer service, outbound networking, and required mach-lookup exceptions.
+- [x] Add **Check for Updates…** to the menu-bar popover and retain the updater
+  controller for the production application lifetime.
+- [x] Add fail-closed appcast generation, signing, validation, release staging,
+  nested-bundle signing, and documented rollback procedures without publishing automatically.
+- [x] Verify updater configuration and menu-action forwarding in permission-free hosted tests.
+- [x] Build and validate a stable-signed Sparkle-enabled bootstrap DMG and its
+  locally signed appcast without publishing either artifact.
+- [ ] Manually install the bootstrap DMG because existing builds do not contain
+  an updater.
+- [ ] Publish the immutable GitHub Release asset and GitHub Pages appcast after
+  owner approval.
+- [ ] With a later version, exercise older-to-newer discovery, download,
+  installation, relaunch, and Settings/History preservation end to end.
+
+Evidence:
+
+- Updater ownership and production wiring are implemented in
+  `Clip/App/ApplicationUpdater.swift`, `Clip/App/AppDelegate.swift`,
+  `Clip/App/ApplicationCoordinator.swift`, and `Clip/UI/MenuBarPopoverView.swift`.
+- `Clip/Resources/Info.plist` contains the hosted feed, embedded public key,
+  automatic-check, and installer-service configuration;
+  `Clip/Resources/Clip.entitlements` contains the network-client and Sparkle
+  mach-lookup capabilities.
+- `ClipTests/ApplicationUpdateConfigurationTests.swift` passed 5/5 in
+  `.build/UpdaterTests/Logs/Test/Test-Clip-2026.07.18_18-18-37-+0200.xcresult`,
+  covering dormant startup, action forwarding, the exact HTTPS feed URL, public
+  key shape, installer service, and version formats.
+- Release implementation and operator guidance live in
+  `scripts/sign-app-bundle.sh`, `scripts/generate-appcast.sh`,
+  `scripts/validate-appcast.sh`, `scripts/prepare-github-release.sh`, and
+  `docs/RELEASING.md`. These tools stage and validate artifacts locally; they do
+  not publish a release or change GitHub Pages settings.
+- The stable-signed 1.0.0 (build 1) candidate embeds Sparkle 2.9.4 and its local
+  one-item appcast passed independent Ed25519 verification against the public
+  key embedded in the packaged app. Final staging additionally requires a clean
+  exact-commit build, committed Xcode versions, isolated dependency resolution,
+  and true-first-release bootstrap checks.

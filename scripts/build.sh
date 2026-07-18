@@ -5,8 +5,11 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CONFIGURATION="${1:-Debug}"
 DERIVED_DATA="${CLIP_DERIVED_DATA_PATH:-$ROOT/.build/DerivedData}"
+SOURCE_PACKAGES="${CLIP_SOURCE_PACKAGES_PATH:-$ROOT/.build/SourcePackages}"
+PACKAGE_CACHE="${CLIP_PACKAGE_CACHE_PATH:-}"
 
 source "$ROOT/scripts/signing-config.sh"
+source "$ROOT/scripts/version-config.sh"
 clip_warn_if_ad_hoc_signing
 
 XCODE_SIGNING_ARGUMENTS=(
@@ -32,11 +35,29 @@ case "$CONFIGURATION" in
     ;;
 esac
 
+PACKAGE_ARGUMENTS=(
+  -onlyUsePackageVersionsFromResolvedFile
+)
+if [[ "${CLIP_DISABLE_PACKAGE_REPOSITORY_CACHE:-0}" == "1" ]]; then
+  PACKAGE_ARGUMENTS+=(
+    -disablePackageRepositoryCache
+  )
+fi
+if [[ -n "$PACKAGE_CACHE" ]]; then
+  PACKAGE_ARGUMENTS+=(
+    -packageCachePath "$PACKAGE_CACHE"
+  )
+fi
+
 exec xcodebuild \
   -project "$ROOT/Clip.xcodeproj" \
   -scheme Clip \
   -configuration "$CONFIGURATION" \
   -destination "platform=macOS,arch=arm64" \
   -derivedDataPath "$DERIVED_DATA" \
+  -clonedSourcePackagesDirPath "$SOURCE_PACKAGES" \
+  "${PACKAGE_ARGUMENTS[@]}" \
+  MARKETING_VERSION="$CLIP_MARKETING_VERSION" \
+  CURRENT_PROJECT_VERSION="$CLIP_BUILD_VERSION" \
   "${XCODE_SIGNING_ARGUMENTS[@]}" \
   clean build

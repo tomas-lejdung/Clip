@@ -8,6 +8,7 @@ MOUNT_ROOT="$ROOT/.build/dmg-mount"
 DESIGNATED_REQUIREMENT_SIDECAR="$DMG.designated-requirement"
 
 source "$ROOT/scripts/signing-config.sh"
+source "$ROOT/scripts/version-config.sh"
 
 fail() {
   echo "DMG verification failed: $*" >&2
@@ -23,10 +24,12 @@ hdiutil verify "$DMG" >/dev/null
 
 rm -rf "$MOUNT_ROOT"
 mkdir -p "$MOUNT_ROOT"
+ENTITLEMENT_DIAGNOSTICS="$(mktemp "$ROOT/.build/dmg-entitlement-diagnostics.XXXXXX")"
 
 cleanup() {
   hdiutil detach "$MOUNT_ROOT" -quiet || true
   rmdir "$MOUNT_ROOT" 2>/dev/null || true
+  rm -f "$ENTITLEMENT_DIAGNOSTICS"
 }
 trap cleanup EXIT
 
@@ -51,6 +54,23 @@ file "$EXECUTABLE" | grep -q "Mach-O 64-bit executable arm64" \
   || fail "Clip executable is not an arm64 Mach-O"
 test -f "$APP/Contents/Resources/Assets.car" || fail "compiled asset catalog is missing"
 test -f "$APP/Contents/Resources/AppIcon.icns" || fail "compiled app icon is missing"
+SPARKLE_FRAMEWORK="$APP/Contents/Frameworks/Sparkle.framework"
+test -d "$SPARKLE_FRAMEWORK" || fail "Sparkle.framework is missing"
+SPARKLE_VERSION="$(
+  plutil -extract CFBundleShortVersionString raw -o - \
+    "$SPARKLE_FRAMEWORK/Versions/Current/Resources/Info.plist"
+)"
+[[ "$SPARKLE_VERSION" == "2.9.4" ]] \
+  || fail "unexpected embedded Sparkle version '$SPARKLE_VERSION'"
+for COMPONENT in \
+  "$SPARKLE_FRAMEWORK/Versions/Current/XPCServices/Installer.xpc" \
+  "$SPARKLE_FRAMEWORK/Versions/Current/XPCServices/Downloader.xpc" \
+  "$SPARKLE_FRAMEWORK/Versions/Current/Autoupdate" \
+  "$SPARKLE_FRAMEWORK/Versions/Current/Updater.app" \
+  "$SPARKLE_FRAMEWORK"; do
+  codesign --verify --strict "$COMPONENT" \
+    || fail "embedded Sparkle component has an invalid signature: $COMPONENT"
+done
 
 INFO_XML="$(plutil -convert xml1 -o - "$INFO")"
 if grep -Fq '$(' <<<"$INFO_XML"; then
@@ -58,12 +78,20 @@ if grep -Fq '$(' <<<"$INFO_XML"; then
   exit 1
 fi
 
-ENTITLEMENTS="$(codesign -d --entitlements - --xml "$APP" 2>/dev/null)"
+if ! ENTITLEMENTS="$(
+  codesign -d --entitlements - --xml "$APP" 2>"$ENTITLEMENT_DIAGNOSTICS"
+)"; then
+  fail "could not read packaged app entitlements"
+fi
+if grep -Fq 'invalid entitlements blob' "$ENTITLEMENT_DIAGNOSTICS"; then
+  fail "codesign reports an invalid packaged entitlement blob"
+fi
 for KEY in \
   com.apple.security.app-sandbox \
   com.apple.security.device.audio-input \
   com.apple.security.files.user-selected.read-write \
-  com.apple.security.files.bookmarks.app-scope; do
+  com.apple.security.files.bookmarks.app-scope \
+  com.apple.security.network.client; do
   VALUE=""
   if ! VALUE="$(
     /usr/libexec/PlistBuddy -c "Print :$KEY" /dev/stdin \
@@ -71,6 +99,20 @@ for KEY in \
   )" || [[ "$VALUE" != "true" ]]; then
     fail "required entitlement '$KEY' is missing or false"
   fi
+done
+if /usr/libexec/PlistBuddy \
+    -c 'Print :com.apple.security.get-task-allow' \
+    /dev/stdin <<<"$ENTITLEMENTS" >/dev/null 2>&1; then
+  fail "distributed app contains com.apple.security.get-task-allow"
+fi
+if grep -Fq '$(' <<<"$ENTITLEMENTS"; then
+  fail "packaged entitlements contain an unresolved build setting"
+fi
+for SERVICE in \
+  com.tomaslejdung.clip-spks \
+  com.tomaslejdung.clip-spki; do
+  grep -Fq "<string>$SERVICE</string>" <<<"$ENTITLEMENTS" \
+    || fail "required Sparkle Mach lookup entitlement '$SERVICE' is missing"
 done
 
 SIGNATURE_INFO="$(codesign -dvvv "$APP" 2>&1)"
@@ -128,14 +170,20 @@ COPYRIGHT="$(plutil -extract NSHumanReadableCopyright raw -o - "$INFO")"
 MICROPHONE_USAGE="$(plutil -extract NSMicrophoneUsageDescription raw -o - "$INFO")"
 SYSTEM_AUDIO_USAGE="$(plutil -extract NSAudioCaptureUsageDescription raw -o - "$INFO")"
 SCREEN_CAPTURE_USAGE="$(plutil -extract NSScreenCaptureUsageDescription raw -o - "$INFO")"
+AUTOMATIC_UPDATE_CHECKS="$(plutil -extract SUEnableAutomaticChecks raw -o - "$INFO")"
+INSTALLER_SERVICE="$(plutil -extract SUEnableInstallerLauncherService raw -o - "$INFO")"
+UPDATE_FEED="$(plutil -extract SUFeedURL raw -o - "$INFO")"
+UPDATE_PUBLIC_KEY="$(plutil -extract SUPublicEDKey raw -o - "$INFO")"
 
 [[ "$IDENTIFIER" == "com.tomaslejdung.clip" ]] || fail "unexpected bundle identifier"
 [[ "$NAME" == "Clip" ]] || fail "unexpected bundle name"
 [[ "$DISPLAY_NAME" == "Clip" ]] || fail "unexpected display name"
 [[ "$BUNDLE_EXECUTABLE" == "Clip" ]] || fail "unexpected bundle executable"
 [[ "$PACKAGE_TYPE" == "APPL" ]] || fail "unexpected bundle package type"
-[[ "$VERSION" == "1.0.0" ]] || fail "unexpected marketing version"
-[[ "$BUILD" == "1" ]] || fail "unexpected build number"
+[[ "$VERSION" == "$CLIP_MARKETING_VERSION" ]] \
+  || fail "marketing version '$VERSION' does not match '$CLIP_MARKETING_VERSION'"
+[[ "$BUILD" == "$CLIP_BUILD_VERSION" ]] \
+  || fail "build number '$BUILD' does not match '$CLIP_BUILD_VERSION'"
 [[ "$MINIMUM_SYSTEM" == "15.0" ]] || fail "unexpected minimum macOS version"
 [[ "$MENU_BAR_ONLY" == "true" ]] || fail "Clip is not configured as a menu-bar app"
 [[ "$COPYRIGHT" == "Copyright © 2026 Tomas Lejdung. All rights reserved." ]] \
@@ -143,6 +191,14 @@ SCREEN_CAPTURE_USAGE="$(plutil -extract NSScreenCaptureUsageDescription raw -o -
 [[ -n "$MICROPHONE_USAGE" ]] || fail "microphone usage description is missing"
 [[ -n "$SYSTEM_AUDIO_USAGE" ]] || fail "system-audio usage description is missing"
 [[ -n "$SCREEN_CAPTURE_USAGE" ]] || fail "screen-capture usage description is missing"
+[[ "$AUTOMATIC_UPDATE_CHECKS" == "true" ]] \
+  || fail "automatic update checks are not enabled"
+[[ "$INSTALLER_SERVICE" == "true" ]] \
+  || fail "Sparkle installer service is not enabled"
+[[ "$UPDATE_FEED" == "https://tomas-lejdung.github.io/Clip/appcast.xml" ]] \
+  || fail "unexpected Sparkle feed URL"
+[[ "$UPDATE_PUBLIC_KEY" =~ ^[A-Za-z0-9+/]{43}=$ ]] \
+  || fail "Sparkle public key is missing or malformed"
 
 echo "Verified $DMG"
 echo "Signing identity: $CLIP_CODE_SIGN_IDENTITY"

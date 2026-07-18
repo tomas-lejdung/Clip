@@ -133,13 +133,33 @@ The default and Personal Team workflows are intentionally not Developer ID
 signed or notarized. If macOS attaches quarantine after the DMG is downloaded,
 messaged, or AirDropped, open Privacy & Security and use **Open Anyway** once.
 
-When Xcode's project driver is temporarily unavailable, the same source set can be assembled with the lower-level Apple tools as an additional release diagnostic:
+The low-level manual build remains a compile diagnostic, but updater-enabled
+release packages must use the Xcode build so Sparkle's framework and installer
+services are embedded and signed correctly.
+
+## Publish an update
+
+Clip uses Sparkle 2 for native updates. Versioned DMGs live in GitHub Releases,
+while the signed appcast is served from this repository's `docs/appcast.xml`
+through GitHub Pages. Release preparation is local and fail-closed: it verifies
+the version, build number, code signature, embedded updater configuration,
+immutable asset URL, EdDSA signature, exact committed source version, and a
+fresh isolated resolution of the pinned Sparkle dependency without publishing
+anything.
 
 ```bash
-CLIP_MANUAL_BUILD=1 ./scripts/package-dmg.sh
+./scripts/prepare-github-release.sh \
+  --tag v1.0.1 \
+  --release-notes .build/release-notes/v1.0.1.md \
+  --keychain-account ed25519
 ```
 
-That path still runs all package tests, performs the strict Swift 6 compile/link gate, compiles the asset and string catalogs, applies the production entitlements and Hardened Runtime, and uses the same configured signing identity. The normal Xcode Release build remains the final release path.
+See [docs/RELEASING.md](docs/RELEASING.md) for the one-time GitHub Pages setup,
+key handling, version rules, ordered GitHub Release commands, final update test,
+and rollback procedure. Release staging also requires clean-build provenance
+and verifies the archive signature against the public key embedded in Clip.
+The first Sparkle-enabled build must be installed manually; later releases can
+update it in place.
 
 ## Install and permissions
 

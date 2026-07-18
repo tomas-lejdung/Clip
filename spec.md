@@ -994,7 +994,14 @@ SQLite is not required for the MVP unless the recording-history model grows sign
 
 - Swift Package Manager.
 
-There are no third-party runtime dependencies in the MVP. Test-only dependencies should also be avoided unless they materially improve deterministic verification.
+Sparkle 2 is the sole third-party runtime dependency and is pinned to an exact
+version through Swift Package Manager. It is used only for application update
+discovery, download, verification, installation, and relaunch. Clip bundles no
+third-party media encoder or other media runtime. Test-only dependencies should
+also be avoided unless they materially improve deterministic verification.
+Publishable DMGs resolve that exact Sparkle revision and its reviewed binary
+checksum in a fresh isolated package cache; ignored development-package state
+is not accepted as release provenance.
 
 ## Development environment
 
@@ -1007,6 +1014,9 @@ There are no third-party runtime dependencies in the MVP. Test-only dependencies
 - App Sandbox enabled.
 - Hardened Runtime enabled.
 - Entitlements limited to the capabilities Clip actually uses, including microphone input and user-selected file access.
+- Clip uses its outbound network entitlement only for the Sparkle update feed
+  and release download path; the sandboxed Sparkle installer receives only its
+  documented installer-service and mach-lookup exceptions.
 - No Accessibility permission is requested.
 
 
@@ -1014,7 +1024,8 @@ There are no third-party runtime dependencies in the MVP. Test-only dependencies
 
 # Distribution
 
-Clip is a local personal application, not a public or App Store release.
+Clip is a personally maintained direct-download application distributed from
+the public GitHub repository's Releases page. It is not an App Store release.
 
 The distribution artifact is:
 
@@ -1041,11 +1052,22 @@ Release requirements:
 - Hardened Runtime.
 - App Sandbox.
 - A DMG containing a launchable `Clip.app` with an Applications shortcut.
+- A Sparkle EdDSA-signed update enclosure using the immutable, tag-specific
+  GitHub Release DMG URL and a one-item appcast hosted by GitHub Pages.
 - Mount, copy, launch, record, export, drag, clipboard, and remount smoke testing on the development Mac.
+
+The first Sparkle-enabled Clip build is a bootstrap release and must be
+downloaded and installed manually from its DMG. Builds installed before the
+updater exists cannot discover it. After that bootstrap install, Clip checks
+the signed appcast periodically and presents an available update through the
+native Sparkle flow. **Check for Updates…** in the menu-bar popover performs the
+same check on demand. Update installation downloads the signed full DMG,
+relaunches Clip, and preserves the existing Settings and History directories.
 
 The DMG is Apple Development signed for local use, not Developer ID signed or notarized. If the artifact later receives a quarantine attribute through download, messaging, or AirDrop, macOS may require a one-time **Open Anyway** approval in Privacy & Security.
 
-Mac App Store distribution, a public release, Homebrew, Developer ID signing, and notarization are outside the current scope.
+Mac App Store distribution, Homebrew, Developer ID signing, and notarization
+are outside the current scope.
 
 The main source repository should simply be named:
 
@@ -1065,6 +1087,12 @@ A separate Homebrew tap can be added later if needed.
 - Deterministic launch fixtures cover onboarding, the populated menu-bar popover and displays, denied permissions, recording, paused recording, Preview, History, every Settings tab, and a representative failure surface. Their UI-automation assertions compile in the permission-free suite but execute only after an explicit visible-pointer-control opt-in.
 - A pointer-free hosted visual lane renders the production Settings window at the top and fully scrolled bottom of every tab, writes ten PNGs plus scroll-position metadata, and fails if a scrollable form does not reach its bottom.
 - Real ScreenCaptureKit, microphone, system-audio, clipboard, drag, Save As, history, and DMG smoke tests run on the development Mac.
+- Application-update verification checks the embedded feed URL/public key,
+  sandbox services and entitlements, nested code signatures, exact app/build
+  versions, immutable enclosure URL, archive length, and Sparkle EdDSA
+  signature. Once two updater-enabled releases exist, final acceptance installs
+  an older build and exercises automatic discovery plus **Check for Updates…**
+  through download, install, relaunch, and Settings/History preservation.
 - The owner performs the required one-time Screen Recording, System Audio, and Microphone approvals. Test runs after approval should be unattended.
 - Multi-display topology, display disconnection, and deterministic loopback-audio cases are simulated when the necessary hardware is unavailable.
 - There is no automated Slack, GitHub, Linear, Discord, Messages, or Mail integration suite. A local receiver and Finder validate file drag and clipboard contracts; an agent-driven check in an explicitly authorized application may be performed without sending content.
@@ -1120,6 +1148,8 @@ A separate Homebrew tap can be added later if needed.
 - Launch at login.
 - Permission onboarding.
 - Local launchable DMG distribution.
+- Signed application updates from immutable GitHub Release DMGs, with periodic
+  automatic checks and an on-demand **Check for Updates…** action.
 
 The release-critical path is: install and launch from DMG → select → record → preview → trim → drag or copy. Other included items remain planned for v1 and should be completed where feasible, but they do not prevent validating the core workflow incrementally.
 
@@ -1141,9 +1171,8 @@ Potential later additions:
 - Explicit microphone-device selection.
 - Optional upload destinations.
 - Homebrew Cask.
-- Automatic application updates.
 - Universal Intel support and native Intel validation.
-- Developer ID signing, notarization, and public distribution.
+- Developer ID signing and notarization.
 
 These features should only be added if they support the core workflow without turning Clip into a general-purpose video editor.
 

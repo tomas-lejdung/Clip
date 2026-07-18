@@ -169,6 +169,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var coordinator: ApplicationCoordinator?
     private var deterministicUIScenarioCoordinator: DeterministicUIScenarioCoordinator?
     private var unattendedCaptureSmokeCoordinator: UnattendedCaptureSmokeCoordinator?
+    private var applicationUpdater: SparkleApplicationUpdater?
     private let terminationCoordinator = ApplicationTerminationCoordinator()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -227,7 +228,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let dependencies = try AppDependencies.live(
                 launchConfiguration: launchConfiguration
             )
-            let coordinator = ApplicationCoordinator(dependencies: dependencies)
+            let applicationUpdater = SparkleApplicationUpdater()
+            self.applicationUpdater = applicationUpdater
+            let coordinator = ApplicationCoordinator(
+                dependencies: dependencies,
+                applicationUpdater: applicationUpdater
+            )
             self.coordinator = coordinator
             coordinator.start()
             ClipLog.lifecycle.info("Clip application started")
@@ -269,6 +275,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         deterministicUIScenarioCoordinator?.stop()
         deterministicUIScenarioCoordinator = nil
         coordinator?.closeForTermination()
+        applicationUpdater = nil
         ClipLog.lifecycle.info("Clip application stopped")
     }
 

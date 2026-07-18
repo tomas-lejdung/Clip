@@ -167,6 +167,7 @@ struct MenuBarActions {
     let openRecentRecording: (RecordingID) -> Void
     let openHistory: () -> Void
     let openSettings: () -> Void
+    let checkForUpdates: () -> Void
     let quit: () -> Void
 
     init(
@@ -181,6 +182,7 @@ struct MenuBarActions {
         openRecentRecording: @escaping (RecordingID) -> Void = { _ in },
         openHistory: @escaping () -> Void,
         openSettings: @escaping () -> Void,
+        checkForUpdates: @escaping () -> Void = {},
         quit: @escaping () -> Void
     ) {
         self.captureArea = captureArea
@@ -194,6 +196,7 @@ struct MenuBarActions {
         self.openRecentRecording = openRecentRecording
         self.openHistory = openHistory
         self.openSettings = openSettings
+        self.checkForUpdates = checkForUpdates
         self.quit = quit
     }
 }
@@ -424,6 +427,12 @@ struct MenuBarPopoverView: View {
                 systemImage: "gearshape",
                 identifier: "clip.menu.settings",
                 action: actions.openSettings
+            )
+            menuButton(
+                "Check for Updates…",
+                systemImage: "arrow.triangle.2.circlepath",
+                identifier: "clip.menu.checkForUpdates",
+                action: actions.checkForUpdates
             )
             menuButton(
                 "Quit Clip",

@@ -71,6 +71,9 @@
 		F5B100000000000000000001 /* SettingsVisualSnapshotTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F5B200000000000000000001 /* SettingsVisualSnapshotTests.swift */; };
 		E1B100000000000000000001 /* CaptureRecoveryRecord.swift in Sources */ = {isa = PBXBuildFile; fileRef = E1F100000000000000000001 /* CaptureRecoveryRecord.swift */; };
 		E1B100000000000000000002 /* CaptureRecoveryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E1F100000000000000000002 /* CaptureRecoveryTests.swift */; };
+		U1B100000000000000000001 /* ApplicationUpdater.swift in Sources */ = {isa = PBXBuildFile; fileRef = U1F100000000000000000001 /* ApplicationUpdater.swift */; };
+		U1B100000000000000000002 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = U1A200000000000000000001 /* Sparkle */; };
+		U1B100000000000000000003 /* ApplicationUpdateConfigurationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = U1F100000000000000000002 /* ApplicationUpdateConfigurationTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -157,6 +160,8 @@
 		F5B200000000000000000001 /* SettingsVisualSnapshotTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsVisualSnapshotTests.swift; sourceTree = "<group>"; };
 		E1F100000000000000000001 /* CaptureRecoveryRecord.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CaptureRecoveryRecord.swift; sourceTree = "<group>"; };
 		E1F100000000000000000002 /* CaptureRecoveryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CaptureRecoveryTests.swift; sourceTree = "<group>"; };
+		U1F100000000000000000001 /* ApplicationUpdater.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ApplicationUpdater.swift; sourceTree = "<group>"; };
+		U1F100000000000000000002 /* ApplicationUpdateConfigurationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ApplicationUpdateConfigurationTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -166,6 +171,7 @@
 			files = (
 				B20000000000000000000001 /* ClipCore in Frameworks */,
 				B20000000000000000000002 /* ClipMedia in Frameworks */,
+				U1B100000000000000000002 /* Sparkle in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -232,6 +238,7 @@
 				F00000000000000000000001 /* ClipApp.swift */,
 				F00000000000000000000002 /* AppDelegate.swift */,
 				F00000000000000000000003 /* ApplicationCoordinator.swift */,
+				U1F100000000000000000001 /* ApplicationUpdater.swift */,
 				A8D200000000000000000001 /* DeterministicUIScenarioCoordinator.swift */,
 				E7F200000000000000000001 /* UnattendedCaptureSmokeCoordinator.swift */,
 			);
@@ -364,6 +371,7 @@
 		G00000000000000000000008 /* ClipTests */ = {
 			isa = PBXGroup;
 			children = (
+				U1F100000000000000000002 /* ApplicationUpdateConfigurationTests.swift */,
 				F0000000000000000000000D /* ApplicationDirectoriesTests.swift */,
 				E1F100000000000000000002 /* CaptureRecoveryTests.swift */,
 				F1000000000000000000001B /* CaptureSelectionAdapterTests.swift */,
@@ -430,6 +438,7 @@
 			packageProductDependencies = (
 				A20000000000000000000001 /* ClipCore */,
 				A20000000000000000000002 /* ClipMedia */,
+				U1A200000000000000000001 /* Sparkle */,
 			);
 			productName = Clip;
 			productReference = F00000000000000000000010 /* Clip.app */;
@@ -530,6 +539,7 @@
 			packageReferences = (
 				A10000000000000000000001 /* XCLocalSwiftPackageReference "Packages/ClipCore" */,
 				A10000000000000000000002 /* XCLocalSwiftPackageReference "Packages/ClipMedia" */,
+				U1A100000000000000000001 /* XCRemoteSwiftPackageReference "Sparkle" */,
 			);
 			productRefGroup = G0000000000000000000000B /* Products */;
 			projectDirPath = "";
@@ -581,6 +591,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				U1B100000000000000000001 /* ApplicationUpdater.swift in Sources */,
 				B00000000000000000000001 /* ClipApp.swift in Sources */,
 				B00000000000000000000002 /* AppDelegate.swift in Sources */,
 				B00000000000000000000003 /* ApplicationCoordinator.swift in Sources */,
@@ -628,6 +639,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				U1B100000000000000000003 /* ApplicationUpdateConfigurationTests.swift in Sources */,
 				B0000000000000000000000B /* ApplicationDirectoriesTests.swift in Sources */,
 				E1B100000000000000000002 /* CaptureRecoveryTests.swift in Sources */,
 				B1000000000000000000001B /* CaptureSelectionAdapterTests.swift in Sources */,
@@ -689,6 +701,17 @@
 		};
 /* End XCLocalSwiftPackageReference section */
 
+/* Begin XCRemoteSwiftPackageReference section */
+		U1A100000000000000000001 /* XCRemoteSwiftPackageReference "Sparkle" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/sparkle-project/Sparkle";
+			requirement = {
+				kind = exactVersion;
+				version = 2.9.4;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
 /* Begin XCSwiftPackageProductDependency section */
 		A20000000000000000000001 /* ClipCore */ = {
 			isa = XCSwiftPackageProductDependency;
@@ -709,6 +732,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = A10000000000000000000002 /* XCLocalSwiftPackageReference "Packages/ClipMedia" */;
 			productName = ClipMedia;
+		};
+		U1A200000000000000000001 /* Sparkle */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = U1A100000000000000000001 /* XCRemoteSwiftPackageReference "Sparkle" */;
+			productName = Sparkle;
 		};
 /* End XCSwiftPackageProductDependency section */
 
