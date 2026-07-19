@@ -44,6 +44,7 @@ public struct RecordingConfiguration: Equatable, Sendable {
     /// limit is paired with it; the encoder chooses the resulting byte rate.
     public var videoQuality: Double
     public var showsCursor: Bool
+    public var showsClickHighlights: Bool
     public var audioMode: AudioCaptureMode
 
     public init(
@@ -52,6 +53,7 @@ public struct RecordingConfiguration: Equatable, Sendable {
         framesPerSecond: Int = 30,
         videoQuality: Double = 0.98,
         showsCursor: Bool = true,
+        showsClickHighlights: Bool = false,
         audioMode: AudioCaptureMode = .off
     ) {
         precondition(width > 0 && height > 0)
@@ -62,6 +64,7 @@ public struct RecordingConfiguration: Equatable, Sendable {
         self.framesPerSecond = framesPerSecond
         self.videoQuality = videoQuality
         self.showsCursor = showsCursor
+        self.showsClickHighlights = showsClickHighlights
         self.audioMode = audioMode
     }
 
@@ -71,6 +74,7 @@ public struct RecordingConfiguration: Equatable, Sendable {
         framesPerSecond: Int = 30,
         videoQualityPercent: Int,
         showsCursor: Bool = true,
+        showsClickHighlights: Bool = false,
         audioMode: AudioCaptureMode = .off
     ) {
         self.init(
@@ -79,6 +83,7 @@ public struct RecordingConfiguration: Equatable, Sendable {
             framesPerSecond: framesPerSecond,
             videoQuality: MediaVideoQuality.normalized(percent: videoQualityPercent),
             showsCursor: showsCursor,
+            showsClickHighlights: showsClickHighlights,
             audioMode: audioMode
         )
     }

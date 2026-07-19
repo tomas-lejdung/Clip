@@ -17,6 +17,7 @@ struct MediaConfigurationTests {
         #expect(configuration.height == 900)
         #expect(configuration.framesPerSecond == 60)
         #expect(configuration.videoQuality == 0.93)
+        #expect(!configuration.showsClickHighlights)
     }
 
     @Test("Percent quality conversion is exact on the settings scale")
@@ -29,9 +30,11 @@ struct MediaConfigurationTests {
         let recording = RecordingConfiguration(
             width: 1_920,
             height: 1_080,
-            videoQualityPercent: 91
+            videoQualityPercent: 91,
+            showsClickHighlights: true
         )
         #expect(recording.videoQuality == 0.91)
+        #expect(recording.showsClickHighlights)
     }
 
     @Test("Every preset preserves native geometry and durable cadence")

@@ -166,6 +166,9 @@
     "Clear Recording History…" : {
 
     },
+    "Click Highlights" : {
+
+    },
     "Click, then type the new shortcut. Press Escape to cancel." : {
 
     },
@@ -711,6 +714,9 @@
 
     },
     "Show Clip in the Dock" : {
+
+    },
+    "Show click highlights" : {
 
     },
     "Show cursor" : {

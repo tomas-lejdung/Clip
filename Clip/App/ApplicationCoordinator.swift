@@ -200,8 +200,7 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
     func start() {
         guard statusItem == nil, !isPreparingForTermination else { return }
         installStatusItem()
-        installIdlePopover()
-        observeSettings()
+        statusItem?.button?.isEnabled = false
         monitorCaptureEvents()
 
         startupTask = Task { @MainActor [weak self] in
@@ -209,11 +208,13 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
             defer { startupTask = nil }
             await dependencies.settings.load()
             guard !Task.isCancelled, !isPreparingForTermination else { return }
-            if dependencies.launchConfiguration.allowsSystemIntegrations {
-                try? applicationBehavior.apply(dependencies.settings.settings)
-            }
             await dependencies.audio.refreshDevices()
             guard !Task.isCancelled, !isPreparingForTermination else { return }
+            installIdlePopover()
+            observeSettings()
+            await applySettings(dependencies.settings.settings)
+            guard !Task.isCancelled, !isPreparingForTermination else { return }
+            statusItem?.button?.isEnabled = true
             do {
                 let recovery = try await dependencies.history.recoverInterruptedRecordings()
                 for recovered in recovery.recovered {
@@ -348,6 +349,7 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
 
         await waitForTerminalOperationHandoff()
         await persistAndReleasePreviewForTermination()
+        await dependencies.settings.flushPendingPersistence()
     }
 
     private func waitForTerminalOperationHandoff() async {
@@ -420,6 +422,9 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
             setSystemAudioEnabled: { [weak self] enabled in
                 self?.setAudioEnabled(.systemAudio, enabled: enabled)
             },
+            setClickHighlightsEnabled: { [weak self] enabled in
+                self?.setClickHighlightsEnabled(enabled)
+            },
             openRecentRecording: { [weak self] recordingID in
                 self?.openRecentRecording(recordingID)
             },
@@ -431,13 +436,10 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
         popover.behavior = .transient
         popover.animates = true
         popover.delegate = self
-        popover.contentSize = NSSize(width: 300, height: 330)
+        popover.contentSize = NSSize(width: 300, height: 360)
         popover.contentViewController = NSHostingController(
             rootView: MenuBarPopoverView(model: menuBarModel, actions: actions)
         )
-        Task { @MainActor [weak self] in
-            await self?.refreshMenuBarModel()
-        }
     }
 
     private func checkForUpdates() {
@@ -460,7 +462,7 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
 
     @objc
     private func togglePopover(_ sender: NSStatusBarButton) {
-        guard !isPreparingForTermination else { return }
+        guard !isPreparingForTermination, dependencies.settings.isLoaded else { return }
         if popover.isShown {
             popover.performClose(sender)
             return
@@ -557,6 +559,12 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
         }
     }
 
+    private func setClickHighlightsEnabled(_ enabled: Bool) {
+        dependencies.settings.updateImmediately { settings in
+            settings.showClickHighlights = enabled
+        }
+    }
+
     private func openRecentRecording(_ recordingID: RecordingID) {
         popover.performClose(nil)
         Task { @MainActor [weak self] in
@@ -621,6 +629,7 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
                 detail: permissionDetail(systemAudioPermission)
             )
         )
+        menuBarModel.setClickHighlightsEnabled(settings.showClickHighlights)
 
         do {
             let index = try await dependencies.history.load()
@@ -1099,6 +1108,7 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
         recordingPresentationModel = nil
         guard !isPreparingForTermination else { return }
         installIdlePopover()
+        await refreshMenuBarModel()
         updateStatusIcon(symbol: "record.circle", description: String(localized: "Clip"))
 
         do {
@@ -1292,6 +1302,7 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
                     _ = try recordingState.recoverPlayableOutput(recordingID: item.id)
                     recordingPresentationModel = nil
                     installIdlePopover()
+                    await refreshMenuBarModel()
                     updateStatusIcon(symbol: "record.circle", description: String(localized: "Clip"))
                     if pendingRetake != nil {
                         try await completePendingRetake(with: item)
@@ -2153,32 +2164,36 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
     }
 
     private func observeSettings() {
-        settingsObservation = dependencies.settings.$settings.sink { [weak self] settings in
+        settingsObservation = dependencies.settings.$settings.dropFirst().sink { [weak self] settings in
             Task { @MainActor in
                 guard let self else { return }
-                if !settings.rememberLastArea {
-                    self.lastAreaStore.clear()
-                }
-                if self.dependencies.launchConfiguration.allowsSystemIntegrations {
-                    do {
-                        try self.applicationBehavior.apply(settings)
-                    } catch {
-                        self.presentError(title: "Couldn’t Apply Settings", error: error)
-                    }
-                    do {
-                        try self.dependencies.shortcuts.registerShortcuts(
-                            settings.shortcuts,
-                            handler: { [weak self] action in
-                                self?.handleGlobalShortcut(action)
-                            }
-                        )
-                    } catch {
-                        self.presentError(title: "Couldn’t Register Global Shortcuts", error: error)
-                    }
-                }
-                await self.refreshMenuBarModel()
+                await self.applySettings(settings)
             }
         }
+    }
+
+    private func applySettings(_ settings: ClipSettings) async {
+        if !settings.rememberLastArea {
+            lastAreaStore.clear()
+        }
+        if dependencies.launchConfiguration.allowsSystemIntegrations {
+            do {
+                try applicationBehavior.apply(settings)
+            } catch {
+                presentError(title: "Couldn’t Apply Settings", error: error)
+            }
+            do {
+                try dependencies.shortcuts.registerShortcuts(
+                    settings.shortcuts,
+                    handler: { [weak self] action in
+                        self?.handleGlobalShortcut(action)
+                    }
+                )
+            } catch {
+                presentError(title: "Couldn’t Register Global Shortcuts", error: error)
+            }
+        }
+        await refreshMenuBarModel()
     }
 
     private func ensureScreenRecordingPermission() async -> Bool {
@@ -2332,6 +2347,9 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
         }
         if !isPreparingForTermination {
             installIdlePopover()
+            Task { @MainActor [weak self] in
+                await self?.refreshMenuBarModel()
+            }
             updateStatusIcon(symbol: "record.circle", description: String(localized: "Clip"))
         }
     }

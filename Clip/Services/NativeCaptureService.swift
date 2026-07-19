@@ -216,6 +216,7 @@ final class NativeCaptureService: CaptureServicing {
             framesPerSecond: settings.frameRate.framesPerSecond,
             videoQualityPercent: settings.exportQualities.crisp,
             showsCursor: settings.showCursor,
+            showsClickHighlights: settings.showClickHighlights,
             audioMode: Self.audioMode(for: settings.audio)
         )
         let active = ActiveRecording(

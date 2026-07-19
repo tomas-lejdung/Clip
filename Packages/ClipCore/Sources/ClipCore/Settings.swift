@@ -51,6 +51,7 @@ public struct AudioConfiguration: Codable, Equatable, Hashable, Sendable {
 public struct CaptureSessionSnapshot: Codable, Equatable, Hashable, Sendable {
     public let frameRate: CaptureFrameRate
     public let showCursor: Bool
+    public let showClickHighlights: Bool
     public let audio: AudioConfiguration
     public let countdown: CountdownDuration
     public let crispQuality: Int
@@ -58,12 +59,14 @@ public struct CaptureSessionSnapshot: Codable, Equatable, Hashable, Sendable {
     public init(
         frameRate: CaptureFrameRate,
         showCursor: Bool,
+        showClickHighlights: Bool = false,
         audio: AudioConfiguration,
         countdown: CountdownDuration,
         crispQuality: Int = ExportQualitySettings.defaults.crisp
     ) {
         self.frameRate = frameRate
         self.showCursor = showCursor
+        self.showClickHighlights = showClickHighlights
         self.audio = audio
         self.countdown = countdown
         self.crispQuality = crispQuality
@@ -73,6 +76,7 @@ public struct CaptureSessionSnapshot: Codable, Equatable, Hashable, Sendable {
         self.init(
             frameRate: settings.frameRate,
             showCursor: settings.showCursor,
+            showClickHighlights: settings.showClickHighlights,
             audio: settings.audio,
             countdown: settings.countdown,
             crispQuality: settings.exportQualities.crisp
@@ -85,6 +89,7 @@ public struct CaptureSessionSnapshot: Codable, Equatable, Hashable, Sendable {
         var result = settings
         result.frameRate = frameRate
         result.showCursor = showCursor
+        result.showClickHighlights = showClickHighlights
         result.audio = audio
         result.countdown = countdown
         result.exportQualities.crisp = crispQuality
@@ -94,6 +99,7 @@ public struct CaptureSessionSnapshot: Codable, Equatable, Hashable, Sendable {
     private enum CodingKeys: String, CodingKey {
         case frameRate
         case showCursor
+        case showClickHighlights
         case audio
         case countdown
         case crispQuality
@@ -103,6 +109,10 @@ public struct CaptureSessionSnapshot: Codable, Equatable, Hashable, Sendable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         frameRate = try container.decode(CaptureFrameRate.self, forKey: .frameRate)
         showCursor = try container.decode(Bool.self, forKey: .showCursor)
+        showClickHighlights = try container.decodeIfPresent(
+            Bool.self,
+            forKey: .showClickHighlights
+        ) ?? false
         audio = try container.decode(AudioConfiguration.self, forKey: .audio)
         countdown = try container.decode(CountdownDuration.self, forKey: .countdown)
         crispQuality = try container.decodeIfPresent(Int.self, forKey: .crispQuality)
@@ -113,6 +123,7 @@ public struct CaptureSessionSnapshot: Codable, Equatable, Hashable, Sendable {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(frameRate, forKey: .frameRate)
         try container.encode(showCursor, forKey: .showCursor)
+        try container.encode(showClickHighlights, forKey: .showClickHighlights)
         try container.encode(audio, forKey: .audio)
         try container.encode(countdown, forKey: .countdown)
         try container.encode(crispQuality, forKey: .crispQuality)
@@ -284,6 +295,7 @@ public struct ClipSettings: Codable, Equatable, Sendable {
     public var rememberLastArea: Bool
     public var frameRate: CaptureFrameRate
     public var showCursor: Bool
+    public var showClickHighlights: Bool
     public var audio: AudioConfiguration
     public var countdown: CountdownDuration
     public var historyRetention: HistoryRetentionPolicy
@@ -304,6 +316,7 @@ public struct ClipSettings: Codable, Equatable, Sendable {
         rememberLastArea: Bool,
         frameRate: CaptureFrameRate,
         showCursor: Bool,
+        showClickHighlights: Bool = false,
         audio: AudioConfiguration,
         countdown: CountdownDuration,
         historyRetention: HistoryRetentionPolicy,
@@ -323,6 +336,7 @@ public struct ClipSettings: Codable, Equatable, Sendable {
         self.rememberLastArea = rememberLastArea
         self.frameRate = frameRate
         self.showCursor = showCursor
+        self.showClickHighlights = showClickHighlights
         self.audio = audio
         self.countdown = countdown
         self.historyRetention = historyRetention
@@ -344,6 +358,7 @@ public struct ClipSettings: Codable, Equatable, Sendable {
             rememberLastArea: true,
             frameRate: .thirty,
             showCursor: true,
+            showClickHighlights: false,
             audio: .none,
             countdown: .threeSeconds,
             historyRetention: .sevenDays,
@@ -372,6 +387,7 @@ public struct ClipSettings: Codable, Equatable, Sendable {
         case rememberLastArea
         case frameRate
         case showCursor
+        case showClickHighlights
         case audio
         case countdown
         case historyRetention
@@ -412,6 +428,10 @@ public struct ClipSettings: Codable, Equatable, Sendable {
         rememberLastArea = try container.decode(Bool.self, forKey: .rememberLastArea)
         frameRate = try container.decode(CaptureFrameRate.self, forKey: .frameRate)
         showCursor = try container.decode(Bool.self, forKey: .showCursor)
+        showClickHighlights = try container.decodeIfPresent(
+            Bool.self,
+            forKey: .showClickHighlights
+        ) ?? false
         audio = try container.decode(AudioConfiguration.self, forKey: .audio)
         countdown = try container.decode(CountdownDuration.self, forKey: .countdown)
         historyRetention = try container.decode(
@@ -452,6 +472,7 @@ public struct ClipSettings: Codable, Equatable, Sendable {
         try container.encode(rememberLastArea, forKey: .rememberLastArea)
         try container.encode(frameRate, forKey: .frameRate)
         try container.encode(showCursor, forKey: .showCursor)
+        try container.encode(showClickHighlights, forKey: .showClickHighlights)
         try container.encode(audio, forKey: .audio)
         try container.encode(countdown, forKey: .countdown)
         try container.encode(historyRetention, forKey: .historyRetention)

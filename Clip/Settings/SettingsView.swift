@@ -261,6 +261,8 @@ struct SettingsView: View {
                 Text("5 seconds").tag(CountdownDuration.fiveSeconds)
             }
             Toggle("Show cursor", isOn: setting(\.showCursor))
+            Toggle("Show click highlights", isOn: setting(\.showClickHighlights))
+                .accessibilityIdentifier("clip.settings.recording.clickHighlights")
             Toggle("Record system audio", isOn: systemAudioBinding)
             Toggle("Record microphone", isOn: microphoneBinding)
             LabeledContent("Current microphone") {

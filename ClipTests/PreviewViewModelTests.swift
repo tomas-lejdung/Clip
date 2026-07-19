@@ -742,6 +742,7 @@ struct PreviewViewModelTests {
         let snapshot = CaptureSessionSnapshot(
             frameRate: .sixty,
             showCursor: false,
+            showClickHighlights: true,
             audio: .microphoneAndSystemAudio,
             countdown: .fiveSeconds
         )
@@ -756,6 +757,7 @@ struct PreviewViewModelTests {
         #expect(plan.usesExactSessionSettings)
         #expect(plan.settings.frameRate == .sixty)
         #expect(plan.settings.showCursor == false)
+        #expect(plan.settings.showClickHighlights)
         #expect(plan.settings.audio == .microphoneAndSystemAudio)
         #expect(plan.settings.countdown == .fiveSeconds)
         #expect(plan.settings.historyRetention == .thirtyDays)
@@ -768,6 +770,7 @@ struct PreviewViewModelTests {
         )
         current.frameRate = .thirty
         current.showCursor = false
+        current.showClickHighlights = true
         current.audio = .none
         current.countdown = .oneSecond
         let item = try makeRetakeHistoryItem(snapshot: nil)
@@ -781,6 +784,7 @@ struct PreviewViewModelTests {
         #expect(plan.settings.frameRate == item.frameRate)
         #expect(plan.settings.audio == item.audioConfiguration)
         #expect(plan.settings.showCursor == false)
+        #expect(!plan.settings.showClickHighlights)
         #expect(plan.settings.countdown == .oneSecond)
     }
 

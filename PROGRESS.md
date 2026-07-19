@@ -2,7 +2,7 @@
 
 This file tracks implementation against [spec.md](spec.md). The specification is the product source of truth; this board records execution state and verification evidence.
 
-Last updated: 2026-07-18
+Last updated: 2026-07-19
 
 ## Status model
 
@@ -36,23 +36,32 @@ Launch from DMG
 
 All cards are planned for v1. The critical path above receives priority when work must be sequenced.
 
-The previously packaged personal-use v1 completed its core workflow, but its
-export policy has since been replaced by the new native-size quality ladder.
-Implementation and permission-free verification of that change are complete.
-A fresh stable-signed DMG has been verified and its exact Release executable is
-installed in `/Applications`. Permission-backed capture acceptance and manual
-review of that new build remain pending.
+The published v1.0.1 (build 2) completed its updater and core-workflow checks
+and remains installed in `/Applications` as the deliberate update-test client.
+The repository is now v1.1.0 (build 3) with native Click Highlights. Its
+permission-free verification and separate stable-signed Release build are
+complete, but it has not replaced the installed app, changed the published
+appcast, or been published. The owner explicitly approved publication on
+2026-07-19; the native click-ring appearance matrix moves to the retained
+v1.0.1 client's post-update acceptance.
 
 ## Verification snapshot
 
-Current quality-ladder and ultrawide-fallback evidence completed on 2026-07-18:
+Current Click Highlights evidence completed on 2026-07-19:
+
+- `./scripts/typecheck.sh` passed the strict Swift 6/localization/project audit, ClipCore 81/81, ClipMedia 73/73, and app/test compilation and link.
+- `./scripts/test.sh` passed ClipCore 81/81, ClipMedia 73/73, and 176/176 hosted ClipTests; the single skip is the intentionally opt-in Settings snapshot generator, whose dedicated lane already passed. Focused tests cover default-Off and missing-key compatibility, ordered Settings/menu persistence, cursor-independent ScreenCaptureKit configuration, capture request propagation, History snapshots, and exact/legacy Retake behavior. The hosted xcresult is `.build/Test-ClickHighlights-1.1.0-final.xcresult`.
+- The pointer-free Settings visual lane passed and rendered all ten top/bottom snapshots; the new native Recording toggle fits without wrapping or overflow.
+- A separate stable-signed v1.1.0 (build 3) Release app at `.build/DerivedDataClickHighlightsManual/Build/Products/Release/Clip.app` passed strict code-signature verification. It is reserved for explicit-path manual launch and has not been copied to `/Applications`.
+
+Quality-ladder and ultrawide-fallback evidence completed on 2026-07-18:
 
 - `./scripts/typecheck.sh` passed the complete strict Swift 6 source/package/localization audit, ClipCore 80/80, ClipMedia 73/73, and app/test compilation and link.
 - The current merged runs passed ClipCore 80/80, ClipMedia 73/73, and 166 hosted Xcode ClipTests with 0 failures. The ordinary hosted lane records one expected skip for the opt-in Settings snapshot generator; its dedicated pointer-free invocation passed separately and produced all ten PNGs. Neither lane requested privacy permissions, ran UI automation, or moved the pointer.
 - A paced exact-size 5,120 x 1,440 at 30 FPS live regression encoded all 60 animated frames through the hardware HEVC fallback with bounded cadence. A separate 5,120 x 2,880 HEVC-master regression exported exact-size H.264 successfully through the native software encoder and verified the quality-derived soft-rate policy without a hard data-rate limit.
 - The native quality acceptance encoded and decoded the deterministic fine-detail fixture. Quality `98`, `90`, and `70` measured SSIM `0.9999985631`, `0.9999682113`, and `0.9987684765`; each measured `100%` edge retention. The same suite passed native geometry/cadence, H.264 High, Rec.709, 30/60 FPS timing, audio, trim, Pause/Resume, hardware quality controls, and byte-identical eligible Crisp reuse.
 - The revised Release benchmark passed Preview media readiness with `44.69`/`45.72`/`45.81` ms min/median/max and a real native 1,440 x 900 at 30 FPS Compact-90 offline transcode with `1,671.29`/`1,674.66`/`1,740.53` ms min/median/max. Both remain below their 1,000 ms and 2,000 ms targets; machine-readable evidence is in `.build/performance/latest.json`.
-- The current `.build/Clip.dmg` is 2,378,101 bytes with SHA-256 `73e4534faf04f46145b9bd40ada101f782c156f1f34fd77036514cf7e74dfae6`. Read-only mounting and verification passed its certificate signature, designated requirement, sandbox entitlements, Hardened Runtime, production resources, and Applications shortcut. The installed `/Applications/Clip.app` executable exactly matches the packaged Release executable at SHA-256 `4e651dd557196bdc2534aaeb6516504d7dd9e1495288722bc8881b2d36437f26` and launched successfully.
+- The prior quality-ladder `.build/Clip.dmg` was 2,378,101 bytes with SHA-256 `73e4534faf04f46145b9bd40ada101f782c156f1f34fd77036514cf7e74dfae6`; its read-only mount and signature/sandbox verification passed. It is not the new v1.1.0 update candidate.
 - The Settings visual audit rendered General, Recording, Export, Storage, and Permissions at both top and fully-scrolled bottom. Export reached its exact 228-point bottom offset; the other four tabs fit without vertical overflow.
 - The focused Settings presentation suite passed 3/3 after adding the extensionless filename editor round trip; the dedicated visual lane passed and regenerated all ten current screenshots.
 - `git diff --check`, the project audit, and searches for obsolete target-size and hard data-rate controls passed.
@@ -74,7 +83,7 @@ Permission-gated evidence and remaining checks:
 - `scripts/run-real-capture-acceptance.sh --allow-permission-prompts-and-pointer-control` selects and executes exactly one real UI test rather than silently skipping it. Its explicit opt-in and startup warning state that XCTest drives the visible macOS pointer. The latest pointer-driven run remains the superseded ad-hoc Debug failure (0 passed, 1 failed, 0 skipped) and was stopped by owner choice. The stable-signed installed app instead completed the no-pointer production ScreenCaptureKit acceptance described below.
 - The enhanced Capture Area lane and the focused Fullscreen lane are compiled but have not run. Capture Area validates the managed master and both drag/Copy exports against the fixture's exact backing-pixel dimensions and visual fingerprint. Fullscreen validates a display-sized hardware H.264/HEVC master, decoded fixture pixels/colors, Preview presentation, and AVPlayer playback, and attaches a capture description plus Preview screenshot to its xcresult.
 - Controlled stable-identity ScreenCaptureKit acceptance passed the prior build at both 30 and optional 60 FPS with H.264 High/AAC, Rec.709, Pause/Resume, decoded fine-detail motion, Preview generation, a byte-identical private-pasteboard Copy, copy re-decode/evaluation, bounded cadence, A/V endpoint checks, and complete artifact cleanup. The packaged `/Applications/Clip.app` passed its 30 FPS lane with a 40 ms maximum video gap; the same pre-ladder source passed the optional 60 FPS lane with a 23.33 ms maximum gap. These results prove the native engine baseline but must be repeated for the new source before release.
-- The current stable-signed DMG and installed app are the same executable and designated requirement. The owner manually verified that drawing an area and dragging anywhere in its interior moves the selection without passing input through. The ordinary fullscreen workflow review remains manual.
+- The installed v1.0.1 app retains the stable designated requirement, and the owner manually verified that drawing an area and dragging anywhere in its interior moves the selection without passing input through. The separate v1.1.0 app still needs explicit-path manual checks for Click Highlights Off/On with cursor Off/On before it can become an update.
 - Real microphone/system-audio modes, physical display/device cases, idle/menu-bar stability, and the ten-minute real recording soak remain unverified.
 
 ## Feature board
@@ -178,6 +187,7 @@ Evidence:
 
 - [x] Build General, Recording, Export, Storage, and Permissions settings sections.
 - [x] Implement every initial default in `spec.md`, including Capture Area, 30 FPS, cursor On, audio Off, three-second countdown, seven-day retention, and Crisp export.
+- [x] Add a remembered native Click Highlights toggle, default Off, in both Recording Settings and the menu quick controls.
 - [x] Add independent 1–100 Crisp, Compact, and Smallest quality controls with a Reset Quality Defaults action restoring `98`, `90`, and `70`; do not impose ordering constraints.
 - [x] Run the final settings persistence, rendering, and reset verification after the quality-ladder merge.
 - [x] Implement configurable global Capture, Finish, and Pause/Resume shortcuts without requiring Accessibility access.
@@ -199,7 +209,7 @@ Evidence:
 
 Evidence:
 
-- The 80 passing ClipCore tests cover defaults, Capture App persistence, filename formatting and schema migration, validation, shortcut conflicts, history, migrations, Remove audio persistence and legacy decoding, and the multi-hour 10,000-cycle Pause/Resume state soak. Executed app tests cover filename-template persistence/use, Carbon registration, and security-scoped bookmark restoration.
+- The 81 passing ClipCore tests cover defaults, Click Highlights missing-key compatibility and snapshots, Capture App persistence, filename formatting and schema migration, validation, shortcut conflicts, history, migrations, Remove audio persistence and legacy decoding, and the multi-hour 10,000-cycle Pause/Resume state soak. Executed app tests cover immediate and ordered quick-setting persistence, filename-template persistence/use, Carbon registration, and security-scoped bookmark restoration.
 - Settings presentation has a deterministic initial-tab/content-size seam, stable control identifiers, an extensionless filename editor adapter, inert external actions for scenario launches, and compile-only assertions for every tab. The pointer-free visual lane renders ten top/bottom PNGs; its manifest verifies Export reaches its exact bottom while the other four tabs fit without overflow.
 - Runtime checks for login-item registration, Dock switching, and sandbox bookmark restoration remain in the installed-app pass.
 
@@ -241,6 +251,7 @@ Evidence:
 
 - [x] Implement an explicit recording state machine for idle, selecting, countdown, recording, paused, finishing, canceled, failed, and preview states.
 - [x] Configure ScreenCaptureKit for region/fullscreen capture, cursor visibility, SDR Rec.709, and 30/60 FPS.
+- [x] Configure ScreenCaptureKit's native click rings independently from cursor visibility, with no Accessibility permission or custom overlay.
 - [x] Pixel-align Area/App source rectangles and use the same exact even dimensions through ScreenCaptureKit, encoding, History, and MP4 metadata.
 - [x] Reject every incoming video pixel buffer whose dimensions differ instead of silently rescaling it.
 - [x] Encode transient ScreenCaptureKit pixel buffers directly with a quality-based hardware VideoToolbox session: H.264 High when exact dimensions are supported, otherwise exact-size HEVC Main.
@@ -258,8 +269,9 @@ Evidence:
 
 Evidence:
 
-- Passing ClipCore and ClipMedia tests cover state transitions, first-frame timing, cancel thresholds, half-open pause intervals, monotonic retiming, stale callback rejection, direct VideoToolbox H.264 writing, passthrough MP4 muxing, exact input dimensions, bounded cadence gaps, and no-frame rejection.
+- Passing ClipCore and ClipMedia tests cover state transitions, first-frame timing, cancel thresholds, half-open pause intervals, monotonic retiming, stale callback rejection, direct VideoToolbox H.264 writing, passthrough MP4 muxing, exact input dimensions, bounded cadence gaps, no-frame rejection, and native click-highlight configuration while cursor capture is disabled.
 - Disk start/stop thresholds and UUID-gated failure, early-stream finalization/import of playable output, and sidecar-based adoption of playable interrupted MP4s are implemented and tested. The state machine explicitly accepts active durations beyond 30 minutes; a physical display disconnect and real long-recording soak remain pending.
+- ScreenCaptureKit's rendered system click rings retain a post-update manual Off/On and cursor Off/On recording check.
 
 ### AUD-01 — Microphone and system audio
 
@@ -471,20 +483,21 @@ Evidence:
 - [x] Finalize app/menu-bar icons, version metadata, bundle identifier, and copyright.
 - [x] Produce a Release build with App Sandbox, Hardened Runtime, and stable local Apple Development signing.
 - [x] Verify the current code-signing structure and entitlements locally.
-- [x] Rebuild the current quality-ladder source into `Clip.dmg` containing `Clip.app` and an Applications shortcut.
-- [ ] Mount the DMG, copy Clip to Applications, launch it, and complete the core workflow.
-- [ ] Reopen the installed app and verify permission, settings, history, drag, and Copy persistence behavior.
+- [x] Rebuild the published quality-ladder source into `Clip.dmg` containing `Clip.app` and an Applications shortcut.
+- [x] Mount the published DMG, copy Clip to Applications, launch it, and complete the core workflow.
+- [x] Reopen the installed app and verify permission, settings, history, drag, and Copy persistence behavior.
 - [x] Document installation, permissions, stable local Apple Development signing, ad-hoc CI fallback, Open Anyway, storage, and known platform limitations.
 - [x] Add concise build, test, DMG, and cleanup instructions to the repository README.
 - [ ] Run the full deterministic and real-Mac suites against the Release build.
-- [ ] Build, verify, install, and manually review a stable-signed DMG containing the new quality ladder.
+- [x] Build, verify, install, and manually review a stable-signed DMG containing the new quality ladder.
+- [x] Keep the explicit-path v1.1.0 repo build separate from `/Applications/Clip.app`; owner approval advanced packaging, with the click-ring matrix retained for post-update acceptance.
 - [x] Audit every v1 item in `spec.md` and reconcile this board before handoff.
 
 Evidence:
 
-- A clean stable-signed `scripts/package-dmg.sh` Release build and `scripts/verify-dmg.sh` read-only verification produced the current `.build/Clip.dmg`: 2,378,101 bytes, SHA-256 `73e4534faf04f46145b9bd40ada101f782c156f1f34fd77036514cf7e74dfae6`.
+- A clean stable-signed `scripts/package-dmg.sh` Release build and `scripts/verify-dmg.sh` read-only verification produced the published quality-ladder `.build/Clip.dmg`: 2,378,101 bytes, SHA-256 `73e4534faf04f46145b9bd40ada101f782c156f1f34fd77036514cf7e74dfae6`.
 - The mounted artifact contains the arm64 app and Applications symlink, production resources and privacy descriptions, Apple Development certificate `BA37BFFD2BD1C29A995682647428847DBC6A83B3`, Team ID `FJ2BS65H3F`, a stable certificate-based designated requirement, Hardened Runtime, and required sandbox entitlements.
-- `/Applications/Clip.app` now contains the same verified Release executable, SHA-256 `4e651dd557196bdc2534aaeb6516504d7dd9e1495288722bc8881b2d36437f26`, and launched successfully. Manual Capture Area interior movement passed; broader permission-backed capture review remains open.
+- The updater-installed `/Applications/Clip.app` is intentionally retained at v1.0.1 (build 2), executable SHA-256 `19509567cdc29e8b47b08bc67b7f3d90e7015fbd0a68435258325b43992a9250`. Manual Capture Area interior movement and the normal recording flow passed on that release. The v1.1.0 repo build remains separate for the next manual gate.
 - The permission-free release wrapper now writes ad-hoc verification images to `.build/Clip-permission-free.dmg`, preventing a CI-style verification run from overwriting the stable-signed `.build/Clip.dmg` and its privacy identity.
 
 ### UPD-01 — GitHub Releases application updates
@@ -503,12 +516,14 @@ Evidence:
 - [x] Verify updater configuration and menu-action forwarding in permission-free hosted tests.
 - [x] Build and validate a stable-signed Sparkle-enabled bootstrap DMG and its
   locally signed appcast without publishing either artifact.
-- [ ] Manually install the bootstrap DMG because existing builds do not contain
-  an updater.
-- [ ] Publish the immutable GitHub Release asset and GitHub Pages appcast after
-  owner approval.
-- [ ] With a later version, exercise older-to-newer discovery, download,
-  installation, relaunch, and Settings/History preservation end to end.
+- [x] Manually install the v1.0.0 bootstrap DMG because earlier builds did not
+  contain an updater.
+- [x] Publish immutable v1.0.0 and v1.0.1 GitHub Release assets and their GitHub
+  Pages appcasts after owner approval.
+- [x] Exercise v1.0.0 to v1.0.1 discovery, download, installation, and relaunch
+  through the native update UI.
+- [ ] Publish v1.1.0 after owner approval, then use the retained installed v1.0.1
+  app to verify the update, click-ring matrix, and state preservation.
 
 Evidence:
 
@@ -533,3 +548,6 @@ Evidence:
   key embedded in the packaged app. Final staging additionally requires a clean
   exact-commit build, committed Xcode versions, isolated dependency resolution,
   and true-first-release bootstrap checks.
+- The owner confirmed the published v1.0.0 to v1.0.1 in-app update completed and
+  relaunched successfully. The hosted feed remains at v1.0.1 while v1.1.0 is
+  developed and manually tested from a separate explicit-path build.

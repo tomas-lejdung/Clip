@@ -373,11 +373,13 @@ struct LivePlatformServicesTests {
         )
         var settings = ClipSettings.defaults(homeDirectory: directory)
         settings.exportQualities.crisp = 73
+        settings.showClickHighlights = true
 
         try await service.prepare(try captureTarget(named: "quality-display"))
         try await service.start(recordingID: RecordingID(), settings: settings)
 
         #expect(recorder.lastRequest?.configuration.videoQuality == 0.73)
+        #expect(recorder.lastRequest?.configuration.showsClickHighlights == true)
         await service.cancel()
     }
 

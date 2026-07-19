@@ -32,11 +32,13 @@ final class DeterministicScenarioLaunchTests: XCTestCase {
             XCTAssertTrue(app.buttons["clip.menu.captureArea"].exists)
             XCTAssertTrue(app.buttons["clip.menu.captureApplication"].exists)
             XCTAssertTrue(app.buttons["clip.menu.recordPrepared"].exists)
+            XCTAssertTrue(app.switches["clip.menu.clickHighlights"].exists)
+            XCTAssertEqual(app.switches["clip.menu.clickHighlights"].value as? String, "1")
             XCTAssertTrue(app.buttons["clip.menu.history"].exists)
             XCTAssertTrue(app.buttons["clip.menu.settings"].exists)
             XCTAssertEqual(
                 app.staticTexts["clip.menu.version"].label,
-                "Version 1.0.1"
+                "Version 1.1.0"
             )
         }
     }
@@ -171,6 +173,11 @@ final class DeterministicScenarioLaunchTests: XCTestCase {
                     tab.waitForExistence(timeout: 5),
                     "\(scenario.title) did not launch as the selected Settings tab."
                 )
+                if scenario.scenario == "settings-recording" {
+                    XCTAssertTrue(
+                        app.switches["clip.settings.recording.clickHighlights"].exists
+                    )
+                }
 
                 retainSettingsScreenshot(
                     app,

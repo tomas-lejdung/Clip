@@ -6,6 +6,11 @@ Clip is a native Apple-Silicon macOS menu-bar recorder for short screen clips. I
 
 The app is local-only: it has no account, cloud upload, analytics, AI processing, or third-party runtime dependencies. See [spec.md](spec.md) for the product contract, [ARCHITECTURE.md](ARCHITECTURE.md) for technical boundaries, and [PROGRESS.md](PROGRESS.md) for implementation and verification status.
 
+Click Highlights can be enabled from the menu-bar quick controls or Recording
+Settings. The option uses ScreenCaptureKit's native recorded click indicator,
+defaults to Off, remains independent of cursor visibility, and requires no
+Accessibility permission.
+
 ## Requirements
 
 - Apple Silicon Mac
@@ -149,8 +154,8 @@ anything.
 
 ```bash
 ./scripts/prepare-github-release.sh \
-  --tag v1.0.1 \
-  --release-notes .build/release-notes/v1.0.1.md \
+  --tag v1.1.0 \
+  --release-notes docs/releases/1.1.0.md \
   --keychain-account ed25519
 ```
 

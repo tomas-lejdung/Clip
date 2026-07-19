@@ -339,6 +339,7 @@ struct ScreenRecorderContentFilterTests {
             height: 1_202,
             framesPerSecond: 30,
             showsCursor: false,
+            showsClickHighlights: true,
             audioMode: .microphoneAndSystem
         )
 
@@ -352,6 +353,8 @@ struct ScreenRecorderContentFilterTests {
         #expect(configuration.preservesAspectRatio)
         #expect(configuration.minimumFrameInterval == CMTime(value: 1, timescale: 30))
         #expect(!configuration.showsCursor)
+        #expect(configuration.showMouseClicks)
+        #expect(configuration.pixelFormat == kCVPixelFormatType_32BGRA)
         #expect(configuration.capturesAudio)
         #expect(configuration.captureMicrophone)
         #expect(configuration.excludesCurrentProcessAudio)

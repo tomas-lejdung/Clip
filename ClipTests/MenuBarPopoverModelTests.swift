@@ -66,6 +66,19 @@ final class MenuBarPopoverModelTests: XCTestCase {
         XCTAssertEqual(model.microphone.status, "Unavailable")
     }
 
+    func testClickHighlightsDefaultOffAndToggleIndependently() {
+        let model = MenuBarPopoverModel(
+            microphone: .init(isAvailable: false),
+            systemAudio: .init(isAvailable: false)
+        )
+
+        XCTAssertFalse(model.showClickHighlights)
+        model.setClickHighlightsEnabled(true)
+        XCTAssertTrue(model.showClickHighlights)
+        XCTAssertFalse(model.microphone.isEnabled)
+        XCTAssertFalse(model.systemAudio.isEnabled)
+    }
+
     func testRecentRecordingRowsAreBoundedAndPreserveRepositoryOrder() {
         let rows = (0..<5).map { index in
             MenuBarRecentRecordingRow(

@@ -43,20 +43,22 @@ Every release needs two versions:
 - `CURRENT_PROJECT_VERSION`: a strictly increasing positive build number, for
   example `2`. It must increase even when the marketing version changes.
 
-Update both Xcode Release and Debug build settings, commit the change, and start
-from a clean worktree. Release packaging rejects environment version overrides:
-the DMG version must be the version committed in `Clip.xcodeproj`. Do not reuse
-a version or tag after publishing it.
-
-Run the complete release gate with the stable signing certificate, then write
-short Markdown release notes:
+Update both Xcode Release and Debug build settings and write short Markdown
+release notes. Commit the complete source, version, documentation, and release
+notes change before starting the release gate from a clean worktree. Release
+packaging rejects environment version overrides: the DMG version must be the
+version committed in `Clip.xcodeproj`. Do not reuse a version or tag after
+publishing it.
 
 ```bash
+VERSION=1.1.0
+BUILD=3
+TAG="v$VERSION"
 export CLIP_CODE_SIGN_IDENTITY='40_CHARACTER_CERTIFICATE_SHA1'
+$EDITOR "docs/releases/$VERSION.md"
+git add Clip.xcodeproj/project.pbxproj "docs/releases/$VERSION.md"
+git commit -m "Prepare Clip $VERSION"
 ./scripts/verify-release.sh
-
-mkdir -p .build/release-notes
-$EDITOR .build/release-notes/v1.0.1.md
 ```
 
 Stage—but do not publish—the GitHub files. The Keychain account is explicit so
@@ -64,8 +66,8 @@ the tool cannot accidentally sign with an unrelated default key:
 
 ```bash
 ./scripts/prepare-github-release.sh \
-  --tag v1.0.1 \
-  --release-notes .build/release-notes/v1.0.1.md \
+  --tag "$TAG" \
+  --release-notes "docs/releases/$VERSION.md" \
   --keychain-account ed25519
 ```
 
@@ -88,8 +90,8 @@ The command fails rather than publishing or overwriting anything. A successful
 run creates:
 
 ```text
-.build/releases/v1.0.1/
-├── Clip-1.0.1.dmg
+.build/releases/v1.1.0/
+├── Clip-1.1.0.dmg
 ├── appcast.xml
 ├── release-manifest.txt
 ├── release-notes.md
@@ -113,16 +115,19 @@ Inspect the staged notes and manifest first. Then create a draft GitHub Release
 from the exact recorded commit and upload the immutable artifacts:
 
 ```bash
-TAG=v1.0.1
+VERSION=1.1.0
+BUILD=3
+TAG="v$VERSION"
 STAGE=".build/releases/$TAG"
+ASSET="Clip-$VERSION.dmg"
 COMMIT="$(sed -n 's/^git_commit=//p' "$STAGE/release-manifest.txt")"
 
 gh release create "$TAG" \
-  "$STAGE/Clip-1.0.1.dmg" \
+  "$STAGE/$ASSET" \
   "$STAGE/SHA256SUMS" \
   --repo tomas-lejdung/Clip \
   --target "$COMMIT" \
-  --title "Clip 1.0.1" \
+  --title "Clip $VERSION" \
   --notes-file "$STAGE/release-notes.md" \
   --draft
 ```
@@ -131,26 +136,36 @@ Review the draft in GitHub, publish it, and verify that the immutable asset is
 downloadable before changing the feed:
 
 ```bash
-gh release edit v1.0.1 --repo tomas-lejdung/Clip --draft=false
+VERSION=1.1.0
+TAG="v$VERSION"
+ASSET="Clip-$VERSION.dmg"
+
+gh release edit "$TAG" --repo tomas-lejdung/Clip --draft=false
 
 curl --fail --location \
-  --output /tmp/Clip-1.0.1.dmg \
-  https://github.com/tomas-lejdung/Clip/releases/download/v1.0.1/Clip-1.0.1.dmg
-shasum -a 256 /tmp/Clip-1.0.1.dmg
-grep 'Clip-1.0.1.dmg' .build/releases/v1.0.1/SHA256SUMS
+  --output "/tmp/$ASSET" \
+  "https://github.com/tomas-lejdung/Clip/releases/download/$TAG/$ASSET"
+shasum -a 256 "/tmp/$ASSET"
+grep "$ASSET" ".build/releases/$TAG/SHA256SUMS"
 ```
 
 Only after those hashes match, publish the staged feed through GitHub Pages:
 
 ```bash
-cp .build/releases/v1.0.1/appcast.xml docs/appcast.xml
+VERSION=1.1.0
+BUILD=3
+TAG="v$VERSION"
+STAGE=".build/releases/$TAG"
+ASSET="Clip-$VERSION.dmg"
+
+cp "$STAGE/appcast.xml" docs/appcast.xml
 ./scripts/validate-appcast.sh \
   docs/appcast.xml \
-  .build/releases/v1.0.1/Clip-1.0.1.dmg \
-  1.0.1 \
-  2
+  "$STAGE/$ASSET" \
+  "$VERSION" \
+  "$BUILD"
 git add docs/appcast.xml
-git commit -m 'Publish Clip 1.0.1 appcast'
+git commit -m "Publish Clip $VERSION appcast"
 git push origin main
 
 curl --fail --location \

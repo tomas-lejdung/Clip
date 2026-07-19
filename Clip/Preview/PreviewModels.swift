@@ -42,6 +42,9 @@ struct PreviewRetakePlan: Equatable, Sendable {
         var legacyFallback = currentSettings
         legacyFallback.frameRate = historyItem.frameRate
         legacyFallback.audio = historyItem.audioConfiguration
+        // Recordings created before capture snapshots could not contain native
+        // click highlights, even if the current global preference is On.
+        legacyFallback.showClickHighlights = false
 
         if let inMemorySessionSettings {
             self.init(

@@ -71,6 +71,7 @@ enum ScreenStreamConfigurationFactory {
         streamConfiguration.preservesAspectRatio = true
 
         streamConfiguration.showsCursor = request.configuration.showsCursor
+        streamConfiguration.showMouseClicks = request.configuration.showsClickHighlights
         streamConfiguration.capturesAudio = request.configuration.audioMode.capturesSystemAudio
         streamConfiguration.excludesCurrentProcessAudio = request.excludesCurrentProcessAudio
         streamConfiguration.captureMicrophone = request.configuration.audioMode.capturesMicrophone

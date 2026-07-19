@@ -18,6 +18,7 @@ struct SettingsAndExportTests {
         #expect(settings.rememberLastArea)
         #expect(settings.frameRate == .thirty)
         #expect(settings.showCursor)
+        #expect(!settings.showClickHighlights)
         #expect(settings.audio == .none)
         #expect(settings.countdown == .threeSeconds)
         #expect(settings.historyRetention == .sevenDays)
@@ -118,12 +119,34 @@ struct SettingsAndExportTests {
         )
         settings.audio = .microphoneAndSystemAudio
         settings.frameRate = .sixty
+        settings.showClickHighlights = true
         settings.mostRecentCaptureMode = .fullscreen
         settings.defaultFilenameTemplate = try RecordingFilenameTemplate(
             validating: "work-YYYY-MM-DD_HHmmss.mp4"
         )
         #expect(try jsonRoundTrip(settings) == settings)
         #expect(settings.captureModeForNextInvocation == .fullscreen)
+    }
+
+    @Test("Settings created before click highlights default the option to Off")
+    func settingsWithoutClickHighlightsRemainCompatible() throws {
+        var settings = ClipSettings.defaults(
+            homeDirectory: URL(fileURLWithPath: "/tmp/home", isDirectory: true)
+        )
+        settings.showClickHighlights = true
+        let encoded = try JSONEncoder().encode(settings)
+        var object = try #require(
+            JSONSerialization.jsonObject(with: encoded) as? [String: Any]
+        )
+        object.removeValue(forKey: "showClickHighlights")
+
+        let decoded = try JSONDecoder().decode(
+            ClipSettings.self,
+            from: JSONSerialization.data(withJSONObject: object)
+        )
+
+        #expect(decoded.schemaVersion == ClipSettings.currentSchemaVersion)
+        #expect(!decoded.showClickHighlights)
     }
 
     @Test("Schema 1 settings migrate to the default filename template")
@@ -233,11 +256,12 @@ struct SettingsAndExportTests {
         #expect(try jsonRoundTrip(qualities) == qualities)
     }
 
-    @Test("Legacy capture snapshots use the default Crisp quality")
-    func legacyCaptureSnapshotQuality() throws {
+    @Test("Legacy capture snapshots use safe quality and click-highlight defaults")
+    func legacyCaptureSnapshotDefaults() throws {
         let snapshot = CaptureSessionSnapshot(
             frameRate: .thirty,
             showCursor: true,
+            showClickHighlights: true,
             audio: .none,
             countdown: .off,
             crispQuality: 73
@@ -247,6 +271,7 @@ struct SettingsAndExportTests {
             JSONSerialization.jsonObject(with: encoded) as? [String: Any]
         )
         object.removeValue(forKey: "crispQuality")
+        object.removeValue(forKey: "showClickHighlights")
 
         let decoded = try JSONDecoder().decode(
             CaptureSessionSnapshot.self,
@@ -254,6 +279,7 @@ struct SettingsAndExportTests {
         )
 
         #expect(decoded.crispQuality == ExportQualitySettings.defaults.crisp)
+        #expect(!decoded.showClickHighlights)
     }
 
     @Test("Every export configuration is Codable")

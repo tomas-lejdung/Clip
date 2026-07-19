@@ -152,6 +152,7 @@ struct HistoryMetadataTests {
         let snapshot = CaptureSessionSnapshot(
             frameRate: .sixty,
             showCursor: false,
+            showClickHighlights: true,
             audio: .microphoneAndSystemAudio,
             countdown: .fiveSeconds,
             crispQuality: 73
@@ -186,6 +187,7 @@ struct HistoryMetadataTests {
         let snapshot = CaptureSessionSnapshot(
             frameRate: .sixty,
             showCursor: false,
+            showClickHighlights: true,
             audio: .microphoneAndSystemAudio,
             countdown: .fiveSeconds,
             crispQuality: 73
@@ -195,6 +197,7 @@ struct HistoryMetadataTests {
 
         #expect(restored.frameRate == .sixty)
         #expect(restored.showCursor == false)
+        #expect(restored.showClickHighlights)
         #expect(restored.audio == .microphoneAndSystemAudio)
         #expect(restored.countdown == .fiveSeconds)
         #expect(restored.showInDock == current.showInDock)

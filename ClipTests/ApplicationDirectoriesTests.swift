@@ -800,6 +800,82 @@ struct ApplicationDirectoriesTests {
     }
 
     @MainActor
+    @Test("Immediate menu settings are authoritative before asynchronous persistence")
+    func immediateSettingsUpdatePrecedesTheNextCaptureRead() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let supportDirectory = root.appendingPathComponent("Application Support", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let model = try AppSettingsModel(
+            applicationSupportDirectory: supportDirectory,
+            homeDirectory: root,
+            directoryBookmarks: FakeDirectoryBookmarkService(directories: [])
+        )
+        await model.load()
+
+        let persistence = model.updateImmediately { $0.showClickHighlights = true }
+
+        // This is the same synchronous read the coordinator uses when the user
+        // toggles the menu control and immediately starts a capture.
+        #expect(model.settings.showClickHighlights)
+
+        // Await the exact save returned by the immediate update, then prove the
+        // same value also reached durable settings without a masking second save.
+        await persistence.value
+        let restored = try AppSettingsModel(
+            applicationSupportDirectory: supportDirectory,
+            homeDirectory: root,
+            directoryBookmarks: FakeDirectoryBookmarkService(directories: [])
+        )
+        await restored.load()
+        #expect(restored.settings.showClickHighlights)
+    }
+
+    @MainActor
+    @Test("Rapid immediate settings persist their latest ordered value")
+    func rapidImmediateSettingsUpdatesPersistLatestValue() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let supportDirectory = root.appendingPathComponent("Application Support", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let fileSystem = GatedSettingsFileSystem()
+        let model = try AppSettingsModel(
+            applicationSupportDirectory: supportDirectory,
+            homeDirectory: root,
+            settingsFileSystem: fileSystem,
+            directoryBookmarks: FakeDirectoryBookmarkService(directories: [])
+        )
+        await model.load()
+
+        let first = model.updateImmediately { $0.showClickHighlights = true }
+        await fileSystem.waitForFirstWriteToStart()
+        let second = model.updateImmediately { $0.showClickHighlights = false }
+
+        // Give a mistakenly unqueued save ample opportunity to enter the
+        // reentrant filesystem while write one is deliberately suspended.
+        for _ in 0 ..< 100 {
+            await Task.yield()
+        }
+        #expect(await fileSystem.startedWriteCount == 1)
+
+        await fileSystem.releaseFirstWrite()
+        await first.value
+        await second.value
+        #expect(await fileSystem.startedWriteCount == 2)
+
+        let restored = try AppSettingsModel(
+            applicationSupportDirectory: supportDirectory,
+            homeDirectory: root,
+            settingsFileSystem: fileSystem,
+            directoryBookmarks: FakeDirectoryBookmarkService(directories: [])
+        )
+        await restored.load()
+        #expect(!restored.settings.showClickHighlights)
+    }
+
+    @MainActor
     @Test("Settings persistence hides filesystem details behind a concise message")
     func settingsPersistenceErrorsAreSanitized() async throws {
         let root = FileManager.default.temporaryDirectory
@@ -1455,6 +1531,59 @@ private final class PublicationLeaseTestClock: @unchecked Sendable {
 
 private enum PeriodicMaintenanceFixtureError: Error, Equatable {
     case expectedFailure
+}
+
+/// Suspends the first settings write so the test can prove a newer write never
+/// enters the reentrant filesystem until its predecessor has completed.
+private actor GatedSettingsFileSystem: AtomicFileSystem {
+    private var storedData: Data?
+    private var writeCount = 0
+    private var firstWriteStarted = false
+    private var firstWriteReleased = false
+    private var firstWriteStartWaiters: [CheckedContinuation<Void, Never>] = []
+    private var firstWriteReleaseWaiters: [CheckedContinuation<Void, Never>] = []
+
+    var startedWriteCount: Int { writeCount }
+
+    func dataIfPresent(at _: URL) async throws -> Data? {
+        storedData
+    }
+
+    func writeAtomically(_ data: Data, to _: URL) async throws {
+        writeCount += 1
+        let writeNumber = writeCount
+        if writeNumber == 1 {
+            firstWriteStarted = true
+            let startWaiters = firstWriteStartWaiters
+            firstWriteStartWaiters.removeAll()
+            for waiter in startWaiters {
+                waiter.resume()
+            }
+
+            if !firstWriteReleased {
+                await withCheckedContinuation { continuation in
+                    firstWriteReleaseWaiters.append(continuation)
+                }
+            }
+        }
+        storedData = data
+    }
+
+    func waitForFirstWriteToStart() async {
+        guard !firstWriteStarted else { return }
+        await withCheckedContinuation { continuation in
+            firstWriteStartWaiters.append(continuation)
+        }
+    }
+
+    func releaseFirstWrite() {
+        firstWriteReleased = true
+        let releaseWaiters = firstWriteReleaseWaiters
+        firstWriteReleaseWaiters.removeAll()
+        for waiter in releaseWaiters {
+            waiter.resume()
+        }
+    }
 }
 
 private actor PeriodicMaintenanceProbe {

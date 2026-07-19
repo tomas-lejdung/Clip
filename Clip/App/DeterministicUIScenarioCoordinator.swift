@@ -345,6 +345,7 @@ final class DeterministicUIScenarioCoordinator {
                 isAvailable: false,
                 detail: "Permission denied"
             ),
+            showClickHighlights: true,
             recentRecordings: [
                 MenuBarRecentRecordingRow(
                     id: RecordingID(
@@ -375,6 +376,7 @@ final class DeterministicUIScenarioCoordinator {
         recordPreparedDisplay: { _ in },
         setMicrophoneEnabled: { _ in },
         setSystemAudioEnabled: { _ in },
+        setClickHighlightsEnabled: { _ in },
         openRecentRecording: { _ in },
         openHistory: {},
         openSettings: {},

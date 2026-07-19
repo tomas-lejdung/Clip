@@ -104,6 +104,7 @@ final class MenuBarPopoverModel: ObservableObject {
     @Published private(set) var preparedDisplayID: CGDirectDisplayID?
     @Published private(set) var microphone: MenuBarAudioState
     @Published private(set) var systemAudio: MenuBarAudioState
+    @Published private(set) var showClickHighlights: Bool
     @Published private(set) var recentRecordings: [MenuBarRecentRecordingRow]
     @Published private(set) var isLastAreaAvailable: Bool
     @Published private(set) var isFullscreenAvailable: Bool
@@ -113,6 +114,7 @@ final class MenuBarPopoverModel: ObservableObject {
         preparedDisplayID: CGDirectDisplayID? = nil,
         microphone: MenuBarAudioState = .init(),
         systemAudio: MenuBarAudioState = .init(),
+        showClickHighlights: Bool = false,
         recentRecordings: [MenuBarRecentRecordingRow] = [],
         isLastAreaAvailable: Bool = false,
         isFullscreenAvailable: Bool = false
@@ -120,6 +122,7 @@ final class MenuBarPopoverModel: ObservableObject {
         self.displays = displays
         self.microphone = microphone
         self.systemAudio = systemAudio
+        self.showClickHighlights = showClickHighlights
         self.recentRecordings = Array(recentRecordings.prefix(Self.recentRecordingLimit))
         self.isLastAreaAvailable = isLastAreaAvailable
         self.isFullscreenAvailable = isFullscreenAvailable
@@ -164,6 +167,10 @@ final class MenuBarPopoverModel: ObservableObject {
         systemAudio.isEnabled = isEnabled && systemAudio.isAvailable
     }
 
+    func setClickHighlightsEnabled(_ isEnabled: Bool) {
+        showClickHighlights = isEnabled
+    }
+
     func replaceRecentRecordings(_ recordings: [MenuBarRecentRecordingRow]) {
         recentRecordings = Array(recordings.prefix(Self.recentRecordingLimit))
     }
@@ -179,6 +186,7 @@ struct MenuBarActions {
     let recordPreparedDisplay: (CGDirectDisplayID) -> Void
     let setMicrophoneEnabled: (Bool) -> Void
     let setSystemAudioEnabled: (Bool) -> Void
+    let setClickHighlightsEnabled: (Bool) -> Void
     let openRecentRecording: (RecordingID) -> Void
     let openHistory: () -> Void
     let openSettings: () -> Void
@@ -194,6 +202,7 @@ struct MenuBarActions {
         recordPreparedDisplay: @escaping (CGDirectDisplayID) -> Void = { _ in },
         setMicrophoneEnabled: @escaping (Bool) -> Void = { _ in },
         setSystemAudioEnabled: @escaping (Bool) -> Void = { _ in },
+        setClickHighlightsEnabled: @escaping (Bool) -> Void = { _ in },
         openRecentRecording: @escaping (RecordingID) -> Void = { _ in },
         openHistory: @escaping () -> Void,
         openSettings: @escaping () -> Void,
@@ -208,6 +217,7 @@ struct MenuBarActions {
         self.recordPreparedDisplay = recordPreparedDisplay
         self.setMicrophoneEnabled = setMicrophoneEnabled
         self.setSystemAudioEnabled = setSystemAudioEnabled
+        self.setClickHighlightsEnabled = setClickHighlightsEnabled
         self.openRecentRecording = openRecentRecording
         self.openHistory = openHistory
         self.openSettings = openSettings
@@ -246,7 +256,7 @@ struct MenuBarPopoverView: View {
             }
 
             Divider()
-            audioControls
+            quickSettingControls
 
             if !model.recentRecordings.isEmpty {
                 Divider()
@@ -378,9 +388,9 @@ struct MenuBarPopoverView: View {
         .background(.quaternary.opacity(0.65), in: RoundedRectangle(cornerRadius: 8))
     }
 
-    private var audioControls: some View {
+    private var quickSettingControls: some View {
         VStack(spacing: 8) {
-            audioToggle(
+            quickToggle(
                 title: "Microphone",
                 systemImage: "mic",
                 state: model.microphone,
@@ -393,7 +403,7 @@ struct MenuBarPopoverView: View {
                     }
                 )
             )
-            audioToggle(
+            quickToggle(
                 title: "System Audio",
                 systemImage: "speaker.wave.2",
                 state: model.systemAudio,
@@ -403,6 +413,19 @@ struct MenuBarPopoverView: View {
                     set: { enabled in
                         model.setSystemAudioEnabled(enabled)
                         actions.setSystemAudioEnabled(enabled)
+                    }
+                )
+            )
+            quickToggle(
+                title: "Click Highlights",
+                systemImage: "cursorarrow.click",
+                state: MenuBarAudioState(isEnabled: model.showClickHighlights),
+                identifier: "clip.menu.clickHighlights",
+                isOn: Binding(
+                    get: { model.showClickHighlights },
+                    set: { enabled in
+                        model.setClickHighlightsEnabled(enabled)
+                        actions.setClickHighlightsEnabled(enabled)
                     }
                 )
             )
@@ -486,7 +509,7 @@ struct MenuBarPopoverView: View {
         .accessibilityIdentifier(identifier)
     }
 
-    private func audioToggle(
+    private func quickToggle(
         title: LocalizedStringKey,
         systemImage: String,
         state: MenuBarAudioState,

@@ -68,6 +68,7 @@ Display 2
 
 Microphone        Off
 System Audio      Off
+Click Highlights  Off
 
 ● Record
 
@@ -86,6 +87,7 @@ Clip remembers:
 - The most recently used capture mode.
 - The most recently selected area.
 - Audio settings.
+- Click-highlight visibility.
 - Frame-rate preference.
 - Export preset.
 
@@ -364,7 +366,7 @@ The default recording configuration is:
 - Cursor visible.
 - No audio unless enabled.
 - No webcam.
-- No click animations.
+- Click highlights off unless enabled.
 - No keystroke overlay.
 
 An optional 60 FPS capture mode is available in settings. Every export preset
@@ -373,17 +375,25 @@ timing; export never interpolates or deliberately decimates frames.
 
 ---
 
-## Cursor
+## Cursor and click highlights
 
 The user can choose whether the cursor is visible in recordings.
+The user can also enable ScreenCaptureKit's native click highlights, which
+draw a visible click indicator into the recorded video. Cursor visibility and
+click highlights are independent choices; Clip does not require Accessibility
+permission or synthesize a custom cursor overlay.
 
 Default:
 
 ```text
 Show cursor: On
+Click highlights: Off
 ```
 
-Cursor highlighting, click ripples, and cursor enlargement are not part of the MVP.
+The menu-bar popover exposes Click Highlights as a persistent quick toggle
+alongside Microphone and System Audio. The selected value is frozen into each
+recording session and its History snapshot, and Retake restores that value.
+Custom cursor enlargement and non-native cursor effects are not part of the MVP.
 
 ---
 
@@ -738,6 +748,7 @@ exceed the window; controls and labels remain single-line where practical.
 - Frame rate: 30 or 60 FPS.
 - Countdown duration.
 - Show cursor.
+- Show click highlights.
 - Default microphone state.
 - Default system-audio state.
 - Current system-default microphone name, shown read-only.
@@ -787,6 +798,7 @@ Each permission should include a button that opens the relevant macOS System Set
 - Remember Last Area: On.
 - Frame rate: 30 FPS.
 - Show cursor: On.
+- Click highlights: Off.
 - Microphone: Off.
 - System audio: Off.
 - Countdown: a silent 3 seconds, with Off, 1, 3, and 5-second choices.
@@ -902,7 +914,7 @@ Any future telemetry must be optional and transparent.
 - Xcode 26.6, build 17F113.
 - macOS 15.0 or later deployment target.
 - Apple Silicon (`arm64`).
-- Version 1.0.1.
+- Version 1.1.0.
 
 ## User interface
 
@@ -930,6 +942,7 @@ Used for:
 - Display capture.
 - Region capture.
 - Cursor capture.
+- Native click highlighting.
 - System audio.
 - Efficient frame delivery.
 
@@ -1110,7 +1123,7 @@ A separate Homebrew tap can be added later if needed.
 
 # MVP feature list
 
-## Included in version 1.0
+## Included in the current version
 
 - Native menu-bar application.
 - Capture Area mode.
@@ -1126,6 +1139,7 @@ A separate Homebrew tap can be added later if needed.
 - 30 FPS recording.
 - Optional 60 FPS.
 - Cursor visibility option.
+- Native click-highlights option, with menu-bar quick toggle.
 - Microphone capture.
 - System-audio capture.
 - Pause and resume.
@@ -1163,7 +1177,7 @@ Potential later additions:
 - Individual-window capture.
 - GIF export.
 - Webcam bubble.
-- Click animations.
+- Custom click animations beyond the native system click-highlight rings.
 - Keystroke visualization.
 - Blur regions.
 - Simple annotations.
@@ -1228,7 +1242,7 @@ clip
 ## Version
 
 ```text
-1.0.1
+1.1.0
 ```
 
 ## Bundle identifier

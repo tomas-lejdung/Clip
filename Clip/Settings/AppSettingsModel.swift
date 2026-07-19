@@ -79,6 +79,7 @@ final class AppSettingsModel: ObservableObject {
     private let defaultSaveDirectoryBookmarkStore: AtomicJSONFileStore<DefaultSaveDirectoryBookmark>
     private let directoryBookmarks: any DirectoryBookmarkServicing
     private var activeSecurityScopedDirectory: URL?
+    private var persistenceTail: Task<Void, Never>?
 
     @Published private(set) var settings: ClipSettings
     @Published private(set) var isLoaded = false
@@ -89,11 +90,13 @@ final class AppSettingsModel: ObservableObject {
         applicationSupportDirectory: URL,
         homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser,
         initialSettings: ClipSettings? = nil,
+        settingsFileSystem: any AtomicFileSystem = LocalAtomicFileSystem(),
         directoryBookmarks: any DirectoryBookmarkServicing = LiveDirectoryBookmarkService()
     ) throws {
         settings = initialSettings ?? ClipSettings.defaults(homeDirectory: homeDirectory)
         store = try SettingsJSONStore(
-            fileURL: applicationSupportDirectory.appendingPathComponent("settings.json")
+            fileURL: applicationSupportDirectory.appendingPathComponent("settings.json"),
+            fileSystem: settingsFileSystem
         )
         defaultSaveDirectoryBookmarkStore = try AtomicJSONFileStore(
             fileURL: applicationSupportDirectory
@@ -167,16 +170,51 @@ final class AppSettingsModel: ObservableObject {
         await persist()
     }
 
+    /// Publishes a small, permission-free preference change before returning,
+    /// then queues its snapshot for ordered persistence. Menu quick controls
+    /// use this so an immediately requested capture observes the new value.
+    @discardableResult
+    func updateImmediately(
+        _ mutation: (inout ClipSettings) -> Void
+    ) -> Task<Void, Never> {
+        var updatedSettings = settings
+        mutation(&updatedSettings)
+        settings = updatedSettings
+        return enqueuePersistence()
+    }
+
+    /// Waits until every settings snapshot queued before this call is durable.
+    /// Application termination uses this to preserve a just-changed quick setting.
+    func flushPendingPersistence() async {
+        await persistenceTail?.value
+    }
+
     private func persist() async {
-        do {
-            try await store.save(settings)
-            lastPersistenceError = nil
-        } catch {
-            lastPersistenceError = reportStorageError(
-                error,
-                operation: "Save settings"
-            )
+        await enqueuePersistence().value
+    }
+
+    /// Chains saves explicitly because actor methods can interleave while their
+    /// filesystem awaits. This guarantees an older snapshot can never finish
+    /// after and overwrite a newer preference value.
+    private func enqueuePersistence() -> Task<Void, Never> {
+        let previous = persistenceTail
+        let snapshot = settings
+        let store = store
+        let task = Task { @MainActor [weak self] in
+            await previous?.value
+            do {
+                try await store.save(snapshot)
+                self?.lastPersistenceError = nil
+            } catch {
+                guard let self else { return }
+                self.lastPersistenceError = self.reportStorageError(
+                    error,
+                    operation: "Save settings"
+                )
+            }
         }
+        persistenceTail = task
+        return task
     }
 
     private func restoreDefaultSaveDirectoryAccess() async {
