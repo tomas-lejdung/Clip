@@ -34,6 +34,7 @@ final class DeterministicUIScenarioCoordinator {
 
     private var statusItem: NSStatusItem?
     private var windowController: NSWindowController?
+    private var initialScrollTask: Task<Void, Never>?
 
     init(
         launchConfiguration: AppLaunchConfiguration,
@@ -94,13 +95,16 @@ final class DeterministicUIScenarioCoordinator {
             } else {
                 presentWindow(
                     rootView: content(for: scenario),
-                    size: windowSize(for: scenario)
+                    size: windowSize(for: scenario),
+                    scrollsContentToBottom: scenario == .liveShareLiveBottom
                 )
             }
         }
     }
 
     func stop() {
+        initialScrollTask?.cancel()
+        initialScrollTask = nil
         popover.close()
         windowController?.close()
         windowController = nil
@@ -139,7 +143,11 @@ final class DeterministicUIScenarioCoordinator {
         popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
     }
 
-    private func presentWindow(rootView: AnyView, size: NSSize) {
+    private func presentWindow(
+        rootView: AnyView,
+        size: NSSize,
+        scrollsContentToBottom: Bool = false
+    ) {
         let window = NSWindow(
             contentRect: NSRect(origin: .zero, size: size),
             styleMask: [.titled, .closable, .miniaturizable],
@@ -157,6 +165,56 @@ final class DeterministicUIScenarioCoordinator {
         window.makeKeyAndOrderFront(nil)
         window.contentView?.layoutSubtreeIfNeeded()
         window.contentView?.displayIfNeeded()
+
+        guard scrollsContentToBottom else { return }
+        initialScrollTask = Task { @MainActor [weak self, weak window] in
+            // SwiftUI installs the lazy scroll document over the next two main-actor turns.
+            // Moving its clip view is deterministic and does not synthesize input or move the
+            // user's pointer.
+            await Task.yield()
+            await Task.yield()
+            guard !Task.isCancelled,
+                  let self,
+                  let window,
+                  self.windowController?.window === window,
+                  let contentView = window.contentView else { return }
+            contentView.layoutSubtreeIfNeeded()
+            self.scrollLargestScrollViewToBottom(in: contentView)
+            contentView.layoutSubtreeIfNeeded()
+            contentView.displayIfNeeded()
+        }
+    }
+
+    private func scrollLargestScrollViewToBottom(in rootView: NSView) {
+        guard let scrollView = allScrollViews(in: rootView).max(by: {
+            verticalScrollRange(of: $0) < verticalScrollRange(of: $1)
+        }),
+        let documentView = scrollView.documentView else { return }
+
+        let clipView = scrollView.contentView
+        let documentBounds = documentView.bounds
+        let bottomOffset = documentView.isFlipped
+            ? NSMaxY(documentBounds) - clipView.bounds.height
+            : NSMinY(documentBounds)
+        let clampedOffset = max(
+            NSMinY(documentBounds),
+            min(bottomOffset, NSMaxY(documentBounds) - clipView.bounds.height)
+        )
+        clipView.scroll(to: NSPoint(x: clipView.bounds.origin.x, y: clampedOffset))
+        scrollView.reflectScrolledClipView(clipView)
+    }
+
+    private func allScrollViews(in view: NSView) -> [NSScrollView] {
+        var result = view is NSScrollView ? [view as! NSScrollView] : []
+        for child in view.subviews {
+            result.append(contentsOf: allScrollViews(in: child))
+        }
+        return result
+    }
+
+    private func verticalScrollRange(of scrollView: NSScrollView) -> CGFloat {
+        guard let documentView = scrollView.documentView else { return 0 }
+        return max(0, documentView.bounds.height - scrollView.contentView.bounds.height)
     }
 
     private func content(for scenario: DeterministicUIScenario) -> AnyView {
@@ -231,6 +289,34 @@ final class DeterministicUIScenarioCoordinator {
                 identifier: scenario.accessibilityIdentifier
             )
 
+        case .liveShareReady,
+             .liveShareLive,
+             .liveShareLiveBottom,
+             .liveShareReconnecting,
+             .liveShareFailed:
+            guard let snapshot = DeterministicLiveShareDemo.snapshot(for: scenario) else {
+                return wrapped(
+                    DeterministicFailureScenarioView(),
+                    identifier: scenario.accessibilityIdentifier
+                )
+            }
+            return wrapped(
+                LiveSharePopoverView(
+                    model: LiveSharePresentationModel(
+                        snapshot: snapshot,
+                        actions: .noOp
+                    ),
+                    initiallyExpandsStatistics: scenario == .liveShareLiveBottom
+                ),
+                identifier: scenario.accessibilityIdentifier
+            )
+
+        case .liveShareOverlays:
+            return wrapped(
+                DeterministicLiveShareOverlayScenarioView(),
+                identifier: scenario.accessibilityIdentifier
+            )
+
         case .settings,
              .settingsRecording,
              .settingsExport,
@@ -296,6 +382,14 @@ final class DeterministicUIScenarioCoordinator {
             NSSize(width: 820, height: 650)
         case .history, .historyExports:
             NSSize(width: 860, height: 560)
+        case .liveShareReady,
+             .liveShareLive,
+             .liveShareLiveBottom,
+             .liveShareReconnecting,
+             .liveShareFailed:
+            LiveSharePopoverView.contentSize
+        case .liveShareOverlays:
+            NSSize(width: 700, height: 430)
         case .settings,
              .settingsRecording,
              .settingsExport,
@@ -409,8 +503,373 @@ private extension DeterministicUIScenario {
              .preview,
              .history,
              .historyExports,
+             .liveShareReady,
+             .liveShareLive,
+             .liveShareLiveBottom,
+             .liveShareReconnecting,
+             .liveShareFailed,
+             .liveShareOverlays,
              .failure:
             nil
+        }
+    }
+}
+
+/// Permission-free, fixed Live Share data used by UI-source and visual regression tests.
+/// Keeping it next to the deterministic coordinator makes it impossible for a scenario launch
+/// to accidentally instantiate signaling, ScreenCaptureKit, WebRTC, or a permission service.
+enum DeterministicLiveShareDemo {
+    static func snapshot(for scenario: DeterministicUIScenario) -> LiveShareViewSnapshot? {
+        switch scenario {
+        case .liveShareReady:
+            readySnapshot()
+        case .liveShareLive, .liveShareLiveBottom:
+            liveSnapshot()
+        case .liveShareReconnecting:
+            reconnectingSnapshot()
+        case .liveShareFailed:
+            failedSnapshot()
+        default:
+            nil
+        }
+    }
+
+    private static let room = LiveShareRoomViewSnapshot(
+        viewerURL: URL(string: "https://gopeep.tineestudio.se/CRISP-FROG-042")!,
+        roomCode: "CRISP-FROG-042"
+    )
+
+    private static let availableWindows = [
+        LiveShareAvailableWindowViewSnapshot(
+            id: "window-slack",
+            applicationName: "Slack",
+            windowTitle: "#clip-development",
+            applicationPath: nil
+        ),
+        LiveShareAvailableWindowViewSnapshot(
+            id: "window-terminal",
+            applicationName: "Terminal",
+            windowTitle: "Clip — swift test",
+            applicationPath: nil
+        ),
+        LiveShareAvailableWindowViewSnapshot(
+            id: "window-notes",
+            applicationName: "Notes",
+            windowTitle: "Release checklist",
+            applicationPath: nil
+        ),
+    ]
+
+    private static let sources = [
+        LiveShareSourceViewSnapshot(
+            id: "window-safari",
+            slotIndex: 0,
+            applicationName: "Safari",
+            windowTitle: "Clip pull request",
+            status: .live,
+            isFocused: true
+        ),
+        LiveShareSourceViewSnapshot(
+            id: "window-xcode",
+            slotIndex: 1,
+            applicationName: "Xcode",
+            windowTitle: "LiveShareCoordinator.swift",
+            status: .starting
+        ),
+        LiveShareSourceViewSnapshot(
+            id: "window-keynote",
+            slotIndex: 2,
+            applicationName: "Keynote",
+            windowTitle: "Product roadmap",
+            status: .live
+        ),
+    ]
+
+    private static let slots = [
+        LiveShareSourceSlotViewSnapshot(index: 0, state: .live),
+        LiveShareSourceSlotViewSnapshot(index: 1, state: .starting),
+        LiveShareSourceSlotViewSnapshot(index: 2, state: .live),
+        LiveShareSourceSlotViewSnapshot(index: 3, state: .empty),
+    ]
+
+    private static let viewers = [
+        LiveShareViewerViewSnapshot(
+            id: "viewer-4F8A",
+            connection: .peerToPeer,
+            connectedDuration: 84
+        ),
+        LiveShareViewerViewSnapshot(
+            id: "viewer-92D1",
+            connection: .turn,
+            connectedDuration: 37
+        ),
+        LiveShareViewerViewSnapshot(
+            id: "viewer-A071",
+            connection: .connecting,
+            connectedDuration: nil
+        ),
+    ]
+
+    private static let statistics = LiveShareStatisticsViewSnapshot(
+        uptime: 94,
+        streams: [
+            LiveShareStreamStatisticsViewSnapshot(
+                id: "stream-safari",
+                name: "Safari · Clip pull request",
+                width: 1_920,
+                height: 1_080,
+                deliveredFramesPerSecond: 29.9,
+                bitsPerSecond: 5_800_000,
+                bytesSent: 58_400_000,
+                isFocused: true
+            ),
+            LiveShareStreamStatisticsViewSnapshot(
+                id: "stream-xcode",
+                name: "Xcode · LiveShareCoordinator.swift",
+                width: 1_728,
+                height: 1_117,
+                deliveredFramesPerSecond: 27.8,
+                bitsPerSecond: 4_200_000,
+                bytesSent: 32_100_000
+            ),
+            LiveShareStreamStatisticsViewSnapshot(
+                id: "stream-keynote",
+                name: "Keynote · Product roadmap",
+                width: 1_600,
+                height: 900,
+                deliveredFramesPerSecond: 30,
+                bitsPerSecond: 3_600_000,
+                bytesSent: 27_900_000
+            ),
+        ]
+    )
+
+    private static func readySnapshot() -> LiveShareViewSnapshot {
+        LiveShareViewSnapshot(
+            phase: .ready,
+            room: room,
+            accessCodeEnabled: false,
+            sources: [],
+            fullscreen: .init(isOn: false, displayName: "Studio Display"),
+            canShareFocusedWindow: true,
+            focusedWindowDescription: "Safari · Clip pull request",
+            availableWindows: availableWindows,
+            canAddWindow: true,
+            settings: .init(
+                quality: .veryHigh,
+                frameRate: .thirty,
+                codec: .init(name: "H.264", acceleration: .hardware),
+                adaptiveBitrate: true,
+                mode: .quality,
+                autoShareFocusedWindows: false
+            )
+        )
+    }
+
+    private static func liveSnapshot() -> LiveShareViewSnapshot {
+        LiveShareViewSnapshot(
+            phase: .live(elapsedSeconds: 94),
+            room: room,
+            accessCodeEnabled: true,
+            accessCode: "orbit-mint-72",
+            sources: sources,
+            slots: slots,
+            fullscreen: .init(isOn: false, displayName: "Studio Display"),
+            canShareFocusedWindow: true,
+            focusedWindowDescription: "Safari · Clip pull request",
+            availableWindows: availableWindows,
+            canAddWindow: true,
+            settings: .init(
+                quality: .ultra,
+                frameRate: .thirty,
+                codec: .init(name: "H.264", acceleration: .hardware),
+                adaptiveBitrate: true,
+                mode: .quality,
+                autoShareFocusedWindows: false
+            ),
+            viewers: viewers,
+            statistics: statistics
+        )
+    }
+
+    private static func reconnectingSnapshot() -> LiveShareViewSnapshot {
+        LiveShareViewSnapshot(
+            phase: .reconnecting(attempt: 2, maximumAttempts: 5),
+            room: room,
+            accessCodeEnabled: true,
+            accessCode: "orbit-mint-72",
+            canChangeAccessCode: false,
+            sources: sources.map {
+                LiveShareSourceViewSnapshot(
+                    id: $0.id,
+                    slotIndex: $0.slotIndex,
+                    applicationName: $0.applicationName,
+                    windowTitle: $0.windowTitle,
+                    status: .starting,
+                    isFocused: $0.isFocused,
+                    canStop: false
+                )
+            },
+            slots: slots.map {
+                LiveShareSourceSlotViewSnapshot(
+                    index: $0.index,
+                    state: $0.state == .empty ? .empty : .starting
+                )
+            },
+            fullscreen: .init(
+                isOn: false,
+                displayName: "Studio Display",
+                isEnabled: false,
+                detail: "Fullscreen controls resume after reconnecting."
+            ),
+            canShareFocusedWindow: false,
+            focusedWindowDescription: "Safari · Clip pull request",
+            availableWindows: availableWindows,
+            canAddWindow: false,
+            settings: disabledSettings(),
+            viewers: [
+                .init(id: "viewer-4F8A", connection: .connecting, connectedDuration: nil),
+                .init(id: "viewer-92D1", connection: .disconnected, connectedDuration: nil),
+            ],
+            statistics: statistics
+        )
+    }
+
+    private static func failedSnapshot() -> LiveShareViewSnapshot {
+        LiveShareViewSnapshot(
+            phase: .failed(message: "The signaling service is unavailable."),
+            room: room,
+            accessCodeEnabled: true,
+            accessCode: "orbit-mint-72",
+            canChangeAccessCode: false,
+            accessCodeError: "The access code could not be refreshed while offline.",
+            sources: [
+                LiveShareSourceViewSnapshot(
+                    id: "window-safari",
+                    slotIndex: 0,
+                    applicationName: "Safari",
+                    windowTitle: "Clip pull request",
+                    status: .failed,
+                    isFocused: true,
+                    canStop: false
+                ),
+            ],
+            slots: [.init(index: 0, state: .starting)],
+            fullscreen: .init(
+                isOn: false,
+                displayName: "Studio Display",
+                isEnabled: false
+            ),
+            focusedWindowDescription: "Safari · Clip pull request",
+            availableWindows: availableWindows,
+            settings: disabledSettings(),
+            viewers: [
+                .init(id: "viewer-4F8A", connection: .disconnected, connectedDuration: nil),
+            ],
+            statistics: statistics
+        )
+    }
+
+    private static func disabledSettings() -> LiveShareSettingsViewSnapshot {
+        LiveShareSettingsViewSnapshot(
+            quality: .ultra,
+            frameRate: .thirty,
+            codec: .init(name: "H.264", acceleration: .hardware),
+            adaptiveBitrate: true,
+            mode: .quality,
+            autoShareFocusedWindows: false,
+            canChangeQuality: false,
+            canChangeFrameRate: false,
+            canChangeAdaptiveBitrate: false,
+            canChangeMode: false,
+            canChangeAutoShare: false
+        )
+    }
+}
+
+@MainActor
+private struct DeterministicLiveShareOverlayScenarioView: View {
+    private let activeHUD = LiveShareStatusHUDSnapshot(
+        slots: [
+            .init(index: 0, state: .live),
+            .init(index: 1, state: .starting),
+            .init(index: 2, state: .live),
+        ],
+        connectedViewerCount: 2,
+        fullscreen: .init(isOn: false, displayName: "Studio Display")
+    )
+
+    private let fullscreenHUD = LiveShareStatusHUDSnapshot(
+        slots: [.init(index: 0, state: .live)],
+        connectedViewerCount: 3,
+        fullscreen: .init(isOn: true, displayName: "Studio Display")
+    )
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 28) {
+            Text("Live Share overlays")
+                .font(.title2.weight(.semibold))
+
+            HStack(alignment: .top, spacing: 54) {
+                preview(title: "Focused window · available") {
+                    FocusedWindowShareOverlayView(
+                        snapshot: .init(
+                            sourceID: "window-safari",
+                            applicationName: "Safari",
+                            windowTitle: "Clip pull request",
+                            state: .shareable
+                        ),
+                        side: .left,
+                        primaryAction: {},
+                        toggleSide: {}
+                    )
+                }
+                .accessibilityIdentifier("clip.liveShare.fixture.focused.shareable")
+
+                preview(title: "Focused window · live") {
+                    FocusedWindowShareOverlayView(
+                        snapshot: .init(
+                            sourceID: "window-xcode",
+                            applicationName: "Xcode",
+                            windowTitle: "LiveShareCoordinator.swift",
+                            state: .live
+                        ),
+                        side: .right,
+                        primaryAction: {},
+                        toggleSide: {}
+                    )
+                }
+                .accessibilityIdentifier("clip.liveShare.fixture.focused.live")
+            }
+
+            HStack(alignment: .top, spacing: 48) {
+                preview(title: "Window sources") {
+                    LiveShareStatusHUDView(snapshot: activeHUD, actions: .init())
+                }
+                .accessibilityIdentifier("clip.liveShare.fixture.hud.windows")
+
+                preview(title: "Fullscreen") {
+                    LiveShareStatusHUDView(snapshot: fullscreenHUD, actions: .init())
+                }
+                .accessibilityIdentifier("clip.liveShare.fixture.hud.fullscreen")
+            }
+        }
+        .padding(28)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .background(.background)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("clip.liveShare.fixture.overlays")
+    }
+
+    private func preview<Content: View>(
+        title: String,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text(title)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+            content()
         }
     }
 }

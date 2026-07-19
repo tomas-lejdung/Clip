@@ -1,5 +1,53 @@
 # Clip acceptance harness
 
+## GoPeep v1 local interoperability
+
+Run the deterministic, pointer-free GoPeep compatibility lane with:
+
+```sh
+./scripts/run-gopeep-interop-acceptance.sh
+```
+
+The script builds and launches the unmodified sibling GoPeep Go signaling server on
+loopback, then runs Clip's package tests with the real production HTTP and WebSocket
+transports. It verifies room reservation, sharer-secret authentication, viewer password
+gating and replacement, viewer joins, targeted offer/answer routing, bidirectional ICE
+routing, and that the embedded browser viewer artifact is served. It then loads that
+unmodified viewer in an offscreen `WKWebView`, negotiates directly with Clip's native
+WebRTC host, and requires several deterministic H.264 frames to be presented. The
+browser snapshot also verifies that exact `streams-info`, focus, and cursor metadata
+sent over the ordered `gopeep-control` channel was consumed by the viewer. The same
+lane retains the native libwebrtc loopback acceptance as a lower-level codec check.
+
+The WebKit window is placed offscreen and the lane never uses pointer control or touches
+the installed app. It does not capture the real desktop or prove remote Internet/TURN
+traversal; those remain separate acceptance surfaces.
+
+### Live Share evidence map
+
+| Surface | Current automated evidence | Not established by that evidence |
+| --- | --- | --- |
+| GoPeep protocol | Unmodified local Go service handles reserve, secret authentication, new-viewer access-code checks, targeted SDP, and bidirectional ICE. | Production service availability, hostile-server security, or remote NAT traversal. |
+| Native WebRTC | Four stable H.264 transceivers, reliable ordered control channel, native loopback frames, viewer/answer/ICE/SDP/control bounds, low-water durable-state replay, and idempotent close. | A controlled TURN relay or four simultaneously active browser-rendered sources. |
+| Browser viewer | Unmodified served viewer in offscreen WebKit presents advancing H.264 and consumes stream/focus/cursor state. | Real desktop content, 15/60 FPS capability, remote Internet, or subjective text quality. |
+| Capture | Package tests require exact dimensions, safe old/new resize handoff, and observable latest-frame pressure; hosted tests require sustained pressure to appear in the popover and HUD and recover after healthy intervals. | Production Live Share ScreenCaptureKit permission, overlay exclusion, window/display loss, or real encoder/network overload. |
+| UI | Injected Ready, Live, scrolled-bottom, Reconnecting, Failed, focused-overlay, and HUD scenarios use production presentation code. | Real-window hit consumption, secondary displays, Spaces, or capture exclusion. |
+| Lifecycle | Unit tests cover state transitions, reconnect, stale work, Stop All, Fullscreen rollback, viewer admission, and bounded authoritative-state replay after native channel drain. | Sleep/wake, permission revocation, ten-minute soak, and runtime resource scans. |
+| Distribution | Source audits enforce dependency pinning, notices, entitlements, nested signing, and DMG checks. | The final stable-signed Release DMG/update candidate until the complete release gate runs. |
+
+The current GoPeep v1 access code is visible to the signaling service and
+applies to new join attempts. The server does not reauthenticate a viewer that
+already joined before the code changed. Live Share contains video only. Thirty
+FPS is the supported default; 60 FPS is optional and not a release blocker.
+
+Before release, the controlled-Mac lane must share real ScreenCaptureKit content
+through the production `LiveShareCoordinator`, exercise one through four
+windows plus Fullscreen and resize, prove both overlays are absent from shared
+pixels, and stop cleanly. Remote Internet/TURN traversal, a repeated-start/stop
+run, a ten-minute soak, and the final stable-signed Release DMG remain separate
+gates. Until those run, the loopback lane must not be described as complete
+real-world Live Share acceptance.
+
 The default acceptance lane is deterministic and permission-free:
 
 ```sh

@@ -115,6 +115,9 @@ export SWIFTPM_MODULECACHE_OVERRIDE="$MODULE_CACHE"
 
 swift test --package-path "$ROOT/Packages/ClipCore"
 swift test --package-path "$ROOT/Packages/ClipMedia"
+swift test --package-path "$ROOT/Packages/ClipCapture"
+swift test --package-path "$ROOT/Packages/ClipLiveShare"
+swift test --package-path "$ROOT/Packages/ClipLiveShareWebRTC"
 
 # Keep the command array non-empty for the system Bash 3.2 shipped by macOS.
 # Expanding an empty array under `set -u` is otherwise reported as an unbound

@@ -19,6 +19,12 @@ enum DeterministicUIScenario: String, CaseIterable, Equatable, Sendable {
     case preview
     case history
     case historyExports = "history-exports"
+    case liveShareReady = "live-share-ready"
+    case liveShareLive = "live-share-live"
+    case liveShareLiveBottom = "live-share-live-bottom"
+    case liveShareReconnecting = "live-share-reconnecting"
+    case liveShareFailed = "live-share-failed"
+    case liveShareOverlays = "live-share-overlays"
     case settings
     case settingsRecording = "settings-recording"
     case settingsExport = "settings-export"

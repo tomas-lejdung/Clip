@@ -93,6 +93,114 @@ final class ClipLaunchTests: XCTestCase {
         app.terminate()
     }
 
+    /// Renders the production Live Share popover against fixed snapshots. These scenarios are
+    /// isolated from app state and deliberately have no coordinator, signaling, capture, WebRTC,
+    /// permission, or pointer-control path behind their inert controls.
+    @MainActor
+    func testDeterministicLiveSharePopoverStatesWithoutPrivacyPrompts() throws {
+        try assertLiveShareScenario(
+            "live-share-ready",
+            statusLabel: "Ready to share",
+            visibleIdentifiers: [
+                "clip.liveShare.copyLink",
+                "clip.liveShare.copyRoomCode",
+                "clip.liveShare.fullscreen",
+                "clip.liveShare.addWindow",
+            ]
+        )
+        try assertLiveShareScenario(
+            "live-share-live",
+            statusLabel: "Live · 01:34",
+            visibleIdentifiers: [
+                "clip.liveShare.copyLink",
+                "clip.liveShare.accessCode.copy",
+                "clip.liveShare.stopAll",
+            ]
+        )
+        try assertLiveShareScenario(
+            "live-share-reconnecting",
+            statusLabel: "Reconnecting 2/5…",
+            visibleIdentifiers: [
+                "clip.liveShare.stopAll",
+                "clip.liveShare.stopSession",
+            ]
+        )
+        try assertLiveShareScenario(
+            "live-share-failed",
+            statusLabel: "The signaling service is unavailable.",
+            visibleIdentifiers: [
+                "clip.liveShare.retry",
+                "clip.liveShare.stopSession",
+            ]
+        )
+    }
+
+    /// The companion bottom scenario scrolls through AppKit after layout instead of synthesizing
+    /// a gesture, so the lower half of the production LazyVStack is covered without moving the
+    /// user's cursor.
+    @MainActor
+    func testDeterministicLiveSharePopoverBottomWithoutPointerControl() throws {
+        let app = launchDeterministicScenario("live-share-live-bottom")
+        defer { app.terminate() }
+
+        let root = app.descendants(matching: .any)
+            .matching(identifier: "clip.uiScenario.live-share-live-bottom")
+            .firstMatch
+        XCTAssertTrue(root.waitForExistence(timeout: 10))
+
+        let statistics = app.descendants(matching: .any)
+            .matching(identifier: "clip.liveShare.statistics")
+            .firstMatch
+        XCTAssertTrue(statistics.waitForExistence(timeout: 10))
+        XCTAssertTrue(
+            waitForHittable(statistics, timeout: 5),
+            "The deterministic bottom scenario did not expose the lower Live Share content."
+        )
+        XCTAssertEqual(
+            accessibilityValue(of: statistics),
+            "1",
+            "The deterministic bottom scenario did not expand Statistics."
+        )
+        let uptime = app.staticTexts
+            .matching(NSPredicate(format: "value == %@", "Uptime 01:34"))
+            .firstMatch
+        XCTAssertTrue(uptime.waitForExistence(timeout: 5))
+        let finalStream = app.staticTexts
+            .matching(NSPredicate(format: "value CONTAINS %@", "Keynote · Product roadmap"))
+            .firstMatch
+        XCTAssertTrue(
+            finalStream.waitForExistence(timeout: 5),
+            "The expanded fixture did not render its final stream statistics row."
+        )
+        attachScenarioScreenshot(app: app, name: "Live Share — live — bottom")
+    }
+
+    @MainActor
+    func testDeterministicLiveShareOverlayAndHUDStatesWithoutPointerControl() throws {
+        let app = launchDeterministicScenario("live-share-overlays")
+        defer { app.terminate() }
+
+        for identifier in [
+            "clip.liveShare.fixture.focused.shareable",
+            "clip.liveShare.fixture.focused.live",
+            "clip.liveShare.fixture.hud.windows",
+            "clip.liveShare.fixture.hud.fullscreen",
+        ] {
+            let element = app.descendants(matching: .any)
+                .matching(identifier: identifier)
+                .firstMatch
+            XCTAssertTrue(
+                element.waitForExistence(timeout: 10),
+                "Missing deterministic overlay fixture \(identifier)."
+            )
+        }
+
+        let primaryControls = app.descendants(matching: .any)
+            .matching(identifier: "clip.liveShare.focusedWindow.primary")
+        XCTAssertEqual(primaryControls.count, 2)
+        attachScenarioScreenshot(app: app, name: "Live Share — overlays and HUD")
+    }
+
     @MainActor
     func testDeterministicHelperAcceptanceWithoutPrivacyPrompts() throws {
         let helperURL = try helperExecutableURL()
@@ -1052,6 +1160,86 @@ final class ClipLaunchTests: XCTestCase {
         return executableURL
     }
     #endif
+
+    @MainActor
+    private func assertLiveShareScenario(
+        _ rawValue: String,
+        statusLabel: String,
+        visibleIdentifiers: [String]
+    ) throws {
+        let app = launchDeterministicScenario(rawValue)
+        defer { app.terminate() }
+
+        let root = app.descendants(matching: .any)
+            .matching(identifier: "clip.uiScenario.\(rawValue)")
+            .firstMatch
+        XCTAssertTrue(
+            root.waitForExistence(timeout: 10),
+            "The deterministic Live Share scenario \(rawValue) did not launch."
+        )
+        let status = app.descendants(matching: .any)
+            .matching(identifier: "clip.liveShare.status")
+            .firstMatch
+        XCTAssertTrue(
+            status.waitForExistence(timeout: 5),
+            "The \(rawValue) fixture did not expose its status element."
+        )
+        let renderedStatus = [status.label, accessibilityValue(of: status)]
+            .joined(separator: " ")
+        XCTAssertTrue(
+            renderedStatus.contains(statusLabel),
+            "The \(rawValue) fixture rendered “\(renderedStatus)” instead of “\(statusLabel)”."
+        )
+
+        for identifier in visibleIdentifiers {
+            let element = app.descendants(matching: .any)
+                .matching(identifier: identifier)
+                .firstMatch
+            XCTAssertTrue(
+                element.waitForExistence(timeout: 5),
+                "The \(rawValue) fixture did not render \(identifier)."
+            )
+        }
+
+        attachScenarioScreenshot(
+            app: app,
+            name: "Live Share — \(rawValue.replacingOccurrences(of: "-", with: " "))"
+        )
+    }
+
+    @MainActor
+    private func launchDeterministicScenario(_ rawValue: String) -> XCUIApplication {
+        let app = XCUIApplication()
+        app.launchArguments = ["--ui-testing", "--ui-scenario=\(rawValue)"]
+        app.launch()
+        return app
+    }
+
+    @MainActor
+    private func attachScenarioScreenshot(app: XCUIApplication, name: String) {
+        let window = app.windows.firstMatch
+        guard window.waitForExistence(timeout: 5) else {
+            XCTFail("Could not capture \(name) because its fixture window was missing.")
+            return
+        }
+        let attachment = XCTAttachment(screenshot: window.screenshot())
+        attachment.name = name
+        attachment.lifetime = .keepAlways
+        add(attachment)
+    }
+
+    @MainActor
+    private func waitForHittable(
+        _ element: XCUIElement,
+        timeout: TimeInterval
+    ) -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if element.exists, element.isHittable { return true }
+            RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+        }
+        return element.exists && element.isHittable
+    }
 
     private func helperExecutableURL() throws -> URL {
         if let explicitPath = ProcessInfo.processInfo.environment["CLIP_TEST_HELPER_PATH"] {

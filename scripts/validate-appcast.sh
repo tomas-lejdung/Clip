@@ -6,6 +6,8 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 EXPECTED_FEED_URL="https://tomas-lejdung.github.io/Clip/appcast.xml"
 RELEASE_DOWNLOAD_ROOT="https://github.com/tomas-lejdung/Clip/releases/download"
 
+source "$ROOT/scripts/webrtc-config.sh"
+
 fail() {
   echo "Appcast validation failed: $*" >&2
   exit 1
@@ -123,10 +125,26 @@ hdiutil attach \
 APP="$MOUNT_ROOT/Clip.app"
 INFO="$APP/Contents/Info.plist"
 SPARKLE_FRAMEWORK="$APP/Contents/Frameworks/Sparkle.framework"
+WEBRTC_FRAMEWORK="$APP/Contents/Frameworks/WebRTC.framework"
+WEBRTC_EXECUTABLE="$WEBRTC_FRAMEWORK/Versions/A/WebRTC"
+THIRD_PARTY_NOTICES="$APP/Contents/Resources/ThirdPartyNotices.txt"
 
 [[ -d "$APP" ]] || fail "DMG does not contain Clip.app"
 [[ -f "$INFO" ]] || fail "packaged Clip.app has no Info.plist"
 [[ -d "$SPARKLE_FRAMEWORK" ]] || fail "packaged Clip.app does not embed Sparkle.framework"
+[[ -d "$WEBRTC_FRAMEWORK" ]] || fail "packaged Clip.app does not embed WebRTC.framework"
+[[ -f "$WEBRTC_EXECUTABLE" ]] || fail "packaged WebRTC runtime is missing"
+[[ -f "$THIRD_PARTY_NOTICES" ]] || fail "packaged third-party notices are missing"
+codesign --verify --strict "$WEBRTC_FRAMEWORK" >/dev/null 2>&1 \
+  || fail "packaged WebRTC.framework has an invalid code signature"
+file "$WEBRTC_EXECUTABLE" | grep -q 'arm64' \
+  || fail "packaged WebRTC runtime has no arm64 slice"
+grep -Fq "Source: $CLIP_WEBRTC_REPOSITORY_URL, version $CLIP_WEBRTC_VERSION" \
+  "$THIRD_PARTY_NOTICES" \
+  || fail "packaged WebRTC notice has an unexpected source or version"
+grep -Fq "Source revision: $CLIP_WEBRTC_WRAPPER_REVISION" \
+  "$THIRD_PARTY_NOTICES" \
+  || fail "packaged WebRTC notice has an unexpected wrapper revision"
 codesign --verify --deep --strict "$APP" >/dev/null 2>&1 \
   || fail "packaged Clip.app has an invalid code signature"
 
@@ -178,6 +196,12 @@ NETWORK_CLIENT="$(
 )"
 [[ "$NETWORK_CLIENT" == "true" ]] \
   || fail "packaged app lacks the outgoing-network sandbox entitlement"
+NETWORK_SERVER="$(
+  plutil -extract 'com\.apple\.security\.network\.server' raw -o - - \
+    <<<"$ENTITLEMENTS" 2>/dev/null || true
+)"
+[[ "$NETWORK_SERVER" == "true" ]] \
+  || fail "packaged app lacks the incoming-network sandbox entitlement"
 if /usr/libexec/PlistBuddy \
     -c 'Print :com.apple.security.get-task-allow' \
     /dev/stdin <<<"$ENTITLEMENTS" >/dev/null 2>&1; then
