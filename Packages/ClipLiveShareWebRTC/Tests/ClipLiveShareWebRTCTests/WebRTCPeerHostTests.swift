@@ -48,6 +48,10 @@ struct WebRTCPeerHostTests {
 
     @Test("offer contains all stable streams, H264, and the data channel")
     func goPeepOfferShape() async throws {
+        let encoderFormats = WebRTCH264EncoderFactory().supportedCodecs()
+        #expect(encoderFormats.map { $0.parameters["profile-level-id"] } == [
+            "640c34", "42e034",
+        ])
         let host = try WebRTCPeerHost(eventQueue: .global())
         defer { host.close() }
 
@@ -59,6 +63,10 @@ struct WebRTCPeerHostTests {
             #expect(offer.sdp.contains("gopeep-stream-\(slot) video\(slot)"))
         }
         #expect(offer.sdp.contains(" H264/90000"))
+        #expect(offer.sdp.contains("profile-level-id=640c34"))
+        #expect(offer.sdp.contains("profile-level-id=42e034"))
+        #expect(!offer.sdp.contains("profile-level-id=640c1f"))
+        #expect(!offer.sdp.contains("profile-level-id=42e01f"))
         #expect(!offer.sdp.contains(" VP8/90000"))
         #expect(!offer.sdp.contains(" VP9/90000"))
         #expect(offer.sdp.contains("m=application"))

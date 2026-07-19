@@ -17,7 +17,7 @@ import WebKit
 @Suite("WebKit GoPeep viewer acceptance", .serialized)
 struct WebKitGoPeepViewerAcceptanceTests {
     @MainActor
-    @Test("served viewer decodes advancing H.264 and consumes control metadata")
+    @Test("served viewer decodes a slot activated after negotiation")
     func servedViewerDecodesNativeHost() async throws {
         let environment = ProcessInfo.processInfo.environment
         guard environment["CLIP_RUN_GOPEEP_WEBKIT_ACCEPTANCE"] == "1" else {
@@ -74,6 +74,7 @@ struct WebKitGoPeepViewerAcceptanceTests {
         let controlOpen = await harness.waitUntilControlOpen(timeout: .seconds(15))
         #expect(controlOpen)
         #expect(await harness.answerAdvertisesH264)
+        try await harness.activateFixtureSlot()
 
         var firstDecodedFrameCount: Int?
         var lastSnapshot = try await webKitViewerSnapshot(webView)
@@ -99,8 +100,8 @@ struct WebKitGoPeepViewerAcceptanceTests {
         let initialFrames = firstDecodedFrameCount ?? 0
         #expect(lastSnapshot.statusText == "Connected")
         #expect(lastSnapshot.hasVideoSource)
-        #expect(lastSnapshot.videoWidth == 320)
-        #expect(lastSnapshot.videoHeight == 180)
+        #expect(lastSnapshot.videoWidth == 2_762)
+        #expect(lastSnapshot.videoHeight == 1_202)
         #expect(lastSnapshot.decodedFrames >= initialFrames + 3)
         #expect(lastSnapshot.metadataMatchesFixture)
         #expect(lastSnapshot.cursorMetadataConsumed)
@@ -121,6 +122,7 @@ private actor WebKitGoPeepHostHarness {
     private var pendingLocalICE: [String: [WebRTCICECandidate]] = [:]
     private var pendingRemoteICE: [String: [WebRTCICECandidate]] = [:]
     private var controlOpen = false
+    private var controlViewerID: String?
     private var answerSDP = ""
     private var failure: String?
 
@@ -139,7 +141,7 @@ private actor WebKitGoPeepHostHarness {
             configuration: .init(
                 iceServers: [],
                 senderPolicy: .init(
-                    maximumBitrateBps: 2_000_000,
+                    maximumBitrateBps: 12_000_000,
                     maximumFramesPerSecond: 30,
                     maintainsResolution: true
                 )
@@ -165,7 +167,6 @@ private actor WebKitGoPeepHostHarness {
 
         let reservation = try await signaling.reserveRoom()
         room = reservation
-        try peerHost.activateSlot(0, metadata: Self.fixtureMetadata)
         try await signaling.connect(room: GoPeepV1RoomConfiguration(
             reservation: reservation
         ))
@@ -193,9 +194,49 @@ private actor WebKitGoPeepHostHarness {
         if let failure {
             throw WebKitAcceptanceError.runtime(failure)
         }
-        let frame = try makeWebKitFixtureFrame(index: index, width: 320, height: 180)
+        let frame = try makeWebKitFixtureFrame(
+            index: index,
+            width: 2_762,
+            height: 1_202
+        )
         guard peerHost.send(frame, toSlot: 0) == .accepted else {
             throw WebKitAcceptanceError.runtime("native host rejected fixture frame")
+        }
+    }
+
+    /// Mirrors Clip's real first-share order: the browser completes its offer,
+    /// answer, and data-channel setup while all four stable tracks are disabled.
+    /// The selected slot only becomes active afterward, without renegotiation.
+    func activateFixtureSlot() throws {
+        if let failure {
+            throw WebKitAcceptanceError.runtime(failure)
+        }
+        guard let viewerID = controlViewerID else {
+            throw WebKitAcceptanceError.runtime("control viewer is unavailable")
+        }
+
+        try peerHost.activateSlot(0, metadata: Self.fixtureMetadata)
+        let messages = [
+            GoPeepV1Message(
+                type: .streamActivated,
+                streamActivated: Self.fixtureMetadata
+            ),
+            GoPeepV1Message(type: .focusChange, focusedTrack: "video0"),
+            GoPeepV1Message(
+                type: .cursorPosition,
+                trackID: "video0",
+                cursorX: 0.25,
+                cursorY: 0.75,
+                cursorInView: true
+            ),
+            GoPeepV1Message(type: .sharerStarted),
+        ]
+        for message in messages {
+            guard try peerHost.sendControl(message, to: viewerID) else {
+                throw WebKitAcceptanceError.runtime(
+                    "could not deliver post-negotiation activation metadata"
+                )
+            }
         }
     }
 
@@ -306,26 +347,9 @@ private actor WebKitGoPeepHostHarness {
             guard state == .open else { return }
             do {
                 controlOpen = true
+                controlViewerID = viewerID
                 _ = try peerHost.sendControl(
-                    GoPeepV1Message(type: .streamsInfo, streams: [Self.fixtureMetadata]),
-                    to: viewerID
-                )
-                _ = try peerHost.sendControl(
-                    GoPeepV1Message(type: .focusChange, focusedTrack: "video0"),
-                    to: viewerID
-                )
-                _ = try peerHost.sendControl(
-                    GoPeepV1Message(
-                        type: .cursorPosition,
-                        trackID: "video0",
-                        cursorX: 0.25,
-                        cursorY: 0.75,
-                        cursorInView: true
-                    ),
-                    to: viewerID
-                )
-                _ = try peerHost.sendControl(
-                    GoPeepV1Message(type: .sharerStarted),
+                    GoPeepV1Message(type: .streamsInfo, streams: []),
                     to: viewerID
                 )
             } catch {
@@ -362,8 +386,8 @@ private actor WebKitGoPeepHostHarness {
         windowName: "WebKit Fixture",
         appName: "Clip Acceptance",
         isFocused: true,
-        width: 320,
-        height: 180
+        width: 2_762,
+        height: 1_202
     )
 }
 
@@ -427,7 +451,7 @@ private func webKitViewerSnapshot(_ webView: WKWebView) async throws -> WebKitVi
         metadataMatchesFixture: !!fixture &&
           fixture.windowName === "WebKit Fixture" &&
           fixture.appName === "Clip Acceptance" &&
-          fixture.width === 320 && fixture.height === 180 &&
+          fixture.width === 2762 && fixture.height === 1202 &&
           fixture.isFocused === true,
         cursorMetadataConsumed: !!cursor && cursor.cursorInView === true,
         streamOrder: Array.from(order),

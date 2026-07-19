@@ -100,7 +100,6 @@ public final class WebRTCPeerHost: LiveShareVideoSlotHosting, @unchecked Sendabl
     private let queueKey = DispatchSpecificKey<UInt8>()
     private let sslLease: WebRTCSSLRuntimeLease
     private let factory: RTCPeerConnectionFactory
-    private let h264Codecs: [RTCRtpCodecCapability]
     private let slots: [Slot]
     private var peers: [String: PeerContext] = [:]
     private var previousOutboundCounters: [
@@ -126,7 +125,10 @@ public final class WebRTCPeerHost: LiveShareVideoSlotHosting, @unchecked Sendabl
             qos: .userInteractive
         )
         sslLease = try WebRTCSSLRuntimeLease()
-        let peerFactory = RTCPeerConnectionFactory()
+        let peerFactory = RTCPeerConnectionFactory(
+            encoderFactory: WebRTCH264EncoderFactory(),
+            decoderFactory: RTCDefaultVideoDecoderFactory()
+        )
         factory = peerFactory
         let codecs = peerFactory
             .rtpSenderCapabilities(forKind: kRTCMediaStreamTrackKindVideo)
@@ -135,7 +137,6 @@ public final class WebRTCPeerHost: LiveShareVideoSlotHosting, @unchecked Sendabl
         guard !codecs.isEmpty else {
             throw WebRTCPeerHostError.h264Unavailable
         }
-        h264Codecs = codecs
         slots = (0 ..< WebRTCRuntimeIdentity.maximumVideoSlots).map {
             Slot(index: $0, factory: peerFactory)
         }
@@ -689,17 +690,11 @@ public final class WebRTCPeerHost: LiveShareVideoSlotHosting, @unchecked Sendabl
                 ) else {
                     throw WebRTCPeerHostError.trackCreationFailed(slot: slot.index)
                 }
-                do {
-                    try transceiver.setCodecPreferences(
-                        h264Codecs,
-                        error: ()
-                    )
-                } catch {
-                    throw WebRTCPeerHostError.h264PreferenceFailed(
-                        slot: slot.index,
-                        message: error.localizedDescription
-                    )
-                }
+                // The injected encoder factory exposes H.264 exclusively.
+                // Calling setCodecPreferences here would cause libwebrtc's
+                // Objective-C bridge to rebuild these capabilities with its
+                // built-in Level 3.1 ceiling, undoing the native-resolution
+                // factory configuration.
                 applySenderPolicy(to: transceiver.sender, slot: slot.index)
                 senders[slot.index] = transceiver.sender
             }
@@ -780,7 +775,13 @@ public final class WebRTCPeerHost: LiveShareVideoSlotHosting, @unchecked Sendabl
                         ))
                     return
                 }
-                context.connection.setLocalDescription(description) { [weak self] error in
+                let upgradedDescription = RTCSessionDescription(
+                    type: description.type,
+                    sdp: WebRTCH264EncoderFactory.upgradingProfileLevels(
+                        in: description.sdp
+                    )
+                )
+                context.connection.setLocalDescription(upgradedDescription) { [weak self] error in
                     guard let self else {
                         continuation.resume(throwing: WebRTCPeerHostError.hostClosed)
                         return
@@ -803,7 +804,7 @@ public final class WebRTCPeerHost: LiveShareVideoSlotHosting, @unchecked Sendabl
                             )
                             continuation.resume(returning: WebRTCSessionDescription(
                                 kind: .offer,
-                                sdp: description.sdp
+                                sdp: upgradedDescription.sdp
                             ))
                         }
                     }

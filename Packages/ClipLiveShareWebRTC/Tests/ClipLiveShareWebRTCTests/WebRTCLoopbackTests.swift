@@ -9,6 +9,17 @@ import Testing
 
 @Suite("Native WebRTC loopback", .serialized)
 struct WebRTCLoopbackTests {
+    @Test("native Retina-sized windows encode and render at source resolution")
+    func nativeResolutionLoopback() async throws {
+        for size in [
+            CGSize(width: 1_258, height: 934),
+            CGSize(width: 1_280, height: 1_202),
+            CGSize(width: 2_762, height: 1_202),
+        ] {
+            try await assertNativeResolution(size)
+        }
+    }
+
     @Test("host negotiates, sends control data, and delivers a captured pixel buffer")
     func nativeLoopback() async throws {
         let bridge = LoopbackBridge()
@@ -141,6 +152,69 @@ struct WebRTCLoopbackTests {
         })
         #expect(bridge.receivedVideoSize == .init(width: 320, height: 180))
 
+        let outbound = try await host.outboundSenderStatisticsSnapshot()
+        let slot = try #require(outbound[slot: 0])
+        #expect(slot.bytesSent > 0)
+        #expect(slot.framesEncoded > 0)
+        #expect(slot.framesSent > 0)
+    }
+
+    private func assertNativeResolution(_ size: CGSize) async throws {
+        let width = Int(size.width)
+        let height = Int(size.height)
+        let bridge = LoopbackBridge()
+        let host = try WebRTCPeerHost(
+            configuration: .init(
+                iceServers: [],
+                senderPolicy: .init(
+                    maximumBitrateBps: 12_000_000,
+                    maximumFramesPerSecond: 30,
+                    maintainsResolution: true
+                ),
+                resourceLimits: .init(answerTimeout: 0.05)
+            ),
+            eventQueue: bridge.eventQueue,
+            eventHandler: { event in bridge.receive(hostEvent: event) }
+        )
+        bridge.host = host
+        defer { host.close() }
+
+        let offer = try await host.createOffer(for: "retina-loopback-viewer")
+        #expect(offer.sdp.contains("profile-level-id=640c34"))
+        let receiver = try LoopbackReceiver(bridge: bridge)
+        defer { receiver.close() }
+        bridge.receiver = receiver.connection
+
+        let answer = try await receiver.answer(offer: offer.sdp)
+        bridge.receiverCanAcceptCandidates()
+        try await host.setRemoteAnswer(answer, for: "retina-loopback-viewer")
+        bridge.hostCanAcceptCandidates()
+        #expect(await waitUntil(timeout: .seconds(5)) {
+            bridge.isConnectedAndControlOpen
+        })
+
+        try host.activateSlot(0, metadata: GoPeepV1StreamInfo(
+            trackID: "video0",
+            windowName: "Retina fixture \(width)x\(height)",
+            appName: "Clip tests",
+            isFocused: true,
+            width: width,
+            height: height
+        ))
+        for index in 0 ..< 30 {
+            let frame = try makeFixtureFrame(
+                index: index,
+                width: width,
+                height: height
+            )
+            #expect(host.send(frame, toSlot: 0) == .accepted)
+            try await Task.sleep(for: .milliseconds(18))
+        }
+
+        #expect(await waitUntil(timeout: .seconds(8)) {
+            bridge.receivedVideoFrameCount > 0
+        })
+        #expect(bridge.receivedVideoSize == size)
         let outbound = try await host.outboundSenderStatisticsSnapshot()
         let slot = try #require(outbound[slot: 0])
         #expect(slot.bytesSent > 0)
