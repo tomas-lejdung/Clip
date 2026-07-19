@@ -36,7 +36,7 @@ final class DeterministicScenarioLaunchTests: XCTestCase {
             XCTAssertTrue(app.buttons["clip.menu.settings"].exists)
             XCTAssertEqual(
                 app.staticTexts["clip.menu.version"].label,
-                "Version 1.0.0"
+                "Version 1.0.1"
             )
         }
     }
