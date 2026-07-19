@@ -6,6 +6,24 @@ import XCTest
 
 @MainActor
 final class MenuBarPopoverModelTests: XCTestCase {
+    func testVersionDisplayUsesTheMarketingVersion() {
+        XCTAssertEqual(
+            MenuBarApplicationVersion.displayString(
+                infoDictionary: ["CFBundleShortVersionString": "1.2.3"]
+            ),
+            "v1.2.3"
+        )
+    }
+
+    func testVersionDisplayRejectsMissingOrEmptyVersions() {
+        XCTAssertNil(MenuBarApplicationVersion.displayString(infoDictionary: [:]))
+        XCTAssertNil(
+            MenuBarApplicationVersion.displayString(
+                infoDictionary: ["CFBundleShortVersionString": "   "]
+            )
+        )
+    }
+
     func testDisplayRefreshRemovesStalePreparedTarget() {
         let first = display(id: 1, name: "Main", width: 3_456, height: 2_234)
         let second = display(id: 2, name: "External", width: 2_560, height: 1_440)

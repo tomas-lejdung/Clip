@@ -479,12 +479,6 @@ struct SettingsView: View {
                 permission: .microphone,
                 settingsAnchor: "Privacy_Microphone"
             )
-            Text("Clip does not request Accessibility access.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            Text("An ad-hoc rebuilt app may need privacy approval again if macOS treats it as a new code identity.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
         }
         .formStyle(.grouped)
     }

@@ -4,6 +4,21 @@ import CoreGraphics
 import Foundation
 import SwiftUI
 
+enum MenuBarApplicationVersion {
+    static var currentDisplayString: String? {
+        displayString(infoDictionary: Bundle.main.infoDictionary ?? [:])
+    }
+
+    static func displayString(infoDictionary: [String: Any]) -> String? {
+        guard let rawVersion = infoDictionary["CFBundleShortVersionString"] as? String else {
+            return nil
+        }
+        let version = rawVersion.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !version.isEmpty else { return nil }
+        return "v\(version)"
+    }
+}
+
 struct MenuBarDisplayRow: Equatable, Identifiable, Sendable {
     let id: CGDirectDisplayID
     let name: String
@@ -249,9 +264,10 @@ struct MenuBarPopoverView: View {
     }
 
     private var header: some View {
-        HStack(spacing: 9) {
+        HStack(alignment: .top, spacing: 9) {
             Image(systemName: "record.circle")
                 .font(.title2)
+                .padding(.top, 1)
                 .accessibilityHidden(true)
 
             VStack(alignment: .leading, spacing: 1) {
@@ -262,6 +278,16 @@ struct MenuBarPopoverView: View {
                     .foregroundStyle(.secondary)
             }
             Spacer()
+            if let version = MenuBarApplicationVersion.currentDisplayString {
+                Text(verbatim: version)
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.tertiary)
+                    .padding(.top, 2)
+                    .accessibilityLabel(
+                        Text(verbatim: "Version \(version.dropFirst())")
+                    )
+                    .accessibilityIdentifier("clip.menu.version")
+            }
         }
     }
 

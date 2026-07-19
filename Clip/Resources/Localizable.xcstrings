@@ -14,9 +14,6 @@
         }
       }
     },
-    "%@ and its Clip-managed file will be permanently deleted." : {
-
-    },
     "%@ could not use %@. That shortcut may already be used by macOS or another app. Choose another shortcut in Clip Settings." : {
       "localizations" : {
         "en" : {
@@ -28,6 +25,9 @@
       }
     },
     "%@ has no visible windows on the original display." : {
+
+    },
+    "%@ will be permanently deleted." : {
 
     },
     "%@, %@" : {
@@ -47,12 +47,6 @@
 
     },
     "1 second" : {
-
-    },
-    "10 MB" : {
-
-    },
-    "25 MB" : {
 
     },
     "3 seconds" : {
@@ -82,9 +76,6 @@
     "All visible windows on this display" : {
 
     },
-    "macOS must allow this exact Clip build. If Clip already appears enabled, turn it off and on again, or remove it and re-add /Applications/Clip.app. Then quit and reopen Clip." : {
-
-    },
     "Allow Screen Recording" : {
 
     },
@@ -94,19 +85,10 @@
     "Allowed" : {
 
     },
-    "An ad-hoc rebuilt app may need privacy approval again if macOS treats it as a new code identity." : {
-
-    },
     "Apply" : {
 
     },
-    "Approximate target" : {
-
-    },
     "Audio is optional" : {
-
-    },
-    "Audio removed" : {
 
     },
     "Back" : {
@@ -154,9 +136,6 @@
     "Choose an area or display before recording." : {
 
     },
-    "Choose any target from 1 MB through 500 MB. The result is approximate." : {
-
-    },
     "Choose the folder Clip shows first when you use Save As." : {
 
     },
@@ -199,6 +178,9 @@
     "Clip Settings" : {
 
     },
+    "Clip could not hide its Dock icon. Try again." : {
+
+    },
     "Clip could not keep access to the selected folder. Choose it again." : {
 
     },
@@ -208,19 +190,28 @@
     "Clip could not prepare a recoverable recording file. Check available storage and try again." : {
 
     },
+    "Clip could not show its Dock icon. Try again." : {
+
+    },
     "Clip could not start" : {
 
     },
     "Clip could not start its global shortcut handler. Restart Clip and try again." : {
 
     },
+    "Clip could not verify this managed export." : {
+
+    },
+    "Clip couldn’t add the shared MP4 to Exports. The file is still available." : {
+
+    },
+    "Clip couldn’t complete this action. Try again." : {
+
+    },
     "Clip couldn’t update History. The shared MP4 is still available." : {
 
     },
     "Clip countdown" : {
-
-    },
-    "Clip does not request Accessibility access." : {
 
     },
     "Clip is paused" : {
@@ -239,6 +230,9 @@
 
     },
     "Clip retake countdown" : {
+
+    },
+    "Clip-managed exports are removed automatically after seven days." : {
 
     },
     "Close Preview after explicit Copy" : {
@@ -262,12 +256,6 @@
     "Current usage" : {
 
     },
-    "Custom" : {
-
-    },
-    "Custom target" : {
-
-    },
     "Customize Shortcuts in Settings…" : {
 
     },
@@ -284,6 +272,24 @@
 
     },
     "Delete" : {
+
+    },
+    "Delete All" : {
+
+    },
+    "Delete All Exports?" : {
+
+    },
+    "Delete All…" : {
+
+    },
+    "Delete Export" : {
+
+    },
+    "Delete Export?" : {
+
+    },
+    "Delete Export…" : {
 
     },
     "Delete Recording" : {
@@ -334,10 +340,10 @@
     "Draw an area" : {
 
     },
-    "Elapsed time: %@" : {
+    "Each preset uses its own H.264 quality value from 1 through 100. File size varies with the recording." : {
 
     },
-    "Each preset uses its own H.264 quality value from 1 through 100. File size varies with the recording." : {
+    "Elapsed time: %@" : {
 
     },
     "Enter a filename format, such as clip-YYYYMMDD-HHmmss." : {
@@ -355,10 +361,16 @@
     "Export" : {
 
     },
+    "Exports" : {
+
+    },
     "File names" : {
 
     },
     "Filename" : {
+
+    },
+    "Files created by Copy or drag will appear here while Clip keeps them available." : {
 
     },
     "Finish" : {
@@ -374,6 +386,9 @@
 
     },
     "Frame rate" : {
+
+    },
+    "From %@" : {
 
     },
     "Fullscreen" : {
@@ -415,13 +430,10 @@
     "Launch Clip at login" : {
 
     },
-    "MB" : {
+    "Managed Exports" : {
 
     },
     "Managed history" : {
-
-    },
-    "Megabytes" : {
 
     },
     "Microphone" : {
@@ -437,6 +449,9 @@
 
     },
     "More Actions" : {
+
+    },
+    "No Exports" : {
 
     },
     "No Recordings" : {
@@ -551,10 +566,10 @@
     "Record without audio, with the current default microphone, with system audio, or with both. Audio starts Off and its permissions are requested only when you enable it." : {
 
     },
-    "Recording" : {
+    "Recorded audio is included in playback and shared files." : {
 
     },
-    "Recording Saved" : {
+    "Recording" : {
 
     },
     "Recording needs at least %@ of free space. Only %@ is available." : {
@@ -573,13 +588,16 @@
     "Recording stopped because free disk space fell to %@. The captured video will be finalized." : {
 
     },
+    "Recordings" : {
+
+    },
     "Recordings are stored locally on this Mac." : {
 
     },
-    "Recorded audio is included in playback and shared files." : {
+    "Refresh" : {
 
     },
-    "Refresh" : {
+    "Refresh Exports" : {
 
     },
     "Refresh History" : {
@@ -629,6 +647,26 @@
     },
     "Reveal" : {
 
+    },
+    "Reveal %@ (%@) in Finder" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Reveal %1$@ (%2$@) in Finder"
+          }
+        }
+      }
+    },
+    "Reveal %@, %@, in Finder" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Reveal %1$@, %2$@, in Finder"
+          }
+        }
+      }
     },
     "Reveal in Finder" : {
 
@@ -684,6 +722,9 @@
     "Smallest" : {
 
     },
+    "Source deleted" : {
+
+    },
     "Space" : {
 
     },
@@ -705,6 +746,9 @@
     "System audio became unavailable. Video recording continues without system audio." : {
 
     },
+    "The .mp4 extension is added automatically" : {
+
+    },
     "The Application Support directory is unavailable." : {
 
     },
@@ -718,9 +762,6 @@
 
     },
     "The deterministic UI scenario did not receive an isolated state directory." : {
-
-    },
-    "The .mp4 extension is added automatically" : {
 
     },
     "The exported video file is unavailable." : {
@@ -783,6 +824,12 @@
     "There is no recording in progress." : {
 
     },
+    "This export is currently in use. Try again when sharing finishes." : {
+
+    },
+    "This export is no longer available. Refresh Exports and try again." : {
+
+    },
     "This permanently removes Clip-managed recordings. Files created with Save As are never removed." : {
 
     },
@@ -837,7 +884,13 @@
     "clip-YYYYMMDD-HHmmss.mp4" : {
 
     },
+    "macOS must allow this exact Clip build. If Clip already appears enabled, turn it off and on again, or remove it and re-add /Applications/Clip.app. Then quit and reopen Clip." : {
+
+    },
     "macOS requires Screen & System Audio Recording access before Clip can record the area or display you choose. Clip excludes its own windows and keeps recordings local." : {
+
+    },
+    "✓ Video copied" : {
 
     }
   },
