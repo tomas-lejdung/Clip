@@ -58,6 +58,7 @@ public final class WebRTCPeerHost: LiveShareVideoSlotHosting, @unchecked Sendabl
         var remoteICECandidateCount = 0
         var didReportLocalICECandidateLimit = false
         var awaitsDurableControlDrain = false
+        var latestFrameSeedGeneration: UInt64 = 0
 
         init(
             viewerID: String,
@@ -431,6 +432,7 @@ public final class WebRTCPeerHost: LiveShareVideoSlotHosting, @unchecked Sendabl
             for slot in slots {
                 slot.metadata = nil
                 slot.track.isEnabled = false
+                slot.frameSource.clearLatestFrame()
             }
         }
     }
@@ -440,16 +442,17 @@ public final class WebRTCPeerHost: LiveShareVideoSlotHosting, @unchecked Sendabl
         _ frame: BorrowedCaptureVideoFrame,
         toSlot slot: Int
     ) -> CaptureFrameDisposition {
-        let frameSource: WebRTCFrameSource? = onQueue {
+        onQueue {
             guard !isClosed,
                   slots.indices.contains(slot),
                   slots[slot].metadata != nil else {
-                return nil
+                return .droppedBackpressure
             }
-            return slots[slot].frameSource
+            // Keep slot lifecycle and frame emission in one serial critical
+            // section. An old ScreenCaptureKit callback can no longer cross a
+            // deactivate/reactivate boundary and seed a replacement source.
+            return slots[slot].frameSource.send(frame)
         }
-        guard let frameSource else { return .droppedBackpressure }
-        return frameSource.send(frame)
     }
 
     public func activateSlot(_ slot: Int, metadata: GoPeepV1StreamInfo) throws {
@@ -469,6 +472,7 @@ public final class WebRTCPeerHost: LiveShareVideoSlotHosting, @unchecked Sendabl
             guard target.metadata == nil else {
                 throw WebRTCPeerHostError.slotAlreadyActive(slot)
             }
+            target.frameSource.clearLatestFrame()
             target.metadata = metadata
             target.track.isEnabled = true
         }
@@ -488,6 +492,7 @@ public final class WebRTCPeerHost: LiveShareVideoSlotHosting, @unchecked Sendabl
                     actual: metadata.trackID
                 )
             }
+            target.frameSource.clearLatestFrame()
             target.metadata = metadata
             target.track.isEnabled = true
             return target.index
@@ -499,6 +504,7 @@ public final class WebRTCPeerHost: LiveShareVideoSlotHosting, @unchecked Sendabl
             guard slots.indices.contains(slot) else { return }
             slots[slot].metadata = nil
             slots[slot].track.isEnabled = false
+            slots[slot].frameSource.clearLatestFrame()
         }
     }
 
@@ -930,6 +936,33 @@ public final class WebRTCPeerHost: LiveShareVideoSlotHosting, @unchecked Sendabl
         return context
     }
 
+    /// A newly negotiated H.264 sender is not guaranteed to consume a frame in
+    /// the same callback that reports peer/DataChannel readiness. Seed a small,
+    /// fixed burst from each slot's one-frame cache; every delayed callback
+    /// revalidates peer identity and channel state, so it cannot outlive or leak
+    /// into a replacement viewer.
+    private func scheduleLatestFrameSeed(for context: PeerContext) {
+        context.latestFrameSeedGeneration &+= 1
+        let generation = context.latestFrameSeedGeneration
+        for delayMilliseconds in [0, 80, 200, 500, 1_000] {
+            queue.asyncAfter(deadline: .now() + .milliseconds(delayMilliseconds)) {
+                [weak self, weak context] in
+                guard let self,
+                      let context,
+                      !isClosed,
+                      peers[context.viewerID] === context,
+                      context.latestFrameSeedGeneration == generation,
+                      context.connectionState == .connected,
+                      context.controlDataChannelState == .open else {
+                    return
+                }
+                for slot in slots where slot.metadata != nil {
+                    slot.frameSource.replayLatestFrame()
+                }
+            }
+        }
+    }
+
     private func ensureOpen() throws {
         if isClosed { throw WebRTCPeerHostError.hostClosed }
     }
@@ -1020,8 +1053,12 @@ public final class WebRTCPeerHost: LiveShareVideoSlotHosting, @unchecked Sendabl
                 context.localICECandidateCount += 1
                 emit(.localICECandidate(viewerID: viewerID, candidate: candidate))
             case .connectionState(let state):
+                let previousState = context.connectionState
                 context.connectionState = state
                 emit(.connectionStateChanged(viewerID: viewerID, state: state))
+                if state == .connected, previousState != .connected {
+                    scheduleLatestFrameSeed(for: context)
+                }
                 if state == .failed || state == .closed {
                     peers.removeValue(forKey: viewerID)
                     previousOutboundCounters = previousOutboundCounters.filter {
@@ -1031,11 +1068,15 @@ public final class WebRTCPeerHost: LiveShareVideoSlotHosting, @unchecked Sendabl
                     emit(.viewerRemoved(viewerID: viewerID))
                 }
             case .controlState(let state):
+                let previousState = context.controlDataChannelState
                 context.controlDataChannelState = state
                 if state != .open {
                     context.awaitsDurableControlDrain = false
                 }
                 emit(.controlDataChannelStateChanged(viewerID: viewerID, state: state))
+                if state == .open, previousState != .open {
+                    scheduleLatestFrameSeed(for: context)
+                }
             case .controlBufferedAmountChanged(let bufferedAmountBytes):
                 guard context.awaitsDurableControlDrain,
                       controlBufferPolicy.hasDrained(

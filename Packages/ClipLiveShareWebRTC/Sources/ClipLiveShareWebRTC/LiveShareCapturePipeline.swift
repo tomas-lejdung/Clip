@@ -13,6 +13,51 @@ public protocol LiveShareVideoSlotHosting: AnyObject, Sendable {
     func deactivateSlot(_ slot: Int)
 }
 
+protocol LiveShareCaptureSession: AnyObject, Sendable {
+    var isRunning: Bool { get }
+    var statistics: CaptureDeliveryStatistics { get }
+
+    func start(_ request: CaptureSessionRequest) async throws
+    func stop() async throws
+    func update(
+        target: CaptureTarget,
+        video: CaptureVideoConfiguration
+    ) async throws
+}
+
+extension ScreenCaptureSession: LiveShareCaptureSession {}
+
+private final class LiveShareCaptureStartCompletion: @unchecked Sendable {
+    private let lock = NSLock()
+    private var isComplete = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    func wait() async {
+        await withCheckedContinuation { continuation in
+            let resumeImmediately = lock.withLock { () -> Bool in
+                guard !isComplete else { return true }
+                waiters.append(continuation)
+                return false
+            }
+            if resumeImmediately {
+                continuation.resume()
+            }
+        }
+    }
+
+    func signal() {
+        let continuations = lock.withLock { () -> [CheckedContinuation<Void, Never>] in
+            guard !isComplete else { return [] }
+            isComplete = true
+            defer { waiters.removeAll(keepingCapacity: false) }
+            return waiters
+        }
+        for continuation in continuations {
+            continuation.resume()
+        }
+    }
+}
+
 public struct LiveShareCaptureDescriptor: Equatable, Sendable {
     public let source: LiveShareSource
     public let target: CaptureTarget
@@ -77,15 +122,24 @@ public struct LiveShareCaptureDeliverySnapshot: Equatable, Sendable {
 public actor LiveShareCapturePipeline {
     public typealias EventHandler = @Sendable (LiveShareCapturePipelineEvent) -> Void
 
+    typealias SessionFactory = @Sendable (
+        _ queueLabel: String,
+        _ frameConsumer: @escaping ScreenCaptureSession.FrameConsumer,
+        _ eventConsumer: @escaping ScreenCaptureSession.EventConsumer
+    ) -> any LiveShareCaptureSession
+
     private struct ActiveSource: @unchecked Sendable {
         let descriptor: LiveShareCaptureDescriptor
         let generation: UUID
-        let session: ScreenCaptureSession
+        let session: any LiveShareCaptureSession
+        let startCompletion: LiveShareCaptureStartCompletion
     }
 
     private let host: any LiveShareVideoSlotHosting
     private let eventHandler: EventHandler
+    private let sessionFactory: SessionFactory
     private var active: [Int: ActiveSource] = [:]
+    private var retiringSlots = Set<Int>()
 
     public init(
         host: any LiveShareVideoSlotHosting,
@@ -93,6 +147,23 @@ public actor LiveShareCapturePipeline {
     ) {
         self.host = host
         self.eventHandler = eventHandler
+        sessionFactory = { queueLabel, frameConsumer, eventConsumer in
+            ScreenCaptureSession(
+                queueLabel: queueLabel,
+                frameConsumer: frameConsumer,
+                eventConsumer: eventConsumer
+            )
+        }
+    }
+
+    init(
+        host: any LiveShareVideoSlotHosting,
+        eventHandler: @escaping EventHandler = { _ in },
+        sessionFactory: @escaping SessionFactory
+    ) {
+        self.host = host
+        self.eventHandler = eventHandler
+        self.sessionFactory = sessionFactory
     }
 
     public var activeSlots: [Int] {
@@ -105,19 +176,20 @@ public actor LiveShareCapturePipeline {
         generation: UUID = UUID()
     ) async throws {
         try Self.validate(slot)
-        guard active[slot] == nil else {
+        guard active[slot] == nil, !retiringSlots.contains(slot) else {
             throw LiveShareCapturePipelineError.slotAlreadyActive(slot)
         }
 
         let host = host
         let source = descriptor.source
         let eventHandler = eventHandler
-        let session = ScreenCaptureSession(
-            queueLabel: "com.tomaslejdung.clip.liveshare.video\(slot)",
-            frameConsumer: { frame in
+        let startCompletion = LiveShareCaptureStartCompletion()
+        let session = sessionFactory(
+            "com.tomaslejdung.clip.liveshare.video\(slot)",
+            { frame in
                 host.send(frame, toSlot: slot)
             },
-            eventConsumer: { event in
+            { event in
                 if case let .failed(_, error) = event {
                     eventHandler(.sourceFailed(
                         slot: slot,
@@ -131,10 +203,17 @@ public actor LiveShareCapturePipeline {
         active[slot] = ActiveSource(
             descriptor: descriptor,
             generation: generation,
-            session: session
+            session: session,
+            startCompletion: startCompletion
         )
+        defer { startCompletion.signal() }
         var activatedHostSlot = false
         do {
+            // Enable the negotiated WebRTC track before ScreenCaptureKit starts.
+            // `startCapture()` may synchronously deliver the only complete frame
+            // for an otherwise idle window before its async call returns.
+            try host.activateSlot(slot, metadata: descriptor.stream)
+            activatedHostSlot = true
             try await session.start(CaptureSessionRequest(
                 target: descriptor.target,
                 video: descriptor.video
@@ -145,8 +224,6 @@ public actor LiveShareCapturePipeline {
                 if session.isRunning { try? await session.stop() }
                 throw LiveShareCapturePipelineError.superseded(slot)
             }
-            try host.activateSlot(slot, metadata: descriptor.stream)
-            activatedHostSlot = true
             eventHandler(.sourceStarted(
                 slot: slot,
                 source: source,
@@ -158,7 +235,10 @@ public actor LiveShareCapturePipeline {
                 active[slot] = nil
             }
             if session.isRunning { try? await session.stop() }
-            if stillOwnsSlot || activatedHostSlot {
+            // A stop/replacement can interleave while `session.start` awaits.
+            // Only tear down the track when this generation still owns it;
+            // otherwise `stop(slot:)` already did so or a replacement owns it.
+            if activatedHostSlot && stillOwnsSlot {
                 host.deactivateSlot(slot)
             }
             throw error
@@ -170,7 +250,10 @@ public actor LiveShareCapturePipeline {
         guard let source = active.removeValue(forKey: slot) else {
             throw LiveShareCapturePipelineError.slotInactive(slot)
         }
+        retiringSlots.insert(slot)
+        defer { retiringSlots.remove(slot) }
         host.deactivateSlot(slot)
+        await source.startCompletion.wait()
         if source.session.isRunning {
             try await source.session.stop()
         }
@@ -206,7 +289,8 @@ public actor LiveShareCapturePipeline {
         active[slot] = ActiveSource(
             descriptor: descriptor,
             generation: expectedGeneration,
-            session: source.session
+            session: source.session,
+            startCompletion: source.startCompletion
         )
     }
 

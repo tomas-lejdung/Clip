@@ -1132,8 +1132,8 @@ final class LiveShareCoordinator {
             windowName: windowName,
             appName: appName,
             isFocused: slot.isFocused,
-            width: width,
-            height: height
+            width: LiveShareCoordinatorPolicy.videoEncoderCompatibleDimension(width),
+            height: LiveShareCoordinatorPolicy.videoEncoderCompatibleDimension(height)
         )
         return LiveShareCaptureDescriptor(
             source: source,
@@ -1714,8 +1714,8 @@ final class LiveShareCoordinator {
             broadcastAuthoritativeControlMutation(GoPeepV1Message(
                 type: .sizeChange,
                 trackID: slot.trackID,
-                width: descriptor.video.width,
-                height: descriptor.video.height
+                width: descriptor.stream.width,
+                height: descriptor.stream.height
             ))
             publish()
             if descriptor.video.framesPerSecond != settings.frameRate.rawValue {
@@ -1752,8 +1752,8 @@ final class LiveShareCoordinator {
                 return LiveShareStreamStatisticsViewSnapshot(
                     id: slot.trackID,
                     name: descriptor.stream.appName,
-                    width: descriptor.video.width,
-                    height: descriptor.video.height,
+                    width: descriptor.stream.width,
+                    height: descriptor.stream.height,
                     deliveredFramesPerSecond: outboundSlot.deliveredFramesPerSecond ?? 0,
                     bitsPerSecond: max(
                         0,
@@ -2000,8 +2000,8 @@ final class LiveShareCoordinator {
             windowName: descriptor.stream.windowName,
             appName: descriptor.stream.appName,
             isFocused: slot.isFocused,
-            width: descriptor.video.width,
-            height: descriptor.video.height
+            width: descriptor.stream.width,
+            height: descriptor.stream.height
         )
     }
 

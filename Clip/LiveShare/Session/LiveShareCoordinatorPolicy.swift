@@ -58,6 +58,14 @@ enum LiveShareCoordinatorPolicy {
         )
     }
 
+    /// libwebrtc's H.264 path crops odd BGRA input down to even 4:2:0 output.
+    /// Capture retains the exact native pixels; metadata advertises the decoded
+    /// geometry so the viewer never adds a one-pixel CSS rescale.
+    static func videoEncoderCompatibleDimension(_ value: Int) -> Int {
+        let positive = max(2, value)
+        return positive - positive % 2
+    }
+
     static func preferredFullscreenDisplay(
         from displays: [ShareableCaptureDisplay],
         focusedWindowFrame: CGRect?,

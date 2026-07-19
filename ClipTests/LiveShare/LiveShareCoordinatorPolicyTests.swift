@@ -61,6 +61,14 @@ struct LiveShareCoordinatorPolicyTests {
         #expect(fixedBackground.maximumBitrateBps == 6_000_000)
     }
 
+    @Test("video dimensions match libwebrtc H.264 output geometry")
+    func videoEncoderGeometry() {
+        #expect(LiveShareCoordinatorPolicy.videoEncoderCompatibleDimension(2_763) == 2_762)
+        #expect(LiveShareCoordinatorPolicy.videoEncoderCompatibleDimension(1_203) == 1_202)
+        #expect(LiveShareCoordinatorPolicy.videoEncoderCompatibleDimension(1_920) == 1_920)
+        #expect(LiveShareCoordinatorPolicy.videoEncoderCompatibleDimension(1) == 2)
+    }
+
     @Test("capture pressure requires sustained samples and rejects stale generations")
     func capturePressureLedger() {
         let source = LiveShareSource.window(LiveShareWindowSource(

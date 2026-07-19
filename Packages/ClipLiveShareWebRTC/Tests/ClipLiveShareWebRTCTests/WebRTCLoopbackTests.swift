@@ -68,8 +68,10 @@ struct WebRTCLoopbackTests {
         let baselineStatistics = try await host.outboundSenderStatisticsSnapshot()
         #expect(baselineStatistics.viewerCount == 1)
         #expect(baselineStatistics[slot: 0]?.aggregateBitrateBps == nil)
+        // Real application windows commonly have odd native dimensions. The
+        // bundled H.264 path crops only the final unmatched row/column.
         for index in 0 ..< 45 {
-            let frame = try makeFixtureFrame(index: index, width: 320, height: 180)
+            let frame = try makeFixtureFrame(index: index, width: 321, height: 181)
             #expect(host.send(frame, toSlot: 0) == .accepted)
             try await Task.sleep(for: .milliseconds(12))
         }
@@ -88,6 +90,62 @@ struct WebRTCLoopbackTests {
         #expect((slot.aggregateBitrateBps ?? 0) > 0)
         #expect((slot.averageFramesPerSecond ?? 0) > 0)
         #expect(slot.viewers.count == 1)
+    }
+
+    @Test("viewer joining an idle source receives its latest frame")
+    func lateViewerFrameReplay() async throws {
+        let bridge = LoopbackBridge()
+        let host = try WebRTCPeerHost(
+            configuration: .init(
+                iceServers: [],
+                senderPolicy: .init(
+                    maximumBitrateBps: 2_000_000,
+                    maximumFramesPerSecond: 30,
+                    maintainsResolution: true
+                ),
+                resourceLimits: .init(answerTimeout: 0.05)
+            ),
+            eventQueue: bridge.eventQueue,
+            eventHandler: { event in bridge.receive(hostEvent: event) }
+        )
+        bridge.host = host
+        defer { host.close() }
+
+        try host.activateSlot(0, metadata: GoPeepV1StreamInfo(
+            trackID: "video0",
+            windowName: "Idle fixture",
+            appName: "Clip tests",
+            isFocused: true,
+            width: 320,
+            height: 180
+        ))
+        #expect(host.send(
+            try makeFixtureFrame(index: 1, width: 320, height: 180),
+            toSlot: 0
+        ) == .accepted)
+
+        let offer = try await host.createOffer(for: "loopback-viewer")
+        let receiver = try LoopbackReceiver(bridge: bridge)
+        defer { receiver.close() }
+        bridge.receiver = receiver.connection
+        let answer = try await receiver.answer(offer: offer.sdp)
+        bridge.receiverCanAcceptCandidates()
+        try await host.setRemoteAnswer(answer, for: "loopback-viewer")
+        bridge.hostCanAcceptCandidates()
+
+        #expect(await waitUntil(timeout: .seconds(5)) {
+            bridge.isConnectedAndControlOpen
+        })
+        #expect(await waitUntil(timeout: .seconds(5)) {
+            bridge.receivedVideoFrameCount > 0
+        })
+        #expect(bridge.receivedVideoSize == .init(width: 320, height: 180))
+
+        let outbound = try await host.outboundSenderStatisticsSnapshot()
+        let slot = try #require(outbound[slot: 0])
+        #expect(slot.bytesSent > 0)
+        #expect(slot.framesEncoded > 0)
+        #expect(slot.framesSent > 0)
     }
 }
 
