@@ -38,12 +38,10 @@ All cards are planned for v1. The critical path above receives priority when wor
 
 The published v1.0.1 (build 2) completed its updater and core-workflow checks
 and remains installed in `/Applications` as the deliberate update-test client.
-The repository is now v1.1.0 (build 3) with native Click Highlights. Its
-permission-free verification and separate stable-signed Release build are
-complete, but it has not replaced the installed app, changed the published
-appcast, or been published. The owner explicitly approved publication on
-2026-07-19; the native click-ring appearance matrix moves to the retained
-v1.0.1 client's post-update acceptance.
+Clip v1.1.0 (build 3), with native Click Highlights, is published as an
+immutable GitHub Release and signed Sparkle update. The installed app remains
+v1.0.1 (build 2) as the deliberate update-test client. The native click-ring
+appearance matrix moves to that client's post-update acceptance.
 
 ## Verification snapshot
 
@@ -522,8 +520,9 @@ Evidence:
   Pages appcasts after owner approval.
 - [x] Exercise v1.0.0 to v1.0.1 discovery, download, installation, and relaunch
   through the native update UI.
-- [ ] Publish v1.1.0 after owner approval, then use the retained installed v1.0.1
-  app to verify the update, click-ring matrix, and state preservation.
+- [x] Publish v1.1.0 after owner approval.
+- [ ] Use the retained installed v1.0.1 app to verify the update, click-ring
+  matrix, and state preservation.
 
 Evidence:
 
@@ -549,5 +548,6 @@ Evidence:
   exact-commit build, committed Xcode versions, isolated dependency resolution,
   and true-first-release bootstrap checks.
 - The owner confirmed the published v1.0.0 to v1.0.1 in-app update completed and
-  relaunched successfully. The hosted feed remains at v1.0.1 while v1.1.0 is
-  developed and manually tested from a separate explicit-path build.
+  relaunched successfully. The v1.1.0 GitHub Release uses exact source commit
+  `1f1024a87aec169ea535b1b1edffed9d372353a2`; its public DMG was downloaded and
+  matched the staged SHA-256 before the signed appcast was published.

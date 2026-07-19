@@ -3,34 +3,36 @@
     <channel>
         <title>Clip</title>
         <item>
-            <title>1.0.1</title>
-            <pubDate>Sun, 19 Jul 2026 14:47:34 +0200</pubDate>
-            <sparkle:version>2</sparkle:version>
-            <sparkle:shortVersionString>1.0.1</sparkle:shortVersionString>
+            <title>1.1.0</title>
+            <pubDate>Sun, 19 Jul 2026 17:01:51 +0200</pubDate>
+            <sparkle:version>3</sparkle:version>
+            <sparkle:shortVersionString>1.1.0</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
             <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
-            <description sparkle:format="markdown"><![CDATA[# Clip 1.0.1
+            <description sparkle:format="markdown"><![CDATA[# Clip 1.1.0
 
-This maintenance release verifies Clip's signed in-app update path from version
-1.0.0. It contains the same recording, preview, export, History, and Settings
-features as the initial release.
+Clip 1.1.0 adds optional native click highlights for clearer demonstrations.
 
-## Updates
+## Click Highlights
 
-Clip 1.0.0 can discover this release automatically or through **Check for
-Updates…** in the menu-bar popover. The updater verifies the download with the
-public EdDSA key embedded in Clip before installing it.
+- Enable **Click Highlights** directly from the menu-bar quick controls or in
+  **Settings → Recording**.
+- Clip remembers the choice and restores it when retaking a recording.
+- Highlights are rendered natively into the captured video by ScreenCaptureKit.
+- Cursor visibility and click highlights remain independent, and the feature
+  does not require Accessibility permission.
+
+Click Highlights are Off by default.
 
 ## Requirements and first launch
 
 Clip requires macOS 15 or later on Apple silicon.
 
-This build is Apple Development signed but is not Developer ID signed or
+This build remains Apple Development signed rather than Developer ID signed and
 notarized. A direct browser download may therefore require **Open Anyway** in
-**System Settings → Privacy & Security**. This limitation will remain until a
-Developer ID–signed and notarized release is available.
+**System Settings → Privacy & Security**.
 ]]></description>
-            <enclosure url="https://github.com/tomas-lejdung/Clip/releases/download/v1.0.1/Clip-1.0.1.dmg" length="3244396" type="application/octet-stream" sparkle:edSignature="SPVb+dqkRS5BH24L35mFAEKYNbrMe8D0bMdiGDdgc+yG5xh1drM439BQqJawTiqXPYp9AV23zvMLxsInDlogCw=="/>
+            <enclosure url="https://github.com/tomas-lejdung/Clip/releases/download/v1.1.0/Clip-1.1.0.dmg" length="3253260" type="application/octet-stream" sparkle:edSignature="TUOKrLPqkqt5nkLyaBNuPhgrLHOA0rXHp7VleWYZ7rOpoLcFMEW1hRTZVRM2Iapg/iO/fwg9wehVpkBmLtEtBw=="/>
         </item>
     </channel>
 </rss>
