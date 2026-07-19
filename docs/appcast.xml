@@ -3,48 +3,34 @@
     <channel>
         <title>Clip</title>
         <item>
-            <title>1.0.0</title>
-            <pubDate>Sun, 19 Jul 2026 13:19:24 +0200</pubDate>
-            <sparkle:version>1</sparkle:version>
-            <sparkle:shortVersionString>1.0.0</sparkle:shortVersionString>
+            <title>1.0.1</title>
+            <pubDate>Sun, 19 Jul 2026 14:47:34 +0200</pubDate>
+            <sparkle:version>2</sparkle:version>
+            <sparkle:shortVersionString>1.0.1</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
             <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
-            <description sparkle:format="markdown"><![CDATA[# Clip 1.0.0
+            <description sparkle:format="markdown"><![CDATA[# Clip 1.0.1
 
-The first public release of Clip, a native macOS menu-bar recorder for quickly
-capturing and sharing clear screen recordings.
-
-## Highlights
-
-- Record a selected area, an app's visible windows, or an entire display, with
-  optional microphone and system audio, cursor capture, pause, and resume.
-- Preview recordings immediately, trim the beginning and end, rename the file,
-  and remove audio before sharing.
-- Export native-size H.264 MP4 files using Crisp, Compact, or Smallest quality;
-  drag them into another app, copy them to the clipboard, or use Save As.
-- Reopen recordings from History and manage the Copy and drag exports linked to
-  them, including revealing or deleting files.
-- Configure shortcuts, countdown, recording defaults, quality values, retention,
-  launch at login, and other behavior in Settings.
+This maintenance release verifies Clip's signed in-app update path from version
+1.0.0. It contains the same recording, preview, export, History, and Settings
+features as the initial release.
 
 ## Updates
 
-Version 1.0.0 installs Clip's in-app updater. This first updater-enabled version
-must be downloaded and installed manually from the DMG. Future releases can be
-found automatically or on demand with **Check for Updates…** in Clip.
+Clip 1.0.0 can discover this release automatically or through **Check for
+Updates…** in the menu-bar popover. The updater verifies the download with the
+public EdDSA key embedded in Clip before installing it.
 
 ## Requirements and first launch
 
 Clip requires macOS 15 or later on Apple silicon.
 
 This build is Apple Development signed but is not Developer ID signed or
-notarized. macOS may therefore block its first launch after download. If that
-happens, try opening Clip once, then go to **System Settings → Privacy &
-Security** and choose **Open Anyway**. Clip will also ask for Screen Recording
-permission before it can capture the screen; microphone and system-audio access
-are requested only when those options are enabled.
+notarized. A direct browser download may therefore require **Open Anyway** in
+**System Settings → Privacy & Security**. This limitation will remain until a
+Developer ID–signed and notarized release is available.
 ]]></description>
-            <enclosure url="https://github.com/tomas-lejdung/Clip/releases/download/v1.0.0/Clip-1.0.0.dmg" length="3244421" type="application/octet-stream" sparkle:edSignature="AVgxIDOq9l4onhgubBcHKVQoGZd1PdR0pi3gIObi3le+1zYdovi83odqE8IuHlxrqqoPdk9U8/UhIzz27qNdDA=="/>
+            <enclosure url="https://github.com/tomas-lejdung/Clip/releases/download/v1.0.1/Clip-1.0.1.dmg" length="3244396" type="application/octet-stream" sparkle:edSignature="SPVb+dqkRS5BH24L35mFAEKYNbrMe8D0bMdiGDdgc+yG5xh1drM439BQqJawTiqXPYp9AV23zvMLxsInDlogCw=="/>
         </item>
     </channel>
 </rss>
