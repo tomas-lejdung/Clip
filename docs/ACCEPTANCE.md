@@ -33,7 +33,7 @@ traversal; those remain separate acceptance surfaces.
 | Capture | Package tests require exact dimensions, safe old/new resize handoff, and observable latest-frame pressure; hosted tests require sustained pressure to appear in the popover and HUD and recover after healthy intervals. | Production Live Share ScreenCaptureKit permission, overlay exclusion, window/display loss, or real encoder/network overload. |
 | UI | Injected Ready, Live, scrolled-bottom, Reconnecting, Failed, focused-overlay, and HUD scenarios use production presentation code. | Real-window hit consumption, secondary displays, Spaces, or capture exclusion. |
 | Lifecycle | Unit tests cover state transitions, reconnect, stale work, Stop All, Fullscreen rollback, viewer admission, and bounded authoritative-state replay after native channel drain. | Sleep/wake, permission revocation, ten-minute soak, and runtime resource scans. |
-| Distribution | Source audits enforce dependency pinning, notices, entitlements, nested signing, and DMG checks. | The final stable-signed Release DMG/update candidate until the complete release gate runs. |
+| Distribution | The clean-source release gate enforces dependency pinning/notices, sandbox entitlements, normalized WebRTC provenance, nested signatures/runtime paths, mounted-DMG validation, and a recorded checksum. | Developer ID notarization and publication, which are outside this local Apple Development-signed milestone. |
 
 The current GoPeep v1 access code is visible to the signaling service and
 applies to new join attempts. The server does not reauthenticate a viewer that
@@ -44,9 +44,8 @@ Before release, the controlled-Mac lane must share real ScreenCaptureKit content
 through the production `LiveShareCoordinator`, exercise one through four
 windows plus Fullscreen and resize, prove both overlays are absent from shared
 pixels, and stop cleanly. Remote Internet/TURN traversal, a repeated-start/stop
-run, a ten-minute soak, and the final stable-signed Release DMG remain separate
-gates. Until those run, the loopback lane must not be described as complete
-real-world Live Share acceptance.
+run, and a ten-minute soak remain separate gates. Until those run, the loopback
+lane must not be described as complete real-world Live Share acceptance.
 
 The default acceptance lane is deterministic and permission-free:
 

@@ -21,10 +21,11 @@ encrypted by WebRTC, but the service is not zero-knowledge.
 The pointer-free acceptance lane has negotiated native H.264 with the
 unmodified GoPeep server and browser viewer on loopback. Real desktop
 Live Share capture, overlay exclusion, remote Internet/TURN traversal, soak,
-and the final signed Release DMG remain separate gates; see the
-[Live Share progress board](docs/live-share-progress.md). Live Share carries no
-audio. Thirty FPS is the supported default, 15 FPS is selectable, and 60 FPS is
-an optional capability rather than a release requirement.
+and lifecycle stress remain separate controlled gates; the stable-signed,
+sandboxed Release DMG has passed its clean-source packaging gate. See the
+[Live Share progress board](docs/live-share-progress.md). Live Share carries
+no audio. Thirty FPS is the supported default, 15 FPS is selectable, and 60
+FPS is an optional capability rather than a release requirement.
 
 Click Highlights can be enabled from the menu-bar quick controls or Recording
 Settings. The option uses ScreenCaptureKit's native recorded click indicator,

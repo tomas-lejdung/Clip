@@ -29,9 +29,10 @@ around that browser check.
 This evidence is deliberately narrower than a release claim. It does not prove
 the production coordinator's real desktop ScreenCaptureKit path, overlay
 exclusion from real shared pixels, secondary-display/Spaces interaction,
-remote Internet or configured-TURN traversal, a long-running share, or the
-final stable-signed Release DMG. Those gates remain listed in
-[live-share-progress.md](live-share-progress.md) and [ACCEPTANCE.md](ACCEPTANCE.md).
+remote Internet or configured-TURN traversal, or a long-running share. The clean-source
+stable-signed Release DMG gate is green; the remaining controlled gates are
+listed in [live-share-progress.md](live-share-progress.md) and
+[ACCEPTANCE.md](ACCEPTANCE.md).
 
 ## Product contract
 

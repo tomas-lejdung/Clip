@@ -15,10 +15,10 @@ not on the presence of source files alone.
 The branch has not been published and development has not replaced
 `/Applications/Clip.app`.
 
-At the current 1.2.0 (build 4) integration checkpoint, the feature-specific
-package, browser-interoperability, and hosted policy suites are green. The
-complete clean-tree release gate is rerun at the final checkpoint; it does not
-close the controlled/external gates listed below.
+At the current 1.2.0 (build 4) checkpoint, strict Swift 6 compilation, every
+package and hosted app test, local GoPeep/browser interoperability,
+deterministic acceptance, and the complete clean-source stable-signing/DMG
+gate are green. That does not close the controlled/external gates below.
 
 ## Status model
 
@@ -35,7 +35,7 @@ close the controlled/external gates listed below.
 | ID | Lane | Status | Evidence-based outcome |
 | --- | --- | --- | --- |
 | LS-00 | Contract and GoPeep audit | `DONE` | v1 wire behavior, native UI contract, trust boundary, and v2 direction are documented. |
-| LS-01 | Native WebRTC dependency | `IN_PROGRESS` | WebRTC 150.0.0 is pinned and isolated; native H.264 works with the unmodified browser viewer. Final signed-Release packaging evidence remains. |
+| LS-01 | Native WebRTC dependency | `DONE` | WebRTC 150.0.0 is pinned and isolated; native H.264 works with the unmodified browser viewer, and the normalized upstream slices match the embedded signed framework payload. |
 | LS-02 | Domain and source state | `DONE` | Session transitions, four stable slots, fullscreen exclusivity, viewer counts, reconnect state, and stale-operation gates have unit evidence. |
 | LS-03 | Repository boundaries | `DONE` | Live Share, shared transient capture, and the WebRTC adapter are separate targets/folders. Recording was deliberately not mechanically reorganized in this feature. |
 | LS-04 | GoPeep v1 signaling | `DONE` | Exact reserve/join/offer/answer/ICE/password-update routing works against the unmodified local Go service; reconnect and queue bounds have unit evidence. |
@@ -47,7 +47,7 @@ close the controlled/external gates listed below.
 | LS-10 | Source transitions | `EXTERNAL_GATE` | Window operations are serialized/coalesced, stale completions are gated, and ON→OFF Fullscreen rollback restores the prior windows without reviving media after Stop All. Real focus churn remains a controlled-Mac gate. |
 | LS-11 | Reliability and privacy | `EXTERNAL_GATE` | Bounded reconnect, viewer/ICE/SDP/signaling/DataChannel limits, native low-water authoritative-state replay, teardown, secret redaction, and session-only access codes are implemented. Sleep/wake, permission loss, display removal, and soak evidence remain. |
 | LS-12 | Automated acceptance | `IN_PROGRESS` | Native loopback, real local GoPeep signaling, unmodified WebKit viewer, deterministic UI, and package/app tests exist. Real ScreenCaptureKit Live Share and controlled TURN lanes remain. |
-| LS-13 | Packaging and release | `IN_PROGRESS` | Strict source/build/test gates and packaging hardening are green; the final stable-signed sandboxed Release DMG/update candidate remains. |
+| LS-13 | Packaging and release | `DONE` | The clean-source gate rebuilt and tested Release, verified the sandbox and nested Sparkle/WebRTC signatures and runtime paths, then mounted and verified the Apple Development-signed DMG with recorded provenance. Publication remains an explicit later action. |
 | LS-20 | Opaque-relay v2 | `DEFERRED` | Future protocol/server/viewer work; it is not silently mixed into GoPeep v1. |
 
 ## Evidence already established
@@ -132,8 +132,8 @@ These are deliberately not inferred from synthetic or loopback tests:
   revocation, and visible sustained encoder/network overload.
 - [ ] Run repeated start/stop and a ten-minute real-share soak while checking
   capture sessions, peers, sockets, tasks, overlays, and memory return to idle.
-- [ ] Build and verify the final stable-signed sandboxed Release DMG, embedded
-  framework signatures/rpaths, appcast/update metadata, checksum, and size.
+- [x] Build and verify the stable-signed sandboxed Release DMG, embedded
+  framework signatures/rpaths, clean-source provenance, checksum, and size.
 
 Live Share has no audio in this milestone. Thirty FPS is the supported default;
 15 FPS is selectable, while 60 FPS remains optional and capability-gated rather
