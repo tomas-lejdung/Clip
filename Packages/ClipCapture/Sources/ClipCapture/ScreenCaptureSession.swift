@@ -211,7 +211,7 @@ extension ScreenCaptureSession: SCStreamOutput {
         of outputType: SCStreamOutputType
     ) {
         guard outputType == .screen,
-              Self.isCompleteVideoSample(sampleBuffer),
+              Self.isDeliverableVideoSample(sampleBuffer),
               let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else {
             return
         }
@@ -252,7 +252,12 @@ extension ScreenCaptureSession: SCStreamOutput {
         }
     }
 
-    private static func isCompleteVideoSample(_ sampleBuffer: CMSampleBuffer) -> Bool {
+    /// ScreenCaptureKit marks the first image emitted by a new stream as
+    /// `.started`, not `.complete`. Rejecting that status leaves a static
+    /// window with no retained frame: every later callback may be `.idle`
+    /// because the window has not changed. Live consumers need both newly
+    /// started and subsequently updated image-bearing frames.
+    private static func isDeliverableVideoSample(_ sampleBuffer: CMSampleBuffer) -> Bool {
         guard sampleBuffer.isValid,
               CMSampleBufferGetImageBuffer(sampleBuffer) != nil else {
             return false
@@ -262,7 +267,21 @@ extension ScreenCaptureSession: SCStreamOutput {
             createIfNecessary: false
         ) as? [[SCStreamFrameInfo: Any]]
         let status = attachments?.first?[.status] as? NSNumber
-        return status?.intValue == SCFrameStatus.complete.rawValue
+        return isDeliverableFrameStatus(status?.intValue)
+    }
+
+    static func isDeliverableFrameStatus(_ rawValue: Int?) -> Bool {
+        guard let rawValue, let status = SCFrameStatus(rawValue: rawValue) else {
+            return false
+        }
+        return switch status {
+        case .started, .complete:
+            true
+        case .idle, .blank, .suspended, .stopped:
+            false
+        @unknown default:
+            false
+        }
     }
 }
 

@@ -1,8 +1,22 @@
+@preconcurrency import ScreenCaptureKit
 import Testing
 @testable import ClipCapture
 
 @Suite("Capture geometry and delivery policy")
 struct CaptureGeometryTests {
+    @Test("the first ScreenCaptureKit frame is deliverable for a static source")
+    func initialFrameStatusPolicy() {
+        #expect(ScreenCaptureSession.isDeliverableFrameStatus(SCFrameStatus.started.rawValue))
+        #expect(ScreenCaptureSession.isDeliverableFrameStatus(SCFrameStatus.complete.rawValue))
+
+        #expect(!ScreenCaptureSession.isDeliverableFrameStatus(SCFrameStatus.idle.rawValue))
+        #expect(!ScreenCaptureSession.isDeliverableFrameStatus(SCFrameStatus.blank.rawValue))
+        #expect(!ScreenCaptureSession.isDeliverableFrameStatus(SCFrameStatus.suspended.rawValue))
+        #expect(!ScreenCaptureSession.isDeliverableFrameStatus(SCFrameStatus.stopped.rawValue))
+        #expect(!ScreenCaptureSession.isDeliverableFrameStatus(nil))
+        #expect(!ScreenCaptureSession.isDeliverableFrameStatus(Int.max))
+    }
+
     @Test("exact dimensions are accepted")
     func exactDimensions() throws {
         try CaptureFrameDimensionValidator.validate(
