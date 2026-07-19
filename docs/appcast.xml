@@ -1,0 +1,50 @@
+<?xml version="1.0" standalone="yes"?>
+<rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" version="2.0">
+    <channel>
+        <title>Clip</title>
+        <item>
+            <title>1.0.0</title>
+            <pubDate>Sun, 19 Jul 2026 13:19:24 +0200</pubDate>
+            <sparkle:version>1</sparkle:version>
+            <sparkle:shortVersionString>1.0.0</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <description sparkle:format="markdown"><![CDATA[# Clip 1.0.0
+
+The first public release of Clip, a native macOS menu-bar recorder for quickly
+capturing and sharing clear screen recordings.
+
+## Highlights
+
+- Record a selected area, an app's visible windows, or an entire display, with
+  optional microphone and system audio, cursor capture, pause, and resume.
+- Preview recordings immediately, trim the beginning and end, rename the file,
+  and remove audio before sharing.
+- Export native-size H.264 MP4 files using Crisp, Compact, or Smallest quality;
+  drag them into another app, copy them to the clipboard, or use Save As.
+- Reopen recordings from History and manage the Copy and drag exports linked to
+  them, including revealing or deleting files.
+- Configure shortcuts, countdown, recording defaults, quality values, retention,
+  launch at login, and other behavior in Settings.
+
+## Updates
+
+Version 1.0.0 installs Clip's in-app updater. This first updater-enabled version
+must be downloaded and installed manually from the DMG. Future releases can be
+found automatically or on demand with **Check for Updates…** in Clip.
+
+## Requirements and first launch
+
+Clip requires macOS 15 or later on Apple silicon.
+
+This build is Apple Development signed but is not Developer ID signed or
+notarized. macOS may therefore block its first launch after download. If that
+happens, try opening Clip once, then go to **System Settings → Privacy &
+Security** and choose **Open Anyway**. Clip will also ask for Screen Recording
+permission before it can capture the screen; microphone and system-audio access
+are requested only when those options are enabled.
+]]></description>
+            <enclosure url="https://github.com/tomas-lejdung/Clip/releases/download/v1.0.0/Clip-1.0.0.dmg" length="3244421" type="application/octet-stream" sparkle:edSignature="AVgxIDOq9l4onhgubBcHKVQoGZd1PdR0pi3gIObi3le+1zYdovi83odqE8IuHlxrqqoPdk9U8/UhIzz27qNdDA=="/>
+        </item>
+    </channel>
+</rss>
