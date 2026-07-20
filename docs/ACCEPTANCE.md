@@ -8,14 +8,15 @@ Run the deterministic, pointer-free GoPeep compatibility lane with:
 ./scripts/run-gopeep-interop-acceptance.sh
 ```
 
-The script builds and launches the unmodified sibling GoPeep Go signaling server on
+The script builds and launches the current sibling GoPeep Go signaling server on
 loopback, then runs Clip's package tests with the real production HTTP and WebSocket
 transports. It verifies room reservation, sharer-secret authentication, viewer password
 gating and replacement, viewer joins, targeted offer/answer routing, bidirectional ICE
 routing, and that the embedded browser viewer artifact is served. It then loads that
-unmodified viewer in an offscreen `WKWebView`, negotiates directly with Clip's native
-WebRTC host, and requires several deterministic H.264 frames to be presented. The
-browser snapshot also verifies that exact `streams-info`, focus, and cursor metadata
+current viewer in an offscreen `WKWebView`, negotiates directly with Clip's native
+WebRTC host, requires deterministic frames to advance through an H.264 → VP8 →
+H.264 live switch, and retains the same viewer and track identities. The browser
+snapshot also verifies that exact `streams-info`, focus, and cursor metadata
 sent over the ordered `gopeep-control` channel was consumed by the viewer. The same
 lane retains the native libwebrtc loopback acceptance as a lower-level codec check.
 
@@ -27,10 +28,10 @@ traversal; those remain separate acceptance surfaces.
 
 | Surface | Current automated evidence | Not established by that evidence |
 | --- | --- | --- |
-| GoPeep protocol | Unmodified local Go service handles reserve, secret authentication, new-viewer access-code checks, targeted SDP, and bidirectional ICE. | Production service availability, hostile-server security, or remote NAT traversal. |
-| Native WebRTC | Four stable H.264 transceivers, reliable ordered control channel, native loopback frames, viewer/answer/ICE/SDP/control bounds, low-water durable-state replay, and idempotent close. | A controlled TURN relay or four simultaneously active browser-rendered sources. |
-| Browser viewer | Unmodified served viewer in offscreen WebKit presents advancing H.264 and consumes stream/focus/cursor state. | Real desktop content, 15/60 FPS capability, remote Internet, or subjective text quality. |
-| Capture | Package tests require exact dimensions, safe old/new resize handoff, and observable latest-frame pressure; hosted tests require sustained pressure to appear in the popover and HUD and recover after healthy intervals. | Production Live Share ScreenCaptureKit permission, overlay exclusion, window/display loss, or real encoder/network overload. |
+| GoPeep protocol | Current local Go service handles reserve, secret authentication, new-viewer access-code checks, targeted SDP, and bidirectional ICE. | Production service availability, hostile-server security, or remote NAT traversal. |
+| Native WebRTC | Four stable transceivers with explicit H.264/VP8 selection and transactional live switching, reliable ordered control channel, native loopback frames, viewer/answer/ICE/SDP/control bounds, low-water durable-state replay, and idempotent close. | A controlled TURN relay or four simultaneously active browser-rendered sources. |
+| Browser viewer | Current served viewer in offscreen WebKit presents advancing H.264 and VP8 across live switches, consumes stream/focus/cursor state, reports selected-track buffer/decode latency, applies low-latency receiver hints, and attempts a live-edge playback reset when sustained backlog is visible. | Real desktop content, 15/60 FPS capability, remote Internet, or subjective text quality. |
+| Capture | Package tests require native VP8 dimensions, bounded Level 5.2 H.264 geometry for 5K/6K/ultrawide/portrait sources, safe transactional codec/resize rollback, a two-frame capture queue, stale-frame rejection, and observable latest-frame pressure. Hosted tests require sustained pressure to appear in the popover and HUD and recover after healthy intervals. | Production Live Share ScreenCaptureKit permission, overlay exclusion, window/display loss, or real encoder/network overload. |
 | UI | Injected Ready, Live, scrolled-bottom, Reconnecting, Failed, focused-overlay, and HUD scenarios use production presentation code. | Real-window hit consumption, secondary displays, Spaces, or capture exclusion. |
 | Lifecycle | Unit tests cover state transitions, reconnect, stale work, Stop All, Fullscreen rollback, viewer admission, and bounded authoritative-state replay after native channel drain. | Sleep/wake, permission revocation, ten-minute soak, and runtime resource scans. |
 | Distribution | The clean-source release gate enforces dependency pinning/notices, sandbox entitlements, normalized WebRTC provenance, nested signatures/runtime paths, mounted-DMG validation, and a recorded checksum. | Developer ID notarization and publication, which are outside this local Apple Development-signed milestone. |

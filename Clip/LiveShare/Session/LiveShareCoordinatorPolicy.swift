@@ -7,6 +7,89 @@ import Foundation
 enum LiveShareCoordinatorPolicy {
     static let maximumReconnectAttempts = 5
 
+    /// ScreenCaptureKit input geometry for a live source. Native pixels remain
+    /// untouched whenever they fit the H.264 hardware envelope, including odd
+    /// dimensions. H.264's even output alignment is applied separately by
+    /// `streamGeometry`; asking ScreenCaptureKit to turn 1,605 pixels into
+    /// 1,604 would fractionally rescale every pixel and soften text.
+    ///
+    /// Apple Silicon's hardware H.264 encoder still rejects geometry above a
+    /// 4,096-pixel side (including 5K and 6K displays), so oversized sources
+    /// are aspect-fit and macroblock-aligned before capture. VP8 keeps exact
+    /// native geometry because none of those H.264 limits apply to it.
+    static func captureGeometry(
+        sourceWidth: Int,
+        sourceHeight: Int,
+        codec: LiveShareVideoCodec,
+        framesPerSecond: Int = 30
+    ) -> LiveShareCaptureGeometry {
+        let width = max(1, sourceWidth)
+        let height = max(1, sourceHeight)
+        guard codec == .h264 else {
+            return LiveShareCaptureGeometry(width: width, height: height)
+        }
+
+        let maximumSide = 4_096.0
+        let maximumLevelMacroblocksPerFrame = 36_864
+        let maximumLevelMacroblocksPerSecond = 2_073_600
+        let cadence = max(1, framesPerSecond)
+        let maximumMacroblocksPerFrame = min(
+            maximumLevelMacroblocksPerFrame,
+            max(1, maximumLevelMacroblocksPerSecond / cadence)
+        )
+        let maximumLuma = Double(maximumMacroblocksPerFrame * 16 * 16)
+        let sourceLuma = Double(width) * Double(height)
+        let scale = min(
+            1,
+            maximumSide / Double(width),
+            maximumSide / Double(height),
+            sqrt(maximumLuma / sourceLuma)
+        )
+        // A tiny epsilon prevents an exactly representable boundary such as
+        // 6,016 × 3,384 → 4,096 × 2,304 from losing two pixels to binary
+        // floating-point rounding before the even-alignment step.
+        var fittedWidth = max(2, Int((Double(width) * scale + 1e-7).rounded(.down)))
+        var fittedHeight = max(2, Int((Double(height) * scale + 1e-7).rounded(.down)))
+        if scale < 1 {
+            // H.264 Level 5.2 is expressed in 16×16 macroblocks, not only
+            // visible luma pixels. Align a downscaled result to macroblocks so
+            // codec padding cannot push an unusual aspect ratio beyond 36,864.
+            if fittedWidth >= 16 { fittedWidth -= fittedWidth % 16 }
+            if fittedHeight >= 16 { fittedHeight -= fittedHeight % 16 }
+        }
+        var encodedWidth = videoEncoderCompatibleDimension(fittedWidth)
+        var encodedHeight = videoEncoderCompatibleDimension(fittedHeight)
+        let macroblocks = ((encodedWidth + 15) / 16) * ((encodedHeight + 15) / 16)
+        var requiresConstrainedCapture = scale < 1
+        if macroblocks > maximumMacroblocksPerFrame {
+            // A source can fit the visible-luma envelope yet exceed Level 5.2
+            // after codec padding. Only those boundary cases lose the final
+            // partial macroblock; normal under-limit geometry stays unchanged.
+            if encodedWidth >= 16 { encodedWidth -= encodedWidth % 16 }
+            if encodedHeight >= 16 { encodedHeight -= encodedHeight % 16 }
+            requiresConstrainedCapture = true
+        }
+        guard requiresConstrainedCapture else {
+            return LiveShareCaptureGeometry(width: width, height: height)
+        }
+        return LiveShareCaptureGeometry(width: encodedWidth, height: encodedHeight)
+    }
+
+    /// Dimensions advertised to WebRTC and produced by the encoder. VP8 can
+    /// encode the capture geometry directly. H.264 aligns down by at most one
+    /// pixel per axis; the native pixel buffer remains unchanged and the
+    /// VideoToolbox bridge performs a top-left crop instead of a scale.
+    static func streamGeometry(
+        captureGeometry: LiveShareCaptureGeometry,
+        codec: LiveShareVideoCodec
+    ) -> LiveShareCaptureGeometry {
+        guard codec == .h264 else { return captureGeometry }
+        return LiveShareCaptureGeometry(
+            width: videoEncoderCompatibleDimension(captureGeometry.width),
+            height: videoEncoderCompatibleDimension(captureGeometry.height)
+        )
+    }
+
     /// GoPeep's `error` field is controlled by the signaling service and may
     /// echo room credentials or SDP. Never carry that text into public OSLog
     /// diagnostics; the protocol type already provides enough classification.
@@ -45,17 +128,74 @@ enum LiveShareCoordinatorPolicy {
 
     static func senderPolicy(
         for settings: LiveShareSettings,
-        isFocused: Bool = true
+        maximumBitrateBps: Int? = nil,
+        bitratePriority: Double = 1
     ) -> WebRTCSenderPolicy {
-        let selectedBitrate = settings.quality.maximumBitrateBitsPerSecond
-        let maximumBitrate = settings.adaptiveBitrateEnabled && !isFocused
-            ? max(500_000, selectedBitrate / 3)
-            : selectedBitrate
         return WebRTCSenderPolicy(
-            maximumBitrateBps: maximumBitrate,
+            maximumBitrateBps: maximumBitrateBps
+                ?? settings.quality.maximumBitrateBitsPerSecond,
             maximumFramesPerSecond: settings.frameRate.rawValue,
-            maintainsResolution: settings.encodingMode == .quality
+            maintainsResolution: settings.encodingMode == .quality,
+            bitratePriority: bitratePriority
         )
+    }
+
+    /// Divides one viewer's selected video budget across all active tracks.
+    /// A focused window receives four shares while each background window
+    /// receives one when focus prioritization is enabled. This keeps the sum
+    /// bounded by the selected Mbps value instead of multiplying it by the
+    /// number of shared windows.
+    static func senderPolicies(
+        for settings: LiveShareSettings,
+        slots: LiveShareTrackSlotAllocation
+    ) -> [Int: WebRTCSenderPolicy] {
+        let activeSlots = slots.activeSlots.sorted { $0.index < $1.index }
+        guard !activeSlots.isEmpty else { return [:] }
+
+        let prioritizesFocus = settings.prioritizeFocusedWindow
+            && activeSlots.count > 1
+            && activeSlots.contains(where: \.isFocused)
+        let weights = activeSlots.map { slot in
+            prioritizesFocus && slot.isFocused ? 4 : 1
+        }
+        let totalWeight = weights.reduce(0, +)
+        let totalBudget = settings.quality.maximumBitrateBitsPerSecond
+        var allocations = zip(activeSlots, weights).map { slot, weight in
+            (slot, totalBudget * weight / totalWeight)
+        }
+
+        // Integer division can leave a few bits undistributed. Give those to
+        // the focused (or first) stream while preserving the exact total cap.
+        let allocated = allocations.reduce(0) { $0 + $1.1 }
+        if let remainderIndex = allocations.firstIndex(where: { $0.0.isFocused })
+            ?? allocations.indices.first
+        {
+            allocations[remainderIndex].1 += totalBudget - allocated
+        }
+
+        return Dictionary(uniqueKeysWithValues: allocations.map { slot, bitrate in
+            (
+                slot.index,
+                senderPolicy(
+                    for: settings,
+                    maximumBitrateBps: bitrate,
+                    bitratePriority: prioritizesFocus && slot.isFocused ? 4 : 1
+                )
+            )
+        })
+    }
+
+    /// Stream statistics aggregate actual and target bitrate across every
+    /// sampled viewer. Present the matching aggregate configured ceiling so a
+    /// second viewer cannot make a healthy stream appear to exceed its limit.
+    static func aggregateConfiguredBitrateCeiling(
+        perViewer: Int,
+        viewerCount: Int
+    ) -> Int {
+        let perViewer = max(0, perViewer)
+        let viewerCount = max(0, viewerCount)
+        let (total, overflow) = perViewer.multipliedReportingOverflow(by: viewerCount)
+        return overflow ? Int.max : total
     }
 
     /// libwebrtc's H.264 path crops odd BGRA input down to even 4:2:0 output.
@@ -178,6 +318,11 @@ enum LiveShareCoordinatorPolicy {
     }
 }
 
+struct LiveShareCaptureGeometry: Equatable, Sendable {
+    let width: Int
+    let height: Int
+}
+
 /// MainActor-owned sampling state for capture delivery. Entries are keyed by
 /// domain source but also retain the capture generation, so late statistics from
 /// a stopped session can neither raise nor clear the replacement session's alert.
@@ -186,6 +331,7 @@ struct LiveShareCapturePressureLedger {
         let generation: UUID
         var monitor: CaptureBackpressureMonitor
         var statistics: CaptureDeliveryStatistics
+        var latestBackpressureDrops: UInt64
     }
 
     private let policy: CaptureBackpressurePolicy
@@ -217,11 +363,17 @@ struct LiveShareCapturePressureLedger {
             var entry: Entry
             if let current = entries[sourceID], current.generation == sample.generation {
                 entry = current
+                entry.latestBackpressureDrops = sample.statistics.backpressureDrops
+                    >= current.statistics.backpressureDrops
+                    ? sample.statistics.backpressureDrops
+                        - current.statistics.backpressureDrops
+                    : 0
             } else {
                 entry = Entry(
                     generation: sample.generation,
                     monitor: CaptureBackpressureMonitor(policy: policy),
-                    statistics: sample.statistics
+                    statistics: sample.statistics,
+                    latestBackpressureDrops: 0
                 )
             }
             entry.statistics = sample.statistics
@@ -249,6 +401,22 @@ struct LiveShareCapturePressureLedger {
             return nil
         }
         return entry.statistics
+    }
+
+    /// Drops observed since the preceding statistics sample. WebRTC's drop
+    /// value is also displayed as a per-sample delta, so keeping this interval
+    /// count avoids comparing a lifetime capture total with a one-second RTC
+    /// value in the same row.
+    func latestBackpressureDrops(
+        for sourceID: LiveShareSourceID,
+        generation: UUID?
+    ) -> UInt64 {
+        guard let generation,
+              let entry = entries[sourceID],
+              entry.generation == generation else {
+            return 0
+        }
+        return entry.latestBackpressureDrops
     }
 
     mutating func removeAll() {

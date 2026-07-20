@@ -17,7 +17,8 @@ struct LiveSharePresentationActions {
     var setFullscreenEnabled: (Bool) -> Void
     var setQuality: (LiveShareQualityPreset) -> Void
     var setFrameRate: (LiveShareFrameRate) -> Void
-    var setAdaptiveBitrateEnabled: (Bool) -> Void
+    var setCodec: (LiveShareVideoCodec) -> Void
+    var setPrioritizeFocusedWindow: (Bool) -> Void
     var setMode: (LiveShareEncodingMode) -> Void
     var setAutoShareEnabled: (Bool) -> Void
     var stopAllMedia: () -> Void
@@ -34,7 +35,8 @@ struct LiveSharePresentationActions {
         setFullscreenEnabled: @escaping (Bool) -> Void = { _ in },
         setQuality: @escaping (LiveShareQualityPreset) -> Void = { _ in },
         setFrameRate: @escaping (LiveShareFrameRate) -> Void = { _ in },
-        setAdaptiveBitrateEnabled: @escaping (Bool) -> Void = { _ in },
+        setCodec: @escaping (LiveShareVideoCodec) -> Void = { _ in },
+        setPrioritizeFocusedWindow: @escaping (Bool) -> Void = { _ in },
         setMode: @escaping (LiveShareEncodingMode) -> Void = { _ in },
         setAutoShareEnabled: @escaping (Bool) -> Void = { _ in },
         stopAllMedia: @escaping () -> Void = {},
@@ -50,7 +52,8 @@ struct LiveSharePresentationActions {
         self.setFullscreenEnabled = setFullscreenEnabled
         self.setQuality = setQuality
         self.setFrameRate = setFrameRate
-        self.setAdaptiveBitrateEnabled = setAdaptiveBitrateEnabled
+        self.setCodec = setCodec
+        self.setPrioritizeFocusedWindow = setPrioritizeFocusedWindow
         self.setMode = setMode
         self.setAutoShareEnabled = setAutoShareEnabled
         self.stopAllMedia = stopAllMedia
@@ -149,9 +152,14 @@ final class LiveSharePresentationModel: ObservableObject {
         actions.setFrameRate(frameRate)
     }
 
-    func setAdaptiveBitrateEnabled(_ enabled: Bool) {
-        guard snapshot.settings.canChangeAdaptiveBitrate else { return }
-        actions.setAdaptiveBitrateEnabled(enabled)
+    func setCodec(_ codec: LiveShareVideoCodec) {
+        guard snapshot.settings.canChangeCodec else { return }
+        actions.setCodec(codec)
+    }
+
+    func setPrioritizeFocusedWindow(_ enabled: Bool) {
+        guard snapshot.settings.canChangePrioritizeFocusedWindow else { return }
+        actions.setPrioritizeFocusedWindow(enabled)
     }
 
     func setMode(_ mode: LiveShareEncodingMode) {

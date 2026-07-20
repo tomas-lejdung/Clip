@@ -14,6 +14,7 @@ import WebKit
 /// external GoPeep server and launches WebKit auxiliary processes. The repository
 /// acceptance script supplies the opt-in environment after starting an unmodified
 /// sibling GoPeep checkout on loopback.
+extension NativeMediaResourceTests {
 @Suite("WebKit GoPeep viewer acceptance", .serialized)
 struct WebKitGoPeepViewerAcceptanceTests {
     @MainActor
@@ -106,7 +107,43 @@ struct WebKitGoPeepViewerAcceptanceTests {
         #expect(lastSnapshot.metadataMatchesFixture)
         #expect(lastSnapshot.cursorMetadataConsumed)
         #expect(lastSnapshot.streamOrder.contains(0))
+
+        let originalViewerID = await harness.viewerID
+        let framesBeforeVP8 = lastSnapshot.decodedFrames
+        try await harness.switchVideoCodec(to: .vp8)
+        #expect(await harness.answerAdvertisesVP8)
+        #expect(await harness.viewerID == originalViewerID)
+        for index in 240 ..< 480 {
+            try await harness.sendFixtureFrame(index: index)
+            try await Task.sleep(for: .milliseconds(16))
+            if index.isMultiple(of: 8) {
+                lastSnapshot = try await webKitViewerSnapshot(webView)
+                if lastSnapshot.decodedFrames >= framesBeforeVP8 + 3 { break }
+            }
+        }
+        lastSnapshot = try await webKitViewerSnapshot(webView)
+        #expect(lastSnapshot.decodedFrames >= framesBeforeVP8 + 3)
+        #expect(lastSnapshot.metadataMatchesFixture)
+        #expect(lastSnapshot.streamOrder.contains(0))
+
+        let framesBeforeH264Return = lastSnapshot.decodedFrames
+        try await harness.switchVideoCodec(to: .h264)
+        #expect(await harness.answerAdvertisesH264)
+        #expect(await harness.viewerID == originalViewerID)
+        for index in 480 ..< 720 {
+            try await harness.sendFixtureFrame(index: index)
+            try await Task.sleep(for: .milliseconds(16))
+            if index.isMultiple(of: 8) {
+                lastSnapshot = try await webKitViewerSnapshot(webView)
+                if lastSnapshot.decodedFrames >= framesBeforeH264Return + 3 { break }
+            }
+        }
+        lastSnapshot = try await webKitViewerSnapshot(webView)
+        #expect(lastSnapshot.decodedFrames >= framesBeforeH264Return + 3)
+        #expect(lastSnapshot.metadataMatchesFixture)
+        #expect(lastSnapshot.streamOrder.contains(0))
     }
+}
 }
 
 private actor WebKitGoPeepHostHarness {
@@ -118,6 +155,7 @@ private actor WebKitGoPeepHostHarness {
     private var joined = false
     private var nextViewerNumber = 1
     private var offerSent: Set<String> = []
+    private var offerInFlight: Set<String> = []
     private var answerApplied: Set<String> = []
     private var pendingLocalICE: [String: [WebRTCICECandidate]] = [:]
     private var pendingRemoteICE: [String: [WebRTCICECandidate]] = [:]
@@ -155,6 +193,12 @@ private actor WebKitGoPeepHostHarness {
     var answerAdvertisesH264: Bool {
         answerSDP.localizedCaseInsensitiveContains("H264/90000")
     }
+
+    var answerAdvertisesVP8: Bool {
+        answerSDP.localizedCaseInsensitiveContains("VP8/90000")
+    }
+
+    var viewerID: String? { controlViewerID }
 
     func start() async throws -> URL {
         let stream = await signaling.events()
@@ -201,6 +245,24 @@ private actor WebKitGoPeepHostHarness {
         )
         guard peerHost.send(frame, toSlot: 0) == .accepted else {
             throw WebKitAcceptanceError.runtime("native host rejected fixture frame")
+        }
+    }
+
+    func switchVideoCodec(to codec: WebRTCVideoCodec) async throws {
+        if let failure {
+            throw WebKitAcceptanceError.runtime(failure)
+        }
+        guard controlViewerID != nil else {
+            throw WebKitAcceptanceError.runtime("control viewer is unavailable")
+        }
+        try await peerHost.updateVideoCodec(codec)
+        if let failure {
+            throw WebKitAcceptanceError.runtime(failure)
+        }
+        guard peerHost.videoCodec == codec else {
+            throw WebKitAcceptanceError.runtime(
+                "native host did not commit the \(codec.rtcName) switch"
+            )
         }
     }
 
@@ -262,7 +324,7 @@ private actor WebKitGoPeepHostHarness {
         case .viewerJoined:
             let viewerID = "viewer-\(nextViewerNumber)"
             nextViewerNumber += 1
-            await sendOffer(viewerID: viewerID)
+            await sendOffer(viewerID: viewerID, isReoffer: false)
 
         case .viewerReoffer:
             guard !message.peerID.isEmpty else { return }
@@ -271,7 +333,7 @@ private actor WebKitGoPeepHostHarness {
             answerApplied.remove(message.peerID)
             pendingLocalICE[message.peerID] = nil
             pendingRemoteICE[message.peerID] = nil
-            await sendOffer(viewerID: message.peerID)
+            await sendOffer(viewerID: message.peerID, isReoffer: false)
 
         case .answer, .renegotiateAnswer:
             guard !message.peerID.isEmpty, !message.sdp.isEmpty else { return }
@@ -279,6 +341,7 @@ private actor WebKitGoPeepHostHarness {
                 answerSDP = message.sdp
                 try await peerHost.setRemoteAnswer(message.sdp, for: message.peerID)
                 answerApplied.insert(message.peerID)
+                offerInFlight.remove(message.peerID)
                 for candidate in pendingRemoteICE.removeValue(forKey: message.peerID) ?? [] {
                     try await peerHost.addRemoteICECandidate(candidate, for: message.peerID)
                 }
@@ -313,9 +376,12 @@ private actor WebKitGoPeepHostHarness {
         }
     }
 
-    private func sendOffer(viewerID: String) async {
+    private func sendOffer(viewerID: String, isReoffer: Bool) async {
+        guard offerInFlight.insert(viewerID).inserted else { return }
         do {
-            let offer = try await peerHost.createOffer(for: viewerID)
+            let offer = try await (isReoffer
+                ? peerHost.createReoffer(for: viewerID)
+                : peerHost.createOffer(for: viewerID))
             try await signaling.send(GoPeepV1Message(
                 type: .offer,
                 sdp: offer.sdp,
@@ -326,6 +392,7 @@ private actor WebKitGoPeepHostHarness {
                 try await sendLocalICE(candidate, viewerID: viewerID)
             }
         } catch {
+            offerInFlight.remove(viewerID)
             failure = "could not send native WebRTC offer: \(error.localizedDescription)"
         }
     }
@@ -360,6 +427,9 @@ private actor WebKitGoPeepHostHarness {
             if state == .failed {
                 failure = "native-to-WebKit peer connection failed"
             }
+
+        case .negotiationNeeded(let viewerID):
+            await sendOffer(viewerID: viewerID, isReoffer: true)
 
         case .error(_, let error):
             failure = error.localizedDescription

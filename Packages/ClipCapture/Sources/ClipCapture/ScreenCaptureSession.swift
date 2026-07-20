@@ -5,6 +5,8 @@ import CoreVideo
 import Foundation
 
 public final class ScreenCaptureSession: NSObject, @unchecked Sendable {
+    static let liveQueueDepth = 2
+
     public typealias FrameConsumer = @Sendable (BorrowedCaptureVideoFrame) -> CaptureFrameDisposition
     public typealias EventConsumer = @Sendable (CaptureSessionEvent) -> Void
 
@@ -15,6 +17,7 @@ public final class ScreenCaptureSession: NSObject, @unchecked Sendable {
     private var stream: SCStream?
     private var request: CaptureSessionRequest?
     private var pendingUpdate: (id: UUID, request: CaptureSessionRequest)?
+    private var dimensionTransition = CaptureFrameDimensionTransitionState()
     private var backpressure = CaptureBackpressureCounter()
 
     public init(
@@ -55,6 +58,7 @@ public final class ScreenCaptureSession: NSObject, @unchecked Sendable {
             self.stream = stream
             self.request = request
             pendingUpdate = nil
+            dimensionTransition.reset()
             backpressure = CaptureBackpressureCounter()
             return true
         }
@@ -71,6 +75,7 @@ public final class ScreenCaptureSession: NSObject, @unchecked Sendable {
                     self.stream = nil
                     self.request = nil
                     self.pendingUpdate = nil
+                    self.dimensionTransition.reset()
                 }
             }
             throw error
@@ -83,6 +88,7 @@ public final class ScreenCaptureSession: NSObject, @unchecked Sendable {
             self.stream = nil
             self.request = nil
             pendingUpdate = nil
+            dimensionTransition.reset()
             return (stream, request.identifier)
         }
         guard let active else { throw CaptureSessionError.notRunning }
@@ -112,11 +118,21 @@ public final class ScreenCaptureSession: NSObject, @unchecked Sendable {
         do {
             try await active.0.updateContentFilter(filter)
             try await active.0.updateConfiguration(configuration)
+            let commitPresentationTime = CMClockGetTime(CMClockGetHostTimeClock())
             let committed = lock.withLock { () -> Bool in
                 guard stream === active.0,
-                      pendingUpdate?.id == updateID else { return false }
+                      pendingUpdate?.id == updateID,
+                      let previousVideo = request?.video else { return false }
                 request = active.1
                 pendingUpdate = nil
+                dimensionTransition.commit(
+                    previousWidth: previousVideo.width,
+                    previousHeight: previousVideo.height,
+                    currentWidth: active.1.video.width,
+                    currentHeight: active.1.video.height,
+                    commitPresentationTime: commitPresentationTime,
+                    framesPerSecond: active.1.video.framesPerSecond
+                )
                 return true
             }
             guard committed else { throw CaptureSessionError.notRunning }
@@ -141,10 +157,16 @@ public final class ScreenCaptureSession: NSObject, @unchecked Sendable {
             value: 1,
             timescale: CMTimeScale(video.framesPerSecond)
         )
-        configuration.queueDepth = 5
+        // Live Share is freshness-first. Two frames absorb a short scheduling
+        // hiccup without allowing roughly five frame intervals of stale video
+        // to accumulate under encoder pressure.
+        configuration.queueDepth = liveQueueDepth
         configuration.pixelFormat = kCVPixelFormatType_32BGRA
         configuration.captureResolution = .best
-        configuration.scalesToFit = false
+        // Live Share may intentionally request an aspect-fitted H.264 frame
+        // below the native 5K/6K source size. Equal source/output dimensions
+        // (the VP8 path) remain exact and do not incur scaling.
+        configuration.scalesToFit = true
         configuration.preservesAspectRatio = true
         configuration.showsCursor = video.showsCursor
         configuration.showMouseClicks = video.showsClickHighlights
@@ -224,31 +246,70 @@ extension ScreenCaptureSession: SCStreamOutput {
             return (request, pendingUpdate?.request.video)
         }
         guard let active else { return }
+        let presentationTime = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
+        let activeFrameRate = active.pendingVideo?.framesPerSecond
+            ?? active.request.video.framesPerSecond
+        if CaptureFrameFreshnessPolicy.isStale(
+            presentationTime: presentationTime,
+            hostTime: CMClockGetTime(CMClockGetHostTimeClock()),
+            framesPerSecond: activeFrameRate
+        ) {
+            lock.withLock {
+                guard self.stream === stream else { return }
+                backpressure.record(.droppedBackpressure)
+            }
+            return
+        }
 
-        do {
-            try CaptureFrameDimensionValidator.validate(
-                pixelBuffer,
-                expectedWidth: active.request.video.width,
-                expectedHeight: active.request.video.height,
-                alternateExpectedWidth: active.pendingVideo?.width,
-                alternateExpectedHeight: active.pendingVideo?.height
-            )
+        let routing = lock.withLock { () -> (
+            identifier: UUID,
+            result: Result<CaptureFrameDimensionAction, CaptureSessionError>
+        )? in
+            guard self.stream === stream, let request else { return nil }
+            do {
+                return (
+                    request.identifier,
+                    .success(try dimensionTransition.classify(
+                        actualWidth: CVPixelBufferGetWidth(pixelBuffer),
+                        actualHeight: CVPixelBufferGetHeight(pixelBuffer),
+                        presentationTime: presentationTime,
+                        currentWidth: request.video.width,
+                        currentHeight: request.video.height,
+                        pendingWidth: pendingUpdate?.request.video.width,
+                        pendingHeight: pendingUpdate?.request.video.height
+                    ))
+                )
+            } catch let error as CaptureSessionError {
+                return (request.identifier, .failure(error))
+            } catch {
+                return (
+                    request.identifier,
+                    .failure(.streamStopped(error.localizedDescription))
+                )
+            }
+        }
+        guard let routing else { return }
+
+        switch routing.result {
+        case .success(.deliver):
             let disposition = frameConsumer(BorrowedCaptureVideoFrame(
                 sampleBuffer: sampleBuffer,
                 pixelBuffer: pixelBuffer,
-                presentationTime: CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
+                presentationTime: presentationTime
             ))
             lock.withLock {
                 guard self.stream === stream else { return }
                 backpressure.record(disposition)
             }
-        } catch let error as CaptureSessionError {
-            eventConsumer(.failed(active.request.identifier, error))
-        } catch {
-            eventConsumer(.failed(
-                active.request.identifier,
-                .streamStopped(error.localizedDescription)
-            ))
+
+        case .success(.dropRetired):
+            lock.withLock {
+                guard self.stream === stream else { return }
+                backpressure.record(.droppedBackpressure)
+            }
+
+        case let .failure(error):
+            eventConsumer(.failed(routing.identifier, error))
         }
     }
 
@@ -293,6 +354,7 @@ extension ScreenCaptureSession: SCStreamDelegate {
             self.stream = nil
             request = nil
             pendingUpdate = nil
+            dimensionTransition.reset()
             return identifier
         }
         eventConsumer(.failed(

@@ -658,8 +658,8 @@ enum DeterministicLiveShareDemo {
             settings: .init(
                 quality: .veryHigh,
                 frameRate: .thirty,
-                codec: .init(name: "H.264", acceleration: .hardware),
-                adaptiveBitrate: true,
+                codec: .init(codec: .h264, acceleration: .hardware),
+                prioritizeFocusedWindow: true,
                 mode: .quality,
                 autoShareFocusedWindows: false
             )
@@ -682,8 +682,8 @@ enum DeterministicLiveShareDemo {
             settings: .init(
                 quality: .ultra,
                 frameRate: .thirty,
-                codec: .init(name: "H.264", acceleration: .hardware),
-                adaptiveBitrate: true,
+                codec: .init(codec: .h264, acceleration: .hardware),
+                prioritizeFocusedWindow: true,
                 mode: .quality,
                 autoShareFocusedWindows: false
             ),
@@ -774,13 +774,14 @@ enum DeterministicLiveShareDemo {
         LiveShareSettingsViewSnapshot(
             quality: .ultra,
             frameRate: .thirty,
-            codec: .init(name: "H.264", acceleration: .hardware),
-            adaptiveBitrate: true,
+            codec: .init(codec: .h264, acceleration: .hardware),
+            prioritizeFocusedWindow: true,
             mode: .quality,
             autoShareFocusedWindows: false,
             canChangeQuality: false,
             canChangeFrameRate: false,
-            canChangeAdaptiveBitrate: false,
+            canChangeCodec: false,
+            canChangePrioritizeFocusedWindow: false,
             canChangeMode: false,
             canChangeAutoShare: false
         )

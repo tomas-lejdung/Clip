@@ -1,4 +1,5 @@
 @preconcurrency import ScreenCaptureKit
+import CoreMedia
 import Testing
 @testable import ClipCapture
 
@@ -6,6 +7,7 @@ import Testing
 struct CaptureGeometryTests {
     @Test("the first ScreenCaptureKit frame is deliverable for a static source")
     func initialFrameStatusPolicy() {
+        #expect(ScreenCaptureSession.liveQueueDepth == 2)
         #expect(ScreenCaptureSession.isDeliverableFrameStatus(SCFrameStatus.started.rawValue))
         #expect(ScreenCaptureSession.isDeliverableFrameStatus(SCFrameStatus.complete.rawValue))
 
@@ -15,6 +17,41 @@ struct CaptureGeometryTests {
         #expect(!ScreenCaptureSession.isDeliverableFrameStatus(SCFrameStatus.stopped.rawValue))
         #expect(!ScreenCaptureSession.isDeliverableFrameStatus(nil))
         #expect(!ScreenCaptureSession.isDeliverableFrameStatus(Int.max))
+    }
+
+    @Test("frames older than two capture intervals are stale")
+    func frameFreshnessPolicy() {
+        let now = CMTime(seconds: 100, preferredTimescale: 60_000)
+        #expect(!CaptureFrameFreshnessPolicy.isStale(
+            presentationTime: CMTime(seconds: 99.95, preferredTimescale: 60_000),
+            hostTime: now,
+            framesPerSecond: 30
+        ))
+        #expect(CaptureFrameFreshnessPolicy.isStale(
+            presentationTime: CMTime(seconds: 99.90, preferredTimescale: 60_000),
+            hostTime: now,
+            framesPerSecond: 30
+        ))
+        #expect(CaptureFrameFreshnessPolicy.isStale(
+            presentationTime: CMTime(seconds: 99.96, preferredTimescale: 60_000),
+            hostTime: now,
+            framesPerSecond: 60
+        ))
+    }
+
+    @Test("invalid or incomparable clocks are delivered rather than guessed stale")
+    func incomparableFrameTimestamps() {
+        let now = CMTime(seconds: 100, preferredTimescale: 600)
+        #expect(!CaptureFrameFreshnessPolicy.isStale(
+            presentationTime: .invalid,
+            hostTime: now,
+            framesPerSecond: 30
+        ))
+        #expect(!CaptureFrameFreshnessPolicy.isStale(
+            presentationTime: CMTime(seconds: 1, preferredTimescale: 600),
+            hostTime: now,
+            framesPerSecond: 30
+        ))
     }
 
     @Test("exact dimensions are accepted")
@@ -77,6 +114,164 @@ struct CaptureGeometryTests {
                 alternateExpectedHeight: 1_440
             )
         }
+    }
+
+    @Test("a late native 5K frame is dropped during the bounded H.264 handoff")
+    func native5KToH264Handoff() throws {
+        let commitTime = CMTime(seconds: 100, preferredTimescale: 60_000)
+        var transition = CaptureFrameDimensionTransitionState()
+        transition.commit(
+            previousWidth: 5_120,
+            previousHeight: 1_440,
+            currentWidth: 4_096,
+            currentHeight: 1_152,
+            commitPresentationTime: commitTime,
+            framesPerSecond: 60
+        )
+
+        #expect(try transition.classify(
+            actualWidth: 4_096,
+            actualHeight: 1_152,
+            presentationTime: commitTime + CMTime(value: 1, timescale: 60),
+            currentWidth: 4_096,
+            currentHeight: 1_152
+        ) == .deliver)
+        #expect(try transition.classify(
+            actualWidth: 5_120,
+            actualHeight: 1_440,
+            presentationTime: commitTime + CMTime(value: 2, timescale: 60),
+            currentWidth: 4_096,
+            currentHeight: 1_152
+        ) == .dropRetired)
+
+        #expect(throws: CaptureSessionError.invalidFrameDimensions(
+            expectedWidth: 4_096,
+            expectedHeight: 1_152,
+            actualWidth: 5_120,
+            actualHeight: 1_440
+        )) {
+            try transition.classify(
+                actualWidth: 5_120,
+                actualHeight: 1_440,
+                presentationTime: commitTime + CMTime(value: 3, timescale: 60),
+                currentWidth: 4_096,
+                currentHeight: 1_152
+            )
+        }
+        #expect(!transition.hasRetiredGeometry)
+    }
+
+    @Test("a one-pixel alignment frame is dropped rather than killing a codec switch")
+    func oddWidthH264Handoff() throws {
+        let commitTime = CMTime(seconds: 200, preferredTimescale: 60_000)
+        var transition = CaptureFrameDimensionTransitionState()
+        transition.commit(
+            previousWidth: 1_605,
+            previousHeight: 1_108,
+            currentWidth: 1_604,
+            currentHeight: 1_108,
+            commitPresentationTime: commitTime,
+            framesPerSecond: 30
+        )
+
+        #expect(try transition.classify(
+            actualWidth: 1_605,
+            actualHeight: 1_108,
+            presentationTime: commitTime + CMTime(value: 1, timescale: 30),
+            currentWidth: 1_604,
+            currentHeight: 1_108
+        ) == .dropRetired)
+        #expect(try transition.classify(
+            actualWidth: 1_604,
+            actualHeight: 1_108,
+            presentationTime: commitTime + CMTime(value: 2, timescale: 30),
+            currentWidth: 1_604,
+            currentHeight: 1_108
+        ) == .deliver)
+    }
+
+    @Test("an unrelated third geometry remains fatal during a resize handoff")
+    func unknownGeometryDuringHandoff() {
+        let commitTime = CMTime(seconds: 300, preferredTimescale: 60_000)
+        var transition = CaptureFrameDimensionTransitionState()
+        transition.commit(
+            previousWidth: 5_120,
+            previousHeight: 1_440,
+            currentWidth: 4_096,
+            currentHeight: 1_152,
+            commitPresentationTime: commitTime,
+            framesPerSecond: 60
+        )
+
+        #expect(throws: CaptureSessionError.invalidFrameDimensions(
+            expectedWidth: 4_096,
+            expectedHeight: 1_152,
+            actualWidth: 3_840,
+            actualHeight: 1_080
+        )) {
+            try transition.classify(
+                actualWidth: 3_840,
+                actualHeight: 1_080,
+                presentationTime: commitTime + CMTime(value: 1, timescale: 60),
+                currentWidth: 4_096,
+                currentHeight: 1_152
+            )
+        }
+        #expect(transition.hasRetiredGeometry)
+    }
+
+    @Test("a subsequent commit replaces or clears the retired geometry")
+    func handoffReplacementAndReset() throws {
+        let commitTime = CMTime(seconds: 400, preferredTimescale: 60_000)
+        var transition = CaptureFrameDimensionTransitionState()
+        transition.commit(
+            previousWidth: 5_120,
+            previousHeight: 1_440,
+            currentWidth: 4_096,
+            currentHeight: 1_152,
+            commitPresentationTime: commitTime,
+            framesPerSecond: 60
+        )
+        transition.commit(
+            previousWidth: 4_096,
+            previousHeight: 1_152,
+            currentWidth: 1_604,
+            currentHeight: 1_108,
+            commitPresentationTime: commitTime + CMTime(seconds: 1, preferredTimescale: 60_000),
+            framesPerSecond: 30
+        )
+
+        #expect(throws: CaptureSessionError.invalidFrameDimensions(
+            expectedWidth: 1_604,
+            expectedHeight: 1_108,
+            actualWidth: 5_120,
+            actualHeight: 1_440
+        )) {
+            try transition.classify(
+                actualWidth: 5_120,
+                actualHeight: 1_440,
+                presentationTime: commitTime + CMTime(seconds: 1.01, preferredTimescale: 60_000),
+                currentWidth: 1_604,
+                currentHeight: 1_108
+            )
+        }
+        #expect(try transition.classify(
+            actualWidth: 4_096,
+            actualHeight: 1_152,
+            presentationTime: commitTime + CMTime(seconds: 1.01, preferredTimescale: 60_000),
+            currentWidth: 1_604,
+            currentHeight: 1_108
+        ) == .dropRetired)
+
+        transition.commit(
+            previousWidth: 1_604,
+            previousHeight: 1_108,
+            currentWidth: 1_604,
+            currentHeight: 1_108,
+            commitPresentationTime: commitTime + CMTime(seconds: 2, preferredTimescale: 60_000),
+            framesPerSecond: 30
+        )
+        #expect(!transition.hasRetiredGeometry)
     }
 
     @Test("accepted and pressure-dropped frames are observable")

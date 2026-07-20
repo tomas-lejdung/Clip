@@ -10,6 +10,7 @@ import Foundation
 /// which keeps track and stream identifiers stable across activation changes.
 public final class WebRTCPeerHost: LiveShareVideoSlotHosting, @unchecked Sendable {
     public typealias EventHandler = @Sendable (WebRTCPeerHostEvent) -> Void
+    private static let idleFrameReplayIntervalNanoseconds: UInt64 = 2_000_000_000
 
     private final class Slot: @unchecked Sendable {
         let index: Int
@@ -19,6 +20,7 @@ public final class WebRTCPeerHost: LiveShareVideoSlotHosting, @unchecked Sendabl
         let track: RTCVideoTrack
         let frameSource: WebRTCFrameSource
         var metadata: GoPeepV1StreamInfo?
+        var captureGeometry: WebRTCVideoCaptureGeometry?
 
         init(index: Int, factory: RTCPeerConnectionFactory) {
             self.index = index
@@ -35,7 +37,8 @@ public final class WebRTCPeerHost: LiveShareVideoSlotHosting, @unchecked Sendabl
                 index: index,
                 trackID: trackID,
                 streamID: streamID,
-                metadata: metadata
+                metadata: metadata,
+                captureGeometry: captureGeometry
             )
         }
     }
@@ -46,6 +49,7 @@ public final class WebRTCPeerHost: LiveShareVideoSlotHosting, @unchecked Sendabl
         let delegate: WebRTCPeerDelegate
         let controlChannel: RTCDataChannel
         let sendersBySlot: [Int: RTCRtpSender]
+        let transceiversBySlot: [Int: RTCRtpTransceiver]
         var isClosing = false
         var connectionState: WebRTCPeerConnectionState = .new
         var controlDataChannelState: WebRTCControlDataChannelState = .connecting
@@ -65,13 +69,50 @@ public final class WebRTCPeerHost: LiveShareVideoSlotHosting, @unchecked Sendabl
             connection: RTCPeerConnection,
             delegate: WebRTCPeerDelegate,
             controlChannel: RTCDataChannel,
-            sendersBySlot: [Int: RTCRtpSender]
+            sendersBySlot: [Int: RTCRtpSender],
+            transceiversBySlot: [Int: RTCRtpTransceiver]
         ) {
             self.viewerID = viewerID
             self.connection = connection
             self.delegate = delegate
             self.controlChannel = controlChannel
             self.sendersBySlot = sendersBySlot
+            self.transceiversBySlot = transceiversBySlot
+        }
+    }
+
+    private final class PendingVideoCodecSwitch: @unchecked Sendable {
+        let previous: WebRTCVideoCodec
+        let requested: WebRTCVideoCodec
+        var awaitingViewerIDs: Set<String>
+        let continuation: CheckedContinuation<Void, any Error>
+
+        init(
+            previous: WebRTCVideoCodec,
+            requested: WebRTCVideoCodec,
+            awaitingViewerIDs: Set<String>,
+            continuation: CheckedContinuation<Void, any Error>
+        ) {
+            self.previous = previous
+            self.requested = requested
+            self.awaitingViewerIDs = awaitingViewerIDs
+            self.continuation = continuation
+        }
+    }
+
+    private final class PendingVideoCodecRestoration: @unchecked Sendable {
+        let previous: WebRTCVideoCodec
+        let failedRequested: WebRTCVideoCodec
+        var awaitingViewerIDs: Set<String>
+
+        init(
+            previous: WebRTCVideoCodec,
+            failedRequested: WebRTCVideoCodec,
+            awaitingViewerIDs: Set<String>
+        ) {
+            self.previous = previous
+            self.failedRequested = failedRequested
+            self.awaitingViewerIDs = awaitingViewerIDs
         }
     }
 
@@ -99,12 +140,19 @@ public final class WebRTCPeerHost: LiveShareVideoSlotHosting, @unchecked Sendabl
     private let queue: DispatchQueue
     private let queueKey = DispatchSpecificKey<UInt8>()
     private let sslLease: WebRTCSSLRuntimeLease
+    private let h264EncoderFactory: WebRTCH264EncoderFactory
     private let factory: RTCPeerConnectionFactory
+    private let videoCodecCapabilities: [RTCRtpCodecCapability]
     private let slots: [Slot]
     private var peers: [String: PeerContext] = [:]
     private var previousOutboundCounters: [
         WebRTCOutboundCounterKey: WebRTCOutboundCounter
     ] = [:]
+    private var previousH264SubmissionBackpressureDrops: UInt64?
+    private var activeVideoCodec: WebRTCVideoCodec
+    private var activeVideoEncodingMode: LiveShareEncodingMode
+    private var pendingVideoCodecSwitch: PendingVideoCodecSwitch?
+    private var pendingVideoCodecRestoration: PendingVideoCodecRestoration?
     private var isClosed = false
 
     public init(
@@ -118,6 +166,8 @@ public final class WebRTCPeerHost: LiveShareVideoSlotHosting, @unchecked Sendabl
             resourceLimits: configuration.resourceLimits
         )
         activeSenderPolicy = configuration.senderPolicy
+        activeVideoCodec = configuration.videoCodec
+        activeVideoEncodingMode = configuration.videoEncodingMode
         self.eventQueue = eventQueue
         self.eventHandler = eventHandler
         queue = DispatchQueue(
@@ -125,22 +175,34 @@ public final class WebRTCPeerHost: LiveShareVideoSlotHosting, @unchecked Sendabl
             qos: .userInteractive
         )
         sslLease = try WebRTCSSLRuntimeLease()
+        let nativeH264Factory = WebRTCH264EncoderFactory(
+            configuration: WebRTCH264EncoderConfiguration(
+                mode: WebRTCH264EncodingMode(configuration.videoEncodingMode)
+            )
+        )
+        h264EncoderFactory = nativeH264Factory
         let peerFactory = RTCPeerConnectionFactory(
-            encoderFactory: WebRTCH264EncoderFactory(),
+            encoderFactory: WebRTCVideoEncoderFactory(
+                preferredCodec: configuration.videoCodec,
+                h264Factory: nativeH264Factory
+            ),
             decoderFactory: RTCDefaultVideoDecoderFactory()
         )
         factory = peerFactory
         let codecs = peerFactory
             .rtpSenderCapabilities(forKind: kRTCMediaStreamTrackKindVideo)
             .codecs
-            .filter { $0.name.caseInsensitiveCompare("H264") == .orderedSame }
-        guard !codecs.isEmpty else {
-            throw WebRTCPeerHostError.h264Unavailable
+        videoCodecCapabilities = codecs
+        guard codecs.contains(where: {
+            $0.name.caseInsensitiveCompare(configuration.videoCodec.rtcName) == .orderedSame
+        }) else {
+            throw WebRTCPeerHostError.videoCodecUnavailable(configuration.videoCodec)
         }
         slots = (0 ..< WebRTCRuntimeIdentity.maximumVideoSlots).map {
             Slot(index: $0, factory: peerFactory)
         }
         queue.setSpecific(key: queueKey, value: 1)
+        scheduleIdleFrameReplay()
     }
 
     deinit {
@@ -172,6 +234,15 @@ public final class WebRTCPeerHost: LiveShareVideoSlotHosting, @unchecked Sendabl
 
     public var senderPolicy: WebRTCSenderPolicy {
         onQueue { activeSenderPolicy }
+    }
+
+    /// The codec used for new offers and, after renegotiation, active peers.
+    public var videoCodec: WebRTCVideoCodec {
+        onQueue { activeVideoCodec }
+    }
+
+    public var videoEncodingMode: LiveShareEncodingMode {
+        onQueue { activeVideoEncodingMode }
     }
 
     public func senderPolicy(forSlot slot: Int) -> WebRTCSenderPolicy {
@@ -214,6 +285,99 @@ public final class WebRTCPeerHost: LiveShareVideoSlotHosting, @unchecked Sendabl
             for context in peers.values {
                 for (slot, sender) in context.sendersBySlot {
                     applySenderPolicy(to: sender, slot: slot)
+                }
+            }
+        }
+    }
+
+    /// Changes VideoToolbox's native rate-control behavior for current and
+    /// future H.264 encoders. Active encoders observe the shared controller and
+    /// rebuild before their next frame; tracks and peer transports remain live.
+    public func updateVideoEncodingMode(_ mode: LiveShareEncodingMode) {
+        onQueue {
+            guard !isClosed else { return }
+            activeVideoEncodingMode = mode
+            h264EncoderFactory.updateMode(WebRTCH264EncodingMode(mode))
+        }
+    }
+
+    /// Selects a codec for every video transceiver and waits until all current
+    /// peers have answered the resulting reoffers. Track IDs, sources, the
+    /// control data channel, and the ICE transport remain intact.
+    ///
+    /// Applying codec preferences raises `negotiationNeeded` for each viewer;
+    /// the signaling owner must send `createReoffer(for:)` and deliver the
+    /// resulting answer through `setRemoteAnswer`. If one peer cannot complete
+    /// that exchange, preferences are restored for every surviving peer and a
+    /// second negotiation-needed event restores their previous codec.
+    public func updateVideoCodec(_ codec: WebRTCVideoCodec) async throws {
+        try await withCheckedThrowingContinuation {
+            (continuation: CheckedContinuation<Void, any Error>) in
+            queue.async { [self] in
+                do {
+                    try ensureOpen()
+                    if let pendingVideoCodecSwitch {
+                        throw WebRTCPeerHostError.videoCodecSwitchInProgress(
+                            from: pendingVideoCodecSwitch.previous,
+                            to: pendingVideoCodecSwitch.requested
+                        )
+                    }
+                    if let pendingVideoCodecRestoration {
+                        throw WebRTCPeerHostError.videoCodecSwitchInProgress(
+                            from: pendingVideoCodecRestoration.failedRequested,
+                            to: pendingVideoCodecRestoration.previous
+                        )
+                    }
+                    guard codec != activeVideoCodec else {
+                        continuation.resume()
+                        return
+                    }
+                    guard videoCodecCapabilities.contains(where: {
+                        $0.name.caseInsensitiveCompare(codec.rtcName) == .orderedSame
+                    }) else {
+                        throw WebRTCPeerHostError.videoCodecUnavailable(codec)
+                    }
+                    for context in peers.values {
+                        guard context.connection.signalingState == .stable,
+                              context.awaitingAnswerGeneration == nil,
+                              !context.operationGeneration
+                                .hasLocalDescriptionInFlight else {
+                            throw WebRTCPeerHostError.videoCodecSwitchFailed(
+                                from: activeVideoCodec,
+                                to: codec,
+                                message: "viewer \(context.viewerID) is already negotiating"
+                            )
+                        }
+                    }
+
+                    let previous = activeVideoCodec
+                    try applyVideoCodecPreference(
+                        codec,
+                        previous: previous,
+                        contexts: peers.values.sorted { $0.viewerID < $1.viewerID }
+                    )
+                    activeVideoCodec = codec
+                    let awaitingViewerIDs = Set(peers.keys)
+                    guard !awaitingViewerIDs.isEmpty else {
+                        emit(.videoCodecChanged(codec: codec))
+                        continuation.resume()
+                        return
+                    }
+                    pendingVideoCodecSwitch = PendingVideoCodecSwitch(
+                        previous: previous,
+                        requested: codec,
+                        awaitingViewerIDs: awaitingViewerIDs,
+                        continuation: continuation
+                    )
+
+                    // setCodecPreferences normally causes negotiationneeded,
+                    // but an already-raised native flag may coalesce it. The
+                    // explicit host event guarantees one signaling request.
+                    for viewerID in awaitingViewerIDs.sorted() {
+                        emit(.negotiationNeeded(viewerID: viewerID))
+                    }
+                } catch {
+                    continuation.resume(throwing: error)
                 }
             }
         }
@@ -269,12 +433,31 @@ public final class WebRTCPeerHost: LiveShareVideoSlotHosting, @unchecked Sendabl
 
         return try onQueue {
             try ensureOpen()
+            let h264SubmissionBackpressureDrops = h264EncoderFactory
+                .submissionBackpressureDropCount
+            let latestH264SubmissionBackpressureDrops: UInt64
+            if let previousH264SubmissionBackpressureDrops,
+               h264SubmissionBackpressureDrops >= previousH264SubmissionBackpressureDrops
+            {
+                latestH264SubmissionBackpressureDrops =
+                    h264SubmissionBackpressureDrops
+                    - previousH264SubmissionBackpressureDrops
+            } else {
+                // The controller belongs to this host, so its first sampled
+                // value is also the complete first interval. Treat a reset as
+                // a new baseline without hiding the new controller's drops.
+                latestH264SubmissionBackpressureDrops =
+                    h264SubmissionBackpressureDrops
+            }
+            previousH264SubmissionBackpressureDrops = h264SubmissionBackpressureDrops
             return WebRTCOutboundStatisticsAggregator.makeSnapshot(
                 samples: samples,
                 slots: plan.slots,
                 connectedViewerCount: plan.connectedViewerCount,
                 previous: &previousOutboundCounters,
-                capturedAt: Date()
+                capturedAt: Date(),
+                h264SubmissionBackpressureDrops:
+                    latestH264SubmissionBackpressureDrops
             )
         }
     }
@@ -413,6 +596,7 @@ public final class WebRTCPeerHost: LiveShareVideoSlotHosting, @unchecked Sendabl
                 $0.key.viewerID != viewerID
             }
             close(context)
+            peerLeftVideoCodecTransaction(viewerID: viewerID)
             if notifies {
                 emit(.viewerRemoved(viewerID: viewerID))
             }
@@ -423,15 +607,23 @@ public final class WebRTCPeerHost: LiveShareVideoSlotHosting, @unchecked Sendabl
         onQueue {
             guard !isClosed else { return }
             isClosed = true
+            if let pendingVideoCodecSwitch {
+                self.pendingVideoCodecSwitch = nil
+                pendingVideoCodecSwitch.continuation.resume(throwing:
+                    WebRTCPeerHostError.hostClosed)
+            }
+            pendingVideoCodecRestoration = nil
             let contexts = peers.values
             peers.removeAll(keepingCapacity: false)
             previousOutboundCounters.removeAll(keepingCapacity: false)
+            previousH264SubmissionBackpressureDrops = nil
             for context in contexts {
                 close(context)
                 emit(.viewerRemoved(viewerID: context.viewerID))
             }
             for slot in slots {
                 slot.metadata = nil
+                slot.captureGeometry = nil
                 slot.track.isEnabled = false
                 slot.frameSource.clearLatestFrame()
             }
@@ -457,6 +649,21 @@ public final class WebRTCPeerHost: LiveShareVideoSlotHosting, @unchecked Sendabl
     }
 
     public func activateSlot(_ slot: Int, metadata: GoPeepV1StreamInfo) throws {
+        try activateSlot(
+            slot,
+            metadata: metadata,
+            captureGeometry: WebRTCVideoCaptureGeometry(
+                width: metadata.width,
+                height: metadata.height
+            )
+        )
+    }
+
+    public func activateSlot(
+        _ slot: Int,
+        metadata: GoPeepV1StreamInfo,
+        captureGeometry: WebRTCVideoCaptureGeometry
+    ) throws {
         try onQueue {
             try ensureOpen()
             guard slots.indices.contains(slot) else {
@@ -475,7 +682,55 @@ public final class WebRTCPeerHost: LiveShareVideoSlotHosting, @unchecked Sendabl
             }
             target.frameSource.clearLatestFrame()
             target.metadata = metadata
+            target.captureGeometry = captureGeometry
             target.track.isEnabled = true
+        }
+    }
+
+    /// Updates dimensions and labels for an already-active stable track. This
+    /// is used when a live codec switch changes only the transmitted geometry;
+    /// no sender, track, data channel, or peer transport is replaced.
+    public func updateSlotMetadata(
+        _ slot: Int,
+        metadata: GoPeepV1StreamInfo
+    ) throws {
+        try updateSlotMetadata(
+            slot,
+            metadata: metadata,
+            captureGeometry: WebRTCVideoCaptureGeometry(
+                width: metadata.width,
+                height: metadata.height
+            )
+        )
+    }
+
+    public func updateSlotMetadata(
+        _ slot: Int,
+        metadata: GoPeepV1StreamInfo,
+        captureGeometry: WebRTCVideoCaptureGeometry
+    ) throws {
+        try onQueue {
+            try ensureOpen()
+            guard slots.indices.contains(slot) else {
+                throw WebRTCPeerHostError.invalidSlot(slot)
+            }
+            let target = slots[slot]
+            guard metadata.trackID == target.trackID else {
+                throw WebRTCPeerHostError.slotTrackMismatch(
+                    slot: slot,
+                    expected: target.trackID,
+                    actual: metadata.trackID
+                )
+            }
+            guard target.metadata != nil else {
+                throw WebRTCPeerHostError.slotInactive(slot)
+            }
+            target.frameSource.discardLatestFrameUnlessMatching(
+                width: captureGeometry.width,
+                height: captureGeometry.height
+            )
+            target.metadata = metadata
+            target.captureGeometry = captureGeometry
         }
     }
 
@@ -495,6 +750,10 @@ public final class WebRTCPeerHost: LiveShareVideoSlotHosting, @unchecked Sendabl
             }
             target.frameSource.clearLatestFrame()
             target.metadata = metadata
+            target.captureGeometry = WebRTCVideoCaptureGeometry(
+                width: metadata.width,
+                height: metadata.height
+            )
             target.track.isEnabled = true
             return target.index
         }
@@ -504,6 +763,7 @@ public final class WebRTCPeerHost: LiveShareVideoSlotHosting, @unchecked Sendabl
         onQueue {
             guard slots.indices.contains(slot) else { return }
             slots[slot].metadata = nil
+            slots[slot].captureGeometry = nil
             slots[slot].track.isEnabled = false
             slots[slot].frameSource.clearLatestFrame()
         }
@@ -679,6 +939,7 @@ public final class WebRTCPeerHost: LiveShareVideoSlotHosting, @unchecked Sendabl
         }
 
         var senders: [Int: RTCRtpSender] = [:]
+        var transceivers: [Int: RTCRtpTransceiver] = [:]
         do {
             for slot in slots {
                 let transceiverConfiguration = RTCRtpTransceiverInit()
@@ -690,13 +951,15 @@ public final class WebRTCPeerHost: LiveShareVideoSlotHosting, @unchecked Sendabl
                 ) else {
                     throw WebRTCPeerHostError.trackCreationFailed(slot: slot.index)
                 }
-                // The injected encoder factory exposes H.264 exclusively.
-                // Calling setCodecPreferences here would cause libwebrtc's
-                // Objective-C bridge to rebuild these capabilities with its
-                // built-in Level 3.1 ceiling, undoing the native-resolution
-                // factory configuration.
+                try setVideoCodecPreference(
+                    activeVideoCodec,
+                    on: transceiver,
+                    viewerID: viewerID,
+                    slot: slot.index
+                )
                 applySenderPolicy(to: transceiver.sender, slot: slot.index)
                 senders[slot.index] = transceiver.sender
+                transceivers[slot.index] = transceiver
             }
 
             let dataConfiguration = RTCDataChannelConfiguration()
@@ -717,9 +980,14 @@ public final class WebRTCPeerHost: LiveShareVideoSlotHosting, @unchecked Sendabl
                 connection: connection,
                 delegate: delegate,
                 controlChannel: dataChannel,
-                sendersBySlot: senders
+                sendersBySlot: senders,
+                transceiversBySlot: transceivers
             )
             peers[viewerID] = context
+            // A viewer can join while current peers are renegotiating. Its
+            // first offer already uses the requested codec, so the global
+            // switch must also wait for this answer (or for its removal).
+            pendingVideoCodecSwitch?.awaitingViewerIDs.insert(viewerID)
             emit(.viewerAdded(viewerID: viewerID))
             return context
         } catch {
@@ -756,10 +1024,16 @@ public final class WebRTCPeerHost: LiveShareVideoSlotHosting, @unchecked Sendabl
             }
             queue.async { [self] in
                 if let staleError = operationError(context: context, token: token) {
+                    context.operationGeneration.finishLocalDescription(token)
                     continuation.resume(throwing: staleError)
                     return
                 }
                 if let error {
+                    context.operationGeneration.finishLocalDescription(token)
+                    failPendingVideoCodecSwitch(
+                        viewerID: context.viewerID,
+                        underlyingError: error
+                    )
                     removeFailedPeer(context)
                     continuation.resume(throwing:
                         WebRTCPeerHostError.localDescriptionCreationFailed(
@@ -768,11 +1042,17 @@ public final class WebRTCPeerHost: LiveShareVideoSlotHosting, @unchecked Sendabl
                     return
                 }
                 guard let description else {
-                    removeFailedPeer(context)
-                    continuation.resume(throwing:
-                        WebRTCPeerHostError.localDescriptionCreationFailed(
+                    context.operationGeneration.finishLocalDescription(token)
+                    let missingDescriptionError = WebRTCPeerHostError
+                        .localDescriptionCreationFailed(
                             "libwebrtc returned neither a description nor an error"
-                        ))
+                        )
+                    failPendingVideoCodecSwitch(
+                        viewerID: context.viewerID,
+                        underlyingError: missingDescriptionError
+                    )
+                    removeFailedPeer(context)
+                    continuation.resume(throwing: missingDescriptionError)
                     return
                 }
                 let upgradedDescription = RTCSessionDescription(
@@ -787,11 +1067,16 @@ public final class WebRTCPeerHost: LiveShareVideoSlotHosting, @unchecked Sendabl
                         return
                     }
                     queue.async { [self] in
+                        context.operationGeneration.finishLocalDescription(token)
                         if let staleError = operationError(context: context, token: token) {
                             continuation.resume(throwing: staleError)
                             return
                         }
                         if let error {
+                            failPendingVideoCodecSwitch(
+                                viewerID: context.viewerID,
+                                underlyingError: error
+                            )
                             removeFailedPeer(context)
                             continuation.resume(throwing:
                                 WebRTCPeerHostError.localDescriptionApplicationFailed(
@@ -849,6 +1134,10 @@ public final class WebRTCPeerHost: LiveShareVideoSlotHosting, @unchecked Sendabl
                                 return
                             }
                             if let error {
+                                failPendingVideoCodecSwitch(
+                                    viewerID: viewerID,
+                                    underlyingError: error
+                                )
                                 continuation.resume(throwing:
                                     WebRTCPeerHostError.remoteDescriptionApplicationFailed(
                                         error.localizedDescription
@@ -857,6 +1146,10 @@ public final class WebRTCPeerHost: LiveShareVideoSlotHosting, @unchecked Sendabl
                                 context.answerTimeoutWorkItem?.cancel()
                                 context.answerTimeoutWorkItem = nil
                                 context.awaitingAnswerGeneration = nil
+                                completePendingVideoCodecSwitchAnswer(viewerID: viewerID)
+                                completePendingVideoCodecRestorationAnswer(
+                                    viewerID: viewerID
+                                )
                                 continuation.resume()
                             }
                         }
@@ -894,16 +1187,192 @@ public final class WebRTCPeerHost: LiveShareVideoSlotHosting, @unchecked Sendabl
         parameters.degradationPreference = NSNumber(value:
             policy.maintainsResolution
                 ? RTCDegradationPreference.maintainResolution.rawValue
-                : RTCDegradationPreference.balanced.rawValue
+                : RTCDegradationPreference.maintainFramerate.rawValue
         )
         for encoding in parameters.encodings {
             encoding.maxBitrateBps = policy.maximumBitrateBps.map(NSNumber.init)
             encoding.maxFramerate = policy.maximumFramesPerSecond.map(NSNumber.init)
             encoding.scaleResolutionDownBy = 1
-            encoding.bitratePriority = 1
+            encoding.bitratePriority = policy.bitratePriority
             encoding.networkPriority = .high
         }
         sender.parameters = parameters
+    }
+
+    private func setVideoCodecPreference(
+        _ codec: WebRTCVideoCodec,
+        on transceiver: RTCRtpTransceiver,
+        viewerID: String,
+        slot: Int
+    ) throws {
+        let preferences = videoCodecCapabilities.filter {
+            $0.name.caseInsensitiveCompare(codec.rtcName) == .orderedSame
+        }
+        guard !preferences.isEmpty else {
+            throw WebRTCPeerHostError.videoCodecUnavailable(codec)
+        }
+        do {
+            try transceiver.setCodecPreferences(preferences, error: ())
+        } catch {
+            throw WebRTCPeerHostError.videoCodecPreferenceFailed(
+                codec: codec,
+                viewerID: viewerID,
+                slot: slot,
+                message: error.localizedDescription
+            )
+        }
+    }
+
+    private func applyVideoCodecPreference(
+        _ codec: WebRTCVideoCodec,
+        previous: WebRTCVideoCodec,
+        contexts: [PeerContext]
+    ) throws {
+        var changed: [(PeerContext, Int, RTCRtpTransceiver)] = []
+        do {
+            for context in contexts {
+                for (slot, transceiver) in context.transceiversBySlot.sorted(by: {
+                    $0.key < $1.key
+                }) {
+                    try setVideoCodecPreference(
+                        codec,
+                        on: transceiver,
+                        viewerID: context.viewerID,
+                        slot: slot
+                    )
+                    changed.append((context, slot, transceiver))
+                }
+            }
+        } catch {
+            for (context, slot, transceiver) in changed.reversed() {
+                try? setVideoCodecPreference(
+                    previous,
+                    on: transceiver,
+                    viewerID: context.viewerID,
+                    slot: slot
+                )
+            }
+            throw error
+        }
+    }
+
+    private func completePendingVideoCodecSwitchAnswer(viewerID: String) {
+        guard let pendingVideoCodecSwitch,
+              pendingVideoCodecSwitch.awaitingViewerIDs.remove(viewerID) != nil,
+              pendingVideoCodecSwitch.awaitingViewerIDs.isEmpty else {
+            return
+        }
+        self.pendingVideoCodecSwitch = nil
+        emit(.videoCodecChanged(codec: pendingVideoCodecSwitch.requested))
+        replayLatestActiveFrames()
+        pendingVideoCodecSwitch.continuation.resume()
+    }
+
+    private func completePendingVideoCodecRestorationAnswer(viewerID: String) {
+        guard let pendingVideoCodecRestoration,
+              pendingVideoCodecRestoration.awaitingViewerIDs.remove(viewerID) != nil,
+              pendingVideoCodecRestoration.awaitingViewerIDs.isEmpty else {
+            return
+        }
+        self.pendingVideoCodecRestoration = nil
+        replayLatestActiveFrames()
+    }
+
+    private func peerLeftVideoCodecTransaction(viewerID: String) {
+        completePendingVideoCodecSwitchAnswer(viewerID: viewerID)
+        completePendingVideoCodecRestorationAnswer(viewerID: viewerID)
+    }
+
+    private func failPendingVideoCodecSwitch(
+        viewerID: String,
+        underlyingError: any Error
+    ) {
+        guard let pendingVideoCodecSwitch,
+              pendingVideoCodecSwitch.awaitingViewerIDs.contains(viewerID) else {
+            return
+        }
+        self.pendingVideoCodecSwitch = nil
+        activeVideoCodec = pendingVideoCodecSwitch.previous
+
+        let contexts = peers.values.sorted { $0.viewerID < $1.viewerID }
+        try? applyVideoCodecPreference(
+            pendingVideoCodecSwitch.previous,
+            previous: pendingVideoCodecSwitch.requested,
+            contexts: contexts
+        )
+        if !contexts.isEmpty {
+            pendingVideoCodecRestoration = PendingVideoCodecRestoration(
+                previous: pendingVideoCodecSwitch.previous,
+                failedRequested: pendingVideoCodecSwitch.requested,
+                awaitingViewerIDs: Set(contexts.map(\.viewerID))
+            )
+        }
+        for context in contexts {
+            requestPreviousCodecReoffer(
+                for: context,
+                previous: pendingVideoCodecSwitch.previous,
+                requested: pendingVideoCodecSwitch.requested
+            )
+        }
+        pendingVideoCodecSwitch.continuation.resume(throwing:
+            WebRTCPeerHostError.videoCodecSwitchFailed(
+                from: pendingVideoCodecSwitch.previous,
+                to: pendingVideoCodecSwitch.requested,
+                message: underlyingError.localizedDescription
+            ))
+    }
+
+    /// Restores a peer after another viewer caused a transactional codec
+    /// switch to fail. Peers that already answered are stable and can reoffer
+    /// immediately. Peers still holding the abandoned target-codec offer must
+    /// first apply an SDP rollback; creating another offer in have-local-offer
+    /// would otherwise fail and unnecessarily disconnect the viewer.
+    private func requestPreviousCodecReoffer(
+        for context: PeerContext,
+        previous: WebRTCVideoCodec,
+        requested: WebRTCVideoCodec
+    ) {
+        context.answerTimeoutWorkItem?.cancel()
+        context.answerTimeoutWorkItem = nil
+        context.awaitingAnswerGeneration = nil
+        context.operationGeneration.invalidateLocalDescriptions()
+
+        switch context.connection.signalingState {
+        case .stable:
+            emit(.negotiationNeeded(viewerID: context.viewerID))
+
+        case .haveLocalOffer, .haveLocalPrAnswer:
+            let rollback = RTCSessionDescription(type: .rollback, sdp: "")
+            context.connection.setLocalDescription(rollback) { [weak self, weak context] error in
+                guard let self, let context else { return }
+                queue.async { [self] in
+                    guard !isClosed,
+                          peers[context.viewerID] === context else { return }
+                    if let error {
+                        let hostError = WebRTCPeerHostError
+                            .localDescriptionApplicationFailed(
+                                "codec rollback: \(error.localizedDescription)"
+                            )
+                        emit(.error(viewerID: context.viewerID, error: hostError))
+                        removeFailedPeer(context)
+                    } else {
+                        emit(.negotiationNeeded(viewerID: context.viewerID))
+                    }
+                }
+            }
+
+        case .haveRemoteOffer, .haveRemotePrAnswer, .closed:
+            let error = WebRTCPeerHostError.videoCodecSwitchFailed(
+                from: previous,
+                to: requested,
+                message: "viewer \(context.viewerID) could not roll back from signaling state \(context.connection.signalingState)"
+            )
+            emit(.error(viewerID: context.viewerID, error: error))
+            removeFailedPeer(context)
+
+        @unknown default:
+            removeFailedPeer(context)
+        }
     }
 
     private func outboundStatistics(
@@ -958,9 +1427,46 @@ public final class WebRTCPeerHost: LiveShareVideoSlotHosting, @unchecked Sendabl
                     return
                 }
                 for slot in slots where slot.metadata != nil {
-                    slot.frameSource.replayLatestFrame()
+                    guard let captureGeometry = slot.captureGeometry else { continue }
+                    slot.frameSource.replayLatestFrame(
+                        expectedWidth: captureGeometry.width,
+                        expectedHeight: captureGeometry.height
+                    )
                 }
             }
+        }
+    }
+
+    /// ScreenCaptureKit intentionally omits unchanged frames. Replaying one
+    /// cached matching frame at most every two seconds lets a pending PLI or a
+    /// rebuilt codec recover even when the shared screen is perfectly static,
+    /// while keeping idle CPU/network work bounded to 0.5 FPS per source.
+    private func scheduleIdleFrameReplay() {
+        queue.asyncAfter(deadline: .now() + .seconds(2)) { [weak self] in
+            guard let self, !isClosed else { return }
+            if peers.values.contains(where: { $0.connectionState == .connected }) {
+                for slot in slots {
+                    guard slot.metadata != nil,
+                          let captureGeometry = slot.captureGeometry else { continue }
+                    slot.frameSource.replayLatestFrameIfIdle(
+                        forAtLeast: Self.idleFrameReplayIntervalNanoseconds,
+                        expectedWidth: captureGeometry.width,
+                        expectedHeight: captureGeometry.height
+                    )
+                }
+            }
+            scheduleIdleFrameReplay()
+        }
+    }
+
+    private func replayLatestActiveFrames() {
+        for slot in slots {
+            guard slot.metadata != nil,
+                  let captureGeometry = slot.captureGeometry else { continue }
+            slot.frameSource.replayLatestFrame(
+                expectedWidth: captureGeometry.width,
+                expectedHeight: captureGeometry.height
+            )
         }
     }
 
@@ -1012,6 +1518,7 @@ public final class WebRTCPeerHost: LiveShareVideoSlotHosting, @unchecked Sendabl
             $0.key.viewerID != context.viewerID
         }
         close(context)
+        peerLeftVideoCodecTransaction(viewerID: context.viewerID)
         emit(.viewerRemoved(viewerID: context.viewerID))
     }
 
@@ -1061,11 +1568,20 @@ public final class WebRTCPeerHost: LiveShareVideoSlotHosting, @unchecked Sendabl
                     scheduleLatestFrameSeed(for: context)
                 }
                 if state == .failed || state == .closed {
+                    failPendingVideoCodecSwitch(
+                        viewerID: viewerID,
+                        underlyingError: WebRTCPeerHostError.videoCodecSwitchFailed(
+                            from: pendingVideoCodecSwitch?.previous ?? activeVideoCodec,
+                            to: pendingVideoCodecSwitch?.requested ?? activeVideoCodec,
+                            message: "viewer connection became \(state)"
+                        )
+                    )
                     peers.removeValue(forKey: viewerID)
                     previousOutboundCounters = previousOutboundCounters.filter {
                         $0.key.viewerID != viewerID
                     }
                     close(context)
+                    peerLeftVideoCodecTransaction(viewerID: viewerID)
                     emit(.viewerRemoved(viewerID: viewerID))
                 }
             case .controlState(let state):
@@ -1124,6 +1640,10 @@ public final class WebRTCPeerHost: LiveShareVideoSlotHosting, @unchecked Sendabl
             context.awaitingAnswerGeneration = nil
             let error = WebRTCPeerHostError.negotiationTimedOut(
                 viewerID: context.viewerID
+            )
+            failPendingVideoCodecSwitch(
+                viewerID: context.viewerID,
+                underlyingError: error
             )
             emit(.error(viewerID: context.viewerID, error: error))
             removeFailedPeer(context)

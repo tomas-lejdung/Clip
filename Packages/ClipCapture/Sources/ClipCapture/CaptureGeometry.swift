@@ -1,4 +1,34 @@
 import CoreVideo
+import CoreMedia
+
+enum CaptureFrameFreshnessPolicy {
+    static let maximumFrameIntervals = 2.0
+    private static let maximumComparableAgeSeconds = 60.0
+
+    /// ScreenCaptureKit timestamps use the host clock on supported macOS
+    /// versions. Invalid timestamps—or a value whose epoch is clearly not the
+    /// host clock—are delivered rather than guessed stale.
+    static func isStale(
+        presentationTime: CMTime,
+        hostTime: CMTime,
+        framesPerSecond: Int
+    ) -> Bool {
+        guard presentationTime.isValid,
+              !presentationTime.isIndefinite,
+              hostTime.isValid,
+              !hostTime.isIndefinite,
+              framesPerSecond > 0 else {
+            return false
+        }
+        let age = CMTimeGetSeconds(hostTime - presentationTime)
+        guard age.isFinite,
+              age >= 0,
+              age <= maximumComparableAgeSeconds else {
+            return false
+        }
+        return age > maximumFrameIntervals / Double(framesPerSecond)
+    }
+}
 
 public enum CaptureFrameDimensionValidator {
     public static func validate(
@@ -37,6 +67,127 @@ public enum CaptureFrameDimensionValidator {
                 actualHeight: actualHeight
             )
         }
+    }
+}
+
+enum CaptureFrameDimensionAction: Equatable {
+    case deliver
+    case dropRetired
+}
+
+/// Tracks the one geometry ScreenCaptureKit is allowed to retire after an
+/// in-place configuration update.
+///
+/// `SCStream.updateConfiguration(_:)` can return before the stream-output
+/// queue has drained frames produced with the previous dimensions. Those
+/// frames must not reach the newly configured encoder, but treating the first
+/// queued frame as corruption makes an otherwise successful codec switch fail.
+/// Keep that exact previous geometry for two presentation-time intervals,
+/// drop it as ordinary backpressure, and continue rejecting every third or
+/// persistent geometry.
+struct CaptureFrameDimensionTransitionState {
+    static let retiredFrameIntervals: CMTimeValue = 2
+
+    private struct RetiredGeometry {
+        let width: Int
+        let height: Int
+        let discardThroughPresentationTime: CMTime
+    }
+
+    private var retired: RetiredGeometry?
+
+    var hasRetiredGeometry: Bool {
+        retired != nil
+    }
+
+    mutating func commit(
+        previousWidth: Int,
+        previousHeight: Int,
+        currentWidth: Int,
+        currentHeight: Int,
+        commitPresentationTime: CMTime,
+        framesPerSecond: Int
+    ) {
+        guard previousWidth != currentWidth || previousHeight != currentHeight,
+              commitPresentationTime.isValid,
+              !commitPresentationTime.isIndefinite else {
+            retired = nil
+            return
+        }
+        let clampedFrameRate = min(max(framesPerSecond, 1), Int(Int32.max))
+        let graceDuration = CMTime(
+            value: Self.retiredFrameIntervals,
+            timescale: CMTimeScale(clampedFrameRate)
+        )
+        retired = RetiredGeometry(
+            width: previousWidth,
+            height: previousHeight,
+            discardThroughPresentationTime: commitPresentationTime + graceDuration
+        )
+    }
+
+    mutating func reset() {
+        retired = nil
+    }
+
+    mutating func classify(
+        actualWidth: Int,
+        actualHeight: Int,
+        presentationTime: CMTime,
+        currentWidth: Int,
+        currentHeight: Int,
+        pendingWidth: Int? = nil,
+        pendingHeight: Int? = nil
+    ) throws -> CaptureFrameDimensionAction {
+        let matchesCurrent = actualWidth == currentWidth && actualHeight == currentHeight
+        let matchesPending = pendingWidth == actualWidth && pendingHeight == actualHeight
+
+        if matchesCurrent || matchesPending {
+            expireRetiredGeometry(after: presentationTime)
+            return .deliver
+        }
+
+        if let retired,
+           actualWidth == retired.width,
+           actualHeight == retired.height,
+           isAtOrBeforeRetiredCutoff(presentationTime, retired: retired) {
+            return .dropRetired
+        }
+
+        expireRetiredGeometry(after: presentationTime)
+        throw CaptureSessionError.invalidFrameDimensions(
+            expectedWidth: currentWidth,
+            expectedHeight: currentHeight,
+            actualWidth: actualWidth,
+            actualHeight: actualHeight
+        )
+    }
+
+    private mutating func expireRetiredGeometry(after presentationTime: CMTime) {
+        guard let retired,
+              presentationTime.isValid,
+              !presentationTime.isIndefinite,
+              CMTimeCompare(
+                  presentationTime,
+                  retired.discardThroughPresentationTime
+              ) > 0 else {
+            return
+        }
+        self.retired = nil
+    }
+
+    private func isAtOrBeforeRetiredCutoff(
+        _ presentationTime: CMTime,
+        retired: RetiredGeometry
+    ) -> Bool {
+        guard presentationTime.isValid,
+              !presentationTime.isIndefinite else {
+            return false
+        }
+        return CMTimeCompare(
+            presentationTime,
+            retired.discardThroughPresentationTime
+        ) <= 0
     }
 }
 

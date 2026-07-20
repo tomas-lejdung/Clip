@@ -4,6 +4,7 @@ import Foundation
 typealias LiveShareQualityPreset = ClipLiveShare.LiveShareQualityPreset
 typealias LiveShareFrameRate = ClipLiveShare.LiveShareFrameRate
 typealias LiveShareEncodingMode = ClipLiveShare.LiveShareEncodingMode
+typealias LiveShareVideoCodec = ClipLiveShare.LiveShareVideoCodec
 
 enum LiveShareViewPhase: Equatable, Sendable {
     case inactive
@@ -197,16 +198,18 @@ enum LiveShareCodecAcceleration: Equatable, Sendable {
 }
 
 struct LiveShareCodecViewSnapshot: Equatable, Sendable {
-    let name: String
+    let codec: LiveShareVideoCodec
     let acceleration: LiveShareCodecAcceleration
 
     init(
-        name: String = "H.264",
+        codec: LiveShareVideoCodec = .vp8,
         acceleration: LiveShareCodecAcceleration = .unknown
     ) {
-        self.name = name
+        self.codec = codec
         self.acceleration = acceleration
     }
+
+    var name: String { codec.displayName }
 
     var detail: String {
         switch acceleration {
@@ -224,13 +227,14 @@ struct LiveShareSettingsViewSnapshot: Equatable, Sendable {
     let quality: LiveShareQualityPreset
     let frameRate: LiveShareFrameRate
     let codec: LiveShareCodecViewSnapshot
-    let adaptiveBitrate: Bool
+    let prioritizeFocusedWindow: Bool
     let mode: LiveShareEncodingMode
     let autoShareFocusedWindows: Bool
     let canChangeQuality: Bool
     let canChangeFrameRate: Bool
     let availableFrameRates: Set<LiveShareFrameRate>
-    let canChangeAdaptiveBitrate: Bool
+    let canChangeCodec: Bool
+    let canChangePrioritizeFocusedWindow: Bool
     let canChangeMode: Bool
     let canChangeAutoShare: Bool
 
@@ -238,26 +242,28 @@ struct LiveShareSettingsViewSnapshot: Equatable, Sendable {
         quality: LiveShareQualityPreset = .veryHigh,
         frameRate: LiveShareFrameRate = .thirty,
         codec: LiveShareCodecViewSnapshot = .init(),
-        adaptiveBitrate: Bool = true,
+        prioritizeFocusedWindow: Bool = true,
         mode: LiveShareEncodingMode = .quality,
         autoShareFocusedWindows: Bool = false,
         canChangeQuality: Bool = true,
         canChangeFrameRate: Bool = true,
         availableFrameRates: Set<LiveShareFrameRate> = Set(LiveShareFrameRate.allCases),
-        canChangeAdaptiveBitrate: Bool = true,
+        canChangeCodec: Bool = true,
+        canChangePrioritizeFocusedWindow: Bool = true,
         canChangeMode: Bool = true,
         canChangeAutoShare: Bool = true
     ) {
         self.quality = quality
         self.frameRate = frameRate
         self.codec = codec
-        self.adaptiveBitrate = adaptiveBitrate
+        self.prioritizeFocusedWindow = prioritizeFocusedWindow
         self.mode = mode
         self.autoShareFocusedWindows = autoShareFocusedWindows
         self.canChangeQuality = canChangeQuality
         self.canChangeFrameRate = canChangeFrameRate
         self.availableFrameRates = availableFrameRates
-        self.canChangeAdaptiveBitrate = canChangeAdaptiveBitrate
+        self.canChangeCodec = canChangeCodec
+        self.canChangePrioritizeFocusedWindow = canChangePrioritizeFocusedWindow
         self.canChangeMode = canChangeMode
         self.canChangeAutoShare = canChangeAutoShare
     }
@@ -298,9 +304,16 @@ struct LiveShareStreamStatisticsViewSnapshot: Equatable, Identifiable, Sendable 
     let height: Int
     let deliveredFramesPerSecond: Double
     let bitsPerSecond: Int
+    let targetBitsPerSecond: Int?
+    let configuredBitrateCeiling: Int
     let bytesSent: Int64
     let captureDeliveredFrames: UInt64
     let captureBackpressureDrops: UInt64
+    let encoderDroppedFrames: UInt64
+    let averageEncodeTimeMilliseconds: Double?
+    let averagePacketSendDelayMilliseconds: Double?
+    let qualityLimitationReasons: [String]
+    let codec: String?
     let isFocused: Bool
 
     init(
@@ -310,9 +323,16 @@ struct LiveShareStreamStatisticsViewSnapshot: Equatable, Identifiable, Sendable 
         height: Int,
         deliveredFramesPerSecond: Double,
         bitsPerSecond: Int,
+        targetBitsPerSecond: Int? = nil,
+        configuredBitrateCeiling: Int = 0,
         bytesSent: Int64,
         captureDeliveredFrames: UInt64 = 0,
         captureBackpressureDrops: UInt64 = 0,
+        encoderDroppedFrames: UInt64 = 0,
+        averageEncodeTimeMilliseconds: Double? = nil,
+        averagePacketSendDelayMilliseconds: Double? = nil,
+        qualityLimitationReasons: [String] = [],
+        codec: String? = nil,
         isFocused: Bool = false
     ) {
         self.id = id
@@ -321,9 +341,20 @@ struct LiveShareStreamStatisticsViewSnapshot: Equatable, Identifiable, Sendable 
         self.height = max(0, height)
         self.deliveredFramesPerSecond = max(0, deliveredFramesPerSecond)
         self.bitsPerSecond = max(0, bitsPerSecond)
+        self.targetBitsPerSecond = targetBitsPerSecond.map { max(0, $0) }
+        self.configuredBitrateCeiling = max(0, configuredBitrateCeiling)
         self.bytesSent = max(0, bytesSent)
         self.captureDeliveredFrames = captureDeliveredFrames
         self.captureBackpressureDrops = captureBackpressureDrops
+        self.encoderDroppedFrames = encoderDroppedFrames
+        self.averageEncodeTimeMilliseconds = averageEncodeTimeMilliseconds.map {
+            max(0, $0)
+        }
+        self.averagePacketSendDelayMilliseconds = averagePacketSendDelayMilliseconds.map {
+            max(0, $0)
+        }
+        self.qualityLimitationReasons = qualityLimitationReasons
+        self.codec = codec
         self.isFocused = isFocused
     }
 }
@@ -331,10 +362,16 @@ struct LiveShareStreamStatisticsViewSnapshot: Equatable, Identifiable, Sendable 
 struct LiveShareStatisticsViewSnapshot: Equatable, Sendable {
     let uptime: TimeInterval
     let streams: [LiveShareStreamStatisticsViewSnapshot]
+    let h264SubmissionBackpressureDrops: UInt64
 
-    init(uptime: TimeInterval = 0, streams: [LiveShareStreamStatisticsViewSnapshot] = []) {
+    init(
+        uptime: TimeInterval = 0,
+        streams: [LiveShareStreamStatisticsViewSnapshot] = [],
+        h264SubmissionBackpressureDrops: UInt64 = 0
+    ) {
         self.uptime = max(0, uptime)
         self.streams = streams
+        self.h264SubmissionBackpressureDrops = h264SubmissionBackpressureDrops
     }
 }
 

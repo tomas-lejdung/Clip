@@ -5,6 +5,35 @@ import ClipLiveShareWebRTC
 import Foundation
 import OSLog
 
+private struct LiveShareCaptureGeometrySnapshot {
+    let sourceID: LiveShareSourceID
+    let slot: Int
+    let generation: UUID
+    let descriptor: LiveShareCaptureDescriptor
+}
+
+enum LiveShareCaptureGeometryTransitionError: LocalizedError {
+    case rollbackFailed(change: String, rollback: String)
+
+    var errorDescription: String? {
+        switch self {
+        case let .rollbackFailed(change, rollback):
+            "Capture geometry update failed (\(change)) and its rollback failed (\(rollback))."
+        }
+    }
+}
+
+enum LiveShareCaptureGeometryFailurePolicy {
+    static func requiresSessionFailure(after error: any Error) -> Bool {
+        if error is LiveShareCaptureGeometryTransitionError { return true }
+        guard let pipelineError = error as? LiveShareCapturePipelineError else {
+            return false
+        }
+        if case .updateRollbackFailed = pipelineError { return true }
+        return false
+    }
+}
+
 @MainActor
 final class LiveShareCoordinator {
     nonisolated private static let logger = Logger(
@@ -37,6 +66,7 @@ final class LiveShareCoordinator {
     private var captureRestartTask: Task<Void, Never>?
     private var captureRestartRequestID: UUID?
     private var settingsSaveTask: Task<Void, Never>?
+    private var codecChangeTask: Task<Void, Never>?
     private var sourceTransitionTask: Task<Void, Never>?
     private var sourceTransitionTaskID: UUID?
     private var sourceTransitionGeneration = 0
@@ -120,8 +150,11 @@ final class LiveShareCoordinator {
             },
             setQuality: { [weak self] quality in self?.setQuality(quality) },
             setFrameRate: { [weak self] frameRate in self?.setFrameRate(frameRate) },
-            setAdaptiveBitrateEnabled: { [weak self] enabled in
-                self?.setAdaptiveBitrateEnabled(enabled)
+            setCodec: { [weak self] codec in
+                self?.requestVideoCodecChange(codec)
+            },
+            setPrioritizeFocusedWindow: { [weak self] enabled in
+                self?.setPrioritizeFocusedWindow(enabled)
             },
             setMode: { [weak self] mode in self?.setEncodingMode(mode) },
             setAutoShareEnabled: { [weak self] enabled in
@@ -205,6 +238,8 @@ final class LiveShareCoordinator {
         focusedWindowMonitor.stop()
         focusedWindowOverlay.tearDown()
         statusHUD.tearDown()
+        codecChangeTask?.cancel()
+        codecChangeTask = nil
         peerHost?.close()
         let pipeline = capturePipeline
         capturePipeline = nil
@@ -289,7 +324,9 @@ final class LiveShareCoordinator {
                 )
             },
             forcesRelay: server.forceRelay,
-            senderPolicy: LiveShareCoordinatorPolicy.senderPolicy(for: settings)
+            senderPolicy: LiveShareCoordinatorPolicy.senderPolicy(for: settings),
+            videoCodec: webRTCVideoCodec(settings.videoCodec),
+            videoEncodingMode: settings.encodingMode
         )
         let host = try WebRTCPeerHost(
             configuration: configuration,
@@ -554,6 +591,9 @@ final class LiveShareCoordinator {
         case let .negotiationNeeded(viewerID):
             await sendOffer(to: viewerID, reoffer: true)
 
+        case .videoCodecChanged:
+            publish()
+
         case let .error(viewerID, error):
             logPeerFailure(error, viewerID: viewerID)
         }
@@ -736,11 +776,13 @@ final class LiveShareCoordinator {
         _ operation: @escaping @MainActor (LiveShareCoordinator) async -> Void
     ) {
         let previous = sourceTransitionTask
+        let pendingCodecChange = codecChangeTask
         let taskID = UUID()
         let generation = sourceTransitionGeneration
         sourceTransitionTaskID = taskID
         sourceTransitionTask = Task { @MainActor [weak self] in
             await previous?.value
+            await pendingCodecChange?.value
             guard let self,
                   !Task.isCancelled,
                   sourceTransitionGeneration == generation,
@@ -1127,20 +1169,32 @@ final class LiveShareCoordinator {
             appName = String(localized: "Fullscreen")
         }
 
+        let geometry = LiveShareCoordinatorPolicy.captureGeometry(
+            sourceWidth: width,
+            sourceHeight: height,
+            codec: settings.videoCodec,
+            framesPerSecond: settings.frameRate.rawValue
+        )
+        let streamGeometry = LiveShareCoordinatorPolicy.streamGeometry(
+            captureGeometry: geometry,
+            codec: settings.videoCodec
+        )
         let stream = GoPeepV1StreamInfo(
             trackID: slot.trackID,
             windowName: windowName,
             appName: appName,
             isFocused: slot.isFocused,
-            width: LiveShareCoordinatorPolicy.videoEncoderCompatibleDimension(width),
-            height: LiveShareCoordinatorPolicy.videoEncoderCompatibleDimension(height)
+            width: streamGeometry.width,
+            height: streamGeometry.height
         )
         return LiveShareCaptureDescriptor(
             source: source,
             target: target,
+            sourcePixelWidth: width,
+            sourcePixelHeight: height,
             video: CaptureVideoConfiguration(
-                width: width,
-                height: height,
+                width: geometry.width,
+                height: geometry.height,
                 framesPerSecond: settings.frameRate.rawValue,
                 showsCursor: true,
                 showsClickHighlights: showsClickHighlights()
@@ -1255,6 +1309,10 @@ final class LiveShareCoordinator {
         if state.snapshot.sources.isEmpty {
             fail(code: .captureFailed, technicalDescription: message)
         } else {
+            if !slotAllocation.activeSlots.contains(where: \.isFocused) {
+                slotAllocation.focus(slotAllocation.activeSlots.first?.source?.id)
+            }
+            broadcastFocusChange()
             Self.logger.error("A Live Share capture stopped: \(message, privacy: .public)")
             publish()
         }
@@ -1307,7 +1365,8 @@ final class LiveShareCoordinator {
     }
 
     private func setFrameRate(_ frameRate: LiveShareFrameRate) {
-        guard availableFrameRates.contains(frameRate) else { return }
+        guard codecChangeTask == nil,
+              availableFrameRates.contains(frameRate) else { return }
         let oldFrameRate = settings.frameRate
         settings.frameRate = frameRate
         applySenderPolicyAndPersist()
@@ -1316,13 +1375,266 @@ final class LiveShareCoordinator {
         }
     }
 
-    private func setAdaptiveBitrateEnabled(_ enabled: Bool) {
-        settings.adaptiveBitrateEnabled = enabled
+    private func requestVideoCodecChange(_ codec: LiveShareVideoCodec) {
+        guard codec != settings.videoCodec, codecChangeTask == nil else { return }
+        guard let host = peerHost else {
+            settings.videoCodec = codec
+            persistSettings()
+            publish()
+            return
+        }
+
+        let previousCodec = settings.videoCodec
+        let pendingSourceTransition = sourceTransitionTask
+        let pendingCaptureRestart = captureRestartTask
+        codecChangeTask = Task { @MainActor [weak self, weak host] in
+            await pendingSourceTransition?.value
+            await pendingCaptureRestart?.value
+            guard let self, let host else { return }
+            guard !Task.isCancelled,
+                  !isEnding,
+                  peerHost === host,
+                  settings.videoCodec == previousCodec else {
+                codecChangeTask = nil
+                publish()
+                return
+            }
+            let reservedSourceIDs = Set(slotAllocation.activeSlots.compactMap(\.source?.id))
+            sourceOperationIDs.formUnion(reservedSourceIDs)
+            defer {
+                sourceOperationIDs.subtract(reservedSourceIDs)
+                if captureDescriptors.values.contains(where: {
+                    $0.video.framesPerSecond != settings.frameRate.rawValue
+                }) {
+                    scheduleActiveCaptureRestart()
+                }
+            }
+            do {
+                try await performVideoCodecChange(
+                    from: previousCodec,
+                    to: codec,
+                    host: host
+                )
+                guard !Task.isCancelled,
+                      !isEnding,
+                      peerHost === host else { return }
+                settings.videoCodec = codec
+                persistSettings()
+            } catch {
+                guard !Task.isCancelled else { return }
+                Self.logger.error(
+                    "Could not change the Live Share codec: \(error.localizedDescription, privacy: .public)"
+                )
+                if LiveShareCaptureGeometryFailurePolicy.requiresSessionFailure(
+                    after: error
+                ) {
+                    // A failed rollback means codec and capture geometry can
+                    // no longer be proven coherent. Quiesce the complete room
+                    // instead of leaving an oversized buffer on H.264 and
+                    // presenting another black-screen session as live.
+                    fail(code: .captureFailed, error: error)
+                }
+            }
+            codecChangeTask = nil
+            publish()
+        }
+        publish()
+    }
+
+    /// Couples codec renegotiation to ScreenCaptureKit geometry without ever
+    /// presenting an unsupported 5K/6K buffer to VideoToolbox. The safe order
+    /// differs by direction: cap before enabling H.264; enable VP8 before
+    /// restoring native pixels. Either failure returns capture and codec to the
+    /// previous coherent pair.
+    private func performVideoCodecChange(
+        from previousCodec: LiveShareVideoCodec,
+        to codec: LiveShareVideoCodec,
+        host: WebRTCPeerHost
+    ) async throws {
+        switch (previousCodec, codec) {
+        case (.vp8, .h264):
+            let previousGeometry = try await transitionActiveCaptureGeometry(to: .h264)
+            do {
+                try await host.updateVideoCodec(.h264)
+            } catch {
+                do {
+                    try await restoreCaptureGeometry(previousGeometry)
+                } catch let rollbackError {
+                    throw LiveShareCaptureGeometryTransitionError.rollbackFailed(
+                        change: error.localizedDescription,
+                        rollback: rollbackError.localizedDescription
+                    )
+                }
+                throw error
+            }
+
+        case (.h264, .vp8):
+            try await host.updateVideoCodec(.vp8)
+            do {
+                _ = try await transitionActiveCaptureGeometry(to: .vp8)
+            } catch {
+                do {
+                    try await host.updateVideoCodec(.h264)
+                } catch let rollbackError {
+                    throw LiveShareCaptureGeometryTransitionError.rollbackFailed(
+                        change: error.localizedDescription,
+                        rollback: rollbackError.localizedDescription
+                    )
+                }
+                throw error
+            }
+
+        default:
+            try await host.updateVideoCodec(webRTCVideoCodec(codec))
+        }
+    }
+
+    /// Reconfigures active ScreenCaptureKit streams in place and returns the
+    /// exact descriptors needed by a later codec-negotiation rollback.
+    private func transitionActiveCaptureGeometry(
+        to codec: LiveShareVideoCodec
+    ) async throws -> [LiveShareCaptureGeometrySnapshot] {
+        guard let pipeline = capturePipeline else { return [] }
+        let changes = slotAllocation.activeSlots.compactMap {
+            slot -> (LiveShareCaptureGeometrySnapshot, LiveShareCaptureDescriptor)? in
+            guard let source = slot.source,
+                  let generation = captureGenerations[source.id],
+                  let current = captureDescriptors[source.id] else { return nil }
+            let requested = descriptor(
+                current,
+                using: codec,
+                framesPerSecond: settings.frameRate.rawValue
+            )
+            guard current != requested else { return nil }
+            return (
+                LiveShareCaptureGeometrySnapshot(
+                    sourceID: source.id,
+                    slot: slot.index,
+                    generation: generation,
+                    descriptor: current
+                ),
+                requested
+            )
+        }
+        guard !changes.isEmpty else { return [] }
+
+        var applied: [LiveShareCaptureGeometrySnapshot] = []
+        do {
+            for (previous, requested) in changes {
+                try await pipeline.update(
+                    requested,
+                    inSlot: previous.slot,
+                    expectedGeneration: previous.generation
+                )
+                guard captureGenerations[previous.sourceID] == previous.generation,
+                      slotAllocation.slot(for: previous.sourceID)?.index == previous.slot,
+                      !isEnding else {
+                    throw LiveShareCapturePipelineError.superseded(previous.slot)
+                }
+                captureDescriptors[previous.sourceID] = requested
+                applied.append(previous)
+            }
+        } catch {
+            do {
+                try await restoreCaptureGeometry(applied.reversed())
+            } catch let rollbackError {
+                throw LiveShareCaptureGeometryTransitionError.rollbackFailed(
+                    change: error.localizedDescription,
+                    rollback: rollbackError.localizedDescription
+                )
+            }
+            throw error
+        }
+
+        broadcastSizeChanges(for: changes.map { $0.1 })
+        publish()
+        return changes.map { $0.0 }
+    }
+
+    private func restoreCaptureGeometry<S: Sequence>(
+        _ snapshots: S
+    ) async throws where S.Element == LiveShareCaptureGeometrySnapshot {
+        guard let pipeline = capturePipeline else { return }
+        var restored: [LiveShareCaptureDescriptor] = []
+        for snapshot in snapshots {
+            guard captureGenerations[snapshot.sourceID] == snapshot.generation,
+                  slotAllocation.slot(for: snapshot.sourceID)?.index == snapshot.slot,
+                  !isEnding else {
+                throw LiveShareCapturePipelineError.superseded(snapshot.slot)
+            }
+            try await pipeline.update(
+                snapshot.descriptor,
+                inSlot: snapshot.slot,
+                expectedGeneration: snapshot.generation
+            )
+            captureDescriptors[snapshot.sourceID] = snapshot.descriptor
+            restored.append(snapshot.descriptor)
+        }
+        broadcastSizeChanges(for: restored)
+        publish()
+    }
+
+    private func descriptor(
+        _ descriptor: LiveShareCaptureDescriptor,
+        using codec: LiveShareVideoCodec,
+        framesPerSecond: Int
+    ) -> LiveShareCaptureDescriptor {
+        let geometry = LiveShareCoordinatorPolicy.captureGeometry(
+            sourceWidth: descriptor.sourcePixelWidth,
+            sourceHeight: descriptor.sourcePixelHeight,
+            codec: codec,
+            framesPerSecond: framesPerSecond
+        )
+        let streamGeometry = LiveShareCoordinatorPolicy.streamGeometry(
+            captureGeometry: geometry,
+            codec: codec
+        )
+        return LiveShareCaptureDescriptor(
+            source: descriptor.source,
+            target: descriptor.target,
+            sourcePixelWidth: descriptor.sourcePixelWidth,
+            sourcePixelHeight: descriptor.sourcePixelHeight,
+            video: CaptureVideoConfiguration(
+                width: geometry.width,
+                height: geometry.height,
+                framesPerSecond: framesPerSecond,
+                showsCursor: descriptor.video.showsCursor,
+                showsClickHighlights: descriptor.video.showsClickHighlights,
+                sourceRect: descriptor.video.sourceRect
+            ),
+            stream: GoPeepV1StreamInfo(
+                trackID: descriptor.stream.trackID,
+                windowName: descriptor.stream.windowName,
+                appName: descriptor.stream.appName,
+                isFocused: descriptor.stream.isFocused,
+                width: streamGeometry.width,
+                height: streamGeometry.height
+            )
+        )
+    }
+
+    private func broadcastSizeChanges(
+        for descriptors: [LiveShareCaptureDescriptor]
+    ) {
+        for descriptor in descriptors {
+            broadcastAuthoritativeControlMutation(GoPeepV1Message(
+                type: .sizeChange,
+                trackID: descriptor.stream.trackID,
+                width: descriptor.stream.width,
+                height: descriptor.stream.height
+            ))
+        }
+    }
+
+    private func setPrioritizeFocusedWindow(_ enabled: Bool) {
+        settings.prioritizeFocusedWindow = enabled
         applySenderPolicyAndPersist()
     }
 
     private func setEncodingMode(_ mode: LiveShareEncodingMode) {
+        guard codecChangeTask == nil else { return }
         settings.encodingMode = mode
+        peerHost?.updateVideoEncodingMode(mode)
         applySenderPolicyAndPersist()
     }
 
@@ -1342,20 +1654,19 @@ final class LiveShareCoordinator {
     }
 
     private func applyRuntimeSenderPolicies() {
-        let fallback = LiveShareCoordinatorPolicy.senderPolicy(
+        let fallback = LiveShareCoordinatorPolicy.senderPolicy(for: settings)
+        let policies = LiveShareCoordinatorPolicy.senderPolicies(
             for: settings,
-            isFocused: false
+            slots: slotAllocation
         )
-        let policies = Dictionary(uniqueKeysWithValues: slotAllocation.slots.map { slot in
-            (
-                slot.index,
-                LiveShareCoordinatorPolicy.senderPolicy(
-                    for: settings,
-                    isFocused: slot.isFocused || state.snapshot.sources.fullscreen != nil
-                )
-            )
-        })
         peerHost?.updateSenderPolicies(policies, fallback: fallback)
+    }
+
+    private func webRTCVideoCodec(_ codec: LiveShareVideoCodec) -> WebRTCVideoCodec {
+        switch codec {
+        case .h264: .h264
+        case .vp8: .vp8
+        }
     }
 
     private func persistSettings() {
@@ -1401,20 +1712,10 @@ final class LiveShareCoordinator {
                   !sourceOperationIDs.contains(source.id) else { continue }
             sourceOperationIDs.insert(source.id)
             defer { sourceOperationIDs.remove(source.id) }
-            var descriptor = oldDescriptor
-            let video = CaptureVideoConfiguration(
-                width: oldDescriptor.video.width,
-                height: oldDescriptor.video.height,
-                framesPerSecond: settings.frameRate.rawValue,
-                showsCursor: oldDescriptor.video.showsCursor,
-                showsClickHighlights: oldDescriptor.video.showsClickHighlights,
-                sourceRect: oldDescriptor.video.sourceRect
-            )
-            descriptor = LiveShareCaptureDescriptor(
-                source: oldDescriptor.source,
-                target: oldDescriptor.target,
-                video: video,
-                stream: oldDescriptor.stream
+            let descriptor = descriptor(
+                oldDescriptor,
+                using: settings.videoCodec,
+                framesPerSecond: settings.frameRate.rawValue
             )
             sourceStatuses[source.id] = .starting
             publish()
@@ -1431,6 +1732,11 @@ final class LiveShareCoordinator {
                       !isEnding else { continue }
                 captureDescriptors[source.id] = descriptor
                 sourceStatuses[source.id] = .live
+                if descriptor.stream.width != oldDescriptor.stream.width
+                    || descriptor.stream.height != oldDescriptor.stream.height
+                {
+                    broadcastSizeChanges(for: [descriptor])
+                }
             } catch {
                 guard captureGenerations[source.id] == generation else { continue }
                 await handleUnexpectedSourceFailure(
@@ -1475,6 +1781,8 @@ final class LiveShareCoordinator {
         captureRestartTask?.cancel()
         captureRestartTask = nil
         captureRestartRequestID = nil
+        codecChangeTask?.cancel()
+        codecChangeTask = nil
         failureCleanupTask?.cancel()
         failureCleanupTask = nil
         cancelAuthoritativeControlReplay()
@@ -1524,6 +1832,8 @@ final class LiveShareCoordinator {
         captureRestartTask?.cancel()
         captureRestartTask = nil
         captureRestartRequestID = nil
+        codecChangeTask?.cancel()
+        codecChangeTask = nil
         retryTask?.cancel()
         retryTask = nil
         isRetrying = false
@@ -1644,8 +1954,8 @@ final class LiveShareCoordinator {
                     processIdentifier: window.processID
                 )?.bundleURL?.path
                 guard let descriptor = captureDescriptors[source.id],
-                      descriptor.video.width != window.pixelWidth
-                        || descriptor.video.height != window.pixelHeight else {
+                      descriptor.sourcePixelWidth != window.pixelWidth
+                        || descriptor.sourcePixelHeight != window.pixelHeight else {
                     continue
                 }
                 await restartSourceForGeometryChange(
@@ -1665,8 +1975,8 @@ final class LiveShareCoordinator {
                 displayFramesByID[displaySource.id] = screen(for: display.id)?.frame
                     ?? display.frame
                 guard let descriptor = captureDescriptors[source.id],
-                      descriptor.video.width != display.pixelWidth
-                        || descriptor.video.height != display.pixelHeight else {
+                      descriptor.sourcePixelWidth != display.pixelWidth
+                        || descriptor.sourcePixelHeight != display.pixelHeight else {
                     continue
                 }
                 await restartSourceForGeometryChange(
@@ -1749,6 +2059,7 @@ final class LiveShareCoordinator {
                     for: source.id,
                     generation: captureGenerations[source.id]
                 )
+                let senderPolicy = peerHost.senderPolicy(forSlot: slot.index)
                 return LiveShareStreamStatisticsViewSnapshot(
                     id: slot.trackID,
                     name: descriptor.stream.appName,
@@ -1759,15 +2070,37 @@ final class LiveShareCoordinator {
                         0,
                         Int((outboundSlot.aggregateBitrateBps ?? 0).rounded())
                     ),
+                    targetBitsPerSecond: outboundSlot.aggregateTargetBitrateBps.map {
+                        max(0, Int($0.rounded()))
+                    },
+                    configuredBitrateCeiling: LiveShareCoordinatorPolicy
+                        .aggregateConfiguredBitrateCeiling(
+                            perViewer: senderPolicy.maximumBitrateBps ?? 0,
+                            viewerCount: outboundSlot.viewers.count
+                        ),
                     bytesSent: Int64(clamping: outboundSlot.bytesSent),
                     captureDeliveredFrames: captureStatistics?.deliveredFrames ?? 0,
-                    captureBackpressureDrops: captureStatistics?.backpressureDrops ?? 0,
+                    captureBackpressureDrops: capturePressure.latestBackpressureDrops(
+                        for: source.id,
+                        generation: captureGenerations[source.id]
+                    ),
+                    encoderDroppedFrames: outboundSlot.encoderDroppedFrames,
+                    averageEncodeTimeMilliseconds: outboundSlot
+                        .averageEncodeTimeMilliseconds,
+                    averagePacketSendDelayMilliseconds: outboundSlot
+                        .averagePacketSendDelayMilliseconds,
+                    qualityLimitationReasons: outboundSlot.qualityLimitationReasons,
+                    codec: outboundSlot.codecs.count == 1
+                        ? outboundSlot.codecs.first
+                        : nil,
                     isFocused: slot.isFocused
                 )
             }
             latestStatistics = LiveShareStatisticsViewSnapshot(
                 uptime: startedAt.map { Date().timeIntervalSince($0) } ?? 0,
-                streams: streams
+                streams: streams,
+                h264SubmissionBackpressureDrops:
+                    outbound.h264SubmissionBackpressureDrops
             )
         } catch {
             Self.logger.debug(
@@ -2037,6 +2370,8 @@ final class LiveShareCoordinator {
         captureRestartTask?.cancel()
         captureRestartTask = nil
         captureRestartRequestID = nil
+        codecChangeTask?.cancel()
+        codecChangeTask = nil
         statisticsTask?.cancel()
         statisticsTask = nil
         cursorTask?.cancel()
@@ -2250,15 +2585,19 @@ final class LiveShareCoordinator {
             settings: LiveShareSettingsViewSnapshot(
                 quality: settings.quality,
                 frameRate: settings.frameRate,
-                codec: .init(),
-                adaptiveBitrate: settings.adaptiveBitrateEnabled,
+                codec: .init(
+                    codec: settings.videoCodec,
+                    acceleration: settings.videoCodec == .h264 ? .hardware : .software
+                ),
+                prioritizeFocusedWindow: settings.prioritizeFocusedWindow,
                 mode: settings.encodingMode,
                 autoShareFocusedWindows: settings.autoShareFocusedWindows,
                 canChangeQuality: canChangeSettings,
-                canChangeFrameRate: canChangeSettings,
+                canChangeFrameRate: canChangeSettings && codecChangeTask == nil,
                 availableFrameRates: availableFrameRates,
-                canChangeAdaptiveBitrate: canChangeSettings,
-                canChangeMode: canChangeSettings,
+                canChangeCodec: canChangeSettings && codecChangeTask == nil,
+                canChangePrioritizeFocusedWindow: canChangeSettings,
+                canChangeMode: canChangeSettings && codecChangeTask == nil,
                 canChangeAutoShare: canOperateSources && fullscreenSource == nil
             ),
             viewers: viewers,

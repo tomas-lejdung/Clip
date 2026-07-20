@@ -389,8 +389,23 @@ struct LiveSharePopoverView: View {
 
             LiveShareSettingRow(title: String(localized: "Codec")) {
                 VStack(alignment: .trailing, spacing: 1) {
-                    Text(model.snapshot.settings.codec.name)
-                        .font(.subheadline.weight(.medium))
+                    Picker(
+                        String(localized: "Codec"),
+                        selection: Binding(
+                            get: { model.snapshot.settings.codec.codec },
+                            set: { model.setCodec($0) }
+                        )
+                    ) {
+                        ForEach(LiveShareVideoCodec.allCases) { codec in
+                            Text(codec.displayName).tag(codec)
+                        }
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.menu)
+                    .frame(width: 165, alignment: .trailing)
+                    .disabled(!model.snapshot.settings.canChangeCodec)
+                    .accessibilityIdentifier("clip.liveShare.codec")
+
                     Text(model.snapshot.settings.codec.detail)
                         .font(.caption2)
                         .foregroundStyle(.secondary)
@@ -398,14 +413,14 @@ struct LiveSharePopoverView: View {
             }
 
             Toggle(
-                String(localized: "Adaptive Bitrate"),
+                String(localized: "Prioritize Focused Window"),
                 isOn: Binding(
-                    get: { model.snapshot.settings.adaptiveBitrate },
-                    set: { model.setAdaptiveBitrateEnabled($0) }
+                    get: { model.snapshot.settings.prioritizeFocusedWindow },
+                    set: { model.setPrioritizeFocusedWindow($0) }
                 )
             )
-            .disabled(!model.snapshot.settings.canChangeAdaptiveBitrate)
-            .accessibilityIdentifier("clip.liveShare.adaptiveBitrate")
+            .disabled(!model.snapshot.settings.canChangePrioritizeFocusedWindow)
+            .accessibilityIdentifier("clip.liveShare.prioritizeFocusedWindow")
 
             VStack(alignment: .leading, spacing: 5) {
                 Text("Mode")
@@ -495,6 +510,16 @@ struct LiveSharePopoverView: View {
                 Text("Uptime \(LiveShareDurationFormatting.string(model.snapshot.statistics.uptime))")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+
+                if model.snapshot.statistics.h264SubmissionBackpressureDrops > 0 {
+                    Text(verbatim:
+                        "H.264 freshness drops: "
+                        + String(model.snapshot.statistics.h264SubmissionBackpressureDrops)
+                        + " (latest interval)"
+                    )
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                }
 
                 if model.snapshot.statistics.streams.isEmpty {
                     Text("Statistics appear after a source starts sending.")
@@ -677,28 +702,78 @@ private struct LiveShareStreamStatisticsRow: View {
             Text(
                 "\(stream.width) × \(stream.height) · "
                     + "\(stream.deliveredFramesPerSecond.formatted(.number.precision(.fractionLength(0...1)))) FPS"
+                    + (stream.codec.map { " · \($0)" } ?? "")
             )
             .font(.caption2.monospacedDigit())
             .foregroundStyle(.secondary)
-            Text(
-                "\(LiveShareFormatting.bitrate(stream.bitsPerSecond)) · "
-                    + "\(LiveShareFormatting.bytes(stream.bytesSent)) sent"
-            )
+            Text(verbatim: bitrateSummary)
             .font(.caption2.monospacedDigit())
             .foregroundStyle(.secondary)
-            if stream.captureBackpressureDrops > 0 {
-                Text(
-                    String(
-                        localized: "\(stream.captureBackpressureDrops) capture frames dropped"
-                    )
-                )
+            if let latencySummary {
+                Text(verbatim: latencySummary)
+                    .font(.caption2.monospacedDigit())
+                    .foregroundStyle(.secondary)
+            }
+            if stream.captureBackpressureDrops > 0 || stream.encoderDroppedFrames > 0 {
+                Text(verbatim: dropSummary)
                 .font(.caption2.monospacedDigit())
                 .foregroundStyle(.secondary)
+            }
+            if let limitationSummary {
+                Text(verbatim: limitationSummary)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
             }
         }
         .padding(7)
         .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 7))
         .accessibilityElement(children: .combine)
+    }
+
+    private var bitrateSummary: String {
+        var values = [
+            "\(LiveShareFormatting.bitrate(stream.bitsPerSecond)) actual",
+        ]
+        if let target = stream.targetBitsPerSecond {
+            values.append("\(LiveShareFormatting.bitrate(target)) target")
+        }
+        if stream.configuredBitrateCeiling > 0 {
+            values.append(
+                "\(LiveShareFormatting.bitrate(stream.configuredBitrateCeiling)) ceiling"
+            )
+        }
+        values.append("\(LiveShareFormatting.bytes(stream.bytesSent)) sent")
+        return values.joined(separator: " · ")
+    }
+
+    private var latencySummary: String? {
+        var values: [String] = []
+        if let milliseconds = stream.averageEncodeTimeMilliseconds {
+            values.append("Encode \(LiveShareFormatting.milliseconds(milliseconds))")
+        }
+        if let milliseconds = stream.averagePacketSendDelayMilliseconds {
+            values.append("Send queue \(LiveShareFormatting.milliseconds(milliseconds))")
+        }
+        return values.isEmpty ? nil : values.joined(separator: " · ")
+    }
+
+    private var dropSummary: String {
+        var values: [String] = []
+        if stream.captureBackpressureDrops > 0 {
+            values.append("\(stream.captureBackpressureDrops) capture drops")
+        }
+        if stream.encoderDroppedFrames > 0 {
+            values.append("\(stream.encoderDroppedFrames) WebRTC drops")
+        }
+        return values.joined(separator: " · ")
+    }
+
+    private var limitationSummary: String? {
+        let reasons = stream.qualityLimitationReasons.filter {
+            !$0.isEmpty && $0.caseInsensitiveCompare("none") != .orderedSame
+        }
+        guard !reasons.isEmpty else { return nil }
+        return "WebRTC limited by " + reasons.joined(separator: ", ")
     }
 }
 
@@ -713,5 +788,12 @@ private enum LiveShareFormatting {
 
     static func bytes(_ value: Int64) -> String {
         ByteCountFormatter.string(fromByteCount: max(0, value), countStyle: .file)
+    }
+
+    static func milliseconds(_ value: Double) -> String {
+        let digits = value < 10 ? 1 : 0
+        return value.formatted(
+            .number.precision(.fractionLength(digits))
+        ) + " ms"
     }
 }

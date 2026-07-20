@@ -2368,7 +2368,7 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
             explanation.alertStyle = .informational
             explanation.messageText = String(localized: "Allow Screen Recording")
             explanation.informativeText = String(
-                localized: "Clip needs Screen & System Audio Recording access to share only the windows or display you choose. Live Share sends H.264 video to connected viewers over encrypted WebRTC media transport."
+                localized: "Clip needs Screen & System Audio Recording access to share only the windows or display you choose. Live Share sends your selected H.264 or VP8 video to connected viewers over encrypted WebRTC media transport."
             )
             explanation.addButton(withTitle: String(localized: "Continue"))
             explanation.addButton(withTitle: String(localized: "Not Now"))

@@ -123,9 +123,6 @@
     "Access Code" : {
 
     },
-    "Adaptive Bitrate" : {
-
-    },
     "Add Window" : {
 
     },
@@ -321,7 +318,7 @@
     "Clip needs Screen & System Audio Recording access to record only the area or display you choose. Recordings stay local on this Mac." : {
 
     },
-    "Clip needs Screen & System Audio Recording access to share only the windows or display you choose. Live Share sends H.264 video to connected viewers over encrypted WebRTC media transport." : {
+    "Clip needs Screen & System Audio Recording access to share only the windows or display you choose. Live Share sends your selected H.264 or VP8 video to connected viewers over encrypted WebRTC media transport." : {
 
     },
     "Clip never removes files you create with Save As." : {
@@ -746,6 +743,9 @@
 
     },
     "Previous Area" : {
+
+    },
+    "Prioritize Focused Window" : {
 
     },
     "Quality" : {

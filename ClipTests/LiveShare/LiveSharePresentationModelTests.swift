@@ -60,10 +60,71 @@ struct LiveSharePresentationModelTests {
     @Test
     func testCodecDoesNotClaimAccelerationUntilRuntimeReportsIt() {
         let unverified = LiveShareCodecViewSnapshot()
+        #expect(unverified.codec == .vp8)
+        #expect(unverified.name == "VP8")
         #expect(unverified.acceleration == .unknown)
         #expect(unverified.detail == "Encoder selected automatically")
         #expect(unverified.detail != "Hardware accelerated")
 
+        let verified = LiveShareCodecViewSnapshot(codec: .vp8, acceleration: .software)
+        #expect(verified.name == "VP8")
+        #expect(verified.detail == "Software encoding")
+    }
+
+    @Test
+    func testCodecAndFocusedWindowPriorityCanChangeDuringLiveSharing() {
+        var codecChanges: [LiveShareVideoCodec] = []
+        var priorityChanges: [Bool] = []
+        let model = LiveSharePresentationModel(
+            snapshot: LiveShareViewSnapshot(
+                phase: .live(elapsedSeconds: 12),
+                settings: .init(
+                    codec: .init(codec: .h264, acceleration: .hardware),
+                    prioritizeFocusedWindow: true,
+                    canChangeCodec: true,
+                    canChangePrioritizeFocusedWindow: true
+                )
+            ),
+            actions: .init(
+                setCodec: { codecChanges.append($0) },
+                setPrioritizeFocusedWindow: { priorityChanges.append($0) }
+            )
+        )
+
+        model.setCodec(.vp8)
+        model.setPrioritizeFocusedWindow(false)
+
+        #expect(codecChanges == [.vp8])
+        #expect(priorityChanges == [false])
+    }
+
+    @Test
+    func testCodecAndFocusedWindowPriorityRespectCapabilityGates() {
+        var codecChanges: [LiveShareVideoCodec] = []
+        var priorityChanges: [Bool] = []
+        let model = LiveSharePresentationModel(
+            snapshot: LiveShareViewSnapshot(
+                phase: .reconnecting(attempt: 1, maximumAttempts: 5),
+                settings: .init(
+                    canChangeCodec: false,
+                    canChangePrioritizeFocusedWindow: false
+                )
+            ),
+            actions: .init(
+                setCodec: { codecChanges.append($0) },
+                setPrioritizeFocusedWindow: { priorityChanges.append($0) }
+            )
+        )
+
+        model.setCodec(.vp8)
+        model.setPrioritizeFocusedWindow(false)
+
+        #expect(codecChanges.isEmpty)
+        #expect(priorityChanges.isEmpty)
+    }
+
+    @Test
+    func testHardwareCodecDetailRemainsAvailable() {
         let verified = LiveShareCodecViewSnapshot(acceleration: .hardware)
         #expect(verified.detail == "Hardware accelerated")
     }
@@ -240,6 +301,9 @@ struct LiveSharePresentationModelTests {
         #expect(live.connectedViewerCount == 2)
         #expect(live.statistics.streams.count == 3)
         #expect(live.accessCode == "orbit-mint-72")
+        #expect(live.settings.codec.codec == .h264)
+        #expect(live.settings.prioritizeFocusedWindow)
+        #expect(live.settings.canChangeCodec)
 
         let reconnecting = try #require(
             DeterministicLiveShareDemo.snapshot(for: .liveShareReconnecting)
@@ -248,6 +312,7 @@ struct LiveSharePresentationModelTests {
         #expect(!reconnecting.canAddWindow)
         #expect(!reconnecting.fullscreen.isEnabled)
         #expect(!reconnecting.settings.canChangeQuality)
+        #expect(!reconnecting.settings.canChangeCodec)
         #expect(reconnecting.sources.allSatisfy { !$0.canStop })
 
         let failed = try #require(

@@ -15,9 +15,32 @@ final class WebRTCH264EncoderFactory: NSObject, RTCVideoEncoderFactory,
 {
     static let maximumLevelIDC = "34" // H.264 Level 5.2.
 
+    private let configurationController: WebRTCH264EncoderConfigurationController
+
     private let codecs: [RTCVideoCodecInfo] = RTCVideoEncoderH264
         .supportedCodecs()
         .map(upgradingToMaximumLevel)
+
+    init(
+        configuration: WebRTCH264EncoderConfiguration = .quality,
+        configurationController: WebRTCH264EncoderConfigurationController? = nil
+    ) {
+        self.configurationController = configurationController
+            ?? WebRTCH264EncoderConfigurationController(configuration: configuration)
+        super.init()
+    }
+
+    func updateMode(_ mode: WebRTCH264EncodingMode) {
+        configurationController.updateMode(mode)
+    }
+
+    func updateConfiguration(_ configuration: WebRTCH264EncoderConfiguration) {
+        configurationController.update(configuration)
+    }
+
+    var submissionBackpressureDropCount: UInt64 {
+        configurationController.submissionBackpressureDropCount
+    }
 
     func supportedCodecs() -> [RTCVideoCodecInfo] {
         codecs
@@ -27,7 +50,10 @@ final class WebRTCH264EncoderFactory: NSObject, RTCVideoEncoderFactory,
         guard info.name.caseInsensitiveCompare("H264") == .orderedSame else {
             return nil
         }
-        return RTCVideoEncoderH264(codecInfo: Self.upgradingToMaximumLevel(info))
+        return WebRTCVideoToolboxH264Encoder(
+            codecInfo: Self.upgradingToMaximumLevel(info),
+            configurationController: configurationController
+        )
     }
 
     private static func upgradingToMaximumLevel(

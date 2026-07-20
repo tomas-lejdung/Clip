@@ -3,6 +3,7 @@ import Foundation
 import Testing
 @testable import ClipLiveShareWebRTC
 
+extension NativeMediaResourceTests {
 @Suite("Native WebRTC peer host", .serialized)
 struct WebRTCPeerHostTests {
     @Test("four stable GoPeep slots are preallocated")
@@ -73,6 +74,37 @@ struct WebRTCPeerHostTests {
         #expect(host.viewerIDs == ["viewer-fixture"])
         await #expect(throws: WebRTCPeerHostError.duplicateViewer("viewer-fixture")) {
             try await host.createOffer(for: "viewer-fixture")
+        }
+    }
+
+    @Test("composite encoder factory exposes H264 and VP8 in selected order")
+    func compositeEncoderFactoryCodecOrder() {
+        let h264First = WebRTCVideoEncoderFactory(preferredCodec: .h264)
+            .supportedCodecs().map(\.name)
+        let vp8First = WebRTCVideoEncoderFactory(preferredCodec: .vp8)
+            .supportedCodecs().map(\.name)
+
+        #expect(h264First.first == "H264")
+        #expect(vp8First.first == "VP8")
+        #expect(h264First.contains("VP8"))
+        #expect(vp8First.contains("H264"))
+    }
+
+    @Test("VP8 host offers VP8 exclusively while retaining stable stream IDs")
+    func vp8OfferShape() async throws {
+        let host = try WebRTCPeerHost(
+            configuration: .init(iceServers: [], videoCodec: .vp8),
+            eventQueue: .global()
+        )
+        defer { host.close() }
+
+        let offer = try await host.createOffer(for: "vp8-viewer")
+
+        #expect(Self.occurrences(of: "m=video", in: offer.sdp) == 4)
+        #expect(offer.sdp.contains(" VP8/90000"))
+        #expect(!offer.sdp.contains(" H264/90000"))
+        for slot in 0 ..< 4 {
+            #expect(offer.sdp.contains("gopeep-stream-\(slot) video\(slot)"))
         }
     }
 
@@ -308,6 +340,7 @@ struct WebRTCPeerHostTests {
         var generation = WebRTCPeerOperationGeneration()
 
         let firstOffer = generation.beginLocalDescription()
+        #expect(generation.hasLocalDescriptionInFlight)
         #expect(generation.contains(firstOffer))
         let firstAnswer = generation.beginRemoteDescription()
         #expect(generation.contains(firstAnswer))
@@ -320,12 +353,25 @@ struct WebRTCPeerHostTests {
         #expect(!generation.contains(firstOffer))
         #expect(!generation.contains(replacementAnswer))
         #expect(generation.contains(replacementOffer))
+
+        // Completing a stale callback cannot mark a newer local-description
+        // operation idle. This is the state used by updateVideoCodec's gate.
+        generation.finishLocalDescription(firstOffer)
+        #expect(generation.hasLocalDescriptionInFlight)
+        generation.finishLocalDescription(replacementOffer)
+        #expect(!generation.hasLocalDescriptionInFlight)
+
+        _ = generation.beginLocalDescription()
+        #expect(generation.hasLocalDescriptionInFlight)
+        generation.invalidateLocalDescriptions()
+        #expect(!generation.hasLocalDescriptionInFlight)
     }
 
     @Test("sender and ICE defaults are explicit and injectable")
     func configurationPolicy() throws {
         #expect(WebRTCPeerHostConfiguration.goPeepDefault.senderPolicy == .goPeepDefault)
         #expect(WebRTCSenderPolicy.goPeepDefault.maintainsResolution)
+        #expect(WebRTCSenderPolicy.goPeepDefault.bitratePriority == 1)
         #expect(WebRTCSenderPolicy.goPeepDefault.maximumFramesPerSecond == 30)
         #expect(WebRTCSenderPolicy.goPeepDefault.maximumBitrateBps == 12_000_000)
         #expect(WebRTCPeerHostConfiguration.goPeepDefault.iceServers.count == 3)
@@ -362,13 +408,18 @@ struct WebRTCPeerHostTests {
                 maximumBitrateBps: 4_000_000,
                 maximumFramesPerSecond: 24,
                 maintainsResolution: true
-            )
+            ),
+            videoEncodingMode: .performance
         )
         #expect(custom.forcesRelay)
         #expect(custom.senderPolicy.maximumFramesPerSecond == 24)
+        #expect(custom.videoEncodingMode == .performance)
 
         let host = try WebRTCPeerHost(configuration: custom, eventQueue: .global())
         defer { host.close() }
+        #expect(host.videoEncodingMode == .performance)
+        host.updateVideoEncodingMode(.quality)
+        #expect(host.videoEncodingMode == .quality)
         let updated = WebRTCSenderPolicy(
             maximumBitrateBps: 8_000_000,
             maximumFramesPerSecond: 30,
@@ -402,4 +453,5 @@ struct WebRTCPeerHostTests {
     private static func occurrences(of needle: String, in haystack: String) -> Int {
         haystack.components(separatedBy: needle).count - 1
     }
+}
 }

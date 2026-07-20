@@ -148,6 +148,21 @@ final class ClipLaunchTests: XCTestCase {
             .firstMatch
         XCTAssertTrue(root.waitForExistence(timeout: 10))
 
+        let codec = app.descendants(matching: .any)
+            .matching(identifier: "clip.liveShare.codec")
+            .firstMatch
+        XCTAssertTrue(
+            codec.waitForExistence(timeout: 10),
+            "The deterministic Live Share settings did not expose the codec menu."
+        )
+        let prioritizeFocusedWindow = app.descendants(matching: .any)
+            .matching(identifier: "clip.liveShare.prioritizeFocusedWindow")
+            .firstMatch
+        XCTAssertTrue(
+            prioritizeFocusedWindow.waitForExistence(timeout: 10),
+            "The deterministic Live Share settings did not expose focus prioritization."
+        )
+
         let statistics = app.descendants(matching: .any)
             .matching(identifier: "clip.liveShare.statistics")
             .firstMatch

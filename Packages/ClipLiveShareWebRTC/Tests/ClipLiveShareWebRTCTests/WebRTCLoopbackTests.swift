@@ -7,8 +7,288 @@ import Testing
 @preconcurrency import WebRTC
 @testable import ClipLiveShareWebRTC
 
+extension NativeMediaResourceTests {
 @Suite("Native WebRTC loopback", .serialized)
 struct WebRTCLoopbackTests {
+    @Test("idle peer renegotiates H264 to VP8 without replacing transports")
+    func idleCodecRenegotiation() async throws {
+        let bridge = LoopbackBridge()
+        let host = try WebRTCPeerHost(
+            configuration: .init(
+                iceServers: [],
+                resourceLimits: .init(answerTimeout: 5),
+                videoCodec: .h264
+            ),
+            eventQueue: bridge.eventQueue,
+            eventHandler: { event in bridge.receive(hostEvent: event) }
+        )
+        bridge.host = host
+        defer { host.close() }
+
+        let initialOffer = try await host.createOffer(for: "loopback-viewer")
+        let receiver = try LoopbackReceiver(bridge: bridge)
+        defer { receiver.close() }
+        bridge.receiver = receiver.connection
+        let initialAnswer = try await receiver.answer(offer: initialOffer.sdp)
+        bridge.receiverCanAcceptCandidates()
+        try await host.setRemoteAnswer(initialAnswer, for: "loopback-viewer")
+        bridge.hostCanAcceptCandidates()
+        #expect(await waitUntil(timeout: .seconds(5)) {
+            bridge.isConnectedAndControlOpen
+        })
+
+        let switchToVP8 = Task { try await host.updateVideoCodec(.vp8) }
+        #expect(await waitUntil(timeout: .seconds(2)) { host.videoCodec == .vp8 })
+        let offer = try await host.createReoffer(for: "loopback-viewer")
+        #expect(offer.sdp.contains(" VP8/90000"))
+        let answer = try await receiver.answer(offer: offer.sdp)
+        try await host.setRemoteAnswer(answer, for: "loopback-viewer")
+        try await switchToVP8.value
+
+        #expect(host.videoCodec == .vp8)
+        #expect(host.viewerIDs == ["loopback-viewer"])
+        #expect(bridge.controlChannelLabel == WebRTCRuntimeIdentity.controlDataChannelLabel)
+    }
+
+    @Test("viewer joining during codec switch is included in the transaction")
+    func viewerJoinsDuringCodecSwitch() async throws {
+        let firstBridge = LoopbackBridge(viewerID: "viewer-a")
+        let joiningBridge = LoopbackBridge(viewerID: "viewer-b")
+        let completion = CodecSwitchCompletionProbe()
+        let host = try WebRTCPeerHost(
+            configuration: .init(
+                iceServers: [],
+                resourceLimits: .init(answerTimeout: 5),
+                videoCodec: .h264
+            ),
+            eventQueue: firstBridge.eventQueue,
+            eventHandler: { event in
+                firstBridge.receive(hostEvent: event)
+                joiningBridge.receive(hostEvent: event)
+            }
+        )
+        firstBridge.host = host
+        joiningBridge.host = host
+        defer { host.close() }
+
+        let firstReceiver = try LoopbackReceiver(bridge: firstBridge)
+        defer { firstReceiver.close() }
+        firstBridge.receiver = firstReceiver.connection
+        let initialOffer = try await host.createOffer(for: "viewer-a")
+        let initialAnswer = try await firstReceiver.answer(offer: initialOffer.sdp)
+        firstBridge.receiverCanAcceptCandidates()
+        try await host.setRemoteAnswer(initialAnswer, for: "viewer-a")
+        firstBridge.hostCanAcceptCandidates()
+        #expect(await waitUntil(timeout: .seconds(5)) {
+            firstBridge.isConnectedAndControlOpen
+        })
+
+        let switchTask = Task {
+            do {
+                try await host.updateVideoCodec(.vp8)
+                await completion.finished()
+            } catch {
+                await completion.finished(error: error.localizedDescription)
+                throw error
+            }
+        }
+        #expect(await waitUntil(timeout: .seconds(2)) { host.videoCodec == .vp8 })
+        let firstReoffer = try await host.createReoffer(for: "viewer-a")
+        #expect(firstReoffer.sdp.contains(" VP8/90000"))
+
+        // This peer did not exist when updateVideoCodec began. Its initial
+        // target-codec answer must nevertheless be part of the transaction.
+        let joiningReceiver = try LoopbackReceiver(bridge: joiningBridge)
+        defer { joiningReceiver.close() }
+        joiningBridge.receiver = joiningReceiver.connection
+        let joiningOffer = try await host.createOffer(for: "viewer-b")
+        #expect(joiningOffer.sdp.contains(" VP8/90000"))
+        let joiningAnswer = try await joiningReceiver.answer(offer: joiningOffer.sdp)
+        joiningBridge.receiverCanAcceptCandidates()
+
+        try await host.setRemoteAnswer(
+            try await firstReceiver.answer(offer: firstReoffer.sdp),
+            for: "viewer-a"
+        )
+        try await Task.sleep(for: .milliseconds(100))
+        #expect(!(await completion.isFinished))
+
+        try await host.setRemoteAnswer(joiningAnswer, for: "viewer-b")
+        joiningBridge.hostCanAcceptCandidates()
+        try await switchTask.value
+
+        #expect(await completion.errorDescription == nil)
+        #expect(host.videoCodec == .vp8)
+        #expect(host.viewerIDs == ["viewer-a", "viewer-b"])
+        #expect(await waitUntil(timeout: .seconds(5)) {
+            joiningBridge.isConnectedAndControlOpen
+        })
+    }
+
+    @Test("failed codec switch rolls back an in-flight peer before reoffering")
+    func codecSwitchRollbackReoffersNegotiatingPeer() async throws {
+        let firstBridge = LoopbackBridge(viewerID: "viewer-a")
+        let secondBridge = LoopbackBridge(viewerID: "viewer-b")
+        let host = try WebRTCPeerHost(
+            configuration: .init(
+                iceServers: [],
+                resourceLimits: .init(answerTimeout: 5),
+                videoCodec: .h264
+            ),
+            eventQueue: firstBridge.eventQueue,
+            eventHandler: { event in
+                firstBridge.receive(hostEvent: event)
+                secondBridge.receive(hostEvent: event)
+            }
+        )
+        firstBridge.host = host
+        secondBridge.host = host
+        defer { host.close() }
+
+        let firstReceiver = try LoopbackReceiver(bridge: firstBridge)
+        defer { firstReceiver.close() }
+        firstBridge.receiver = firstReceiver.connection
+        let firstInitialOffer = try await host.createOffer(for: "viewer-a")
+        let firstInitialAnswer = try await firstReceiver.answer(
+            offer: firstInitialOffer.sdp
+        )
+        firstBridge.receiverCanAcceptCandidates()
+        try await host.setRemoteAnswer(firstInitialAnswer, for: "viewer-a")
+        firstBridge.hostCanAcceptCandidates()
+
+        let secondReceiver = try LoopbackReceiver(bridge: secondBridge)
+        defer { secondReceiver.close() }
+        secondBridge.receiver = secondReceiver.connection
+        let secondInitialOffer = try await host.createOffer(for: "viewer-b")
+        let secondInitialAnswer = try await secondReceiver.answer(
+            offer: secondInitialOffer.sdp
+        )
+        secondBridge.receiverCanAcceptCandidates()
+        try await host.setRemoteAnswer(secondInitialAnswer, for: "viewer-b")
+        secondBridge.hostCanAcceptCandidates()
+        #expect(await waitUntil(timeout: .seconds(5)) {
+            firstBridge.isConnectedAndControlOpen
+                && secondBridge.isConnectedAndControlOpen
+        })
+
+        let switchTask = Task { try await host.updateVideoCodec(.vp8) }
+        #expect(await waitUntil(timeout: .seconds(2)) { host.videoCodec == .vp8 })
+        let firstReoffer = try await host.createReoffer(for: "viewer-a")
+        let secondReoffer = try await host.createReoffer(for: "viewer-b")
+        #expect(firstReoffer.sdp.contains(" VP8/90000"))
+        #expect(secondReoffer.sdp.contains(" VP8/90000"))
+        try await Task.sleep(for: .milliseconds(100))
+        secondBridge.resetNegotiationNeededCount()
+
+        // A malformed answer makes viewer-a fail the codec-switch transaction.
+        // viewer-b is deliberately left in have-local-offer to exercise the
+        // SDP rollback path before its restoration reoffer.
+        do {
+            try await host.setRemoteAnswer(
+                .init(kind: .answer, sdp: "not a valid session description"),
+                for: "viewer-a"
+            )
+            Issue.record("The malformed codec answer unexpectedly succeeded")
+        } catch {}
+        do {
+            try await switchTask.value
+            Issue.record("The transactional codec switch unexpectedly succeeded")
+        } catch {}
+
+        #expect(host.videoCodec == .h264)
+        await #expect(throws: WebRTCPeerHostError.videoCodecSwitchInProgress(
+            from: .vp8,
+            to: .h264
+        )) {
+            try await host.updateVideoCodec(.vp8)
+        }
+        #expect(await waitUntil(timeout: .seconds(2)) {
+            secondBridge.negotiationNeededCount > 0
+        })
+        let restoredOffer = try await host.createReoffer(for: "viewer-b")
+        #expect(restoredOffer.sdp.contains(" H264/90000"))
+        #expect(!restoredOffer.sdp.contains(" VP8/90000"))
+        try await host.setRemoteAnswer(
+            try await secondReceiver.answer(offer: restoredOffer.sdp),
+            for: "viewer-b"
+        )
+        host.removePeer("viewer-a")
+
+        #expect(host.viewerIDs == ["viewer-b"])
+        #expect(secondBridge.isConnectedAndControlOpen)
+
+        // Both restoration answers/departures have now completed, so a fresh
+        // transaction can start and finish normally on the surviving peer.
+        let retrySwitch = Task { try await host.updateVideoCodec(.vp8) }
+        #expect(await waitUntil(timeout: .seconds(2)) { host.videoCodec == .vp8 })
+        let retryOffer = try await host.createReoffer(for: "viewer-b")
+        #expect(retryOffer.sdp.contains(" VP8/90000"))
+        try await host.setRemoteAnswer(
+            try await secondReceiver.answer(offer: retryOffer.sdp),
+            for: "viewer-b"
+        )
+        try await retrySwitch.value
+        #expect(host.videoCodec == .vp8)
+    }
+
+    @Test("VP8 screensharing encoder delivers captured pixel buffers")
+    func vp8FrameLoopback() async throws {
+        let bridge = LoopbackBridge()
+        let host = try WebRTCPeerHost(
+            configuration: .init(
+                iceServers: [],
+                senderPolicy: .init(
+                    maximumBitrateBps: 2_000_000,
+                    maximumFramesPerSecond: 30,
+                    maintainsResolution: true
+                ),
+                resourceLimits: .init(answerTimeout: 5),
+                videoCodec: .vp8
+            ),
+            eventQueue: bridge.eventQueue,
+            eventHandler: { event in bridge.receive(hostEvent: event) }
+        )
+        bridge.host = host
+        defer { host.close() }
+
+        let offer = try await host.createOffer(for: "loopback-viewer")
+        let receiver = try LoopbackReceiver(bridge: bridge)
+        defer { receiver.close() }
+        bridge.receiver = receiver.connection
+        let answer = try await receiver.answer(offer: offer.sdp)
+        bridge.receiverCanAcceptCandidates()
+        try await host.setRemoteAnswer(answer, for: "loopback-viewer")
+        bridge.hostCanAcceptCandidates()
+        #expect(await waitUntil(timeout: .seconds(5)) {
+            bridge.isConnectedAndControlOpen
+        })
+
+        try host.activateSlot(0, metadata: GoPeepV1StreamInfo(
+            trackID: "video0",
+            windowName: "VP8 fixture",
+            appName: "Clip tests",
+            isFocused: true,
+            width: 320,
+            height: 180
+        ))
+        for index in 0 ..< 45 {
+            #expect(host.send(
+                try makeFixtureFrame(index: index, width: 320, height: 180),
+                toSlot: 0
+            ) == .accepted)
+            try await Task.sleep(for: .milliseconds(12))
+        }
+        #expect(await waitUntil(timeout: .seconds(5)) {
+            bridge.receivedVideoFrameCount > 0
+        })
+        #expect(bridge.receivedVideoSize == .init(width: 320, height: 180))
+        let outbound = try await host.outboundSenderStatisticsSnapshot()
+        let slot = try #require(outbound[slot: 0])
+        #expect(slot.bytesSent > 0)
+        #expect(slot.framesEncoded > 0)
+        #expect(slot.framesSent > 0)
+    }
+
     @Test("native Retina-sized windows encode and render at source resolution")
     func nativeResolutionLoopback() async throws {
         for size in [
@@ -103,6 +383,112 @@ struct WebRTCLoopbackTests {
         #expect(slot.viewers.count == 1)
     }
 
+    @Test("active peer switches H264 to VP8 and back without replacing its tracks")
+    func liveCodecSwitchLoopback() async throws {
+        let bridge = LoopbackBridge()
+        let host = try WebRTCPeerHost(
+            configuration: .init(
+                iceServers: [],
+                senderPolicy: .init(
+                    maximumBitrateBps: 4_000_000,
+                    maximumFramesPerSecond: 30,
+                    maintainsResolution: true
+                ),
+                resourceLimits: .init(answerTimeout: 5),
+                videoCodec: .h264
+            ),
+            eventQueue: bridge.eventQueue,
+            eventHandler: { event in bridge.receive(hostEvent: event) }
+        )
+        bridge.host = host
+        defer { host.close() }
+
+        let initialOffer = try await host.createOffer(for: "loopback-viewer")
+        #expect(initialOffer.sdp.contains(" H264/90000"))
+        #expect(!initialOffer.sdp.contains(" VP8/90000"))
+        let receiver = try LoopbackReceiver(bridge: bridge)
+        defer { receiver.close() }
+        bridge.receiver = receiver.connection
+        let initialAnswer = try await receiver.answer(offer: initialOffer.sdp)
+        bridge.receiverCanAcceptCandidates()
+        try await host.setRemoteAnswer(initialAnswer, for: "loopback-viewer")
+        bridge.hostCanAcceptCandidates()
+        #expect(await waitUntil(timeout: .seconds(5)) {
+            bridge.isConnectedAndControlOpen
+        })
+
+        try host.activateSlot(0, metadata: GoPeepV1StreamInfo(
+            trackID: "video0",
+            windowName: "Codec switch fixture",
+            appName: "Clip tests",
+            isFocused: true,
+            width: 320,
+            height: 180
+        ))
+        for index in 0 ..< 30 {
+            #expect(host.send(
+                try makeFixtureFrame(index: index, width: 320, height: 180),
+                toSlot: 0
+            ) == .accepted)
+            try await Task.sleep(for: .milliseconds(12))
+        }
+        #expect(await waitUntil(timeout: .seconds(5)) {
+            bridge.receivedVideoFrameCount > 0
+        })
+        let framesBeforeVP8 = bridge.receivedVideoFrameCount
+
+        let switchToVP8 = Task { try await host.updateVideoCodec(.vp8) }
+        #expect(await waitUntil(timeout: .seconds(2)) { host.videoCodec == .vp8 })
+        let vp8Offer = try await host.createReoffer(for: "loopback-viewer")
+        #expect(vp8Offer.sdp.contains(" VP8/90000"))
+        #expect(!vp8Offer.sdp.contains(" H264/90000"))
+        try await host.setRemoteAnswer(
+            try await receiver.answer(offer: vp8Offer.sdp),
+            for: "loopback-viewer"
+        )
+        try await switchToVP8.value
+        #expect(host.videoCodec == .vp8)
+
+        for index in 30 ..< 60 {
+            #expect(host.send(
+                try makeFixtureFrame(index: index, width: 320, height: 180),
+                toSlot: 0
+            ) == .accepted)
+            try await Task.sleep(for: .milliseconds(12))
+        }
+        #expect(await waitUntil(timeout: .seconds(5)) {
+            bridge.receivedVideoFrameCount > framesBeforeVP8
+        })
+        let framesBeforeH264 = bridge.receivedVideoFrameCount
+
+        let switchToH264 = Task { try await host.updateVideoCodec(.h264) }
+        #expect(await waitUntil(timeout: .seconds(2)) { host.videoCodec == .h264 })
+        let h264Offer = try await host.createReoffer(for: "loopback-viewer")
+        #expect(h264Offer.sdp.contains(" H264/90000"))
+        #expect(!h264Offer.sdp.contains(" VP8/90000"))
+        #expect(h264Offer.sdp.contains("profile-level-id=640c34"))
+        try await host.setRemoteAnswer(
+            try await receiver.answer(offer: h264Offer.sdp),
+            for: "loopback-viewer"
+        )
+        try await switchToH264.value
+        #expect(host.videoCodec == .h264)
+
+        for index in 60 ..< 90 {
+            #expect(host.send(
+                try makeFixtureFrame(index: index, width: 320, height: 180),
+                toSlot: 0
+            ) == .accepted)
+            try await Task.sleep(for: .milliseconds(12))
+        }
+        #expect(await waitUntil(timeout: .seconds(5)) {
+            bridge.receivedVideoFrameCount > framesBeforeH264
+        })
+        #expect(bridge.controlChannelLabel == WebRTCRuntimeIdentity.controlDataChannelLabel)
+        #expect(bridge.receivedVideoSize == .init(width: 320, height: 180))
+        #expect(host.viewerIDs == ["loopback-viewer"])
+    }
+
     @Test("viewer joining an idle source receives its latest frame")
     func lateViewerFrameReplay() async throws {
         let bridge = LoopbackBridge()
@@ -162,7 +548,7 @@ struct WebRTCLoopbackTests {
     private func assertNativeResolution(_ size: CGSize) async throws {
         let width = Int(size.width)
         let height = Int(size.height)
-        let bridge = LoopbackBridge()
+        let bridge = LoopbackBridge(viewerID: "retina-loopback-viewer")
         let host = try WebRTCPeerHost(
             configuration: .init(
                 iceServers: [],
@@ -222,10 +608,12 @@ struct WebRTCLoopbackTests {
         #expect(slot.framesSent > 0)
     }
 }
+}
 
 private final class LoopbackBridge: @unchecked Sendable {
     let eventQueue = DispatchQueue(label: "com.tomaslejdung.clip.tests.webrtc-events")
 
+    private let viewerID: String
     private let lock = NSLock()
     private weak var storedHost: WebRTCPeerHost?
     private var storedReceiver: RTCPeerConnection?
@@ -241,6 +629,11 @@ private final class LoopbackBridge: @unchecked Sendable {
     private var storedControlMessage: Data?
     private var storedFrameCount = 0
     private var storedVideoSize = CGSize.zero
+    private var storedNegotiationNeededCount = 0
+
+    init(viewerID: String = "loopback-viewer") {
+        self.viewerID = viewerID
+    }
 
     var host: WebRTCPeerHost? {
         get { lock.withLock { storedHost } }
@@ -261,15 +654,27 @@ private final class LoopbackBridge: @unchecked Sendable {
     var lastControlMessage: Data? { lock.withLock { storedControlMessage } }
     var receivedVideoFrameCount: Int { lock.withLock { storedFrameCount } }
     var receivedVideoSize: CGSize { lock.withLock { storedVideoSize } }
+    var negotiationNeededCount: Int {
+        lock.withLock { storedNegotiationNeededCount }
+    }
+
+    func resetNegotiationNeededCount() {
+        lock.withLock { storedNegotiationNeededCount = 0 }
+    }
 
     func receive(hostEvent: WebRTCPeerHostEvent) {
         switch hostEvent {
-        case .localICECandidate(_, let candidate):
+        case .localICECandidate(let eventViewerID, let candidate)
+            where eventViewerID == viewerID:
             deliverToReceiver(candidate)
-        case .connectionStateChanged(_, let state):
+        case .connectionStateChanged(let eventViewerID, let state)
+            where eventViewerID == viewerID:
             lock.withLock { hostConnected = state == .connected }
-        case .controlDataChannelStateChanged(_, let state):
+        case .controlDataChannelStateChanged(let eventViewerID, let state)
+            where eventViewerID == viewerID:
             lock.withLock { hostControlOpen = state == .open }
+        case .negotiationNeeded(let eventViewerID) where eventViewerID == viewerID:
+            lock.withLock { storedNegotiationNeededCount += 1 }
         default:
             break
         }
@@ -284,7 +689,7 @@ private final class LoopbackBridge: @unchecked Sendable {
             return storedHost
         }
         guard let host else { return }
-        Task { try? await host.addRemoteICECandidate(receiverCandidate, for: "loopback-viewer") }
+        Task { try? await host.addRemoteICECandidate(receiverCandidate, for: viewerID) }
     }
 
     func receiverCanAcceptCandidates() {
@@ -307,7 +712,7 @@ private final class LoopbackBridge: @unchecked Sendable {
         }
         guard let host = pending.1 else { return }
         for candidate in pending.0 {
-            Task { try? await host.addRemoteICECandidate(candidate, for: "loopback-viewer") }
+            Task { try? await host.addRemoteICECandidate(candidate, for: viewerID) }
         }
     }
 
@@ -354,6 +759,16 @@ private final class LoopbackBridge: @unchecked Sendable {
     }
 }
 
+private actor CodecSwitchCompletionProbe {
+    private(set) var isFinished = false
+    private(set) var errorDescription: String?
+
+    func finished(error: String? = nil) {
+        isFinished = true
+        errorDescription = error
+    }
+}
+
 private final class LoopbackReceiver: NSObject, RTCPeerConnectionDelegate,
     RTCDataChannelDelegate, RTCVideoRenderer, @unchecked Sendable
 {
@@ -367,7 +782,10 @@ private final class LoopbackReceiver: NSObject, RTCPeerConnectionDelegate,
     init(bridge: LoopbackBridge) throws {
         self.bridge = bridge
         sslLease = try WebRTCSSLRuntimeLease()
-        factory = RTCPeerConnectionFactory()
+        factory = RTCPeerConnectionFactory(
+            encoderFactory: RTCDefaultVideoEncoderFactory(),
+            decoderFactory: RTCDefaultVideoDecoderFactory()
+        )
         let configuration = RTCConfiguration()
         configuration.sdpSemantics = .unifiedPlan
         configuration.bundlePolicy = .maxBundle

@@ -24,7 +24,8 @@ struct LiveShareSettingsTests {
         #expect(settings.quality == .veryHigh)
         #expect(settings.frameRate == .thirty)
         #expect(settings.encodingMode == .quality)
-        #expect(settings.adaptiveBitrateEnabled)
+        #expect(settings.videoCodec == .vp8)
+        #expect(settings.prioritizeFocusedWindow)
         #expect(!settings.autoShareFocusedWindows)
         #expect(!settings.accessCodeEnabled)
     }
@@ -34,8 +35,51 @@ struct LiveShareSettingsTests {
         var value = LiveShareSettings.default
         value.quality = .insane
         value.frameRate = .sixty
+        value.videoCodec = .h264
+        value.prioritizeFocusedWindow = false
         value.autoShareFocusedWindows = true
         let data = try JSONEncoder().encode(value)
         #expect(try JSONDecoder().decode(LiveShareSettings.self, from: data) == value)
+
+        let object = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        #expect(object["videoCodec"] as? String == "h264")
+        #expect(object["prioritizeFocusedWindow"] as? Bool == false)
+        #expect(object["adaptiveBitrateEnabled"] == nil)
+    }
+
+    @Test("codec-less settings migrate to VP8 and the renamed focused-window preference")
+    func legacyMigration() throws {
+        let data = Data("""
+        {
+          "quality": 6,
+          "frameRate": 30,
+          "encodingMode": "performance",
+          "adaptiveBitrateEnabled": false,
+          "autoShareFocusedWindows": true,
+          "accessCodeEnabled": true
+        }
+        """.utf8)
+
+        let settings = try JSONDecoder().decode(LiveShareSettings.self, from: data)
+        #expect(settings.quality == .max)
+        #expect(settings.frameRate == .thirty)
+        #expect(settings.encodingMode == .performance)
+        #expect(settings.videoCodec == .vp8)
+        #expect(!settings.prioritizeFocusedWindow)
+        #expect(settings.autoShareFocusedWindows)
+        #expect(settings.accessCodeEnabled)
+    }
+
+    @Test("missing settings fields receive current defaults")
+    func missingFieldsUseDefaults() throws {
+        let settings = try JSONDecoder().decode(LiveShareSettings.self, from: Data("{}".utf8))
+        #expect(settings == .default)
+    }
+
+    @Test("codec options have stable persistence identifiers and user-facing names")
+    func codecs() {
+        #expect(LiveShareVideoCodec.allCases == [.h264, .vp8])
+        #expect(LiveShareVideoCodec.allCases.map(\.rawValue) == ["h264", "vp8"])
+        #expect(LiveShareVideoCodec.allCases.map(\.displayName) == ["H.264", "VP8"])
     }
 }

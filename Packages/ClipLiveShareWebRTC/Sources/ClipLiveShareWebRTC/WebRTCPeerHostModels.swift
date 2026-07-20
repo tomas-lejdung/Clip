@@ -1,6 +1,23 @@
 import ClipLiveShare
 import Foundation
 
+/// Video codecs that Clip can select for an active WebRTC screen share.
+///
+/// This is intentionally independent from the app's settings model. The
+/// WebRTC package owns negotiation while callers decide how the choice is
+/// presented and persisted.
+public enum WebRTCVideoCodec: String, CaseIterable, Codable, Equatable, Sendable {
+    case h264
+    case vp8
+
+    var rtcName: String {
+        switch self {
+        case .h264: "H264"
+        case .vp8: "VP8"
+        }
+    }
+}
+
 public struct WebRTCICEServerConfiguration: Equatable, Sendable {
     public var urlStrings: [String]
     public var username: String?
@@ -21,15 +38,18 @@ public struct WebRTCSenderPolicy: Equatable, Sendable {
     public var maximumBitrateBps: Int?
     public var maximumFramesPerSecond: Int?
     public var maintainsResolution: Bool
+    public var bitratePriority: Double
 
     public init(
         maximumBitrateBps: Int? = 12_000_000,
         maximumFramesPerSecond: Int? = 30,
-        maintainsResolution: Bool = true
+        maintainsResolution: Bool = true,
+        bitratePriority: Double = 1
     ) {
         self.maximumBitrateBps = maximumBitrateBps
         self.maximumFramesPerSecond = maximumFramesPerSecond
         self.maintainsResolution = maintainsResolution
+        self.bitratePriority = bitratePriority
     }
 
     public static let goPeepDefault = Self()
@@ -139,17 +159,23 @@ public struct WebRTCPeerHostConfiguration: Equatable, Sendable {
     public var forcesRelay: Bool
     public var senderPolicy: WebRTCSenderPolicy
     public var resourceLimits: WebRTCPeerResourceLimits
+    public var videoCodec: WebRTCVideoCodec
+    public var videoEncodingMode: LiveShareEncodingMode
 
     public init(
         iceServers: [WebRTCICEServerConfiguration],
         forcesRelay: Bool = false,
         senderPolicy: WebRTCSenderPolicy = .goPeepDefault,
-        resourceLimits: WebRTCPeerResourceLimits = .goPeepDefault
+        resourceLimits: WebRTCPeerResourceLimits = .goPeepDefault,
+        videoCodec: WebRTCVideoCodec = .h264,
+        videoEncodingMode: LiveShareEncodingMode = .quality
     ) {
         self.iceServers = iceServers
         self.forcesRelay = forcesRelay
         self.senderPolicy = senderPolicy
         self.resourceLimits = resourceLimits
+        self.videoCodec = videoCodec
+        self.videoEncodingMode = videoEncodingMode
     }
 
     public static let goPeepDefault = Self(iceServers: [
@@ -261,14 +287,45 @@ public extension WebRTCICECandidate {
     }
 }
 
+/// Pixel geometry delivered by ScreenCaptureKit to a stable WebRTC slot.
+///
+/// This can intentionally differ from the encoded stream metadata by one
+/// pixel. H.264 requires even output dimensions, while preserving an odd-sized
+/// native capture lets the encoder crop that final pixel without asking
+/// ScreenCaptureKit to fractionally rescale the complete image.
+public struct WebRTCVideoCaptureGeometry: Equatable, Sendable {
+    public let width: Int
+    public let height: Int
+
+    public init(width: Int, height: Int) {
+        self.width = max(1, width)
+        self.height = max(1, height)
+    }
+}
+
 public struct WebRTCStreamSlotSnapshot: Equatable, Sendable, Identifiable {
     public let index: Int
     public let trackID: String
     public let streamID: String
     public let metadata: GoPeepV1StreamInfo?
+    public let captureGeometry: WebRTCVideoCaptureGeometry?
 
     public var id: Int { index }
     public var isActive: Bool { metadata != nil }
+
+    init(
+        index: Int,
+        trackID: String,
+        streamID: String,
+        metadata: GoPeepV1StreamInfo?,
+        captureGeometry: WebRTCVideoCaptureGeometry? = nil
+    ) {
+        self.index = index
+        self.trackID = trackID
+        self.streamID = streamID
+        self.metadata = metadata
+        self.captureGeometry = captureGeometry
+    }
 }
 
 public enum WebRTCPeerConnectionState: String, Equatable, Sendable {
@@ -328,6 +385,17 @@ public struct WebRTCOutboundViewerStatistics: Equatable, Sendable, Identifiable 
     public let framesEncoded: UInt64
     public let bitrateBps: Double?
     public let framesPerSecond: Double?
+    /// libwebrtc's current codec target, which may be lower than Clip's
+    /// selected ceiling while congestion control protects latency.
+    public let targetBitrateBps: Double?
+    /// Mean encoder time for frames completed during the latest sample.
+    public let averageEncodeTimeMilliseconds: Double?
+    /// Mean time packets completed during the latest sample spent waiting
+    /// before being handed to the network socket.
+    public let averagePacketSendDelayMilliseconds: Double?
+    public let encoderDroppedFrames: UInt64?
+    public let qualityLimitationReason: String?
+    public let codec: String?
 
     public var id: String { viewerID }
     public var deliveredFramesPerSecond: Double? { framesPerSecond }
@@ -339,7 +407,13 @@ public struct WebRTCOutboundViewerStatistics: Equatable, Sendable, Identifiable 
         framesSent: UInt64,
         framesEncoded: UInt64,
         bitrateBps: Double?,
-        framesPerSecond: Double?
+        framesPerSecond: Double?,
+        targetBitrateBps: Double? = nil,
+        averageEncodeTimeMilliseconds: Double? = nil,
+        averagePacketSendDelayMilliseconds: Double? = nil,
+        encoderDroppedFrames: UInt64? = nil,
+        qualityLimitationReason: String? = nil,
+        codec: String? = nil
     ) {
         self.viewerID = viewerID
         self.bytesSent = bytesSent
@@ -348,6 +422,12 @@ public struct WebRTCOutboundViewerStatistics: Equatable, Sendable, Identifiable 
         self.framesEncoded = framesEncoded
         self.bitrateBps = bitrateBps
         self.framesPerSecond = framesPerSecond
+        self.targetBitrateBps = targetBitrateBps
+        self.averageEncodeTimeMilliseconds = averageEncodeTimeMilliseconds
+        self.averagePacketSendDelayMilliseconds = averagePacketSendDelayMilliseconds
+        self.encoderDroppedFrames = encoderDroppedFrames
+        self.qualityLimitationReason = qualityLimitationReason
+        self.codec = codec
     }
 }
 
@@ -365,6 +445,14 @@ public struct WebRTCOutboundSlotStatistics: Equatable, Sendable, Identifiable {
     public let aggregateBitrateBps: Double?
     /// Mean measured delivered sender FPS across viewers.
     public let averageFramesPerSecond: Double?
+    /// Sum of libwebrtc's current target across viewers. This is deliberately
+    /// distinct from both measured egress and Clip's configured ceiling.
+    public let aggregateTargetBitrateBps: Double?
+    public let averageEncodeTimeMilliseconds: Double?
+    public let averagePacketSendDelayMilliseconds: Double?
+    public let encoderDroppedFrames: UInt64
+    public let qualityLimitationReasons: [String]
+    public let codecs: [String]
     public let viewers: [WebRTCOutboundViewerStatistics]
 
     public var id: Int { slot }
@@ -381,6 +469,12 @@ public struct WebRTCOutboundSlotStatistics: Equatable, Sendable, Identifiable {
         framesEncoded: UInt64,
         aggregateBitrateBps: Double?,
         averageFramesPerSecond: Double?,
+        aggregateTargetBitrateBps: Double? = nil,
+        averageEncodeTimeMilliseconds: Double? = nil,
+        averagePacketSendDelayMilliseconds: Double? = nil,
+        encoderDroppedFrames: UInt64 = 0,
+        qualityLimitationReasons: [String] = [],
+        codecs: [String] = [],
         viewers: [WebRTCOutboundViewerStatistics]
     ) {
         self.slot = slot
@@ -392,6 +486,12 @@ public struct WebRTCOutboundSlotStatistics: Equatable, Sendable, Identifiable {
         self.framesEncoded = framesEncoded
         self.aggregateBitrateBps = aggregateBitrateBps
         self.averageFramesPerSecond = averageFramesPerSecond
+        self.aggregateTargetBitrateBps = aggregateTargetBitrateBps
+        self.averageEncodeTimeMilliseconds = averageEncodeTimeMilliseconds
+        self.averagePacketSendDelayMilliseconds = averagePacketSendDelayMilliseconds
+        self.encoderDroppedFrames = encoderDroppedFrames
+        self.qualityLimitationReasons = qualityLimitationReasons
+        self.codecs = codecs
         self.viewers = viewers
     }
 }
@@ -401,17 +501,23 @@ public struct WebRTCOutboundStatisticsSnapshot: Equatable, Sendable {
     public let viewerCount: Int
     public let connectedViewerCount: Int
     public let slots: [WebRTCOutboundSlotStatistics]
+    /// Aggregate H.264 inputs rejected by Clip's bounded submission gate
+    /// since the previous statistics sample. This is host-wide because one
+    /// encoder controller serves all viewer/slot encoder instances.
+    public let h264SubmissionBackpressureDrops: UInt64
 
     public init(
         capturedAt: Date,
         viewerCount: Int,
         connectedViewerCount: Int,
-        slots: [WebRTCOutboundSlotStatistics]
+        slots: [WebRTCOutboundSlotStatistics],
+        h264SubmissionBackpressureDrops: UInt64 = 0
     ) {
         self.capturedAt = capturedAt
         self.viewerCount = viewerCount
         self.connectedViewerCount = connectedViewerCount
         self.slots = slots
+        self.h264SubmissionBackpressureDrops = h264SubmissionBackpressureDrops
     }
 
     public subscript(slot slot: Int) -> WebRTCOutboundSlotStatistics? {
@@ -428,6 +534,7 @@ public enum WebRTCPeerHostEvent: Sendable {
     case controlDataChannelDrained(viewerID: String)
     case controlMessageReceived(viewerID: String, data: Data, isBinary: Bool)
     case negotiationNeeded(viewerID: String)
+    case videoCodecChanged(codec: WebRTCVideoCodec)
     case error(viewerID: String?, error: WebRTCPeerHostError)
 }
 
@@ -460,11 +567,30 @@ struct WebRTCPeerOperationGeneration: Equatable, Sendable {
 
     private var negotiation: UInt64 = 0
     private var remoteApplication: UInt64 = 0
+    private var localDescriptionsInFlight: Set<UInt64> = []
+
+    var hasLocalDescriptionInFlight: Bool {
+        !localDescriptionsInFlight.isEmpty
+    }
 
     mutating func beginLocalDescription() -> LocalDescriptionToken {
         negotiation &+= 1
         remoteApplication = 0
+        localDescriptionsInFlight.insert(negotiation)
         return LocalDescriptionToken(negotiation: negotiation)
+    }
+
+    mutating func finishLocalDescription(_ token: LocalDescriptionToken) {
+        localDescriptionsInFlight.remove(token.negotiation)
+    }
+
+    /// Invalidates every asynchronous offer callback before applying an SDP
+    /// rollback. Those callbacks may still arrive, but no longer keep the peer
+    /// marked busy or match the current negotiation generation.
+    mutating func invalidateLocalDescriptions() {
+        negotiation &+= 1
+        remoteApplication = 0
+        localDescriptionsInFlight.removeAll(keepingCapacity: true)
     }
 
     mutating func beginRemoteDescription() -> RemoteDescriptionToken {
@@ -499,6 +625,15 @@ public enum WebRTCPeerHostError: Error, Equatable, LocalizedError, Sendable {
     case trackCreationFailed(slot: Int)
     case h264Unavailable
     case h264PreferenceFailed(slot: Int, message: String)
+    case videoCodecUnavailable(WebRTCVideoCodec)
+    case videoCodecPreferenceFailed(
+        codec: WebRTCVideoCodec,
+        viewerID: String,
+        slot: Int,
+        message: String
+    )
+    case videoCodecSwitchInProgress(from: WebRTCVideoCodec, to: WebRTCVideoCodec)
+    case videoCodecSwitchFailed(from: WebRTCVideoCodec, to: WebRTCVideoCodec, message: String)
     case localDescriptionCreationFailed(String)
     case localDescriptionApplicationFailed(String)
     case remoteDescriptionApplicationFailed(String)
@@ -510,6 +645,7 @@ public enum WebRTCPeerHostError: Error, Equatable, LocalizedError, Sendable {
     case invalidSlot(Int)
     case slotTrackMismatch(slot: Int, expected: String, actual: String)
     case slotAlreadyActive(Int)
+    case slotInactive(Int)
     case noAvailableSlot
     case controlMessageEncodingFailed(String)
     case stalePeerOperation(String)
@@ -542,6 +678,14 @@ public enum WebRTCPeerHostError: Error, Equatable, LocalizedError, Sendable {
             "The WebRTC runtime does not expose an H.264 sender codec."
         case .h264PreferenceFailed(let slot, let message):
             "H.264 could not be selected for slot \(slot): \(message)"
+        case .videoCodecUnavailable(let codec):
+            "The WebRTC encoder does not support \(codec.rtcName)."
+        case .videoCodecPreferenceFailed(let codec, let viewerID, let slot, let message):
+            "The \(codec.rtcName) preference for viewer \(viewerID), video slot \(slot) could not be applied: \(message)"
+        case .videoCodecSwitchInProgress(let from, let to):
+            "A WebRTC codec change from \(from.rtcName) to \(to.rtcName) is already in progress."
+        case .videoCodecSwitchFailed(let from, let to, let message):
+            "The WebRTC codec change from \(from.rtcName) to \(to.rtcName) failed: \(message)"
         case .localDescriptionCreationFailed(let message):
             "The local session description could not be created: \(message)"
         case .localDescriptionApplicationFailed(let message):
@@ -564,6 +708,8 @@ public enum WebRTCPeerHostError: Error, Equatable, LocalizedError, Sendable {
             "Video slot \(slot) requires track ID \(expected), not \(actual)."
         case .slotAlreadyActive(let slot):
             "Video slot \(slot) is already active."
+        case .slotInactive(let slot):
+            "Video slot \(slot) is not active."
         case .noAvailableSlot:
             "All four video slots are already active."
         case .controlMessageEncodingFailed(let message):

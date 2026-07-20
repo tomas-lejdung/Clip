@@ -37,9 +37,52 @@ public final class WebRTCFrameSource: RTCVideoCapturer, @unchecked Sendable {
     /// WebRTC sources do not retain frames sent before a peer connects, while
     /// ScreenCaptureKit may stay idle indefinitely for an unchanged window.
     @discardableResult
-    public func replayLatestFrame() -> Bool {
+    public func replayLatestFrame(
+        expectedWidth: Int? = nil,
+        expectedHeight: Int? = nil
+    ) -> Bool {
         lock.withLock {
-            guard let latestPixelBuffer else { return false }
+            guard let latestPixelBuffer,
+                  Self.matches(
+                      latestPixelBuffer,
+                      expectedWidth: expectedWidth,
+                      expectedHeight: expectedHeight
+                  ) else {
+                return false
+            }
+            let timestamp = nextOutputTimestamp()
+            lastOutputTimestampNanoseconds = timestamp
+            emit(pixelBuffer: latestPixelBuffer, timestampNanoseconds: timestamp)
+            return true
+        }
+    }
+
+    /// Static ScreenCaptureKit sources emit no `.complete` frames. A low-rate
+    /// bounded replay gives a newly rebuilt encoder fresh input for a pending
+    /// PLI without turning an idle source into a full-cadence capture stream.
+    @discardableResult
+    public func replayLatestFrameIfIdle(
+        forAtLeast intervalNanoseconds: UInt64,
+        expectedWidth: Int,
+        expectedHeight: Int
+    ) -> Bool {
+        lock.withLock {
+            guard let latestPixelBuffer,
+                  Self.matches(
+                      latestPixelBuffer,
+                      expectedWidth: expectedWidth,
+                      expectedHeight: expectedHeight
+                  ) else {
+                return false
+            }
+            let now = Int64(clamping: DispatchTime.now().uptimeNanoseconds)
+            guard lastOutputTimestampNanoseconds == .min
+                || (now >= lastOutputTimestampNanoseconds
+                    && UInt64(now - lastOutputTimestampNanoseconds)
+                        >= intervalNanoseconds)
+            else {
+                return false
+            }
             let timestamp = nextOutputTimestamp()
             lastOutputTimestampNanoseconds = timestamp
             emit(pixelBuffer: latestPixelBuffer, timestampNanoseconds: timestamp)
@@ -55,6 +98,25 @@ public final class WebRTCFrameSource: RTCVideoCapturer, @unchecked Sendable {
         }
     }
 
+    /// Geometry changes can race the first frame from an updated SCK stream.
+    /// Preserve a freshly arrived matching buffer, but never replay the prior
+    /// codec's differently sized frame into the new encoder configuration.
+    public func discardLatestFrameUnlessMatching(
+        width: Int,
+        height: Int
+    ) {
+        lock.withLock {
+            guard let latestPixelBuffer else { return }
+            if !Self.matches(
+                latestPixelBuffer,
+                expectedWidth: width,
+                expectedHeight: height
+            ) {
+                self.latestPixelBuffer = nil
+            }
+        }
+    }
+
     private func emit(
         pixelBuffer: CVPixelBuffer,
         timestampNanoseconds: Int64
@@ -66,6 +128,22 @@ public final class WebRTCFrameSource: RTCVideoCapturer, @unchecked Sendable {
             timeStampNs: timestampNanoseconds
         )
         delegate?.capturer(self, didCapture: rtcFrame)
+    }
+
+    private static func matches(
+        _ pixelBuffer: CVPixelBuffer,
+        expectedWidth: Int?,
+        expectedHeight: Int?
+    ) -> Bool {
+        if let expectedWidth,
+           CVPixelBufferGetWidth(pixelBuffer) != expectedWidth {
+            return false
+        }
+        if let expectedHeight,
+           CVPixelBufferGetHeight(pixelBuffer) != expectedHeight {
+            return false
+        }
+        return true
     }
 
     private static func nanoseconds(_ time: CMTime) -> Int64 {

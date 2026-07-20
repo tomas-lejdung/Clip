@@ -54,13 +54,29 @@ public enum LiveShareEncodingMode: String, Codable, CaseIterable, Equatable, Has
     public var id: String { rawValue }
 }
 
-/// Independent from recording/export quality. WebRTC congestion control owns
-/// actual rate; this preset supplies a sender ceiling and degradation policy.
+public enum LiveShareVideoCodec: String, Codable, CaseIterable, Equatable, Hashable, Identifiable, Sendable {
+    case h264
+    case vp8
+
+    public var id: String { rawValue }
+
+    public var displayName: String {
+        switch self {
+        case .h264: "H.264"
+        case .vp8: "VP8"
+        }
+    }
+}
+
+/// Independent from recording/export quality. The selected preset is one
+/// viewer's video-bandwidth budget; transport congestion control can still
+/// reduce the effective rate to protect latency.
 public struct LiveShareSettings: Codable, Equatable, Sendable {
     public var quality: LiveShareQualityPreset
     public var frameRate: LiveShareFrameRate
     public var encodingMode: LiveShareEncodingMode
-    public var adaptiveBitrateEnabled: Bool
+    public var videoCodec: LiveShareVideoCodec
+    public var prioritizeFocusedWindow: Bool
     public var autoShareFocusedWindows: Bool
     public var accessCodeEnabled: Bool
 
@@ -68,17 +84,54 @@ public struct LiveShareSettings: Codable, Equatable, Sendable {
         quality: LiveShareQualityPreset = .veryHigh,
         frameRate: LiveShareFrameRate = .thirty,
         encodingMode: LiveShareEncodingMode = .quality,
-        adaptiveBitrateEnabled: Bool = true,
+        videoCodec: LiveShareVideoCodec = .vp8,
+        prioritizeFocusedWindow: Bool = true,
         autoShareFocusedWindows: Bool = false,
         accessCodeEnabled: Bool = false
     ) {
         self.quality = quality
         self.frameRate = frameRate
         self.encodingMode = encodingMode
-        self.adaptiveBitrateEnabled = adaptiveBitrateEnabled
+        self.videoCodec = videoCodec
+        self.prioritizeFocusedWindow = prioritizeFocusedWindow
         self.autoShareFocusedWindows = autoShareFocusedWindows
         self.accessCodeEnabled = accessCodeEnabled
     }
 
     public static let `default` = Self()
+
+    private enum CodingKeys: String, CodingKey {
+        case quality
+        case frameRate
+        case encodingMode
+        case videoCodec
+        case prioritizeFocusedWindow
+        case adaptiveBitrateEnabled
+        case autoShareFocusedWindows
+        case accessCodeEnabled
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        quality = try container.decodeIfPresent(LiveShareQualityPreset.self, forKey: .quality) ?? .veryHigh
+        frameRate = try container.decodeIfPresent(LiveShareFrameRate.self, forKey: .frameRate) ?? .thirty
+        encodingMode = try container.decodeIfPresent(LiveShareEncodingMode.self, forKey: .encodingMode) ?? .quality
+        videoCodec = try container.decodeIfPresent(LiveShareVideoCodec.self, forKey: .videoCodec) ?? .vp8
+        prioritizeFocusedWindow = try container.decodeIfPresent(Bool.self, forKey: .prioritizeFocusedWindow)
+            ?? container.decodeIfPresent(Bool.self, forKey: .adaptiveBitrateEnabled)
+            ?? true
+        autoShareFocusedWindows = try container.decodeIfPresent(Bool.self, forKey: .autoShareFocusedWindows) ?? false
+        accessCodeEnabled = try container.decodeIfPresent(Bool.self, forKey: .accessCodeEnabled) ?? false
+    }
+
+    public func encode(to encoder: any Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(quality, forKey: .quality)
+        try container.encode(frameRate, forKey: .frameRate)
+        try container.encode(encodingMode, forKey: .encodingMode)
+        try container.encode(videoCodec, forKey: .videoCodec)
+        try container.encode(prioritizeFocusedWindow, forKey: .prioritizeFocusedWindow)
+        try container.encode(autoShareFocusedWindows, forKey: .autoShareFocusedWindows)
+        try container.encode(accessCodeEnabled, forKey: .accessCodeEnabled)
+    }
 }

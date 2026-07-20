@@ -6,6 +6,7 @@ import Foundation
 import Testing
 @testable import ClipLiveShareWebRTC
 
+extension NativeMediaResourceTests {
 @Suite("Live Share capture pipeline policy")
 struct LiveShareCapturePipelineTests {
     @Test("only the four negotiated slots are accepted")
@@ -57,6 +58,159 @@ struct LiveShareCapturePipelineTests {
         }
         #expect(host.timeline == [.activated(0), .deactivated(0)])
         #expect(await pipeline.activeSlots.isEmpty)
+    }
+
+    @Test("in-place geometry update commits stable-slot metadata")
+    func geometryUpdateMetadata() async throws {
+        let host = FakeSlotHost()
+        let pipeline = LiveShareCapturePipeline(
+            host: host,
+            sessionFactory: { _, frameConsumer, _ in
+                FixtureCaptureSession(frameConsumer: frameConsumer)
+            }
+        )
+        let generation = UUID()
+        try await pipeline.start(Self.descriptor(), inSlot: 0, generation: generation)
+
+        let source = LiveShareWindowSource(
+            id: LiveShareWindowID(rawValue: 42),
+            windowName: "Fixture",
+            appName: "Tests"
+        )
+        let capped = LiveShareCaptureDescriptor(
+            source: .window(source),
+            target: .window(id: 42),
+            sourcePixelWidth: 5_120,
+            sourcePixelHeight: 2_880,
+            video: CaptureVideoConfiguration(width: 4_096, height: 2_304),
+            stream: GoPeepV1StreamInfo(
+                trackID: "video0",
+                windowName: "Fixture",
+                appName: "Tests",
+                isFocused: true,
+                width: 4_096,
+                height: 2_304
+            )
+        )
+        try await pipeline.update(capped, inSlot: 0, expectedGeneration: generation)
+
+        #expect(host.timeline == [
+            .activated(0),
+            .sent(0),
+            .metadataUpdated(slot: 0, width: 4_096, height: 2_304),
+        ])
+        #expect(capped.sourcePixelWidth == 5_120)
+        #expect(capped.sourcePixelHeight == 2_880)
+        try await pipeline.stop(slot: 0)
+    }
+
+    @Test("metadata failure restores the previous capture configuration")
+    func geometryMetadataFailureRollback() async throws {
+        let host = FakeSlotHost()
+        let session = FixtureCaptureSession(
+            frameConsumer: { _ in .accepted },
+            deliversStartupFrame: false
+        )
+        let pipeline = LiveShareCapturePipeline(
+            host: host,
+            sessionFactory: { _, _, _ in session }
+        )
+        let generation = UUID()
+        let original = Self.descriptor()
+        try await pipeline.start(original, inSlot: 0, generation: generation)
+        host.rejectNextMetadataUpdate()
+        let updated = LiveShareCaptureDescriptor(
+            source: original.source,
+            target: original.target,
+            sourcePixelWidth: 5_120,
+            sourcePixelHeight: 2_880,
+            video: CaptureVideoConfiguration(width: 4_096, height: 2_304),
+            stream: GoPeepV1StreamInfo(
+                trackID: "video0",
+                windowName: "Fixture",
+                appName: "Tests",
+                isFocused: true,
+                width: 4_096,
+                height: 2_304
+            )
+        )
+
+        await #expect(throws: FixtureCaptureError.metadataUpdateFailed) {
+            try await pipeline.update(updated, inSlot: 0, expectedGeneration: generation)
+        }
+        #expect(session.updatedGeometry == [
+            CaptureVideoConfiguration(width: 4_096, height: 2_304),
+            original.video,
+        ])
+        #expect(host.timeline.last == .metadataUpdated(
+            slot: 0,
+            width: original.stream.width,
+            height: original.stream.height
+        ))
+        try await pipeline.stop(slot: 0)
+    }
+
+    @Test("encoded alignment metadata does not rescale native odd capture")
+    func metadataOnlyAlignmentUpdate() async throws {
+        let host = FakeSlotHost()
+        let session = FixtureCaptureSession(
+            frameConsumer: { _ in .accepted },
+            deliversStartupFrame: false
+        )
+        let pipeline = LiveShareCapturePipeline(
+            host: host,
+            sessionFactory: { _, _, _ in session }
+        )
+        let generation = UUID()
+        let source = LiveShareWindowSource(
+            id: LiveShareWindowID(rawValue: 42),
+            windowName: "Odd Fixture",
+            appName: "Tests"
+        )
+        let nativeVideo = CaptureVideoConfiguration(width: 1_605, height: 1_108)
+        let original = LiveShareCaptureDescriptor(
+            source: .window(source),
+            target: .window(id: 42),
+            video: nativeVideo,
+            stream: GoPeepV1StreamInfo(
+                trackID: "video0",
+                windowName: "Odd Fixture",
+                appName: "Tests",
+                isFocused: true,
+                width: 1_605,
+                height: 1_108
+            )
+        )
+        try await pipeline.start(original, inSlot: 0, generation: generation)
+
+        let h264Aligned = LiveShareCaptureDescriptor(
+            source: original.source,
+            target: original.target,
+            video: nativeVideo,
+            stream: GoPeepV1StreamInfo(
+                trackID: "video0",
+                windowName: "Odd Fixture",
+                appName: "Tests",
+                isFocused: true,
+                width: 1_604,
+                height: 1_108
+            )
+        )
+        try await pipeline.update(
+            h264Aligned,
+            inSlot: 0,
+            expectedGeneration: generation
+        )
+
+        #expect(session.updatedGeometry.isEmpty)
+        #expect(host.latestConfiguration == .init(
+            slot: 0,
+            captureWidth: 1_605,
+            captureHeight: 1_108,
+            streamWidth: 1_604,
+            streamHeight: 1_108
+        ))
+        try await pipeline.stop(slot: 0)
     }
 
     @Test("a slot cannot be reused until its previous capture has drained")
@@ -143,20 +297,40 @@ struct LiveShareCapturePipelineTests {
         )
     }
 }
+}
 
 private final class FakeSlotHost: LiveShareVideoSlotHosting, @unchecked Sendable {
+    struct Configuration: Equatable {
+        let slot: Int
+        let captureWidth: Int
+        let captureHeight: Int
+        let streamWidth: Int
+        let streamHeight: Int
+    }
+
     enum Event: Equatable {
         case activated(Int)
         case sent(Int)
+        case metadataUpdated(slot: Int, width: Int, height: Int)
         case deactivated(Int)
     }
 
     private let lock = NSLock()
     private var activeSlots = Set<Int>()
     private var storedTimeline: [Event] = []
+    private var rejectsNextMetadata = false
+    private var storedLatestConfiguration: Configuration?
 
     var timeline: [Event] {
         lock.withLock { storedTimeline }
+    }
+
+    var latestConfiguration: Configuration? {
+        lock.withLock { storedLatestConfiguration }
+    }
+
+    func rejectNextMetadataUpdate() {
+        lock.withLock { rejectsNextMetadata = true }
     }
 
     func waitUntilDeactivated(slot: Int) async {
@@ -175,10 +349,49 @@ private final class FakeSlotHost: LiveShareVideoSlotHosting, @unchecked Sendable
         }
     }
 
-    func activateSlot(_ slot: Int, metadata: GoPeepV1StreamInfo) throws {
+    func activateSlot(
+        _ slot: Int,
+        metadata: GoPeepV1StreamInfo,
+        captureGeometry: WebRTCVideoCaptureGeometry
+    ) throws {
         lock.withLock {
             activeSlots.insert(slot)
+            storedLatestConfiguration = Configuration(
+                slot: slot,
+                captureWidth: captureGeometry.width,
+                captureHeight: captureGeometry.height,
+                streamWidth: metadata.width,
+                streamHeight: metadata.height
+            )
             storedTimeline.append(.activated(slot))
+        }
+    }
+
+    func updateSlotMetadata(
+        _ slot: Int,
+        metadata: GoPeepV1StreamInfo,
+        captureGeometry: WebRTCVideoCaptureGeometry
+    ) throws {
+        try lock.withLock {
+            guard activeSlots.contains(slot) else {
+                throw LiveShareCapturePipelineError.slotInactive(slot)
+            }
+            if rejectsNextMetadata {
+                rejectsNextMetadata = false
+                throw FixtureCaptureError.metadataUpdateFailed
+            }
+            storedLatestConfiguration = Configuration(
+                slot: slot,
+                captureWidth: captureGeometry.width,
+                captureHeight: captureGeometry.height,
+                streamWidth: metadata.width,
+                streamHeight: metadata.height
+            )
+            storedTimeline.append(.metadataUpdated(
+                slot: slot,
+                width: metadata.width,
+                height: metadata.height
+            ))
         }
     }
 
@@ -192,6 +405,7 @@ private final class FakeSlotHost: LiveShareVideoSlotHosting, @unchecked Sendable
 
 private enum FixtureCaptureError: Error, Equatable {
     case startFailed
+    case metadataUpdateFailed
 }
 
 private actor FixtureAsyncGate {
@@ -251,19 +465,23 @@ private final class FixtureCaptureSession: LiveShareCaptureSession, @unchecked S
     private let lock = NSLock()
     private let frameConsumer: ScreenCaptureSession.FrameConsumer
     private let startupError: FixtureCaptureError?
+    private let deliversStartupFrame: Bool
     private let startGate: FixtureAsyncGate?
     private let stopGate: FixtureAsyncGate?
     private var running = false
     private var storedStatistics = CaptureDeliveryStatistics()
+    private var storedUpdatedGeometry: [CaptureVideoConfiguration] = []
 
     init(
         frameConsumer: @escaping ScreenCaptureSession.FrameConsumer,
         startupError: FixtureCaptureError? = nil,
+        deliversStartupFrame: Bool = true,
         startGate: FixtureAsyncGate? = nil,
         stopGate: FixtureAsyncGate? = nil
     ) {
         self.frameConsumer = frameConsumer
         self.startupError = startupError
+        self.deliversStartupFrame = deliversStartupFrame
         self.startGate = startGate
         self.stopGate = stopGate
     }
@@ -276,10 +494,15 @@ private final class FixtureCaptureSession: LiveShareCaptureSession, @unchecked S
         lock.withLock { storedStatistics }
     }
 
+    var updatedGeometry: [CaptureVideoConfiguration] {
+        lock.withLock { storedUpdatedGeometry }
+    }
+
     func start(_ request: CaptureSessionRequest) async throws {
         if let startupError { throw startupError }
         await startGate?.suspend()
         lock.withLock { running = true }
+        guard deliversStartupFrame else { return }
         let disposition = frameConsumer(try makeFixtureFrame())
         lock.withLock {
             switch disposition {
@@ -299,7 +522,9 @@ private final class FixtureCaptureSession: LiveShareCaptureSession, @unchecked S
     func update(
         target: CaptureTarget,
         video: CaptureVideoConfiguration
-    ) async throws {}
+    ) async throws {
+        lock.withLock { storedUpdatedGeometry.append(video) }
+    }
 }
 
 private func makeFixtureFrame() throws -> BorrowedCaptureVideoFrame {

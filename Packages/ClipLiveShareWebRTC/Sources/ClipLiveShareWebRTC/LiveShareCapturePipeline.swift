@@ -9,7 +9,16 @@ public protocol LiveShareVideoSlotHosting: AnyObject, Sendable {
         toSlot slot: Int
     ) -> CaptureFrameDisposition
 
-    func activateSlot(_ slot: Int, metadata: GoPeepV1StreamInfo) throws
+    func activateSlot(
+        _ slot: Int,
+        metadata: GoPeepV1StreamInfo,
+        captureGeometry: WebRTCVideoCaptureGeometry
+    ) throws
+    func updateSlotMetadata(
+        _ slot: Int,
+        metadata: GoPeepV1StreamInfo,
+        captureGeometry: WebRTCVideoCaptureGeometry
+    ) throws
     func deactivateSlot(_ slot: Int)
 }
 
@@ -61,17 +70,30 @@ private final class LiveShareCaptureStartCompletion: @unchecked Sendable {
 public struct LiveShareCaptureDescriptor: Equatable, Sendable {
     public let source: LiveShareSource
     public let target: CaptureTarget
+    /// Native source pixels are kept separately from the transmitted capture
+    /// geometry. H.264 may intentionally aspect-fit a 5K/6K source while VP8
+    /// continues to request the native dimensions.
+    public let sourcePixelWidth: Int
+    public let sourcePixelHeight: Int
     public let video: CaptureVideoConfiguration
     public let stream: GoPeepV1StreamInfo
+
+    public var captureGeometry: WebRTCVideoCaptureGeometry {
+        WebRTCVideoCaptureGeometry(width: video.width, height: video.height)
+    }
 
     public init(
         source: LiveShareSource,
         target: CaptureTarget,
+        sourcePixelWidth: Int? = nil,
+        sourcePixelHeight: Int? = nil,
         video: CaptureVideoConfiguration,
         stream: GoPeepV1StreamInfo
     ) {
         self.source = source
         self.target = target
+        self.sourcePixelWidth = max(1, sourcePixelWidth ?? video.width)
+        self.sourcePixelHeight = max(1, sourcePixelHeight ?? video.height)
         self.video = video
         self.stream = stream
     }
@@ -93,6 +115,7 @@ public enum LiveShareCapturePipelineError: Error, Equatable, Sendable {
     case slotAlreadyActive(Int)
     case slotInactive(Int)
     case superseded(Int)
+    case updateRollbackFailed(slot: Int, update: String, rollback: String)
 }
 
 /// An atomic identity + counter snapshot for one active capture. Keeping the
@@ -212,7 +235,11 @@ public actor LiveShareCapturePipeline {
             // Enable the negotiated WebRTC track before ScreenCaptureKit starts.
             // `startCapture()` may synchronously deliver the only complete frame
             // for an otherwise idle window before its async call returns.
-            try host.activateSlot(slot, metadata: descriptor.stream)
+            try host.activateSlot(
+                slot,
+                metadata: descriptor.stream,
+                captureGeometry: descriptor.captureGeometry
+            )
             activatedHostSlot = true
             try await session.start(CaptureSessionRequest(
                 target: descriptor.target,
@@ -277,14 +304,74 @@ public actor LiveShareCapturePipeline {
               source.generation == expectedGeneration else {
             throw LiveShareCapturePipelineError.slotInactive(slot)
         }
-        try await source.session.update(
-            target: descriptor.target,
-            video: descriptor.video
-        )
+        let captureChanged = source.descriptor.target != descriptor.target
+            || source.descriptor.video != descriptor.video
+        do {
+            if captureChanged {
+                try await source.session.update(
+                    target: descriptor.target,
+                    video: descriptor.video
+                )
+            }
+        } catch {
+            guard let current = active[slot],
+                  current.generation == expectedGeneration,
+                  current.session === source.session else {
+                throw LiveShareCapturePipelineError.superseded(slot)
+            }
+            do {
+                if captureChanged {
+                    try await source.session.update(
+                        target: source.descriptor.target,
+                        video: source.descriptor.video
+                    )
+                }
+                try host.updateSlotMetadata(
+                    slot,
+                    metadata: source.descriptor.stream,
+                    captureGeometry: source.descriptor.captureGeometry
+                )
+            } catch let rollbackError {
+                throw LiveShareCapturePipelineError.updateRollbackFailed(
+                    slot: slot,
+                    update: error.localizedDescription,
+                    rollback: rollbackError.localizedDescription
+                )
+            }
+            throw error
+        }
         guard let current = active[slot],
               current.generation == expectedGeneration,
               current.session === source.session else {
             throw LiveShareCapturePipelineError.superseded(slot)
+        }
+        do {
+            try host.updateSlotMetadata(
+                slot,
+                metadata: descriptor.stream,
+                captureGeometry: descriptor.captureGeometry
+            )
+        } catch {
+            do {
+                if captureChanged {
+                    try await source.session.update(
+                        target: source.descriptor.target,
+                        video: source.descriptor.video
+                    )
+                }
+                try host.updateSlotMetadata(
+                    slot,
+                    metadata: source.descriptor.stream,
+                    captureGeometry: source.descriptor.captureGeometry
+                )
+            } catch let rollbackError {
+                throw LiveShareCapturePipelineError.updateRollbackFailed(
+                    slot: slot,
+                    update: error.localizedDescription,
+                    rollback: rollbackError.localizedDescription
+                )
+            }
+            throw error
         }
         active[slot] = ActiveSource(
             descriptor: descriptor,

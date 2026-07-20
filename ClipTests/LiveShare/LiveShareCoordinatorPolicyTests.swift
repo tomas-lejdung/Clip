@@ -41,24 +41,90 @@ struct LiveShareCoordinatorPolicyTests {
         #expect(performance.maximumBitrateBps == 500_000)
         #expect(performance.maximumFramesPerSecond == 15)
         #expect(!performance.maintainsResolution)
+    }
 
-        let adaptiveBackground = LiveShareCoordinatorPolicy.senderPolicy(
+    @Test("one session budget is divided by focus without multiplying bandwidth")
+    func senderPolicyAllocation() throws {
+        let slots = try LiveShareTrackSlotAllocation(slots: [
+            LiveShareTrackSlot(
+                index: 0,
+                source: .window(.init(id: .init(rawValue: 10), windowName: "A", appName: "A")),
+                isFocused: true
+            ),
+            LiveShareTrackSlot(
+                index: 1,
+                source: .window(.init(id: .init(rawValue: 11), windowName: "B", appName: "B"))
+            ),
+            LiveShareTrackSlot(
+                index: 2,
+                source: .window(.init(id: .init(rawValue: 12), windowName: "C", appName: "C"))
+            ),
+            LiveShareTrackSlot(index: 3),
+        ])
+
+        let prioritized = LiveShareCoordinatorPolicy.senderPolicies(
             for: LiveShareSettings(
                 quality: .veryHigh,
-                adaptiveBitrateEnabled: true
+                prioritizeFocusedWindow: true
             ),
-            isFocused: false
+            slots: slots
         )
-        #expect(adaptiveBackground.maximumBitrateBps == 2_000_000)
+        #expect(prioritized[0]?.maximumBitrateBps == 4_000_000)
+        #expect(prioritized[1]?.maximumBitrateBps == 1_000_000)
+        #expect(prioritized[2]?.maximumBitrateBps == 1_000_000)
+        #expect(prioritized[0]?.bitratePriority == 4)
+        #expect(prioritized[1]?.bitratePriority == 1)
+        #expect(prioritized[2]?.bitratePriority == 1)
+        #expect(prioritized.values.compactMap(\.maximumBitrateBps).reduce(0, +) == 6_000_000)
 
-        let fixedBackground = LiveShareCoordinatorPolicy.senderPolicy(
+        let equal = LiveShareCoordinatorPolicy.senderPolicies(
             for: LiveShareSettings(
                 quality: .veryHigh,
-                adaptiveBitrateEnabled: false
+                prioritizeFocusedWindow: false
             ),
-            isFocused: false
+            slots: slots
         )
-        #expect(fixedBackground.maximumBitrateBps == 6_000_000)
+        #expect(equal[0]?.maximumBitrateBps == 2_000_000)
+        #expect(equal[1]?.maximumBitrateBps == 2_000_000)
+        #expect(equal[2]?.maximumBitrateBps == 2_000_000)
+        #expect(equal.values.allSatisfy { $0.bitratePriority == 1 })
+        #expect(equal.values.compactMap(\.maximumBitrateBps).reduce(0, +) == 6_000_000)
+    }
+
+    @Test("statistics compare aggregate rates with an aggregate ceiling")
+    func aggregateBitrateCeiling() {
+        #expect(LiveShareCoordinatorPolicy.aggregateConfiguredBitrateCeiling(
+            perViewer: 6_000_000,
+            viewerCount: 2
+        ) == 12_000_000)
+        #expect(LiveShareCoordinatorPolicy.aggregateConfiguredBitrateCeiling(
+            perViewer: 6_000_000,
+            viewerCount: 0
+        ) == 0)
+        #expect(LiveShareCoordinatorPolicy.aggregateConfiguredBitrateCeiling(
+            perViewer: Int.max,
+            viewerCount: 2
+        ) == Int.max)
+    }
+
+    @Test("any failed geometry rollback requires complete session cleanup")
+    func geometryRollbackFailurePolicy() {
+        #expect(LiveShareCaptureGeometryFailurePolicy.requiresSessionFailure(
+            after: LiveShareCaptureGeometryTransitionError.rollbackFailed(
+                change: "change",
+                rollback: "rollback"
+            )
+        ))
+        #expect(LiveShareCaptureGeometryFailurePolicy.requiresSessionFailure(
+            after: LiveShareCapturePipelineError.updateRollbackFailed(
+                slot: 0,
+                update: "change",
+                rollback: "rollback"
+            )
+        ))
+        #expect(!LiveShareCaptureGeometryFailurePolicy.requiresSessionFailure(
+            after: LiveShareCapturePipelineError.slotInactive(0)
+        ))
     }
 
     @Test("video dimensions match libwebrtc H.264 output geometry")
@@ -67,6 +133,112 @@ struct LiveShareCoordinatorPolicyTests {
         #expect(LiveShareCoordinatorPolicy.videoEncoderCompatibleDimension(1_203) == 1_202)
         #expect(LiveShareCoordinatorPolicy.videoEncoderCompatibleDimension(1_920) == 1_920)
         #expect(LiveShareCoordinatorPolicy.videoEncoderCompatibleDimension(1) == 2)
+    }
+
+    @Test("H.264 aspect-fits 5K and 6K while VP8 stays native")
+    func codecCaptureGeometry() {
+        #expect(LiveShareCoordinatorPolicy.captureGeometry(
+            sourceWidth: 1_920,
+            sourceHeight: 1_080,
+            codec: .h264
+        ) == LiveShareCaptureGeometry(width: 1_920, height: 1_080))
+        #expect(LiveShareCoordinatorPolicy.captureGeometry(
+            sourceWidth: 1_605,
+            sourceHeight: 1_108,
+            codec: .h264
+        ) == LiveShareCaptureGeometry(width: 1_605, height: 1_108))
+        #expect(LiveShareCoordinatorPolicy.streamGeometry(
+            captureGeometry: LiveShareCaptureGeometry(width: 1_605, height: 1_108),
+            codec: .h264
+        ) == LiveShareCaptureGeometry(width: 1_604, height: 1_108))
+        #expect(LiveShareCoordinatorPolicy.streamGeometry(
+            captureGeometry: LiveShareCaptureGeometry(width: 1_605, height: 1_109),
+            codec: .vp8
+        ) == LiveShareCaptureGeometry(width: 1_605, height: 1_109))
+        #expect(LiveShareCoordinatorPolicy.captureGeometry(
+            sourceWidth: 5_120,
+            sourceHeight: 2_880,
+            codec: .h264
+        ) == LiveShareCaptureGeometry(width: 4_096, height: 2_304))
+        #expect(LiveShareCoordinatorPolicy.captureGeometry(
+            sourceWidth: 5_120,
+            sourceHeight: 1_440,
+            codec: .h264
+        ) == LiveShareCaptureGeometry(width: 4_096, height: 1_152))
+        #expect(LiveShareCoordinatorPolicy.captureGeometry(
+            sourceWidth: 2_880,
+            sourceHeight: 5_120,
+            codec: .h264
+        ) == LiveShareCaptureGeometry(width: 2_304, height: 4_096))
+        #expect(LiveShareCoordinatorPolicy.captureGeometry(
+            sourceWidth: 6_016,
+            sourceHeight: 3_384,
+            codec: .h264
+        ) == LiveShareCaptureGeometry(width: 4_096, height: 2_304))
+        let sixtyFPSH264 = LiveShareCoordinatorPolicy.captureGeometry(
+            sourceWidth: 6_016,
+            sourceHeight: 3_384,
+            codec: .h264,
+            framesPerSecond: 60
+        )
+        let sixtyFPSMacroblocks = ((sixtyFPSH264.width + 15) / 16)
+            * ((sixtyFPSH264.height + 15) / 16)
+        #expect(sixtyFPSMacroblocks * 60 <= 2_073_600)
+        #expect(sixtyFPSH264 != LiveShareCaptureGeometry(width: 4_096, height: 2_304))
+        #expect(LiveShareCoordinatorPolicy.captureGeometry(
+            sourceWidth: 6_016,
+            sourceHeight: 3_384,
+            codec: .vp8,
+            framesPerSecond: 60
+        ) == LiveShareCaptureGeometry(width: 6_016, height: 3_384))
+        #expect(LiveShareCoordinatorPolicy.captureGeometry(
+            sourceWidth: 6_017,
+            sourceHeight: 3_385,
+            codec: .vp8
+        ) == LiveShareCaptureGeometry(width: 6_017, height: 3_385))
+    }
+
+    @Test("H.264 geometry never exceeds hardware side or luma limits")
+    func h264GeometryLimits() {
+        for (width, height) in [
+            (5_120, 2_880),
+            (6_016, 3_384),
+            (8_000, 1_000),
+            (1_000, 8_000),
+            (4_097, 2_305),
+        ] {
+            let geometry = LiveShareCoordinatorPolicy.captureGeometry(
+                sourceWidth: width,
+                sourceHeight: height,
+                codec: .h264
+            )
+            let streamGeometry = LiveShareCoordinatorPolicy.streamGeometry(
+                captureGeometry: geometry,
+                codec: .h264
+            )
+            #expect(streamGeometry.width <= 4_096)
+            #expect(streamGeometry.height <= 4_096)
+            #expect(streamGeometry.width * streamGeometry.height <= 4_096 * 2_304)
+            #expect(
+                ((streamGeometry.width + 15) / 16)
+                    * ((streamGeometry.height + 15) / 16)
+                    <= 36_864
+            )
+            #expect(streamGeometry.width.isMultiple(of: 2))
+            #expect(streamGeometry.height.isMultiple(of: 2))
+        }
+
+        // Visible luma alone is under the nominal limit, but codec padding for
+        // both non-multiple-of-16 sides would otherwise exceed Level 5.2.
+        let pathological = LiveShareCoordinatorPolicy.captureGeometry(
+            sourceWidth: 4_081,
+            sourceHeight: 2_307,
+            codec: .h264
+        )
+        #expect(
+            ((pathological.width + 15) / 16) * ((pathological.height + 15) / 16)
+                <= 36_864
+        )
     }
 
     @Test("capture pressure requires sustained samples and rejects stale generations")
@@ -102,6 +274,10 @@ struct LiveShareCoordinatorPolicyTests {
             [sample(generation: firstGeneration, delivered: 0, dropped: 0)],
             activeGenerations: firstActive
         )
+        #expect(ledger.latestBackpressureDrops(
+            for: sourceID,
+            generation: firstGeneration
+        ) == 0)
         for interval in 1...4 {
             ledger.update(
                 [sample(
@@ -112,6 +288,10 @@ struct LiveShareCoordinatorPolicyTests {
                 activeGenerations: firstActive
             )
             #expect(!ledger.isOverloaded(sourceID, generation: firstGeneration))
+            #expect(ledger.latestBackpressureDrops(
+                for: sourceID,
+                generation: firstGeneration
+            ) == 10)
         }
 
         // A sample for an unrecognized replacement cannot complete the old
@@ -142,6 +322,10 @@ struct LiveShareCoordinatorPolicyTests {
             [sample(generation: replacementGeneration, delivered: 1, dropped: 0)],
             activeGenerations: replacementActive
         )
+        #expect(ledger.latestBackpressureDrops(
+            for: sourceID,
+            generation: replacementGeneration
+        ) == 0)
         #expect(
             ledger.statistics(for: sourceID, generation: replacementGeneration)
                 == CaptureDeliveryStatistics(deliveredFrames: 1, backpressureDrops: 0)

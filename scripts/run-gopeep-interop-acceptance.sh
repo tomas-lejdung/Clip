@@ -20,7 +20,7 @@ trap cleanup EXIT INT TERM
 
 if [[ ! -f "$GOPEEP_ROOT/go.mod" || ! -f "$GOPEEP_ROOT/cmd/server/main.go" ]]; then
   echo "GoPeep source checkout not found at: $GOPEEP_ROOT" >&2
-  echo "Set CLIP_GOPEEP_ROOT to the unmodified GoPeep checkout." >&2
+  echo "Set CLIP_GOPEEP_ROOT to the compatible GoPeep checkout." >&2
   exit 66
 fi
 
@@ -39,7 +39,7 @@ if [[ -z "$PORT" ]]; then
   exit 69
 fi
 
-echo "Building the unmodified GoPeep v1 signaling server..."
+echo "Building the current GoPeep v1 signaling server and viewer..."
 (
   cd "$GOPEEP_ROOT"
   # The reference checkout carries a stale vendor directory. `-mod=readonly`
@@ -66,7 +66,7 @@ if [[ "$READY" != "1" ]]; then
   exit 70
 fi
 
-echo "Running real GoPeep routing plus native H.264/control-channel acceptance..."
+echo "Running real GoPeep routing, H.264/VP8 switching, and control-channel acceptance..."
 mkdir -p "$MODULE_CACHE"
 export CLANG_MODULE_CACHE_PATH="$MODULE_CACHE"
 export SWIFTPM_MODULECACHE_OVERRIDE="$MODULE_CACHE"
@@ -77,6 +77,6 @@ swift test --package-path "$PACKAGE"
 
 echo "GoPeep interoperability acceptance passed."
 echo "Covered: real reserve/auth/join/offer/answer/ICE routing and served viewer artifact."
-echo "Covered: native libwebrtc H.264 encode/decode and ordered gopeep-control delivery."
-echo "Covered: unmodified viewer execution in WebKit, advancing H.264 frames, and control metadata."
+echo "Covered: native H.264 and libwebrtc VP8 encode/decode plus ordered gopeep-control delivery."
+echo "Covered: current viewer execution in WebKit, live H.264/VP8 switching, and control metadata."
 echo "Not claimed: remote Internet/TURN traversal."
