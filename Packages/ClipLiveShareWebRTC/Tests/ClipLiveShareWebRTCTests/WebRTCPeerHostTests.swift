@@ -1,6 +1,7 @@
 import ClipLiveShare
 import Foundation
 import Testing
+@preconcurrency import WebRTC
 @testable import ClipLiveShareWebRTC
 
 extension NativeMediaResourceTests {
@@ -70,6 +71,7 @@ struct WebRTCPeerHostTests {
         #expect(!offer.sdp.contains("profile-level-id=42e01f"))
         #expect(!offer.sdp.contains(" VP8/90000"))
         #expect(!offer.sdp.contains(" VP9/90000"))
+        #expect(!offer.sdp.contains(" AV1/90000"))
         #expect(offer.sdp.contains("m=application"))
         #expect(host.viewerIDs == ["viewer-fixture"])
         await #expect(throws: WebRTCPeerHostError.duplicateViewer("viewer-fixture")) {
@@ -77,17 +79,101 @@ struct WebRTCPeerHostTests {
         }
     }
 
-    @Test("composite encoder factory exposes H264 and VP8 in selected order")
-    func compositeEncoderFactoryCodecOrder() {
-        let h264First = WebRTCVideoEncoderFactory(preferredCodec: .h264)
-            .supportedCodecs().map(\.name)
-        let vp8First = WebRTCVideoEncoderFactory(preferredCodec: .vp8)
-            .supportedCodecs().map(\.name)
+    @Test("video codec model maps every persisted value to its RTC name")
+    func videoCodecModel() throws {
+        #expect(WebRTCVideoCodec.allCases == [.h264, .vp8, .vp9, .av1])
+        #expect(WebRTCVideoCodec.allCases.map(\.rawValue) == [
+            "h264", "vp8", "vp9", "av1",
+        ])
+        #expect(WebRTCVideoCodec.allCases.map(\.rtcName) == [
+            "H264", "VP8", "VP9", "AV1",
+        ])
 
-        #expect(h264First.first == "H264")
-        #expect(vp8First.first == "VP8")
-        #expect(h264First.contains("VP8"))
-        #expect(vp8First.contains("H264"))
+        for codec in WebRTCVideoCodec.allCases {
+            let data = try JSONEncoder().encode(codec)
+            let decoded = try JSONDecoder().decode(
+                WebRTCVideoCodec.self,
+                from: data
+            )
+            #expect(decoded == codec)
+        }
+    }
+
+    @Test("composite encoder factory exposes available codecs in selected order")
+    func compositeEncoderFactoryCodecOrder() {
+        let supportedKinds = WebRTCVideoCodec.allCases.filter { codec in
+            switch codec {
+            case .h264, .vp8:
+                true
+            case .vp9:
+                RTCVideoEncoderVP9.isSupported()
+            case .av1:
+                RTCVideoEncoderAV1.isSupported()
+            }
+        }
+
+        for preferredCodec in supportedKinds {
+            let factory = WebRTCVideoEncoderFactory(
+                preferredCodec: preferredCodec
+            )
+            let codecNames = factory.supportedCodecs().map(\.name)
+
+            #expect(codecNames.first == preferredCodec.rtcName)
+            for codec in supportedKinds {
+                #expect(codecNames.contains(codec.rtcName))
+            }
+
+            let vp9Formats = factory.supportedCodecs().filter {
+                $0.name == WebRTCVideoCodec.vp9.rtcName
+            }
+            #expect(vp9Formats.allSatisfy {
+                $0.parameters["profile-id"] == "0"
+            })
+        }
+    }
+
+    @Test("software codec runtime guards control advertising and creation")
+    func softwareCodecRuntimeGuards() {
+        let unsupportedFactory = WebRTCVideoEncoderFactory(
+            preferredCodec: .vp9,
+            supportsVP9: false,
+            supportsAV1: false
+        )
+
+        #expect(!unsupportedFactory.supportedCodecs().contains {
+            $0.name == WebRTCVideoCodec.vp9.rtcName
+        })
+        #expect(!unsupportedFactory.supportedCodecs().contains {
+            $0.name == WebRTCVideoCodec.av1.rtcName
+        })
+        #expect(unsupportedFactory.createEncoder(
+            RTCVideoCodecInfo(name: WebRTCVideoCodec.vp9.rtcName)
+        ) == nil)
+        #expect(unsupportedFactory.createEncoder(
+            RTCVideoCodecInfo(name: WebRTCVideoCodec.av1.rtcName)
+        ) == nil)
+
+        let supportedFactory = WebRTCVideoEncoderFactory(
+            preferredCodec: .vp9,
+            supportsVP9: true,
+            supportsAV1: true
+        )
+        #expect(supportedFactory.supportedCodecs().contains {
+            $0.name == WebRTCVideoCodec.vp9.rtcName
+        })
+        #expect(supportedFactory.supportedCodecs().contains {
+            $0.name == WebRTCVideoCodec.av1.rtcName
+        })
+        #expect(supportedFactory.createEncoder(
+            RTCVideoCodecInfo(name: WebRTCVideoCodec.vp9.rtcName)
+        ) != nil)
+        #expect(supportedFactory.createEncoder(RTCVideoCodecInfo(
+            name: WebRTCVideoCodec.vp9.rtcName,
+            parameters: ["profile-id": "2"]
+        )) == nil)
+        #expect(supportedFactory.createEncoder(
+            RTCVideoCodecInfo(name: WebRTCVideoCodec.av1.rtcName)
+        ) != nil)
     }
 
     @Test("VP8 host offers VP8 exclusively while retaining stable stream IDs")
@@ -103,8 +189,51 @@ struct WebRTCPeerHostTests {
         #expect(Self.occurrences(of: "m=video", in: offer.sdp) == 4)
         #expect(offer.sdp.contains(" VP8/90000"))
         #expect(!offer.sdp.contains(" H264/90000"))
+        #expect(!offer.sdp.contains(" VP9/90000"))
+        #expect(!offer.sdp.contains(" AV1/90000"))
         for slot in 0 ..< 4 {
             #expect(offer.sdp.contains("gopeep-stream-\(slot) video\(slot)"))
+        }
+    }
+
+    @Test(
+        "optional software codec offers prefer the selection and retain VP8 fallback",
+        arguments: [WebRTCVideoCodec.vp9, .av1]
+    )
+    func optionalSoftwareCodecOfferShape(codec: WebRTCVideoCodec) async throws {
+        let isSupported = switch codec {
+        case .vp9: RTCVideoEncoderVP9.isSupported()
+        case .av1: RTCVideoEncoderAV1.isSupported()
+        case .h264, .vp8: true
+        }
+        #expect(isSupported)
+        guard isSupported else { return }
+
+        let host = try WebRTCPeerHost(
+            configuration: .init(iceServers: [], videoCodec: codec),
+            eventQueue: .global()
+        )
+        defer { host.close() }
+
+        let offer = try await host.createOffer(for: "\(codec.rawValue)-viewer")
+        #expect(Self.occurrences(of: "m=video", in: offer.sdp) == 4)
+        let selected = try #require(offer.sdp.range(
+            of: " \(codec.rtcName)/90000",
+            options: .caseInsensitive
+        ))
+        let fallback = try #require(offer.sdp.range(of: " VP8/90000"))
+        #expect(selected.lowerBound < fallback.lowerBound)
+        #expect(!offer.sdp.contains(" H264/90000"))
+        if codec == .vp9 {
+            #expect(offer.sdp.contains("profile-id=0"))
+            #expect(!offer.sdp.contains("profile-id=2"))
+        } else {
+            let vp9Fallback = try #require(offer.sdp.range(of: " VP9/90000"))
+            #expect(selected.lowerBound < vp9Fallback.lowerBound)
+            #expect(vp9Fallback.lowerBound < fallback.lowerBound)
+            #expect(offer.sdp.contains("level-idx=5"))
+            #expect(offer.sdp.contains("profile=0"))
+            #expect(offer.sdp.contains("tier=0"))
         }
     }
 

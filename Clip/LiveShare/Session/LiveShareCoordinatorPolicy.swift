@@ -7,6 +7,27 @@ import Foundation
 enum LiveShareCoordinatorPolicy {
     static let maximumReconnectAttempts = 5
 
+    /// Recording click highlights are a separate, file-capture preference.
+    /// Live Share does not expose that setting and ScreenCaptureKit can place
+    /// the system highlight in the wrong coordinate space after a live window
+    /// resize, so every network capture keeps it disabled explicitly.
+    static func captureVideoConfiguration(
+        width: Int,
+        height: Int,
+        framesPerSecond: Int,
+        showsCursor: Bool = true,
+        sourceRect: CGRect? = nil
+    ) -> CaptureVideoConfiguration {
+        CaptureVideoConfiguration(
+            width: width,
+            height: height,
+            framesPerSecond: framesPerSecond,
+            showsCursor: showsCursor,
+            showsClickHighlights: false,
+            sourceRect: sourceRect
+        )
+    }
+
     /// ScreenCaptureKit input geometry for a live source. Native pixels remain
     /// untouched whenever they fit the H.264 hardware envelope, including odd
     /// dimensions. H.264's even output alignment is applied separately by
@@ -15,8 +36,9 @@ enum LiveShareCoordinatorPolicy {
     ///
     /// Apple Silicon's hardware H.264 encoder still rejects geometry above a
     /// 4,096-pixel side (including 5K and 6K displays), so oversized sources
-    /// are aspect-fit and macroblock-aligned before capture. VP8 keeps exact
-    /// native geometry because none of those H.264 limits apply to it.
+    /// are aspect-fit and macroblock-aligned before capture. VP8, VP9, and AV1
+    /// keep exact native geometry because none of those H.264 limits apply to
+    /// their libwebrtc software encoders.
     static func captureGeometry(
         sourceWidth: Int,
         sourceHeight: Int,
@@ -75,10 +97,10 @@ enum LiveShareCoordinatorPolicy {
         return LiveShareCaptureGeometry(width: encodedWidth, height: encodedHeight)
     }
 
-    /// Dimensions advertised to WebRTC and produced by the encoder. VP8 can
-    /// encode the capture geometry directly. H.264 aligns down by at most one
-    /// pixel per axis; the native pixel buffer remains unchanged and the
-    /// VideoToolbox bridge performs a top-left crop instead of a scale.
+    /// Dimensions advertised to WebRTC and produced by the encoder. Software
+    /// codecs can encode the capture geometry directly. H.264 aligns down by
+    /// at most one pixel per axis; the native pixel buffer remains unchanged
+    /// and the VideoToolbox bridge performs a top-left crop instead of a scale.
     static func streamGeometry(
         captureGeometry: LiveShareCaptureGeometry,
         codec: LiveShareVideoCodec
@@ -303,7 +325,7 @@ enum LiveShareCoordinatorPolicy {
         case .captureFailed:
             String(localized: "Clip couldn’t capture the selected source.")
         case .encoderFailed:
-            String(localized: "The H.264 encoder couldn’t start.")
+            String(localized: "The video encoder couldn’t start.")
         case .peerConnectionFailed:
             String(localized: "A viewer connection couldn’t be established.")
         case .unknown, nil:

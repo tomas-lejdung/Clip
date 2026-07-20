@@ -307,14 +307,7 @@ struct MenuBarPopoverView: View {
     private var captureTargets: some View {
         VStack(spacing: 2) {
             menuButton(
-                "Live Share…",
-                systemImage: "dot.radiowaves.left.and.right",
-                identifier: "clip.menu.liveShare",
-                action: actions.startLiveShare
-            )
-
-            menuButton(
-                "Capture Area…",
+                "Capture Area",
                 systemImage: "viewfinder",
                 identifier: "clip.menu.captureArea",
                 action: actions.captureArea
@@ -370,6 +363,13 @@ struct MenuBarPopoverView: View {
                 .accessibilityLabel("\(display.name), \(display.resolution)")
                 .accessibilityIdentifier("clip.menu.display.\(display.id)")
             }
+
+            menuButton(
+                "Live Share",
+                systemImage: "dot.radiowaves.left.and.right",
+                identifier: "clip.menu.liveShare",
+                action: actions.startLiveShare
+            )
         }
     }
 

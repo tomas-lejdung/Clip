@@ -45,7 +45,6 @@ final class LiveShareCoordinator {
     private let server: GoPeepV1ServerConfiguration
     private let signaling: GoPeepV1SignalingClient
     private let discovery: any CaptureContentDiscovering
-    private let showsClickHighlights: () -> Bool
     private let onSessionEnded: () -> Void
     private let onMenuBarStatusChanged: (LiveShareMenuBarStatus) -> Void
 
@@ -170,7 +169,6 @@ final class LiveShareCoordinator {
         applicationSupportDirectory: URL,
         server: GoPeepV1ServerConfiguration = .goPeepRemote,
         discovery: any CaptureContentDiscovering = ScreenCaptureContentDiscovery(),
-        showsClickHighlights: @escaping () -> Bool,
         onSessionEnded: @escaping () -> Void,
         onMenuBarStatusChanged: @escaping (LiveShareMenuBarStatus) -> Void = { _ in }
     ) throws {
@@ -179,7 +177,6 @@ final class LiveShareCoordinator {
         )
         self.server = server
         self.discovery = discovery
-        self.showsClickHighlights = showsClickHighlights
         self.onSessionEnded = onSessionEnded
         self.onMenuBarStatusChanged = onMenuBarStatusChanged
         signaling = GoPeepV1SignalingClient(
@@ -717,24 +714,43 @@ final class LiveShareCoordinator {
             }
             await coordinator.performShareWindow(
                 targetWindow,
-                requestedIdentifier: requestedIdentifier
+                requestedIdentifier: requestedIdentifier,
+                isAutomatic: isAutomatic
             )
         }
     }
 
     private func performShareWindow(
         _ targetWindow: ShareableCaptureWindow,
-        requestedIdentifier: String?
+        requestedIdentifier: String?,
+        isAutomatic: Bool
     ) async {
         guard !isEnding,
-              state.snapshot.phase == .ready || state.snapshot.phase == .sharing else { return }
+              state.snapshot.phase == .ready || state.snapshot.phase == .sharing,
+              ShareableApplicationWindowEligibility.isEligible(
+                  targetWindow,
+                  minimumPointSize: CGSize(width: 100, height: 100)
+              ) else { return }
         let windowID = LiveShareWindowID(rawValue: targetWindow.id)
         let sourceID = LiveShareSourceID.window(windowID)
         if let requestedIdentifier,
            requestedIdentifier != LiveShareCoordinatorPolicy.sourceIdentifier(sourceID) {
             return
         }
+        if isAutomatic {
+            guard settings.autoShareFocusedWindows,
+                  latestAutomaticWindowID == windowID,
+                  state.snapshot.sources.fullscreen == nil else { return }
+        }
+        let source = LiveShareSource.window(LiveShareWindowSource(
+            id: windowID,
+            windowName: targetWindow.title,
+            appName: targetWindow.applicationName
+        ))
         if state.snapshot.sources.contains(sourceID) {
+            if isAutomatic {
+                await retainOnlyAutomaticWindow(source)
+            }
             slotAllocation.focus(sourceID)
             broadcastFocusChange()
             publish()
@@ -750,12 +766,30 @@ final class LiveShareCoordinator {
         }
         guard !isEnding,
               state.snapshot.phase == .ready || state.snapshot.phase == .sharing else { return }
-        let source = LiveShareSource.window(LiveShareWindowSource(
-            id: windowID,
-            windowName: targetWindow.title,
-            appName: targetWindow.applicationName
-        ))
-        _ = await startSource(source, window: targetWindow, display: nil)
+        _ = await startSource(
+            source,
+            window: targetWindow,
+            display: nil,
+            replacesExistingWindows: isAutomatic
+        )
+    }
+
+    private func retainOnlyAutomaticWindow(_ source: LiveShareSource) async {
+        guard case let .window(window) = source else { return }
+        let oldAllocation = slotAllocation
+        let change = state.replaceWindows(with: window)
+        guard change.changed else { return }
+        do {
+            try slotAllocation.apply(change)
+        } catch {
+            fail(code: .captureFailed, error: error)
+            return
+        }
+        for removed in change.removed {
+            if let oldSlot = oldAllocation.slot(for: removed.id) {
+                await stopCaptureOnly(source: removed, slot: oldSlot.index)
+            }
+        }
     }
 
     private func permitsWindowShare(_ sourceID: LiveShareSourceID) -> Bool {
@@ -768,10 +802,8 @@ final class LiveShareCoordinator {
         )
     }
 
-    /// Serializes user and auto-share source transitions across suspension
-    /// points. Per-source guards are insufficient because a fifth focused
-    /// window may reuse the slot of a different source whose capture start is
-    /// still suspended.
+    /// Serializes manual additions and exclusive auto-share replacements across
+    /// suspension points so capture teardown and stable slot reuse cannot race.
     private func enqueueSourceTransition(
         _ operation: @escaping @MainActor (LiveShareCoordinator) async -> Void
     ) {
@@ -1013,7 +1045,8 @@ final class LiveShareCoordinator {
         _ source: LiveShareSource,
         window: ShareableCaptureWindow?,
         display: ShareableCaptureDisplay?,
-        failsSessionWhenNoSources: Bool = true
+        failsSessionWhenNoSources: Bool = true,
+        replacesExistingWindows: Bool = false
     ) async -> Bool {
         let sourceID = source.id
         guard !sourceOperationIDs.contains(sourceID),
@@ -1024,7 +1057,12 @@ final class LiveShareCoordinator {
         defer { sourceOperationIDs.remove(sourceID) }
 
         let oldAllocation = slotAllocation
-        let change = state.addSource(source)
+        let change: LiveShareSourceChange
+        if replacesExistingWindows, case let .window(windowSource) = source {
+            change = state.replaceWindows(with: windowSource)
+        } else {
+            change = state.addSource(source)
+        }
         do {
             try slotAllocation.apply(change)
         } catch {
@@ -1192,12 +1230,11 @@ final class LiveShareCoordinator {
             target: target,
             sourcePixelWidth: width,
             sourcePixelHeight: height,
-            video: CaptureVideoConfiguration(
+            video: LiveShareCoordinatorPolicy.captureVideoConfiguration(
                 width: geometry.width,
                 height: geometry.height,
                 framesPerSecond: settings.frameRate.rawValue,
-                showsCursor: true,
-                showsClickHighlights: showsClickHighlights()
+                showsCursor: true
             ),
             stream: stream
         )
@@ -1443,16 +1480,15 @@ final class LiveShareCoordinator {
 
     /// Couples codec renegotiation to ScreenCaptureKit geometry without ever
     /// presenting an unsupported 5K/6K buffer to VideoToolbox. The safe order
-    /// differs by direction: cap before enabling H.264; enable VP8 before
-    /// restoring native pixels. Either failure returns capture and codec to the
-    /// previous coherent pair.
+    /// differs by direction: cap before enabling H.264; enable any software
+    /// codec before restoring native pixels. Either failure returns capture
+    /// and codec to the previous coherent pair.
     private func performVideoCodecChange(
         from previousCodec: LiveShareVideoCodec,
         to codec: LiveShareVideoCodec,
         host: WebRTCPeerHost
     ) async throws {
-        switch (previousCodec, codec) {
-        case (.vp8, .h264):
+        if previousCodec != .h264, codec == .h264 {
             let previousGeometry = try await transitionActiveCaptureGeometry(to: .h264)
             do {
                 try await host.updateVideoCodec(.h264)
@@ -1467,11 +1503,10 @@ final class LiveShareCoordinator {
                 }
                 throw error
             }
-
-        case (.h264, .vp8):
-            try await host.updateVideoCodec(.vp8)
+        } else if previousCodec == .h264, codec != .h264 {
+            try await host.updateVideoCodec(webRTCVideoCodec(codec))
             do {
-                _ = try await transitionActiveCaptureGeometry(to: .vp8)
+                _ = try await transitionActiveCaptureGeometry(to: codec)
             } catch {
                 do {
                     try await host.updateVideoCodec(.h264)
@@ -1483,8 +1518,7 @@ final class LiveShareCoordinator {
                 }
                 throw error
             }
-
-        default:
+        } else {
             try await host.updateVideoCodec(webRTCVideoCodec(codec))
         }
     }
@@ -1594,12 +1628,11 @@ final class LiveShareCoordinator {
             target: descriptor.target,
             sourcePixelWidth: descriptor.sourcePixelWidth,
             sourcePixelHeight: descriptor.sourcePixelHeight,
-            video: CaptureVideoConfiguration(
+            video: LiveShareCoordinatorPolicy.captureVideoConfiguration(
                 width: geometry.width,
                 height: geometry.height,
                 framesPerSecond: framesPerSecond,
                 showsCursor: descriptor.video.showsCursor,
-                showsClickHighlights: descriptor.video.showsClickHighlights,
                 sourceRect: descriptor.video.sourceRect
             ),
             stream: GoPeepV1StreamInfo(
@@ -1640,6 +1673,9 @@ final class LiveShareCoordinator {
 
     private func setAutoShareEnabled(_ enabled: Bool) {
         settings.autoShareFocusedWindows = enabled
+        if !enabled {
+            latestAutomaticWindowID = nil
+        }
         persistSettings()
         publish()
         if enabled, state.snapshot.sources.fullscreen == nil, focusedWindow != nil {
@@ -1666,6 +1702,8 @@ final class LiveShareCoordinator {
         switch codec {
         case .h264: .h264
         case .vp8: .vp8
+        case .vp9: .vp9
+        case .av1: .av1
         }
     }
 
@@ -1922,7 +1960,10 @@ final class LiveShareCoordinator {
         guard !Task.isCancelled, !isEnding else { return }
 
         let refreshedWindows = content.windows.filter {
-            $0.frame.width >= 100 && $0.frame.height >= 100
+            ShareableApplicationWindowEligibility.isEligible(
+                $0,
+                minimumPointSize: CGSize(width: 100, height: 100)
+            )
         }
         for window in refreshedWindows {
             let windowID = LiveShareWindowID(rawValue: window.id)
@@ -2090,9 +2131,9 @@ final class LiveShareCoordinator {
                     averagePacketSendDelayMilliseconds: outboundSlot
                         .averagePacketSendDelayMilliseconds,
                     qualityLimitationReasons: outboundSlot.qualityLimitationReasons,
-                    codec: outboundSlot.codecs.count == 1
-                        ? outboundSlot.codecs.first
-                        : nil,
+                    codec: outboundSlot.codecs.isEmpty
+                        ? nil
+                        : outboundSlot.codecs.sorted().joined(separator: " / "),
                     isFocused: slot.isFocused
                 )
             }

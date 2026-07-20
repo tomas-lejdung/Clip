@@ -14,18 +14,27 @@ network protocol and trust boundary.
 
 Live Share can send up to four application windows or one fullscreen display.
 It uses native Swift/AppKit/SwiftUI and ScreenCaptureKit, with a pinned native
-WebRTC framework for H.264 browser transport. The current GoPeep v1 signaling
-service can read room credentials and signaling metadata; the media channel is
-encrypted by WebRTC, but the service is not zero-knowledge.
+WebRTC framework. VP8 remains the default. The live codec picker selects a
+preference: H.264 and VP8 are exact choices, VP9 may fall back to VP8, and AV1
+may fall back to VP9 and then VP8. Each browser viewer negotiates independently,
+so the actual outbound RTP codec shown in Statistics is authoritative. H.264
+uses hardware encoding and caps oversized capture geometry; software VP8, VP9
+profile 0, and AV1 retain native capture geometry. AV1 can consume substantially
+more CPU. The current GoPeep v1 signaling service can read room credentials and
+signaling metadata; the media channel is encrypted by WebRTC, but the service
+is not zero-knowledge.
 
-The pointer-free acceptance lane has negotiated native H.264 with the
-unmodified GoPeep server and browser viewer on loopback. Real desktop
-Live Share capture, overlay exclusion, remote Internet/TURN traversal, soak,
-and lifecycle stress remain separate controlled gates; the stable-signed,
-sandboxed Release DMG has passed its clean-source packaging gate. See the
-[Live Share progress board](docs/live-share-progress.md). Live Share carries
-no audio. Thirty FPS is the supported default, 15 FPS is selectable, and 60
-FPS is an optional capability rather than a release requirement.
+The pointer-free acceptance lane has kept one browser viewer, session, and set
+of tracks alive while switching the preference H.264 → VP8 → VP9 → AV1
+→ H.264 through the unmodified GoPeep server and viewer on loopback. The lane
+accepts only the documented per-viewer fallbacks and verifies the codec actually
+reported by outbound WebRTC statistics. Real desktop Live Share capture,
+overlay exclusion, remote Internet/TURN traversal, soak, and lifecycle stress
+remain separate controlled gates; the stable-signed, sandboxed Release DMG has
+passed its clean-source packaging gate. See the [Live Share progress
+board](docs/live-share-progress.md). Live Share carries no audio. Thirty FPS is
+the supported default, 15 FPS is selectable, and 60 FPS is an optional
+capability rather than a release requirement.
 
 Click Highlights can be enabled from the menu-bar quick controls or Recording
 Settings. The option uses ScreenCaptureKit's native recorded click indicator,

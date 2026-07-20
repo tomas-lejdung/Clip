@@ -77,9 +77,14 @@ struct LiveShareSettingsTests {
     }
 
     @Test("codec options have stable persistence identifiers and user-facing names")
-    func codecs() {
-        #expect(LiveShareVideoCodec.allCases == [.h264, .vp8])
-        #expect(LiveShareVideoCodec.allCases.map(\.rawValue) == ["h264", "vp8"])
-        #expect(LiveShareVideoCodec.allCases.map(\.displayName) == ["H.264", "VP8"])
+    func codecs() throws {
+        #expect(LiveShareVideoCodec.allCases == [.h264, .vp8, .vp9, .av1])
+        #expect(LiveShareVideoCodec.allCases.map(\.rawValue) == ["h264", "vp8", "vp9", "av1"])
+        #expect(LiveShareVideoCodec.allCases.map(\.displayName) == ["H.264", "VP8", "VP9", "AV1"])
+
+        for codec in LiveShareVideoCodec.allCases {
+            let data = try JSONEncoder().encode(codec)
+            #expect(try JSONDecoder().decode(LiveShareVideoCodec.self, from: data) == codec)
+        }
     }
 }

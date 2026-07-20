@@ -156,6 +156,13 @@ public struct LiveShareSourceSelection: Codable, Equatable, Hashable, Sendable {
     contains(source.id) ? removing(source.id) : adding(source)
   }
 
+  /// Replaces every selected source with one window. Auto-share uses this
+  /// exclusive policy while manual window selection retains the four-window
+  /// LRU behavior provided by `adding(_:)`.
+  public func replacingWindows(with window: LiveShareWindowSource) -> LiveShareSourceChange {
+    Self.change(from: self, to: try! Self(windows: [window]))
+  }
+
   /// Moves a selected window to the most-recently-used end of the list.
   /// Calling this for a missing window or while fullscreen is selected is a no-op.
   public func markingWindowAsMostRecentlyUsed(

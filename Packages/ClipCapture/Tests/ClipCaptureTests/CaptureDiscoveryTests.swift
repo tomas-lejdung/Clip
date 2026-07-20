@@ -40,6 +40,31 @@ struct CaptureDiscoveryTests {
         )?.id == 2)
     }
 
+    @Test("focused selection skips untitled popups and confirmation surfaces")
+    func untitledTransientWindows() {
+        let popup = window(id: 1, processID: 44, title: "")
+        let confirmation = window(id: 2, processID: 44, title: "  \n\t")
+        let document = window(id: 3, processID: 44, title: "Document")
+
+        #expect(FocusedWindowSelection.eligibleWindow(
+            frontmostProcessID: 44,
+            orderedWindows: [popup, confirmation, document],
+            minimumPointSize: CGSize(width: 100, height: 100)
+        )?.id == document.id)
+    }
+
+    @Test("focused selection has no target when only transient windows remain")
+    func onlyTransientWindows() {
+        let popup = window(id: 1, processID: 44, title: "")
+        let confirmation = window(id: 2, processID: 44, title: "   ")
+
+        #expect(FocusedWindowSelection.eligibleWindow(
+            frontmostProcessID: 44,
+            orderedWindows: [popup, confirmation],
+            minimumPointSize: CGSize(width: 100, height: 100)
+        ) == nil)
+    }
+
     private func window(
         id: CGWindowID,
         processID: pid_t,

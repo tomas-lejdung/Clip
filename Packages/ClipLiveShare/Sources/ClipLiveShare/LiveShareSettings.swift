@@ -57,6 +57,8 @@ public enum LiveShareEncodingMode: String, Codable, CaseIterable, Equatable, Has
 public enum LiveShareVideoCodec: String, Codable, CaseIterable, Equatable, Hashable, Identifiable, Sendable {
     case h264
     case vp8
+    case vp9
+    case av1
 
     public var id: String { rawValue }
 
@@ -64,6 +66,8 @@ public enum LiveShareVideoCodec: String, Codable, CaseIterable, Equatable, Hasha
         switch self {
         case .h264: "H.264"
         case .vp8: "VP8"
+        case .vp9: "VP9"
+        case .av1: "AV1"
         }
     }
 }

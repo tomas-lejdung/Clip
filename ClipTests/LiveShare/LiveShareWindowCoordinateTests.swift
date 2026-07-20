@@ -71,6 +71,50 @@ struct LiveShareWindowCoordinateTests {
         monitor.stop()
     }
 
+    @Test("focused monitor skips a large untitled popup before the document window")
+    @MainActor
+    func focusedMonitorSkipsUntitledPopup() async throws {
+        let processID = pid_t(4_242)
+        let displayFrame = CGDisplayBounds(CGMainDisplayID())
+        let popup = Self.window(
+            id: 81,
+            processID: processID,
+            frame: displayFrame.insetBy(dx: 20, dy: 20),
+            title: ""
+        )
+        let document = Self.window(
+            id: 82,
+            processID: processID,
+            frame: displayFrame.insetBy(dx: 80, dy: 80),
+            title: "Document"
+        )
+        let content = ShareableCaptureContent(
+            displays: [],
+            windows: [popup, document]
+        )
+        let discovery = SuspendedFocusedWindowDiscovery(
+            first: content,
+            replacement: content
+        )
+        let recorder = FocusedWindowRecorder()
+        let monitor = LiveShareFocusedWindowMonitor(
+            discovery: discovery,
+            excludedBundleIdentifier: nil,
+            frontmostProcessID: { processID },
+            handler: { value in recorder.append(value) }
+        )
+
+        monitor.start()
+        await discovery.waitForFirstRequest()
+        await discovery.releaseFirstRequest()
+
+        try await eventuallyFocusedWindow {
+            recorder.lastWindowID == document.id
+        }
+        #expect(recorder.nonNilWindowIDs == [document.id])
+        monitor.stop()
+    }
+
     private static func window(
         id: CGWindowID,
         processID: pid_t,

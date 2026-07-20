@@ -28,6 +28,13 @@ enum FocusedWindowShareOverlayState: Equatable, Sendable {
     var isEnabled: Bool { self != .stopping }
 }
 
+enum FocusedWindowShareOverlayMovement: Equatable, Sendable {
+    case targetRefresh
+    case anchorToggle
+
+    var isAnimated: Bool { self == .anchorToggle }
+}
+
 struct FocusedWindowShareOverlaySnapshot: Equatable, Sendable {
     let sourceID: String
     let applicationName: String
@@ -75,9 +82,6 @@ struct FocusedWindowShareOverlayView: View {
             .help(primaryHelp)
             .accessibilityLabel(primaryHelp)
             .accessibilityIdentifier("clip.liveShare.focusedWindow.primary")
-
-            Divider()
-                .frame(height: 18)
 
             Button(action: toggleSide) {
                 Image(systemName: side == .left ? "arrow.right" : "arrow.left")
@@ -148,12 +152,11 @@ final class FocusedWindowShareOverlayController {
         targetWindowFrame: CGRect,
         visibleScreenFrame: CGRect
     ) {
-        let wasSameSource = currentSnapshot?.sourceID == snapshot.sourceID
         currentSnapshot = snapshot
         currentTargetWindowFrame = targetWindowFrame
         currentVisibleScreenFrame = visibleScreenFrame
         render()
-        movePanel(animated: wasSameSource && panel.isVisible)
+        movePanel(for: .targetRefresh)
         panel.orderFrontRegardless()
     }
 
@@ -193,7 +196,7 @@ final class FocusedWindowShareOverlayController {
         guard let snapshot else { return }
         anchorMemory.toggle(for: snapshot.sourceID)
         render()
-        movePanel(animated: true)
+        movePanel(for: .anchorToggle)
     }
 
     private var snapshot: FocusedWindowShareOverlaySnapshot? { currentSnapshot }
@@ -218,7 +221,7 @@ final class FocusedWindowShareOverlayController {
         }
     }
 
-    private func movePanel(animated: Bool) {
+    private func movePanel(for movement: FocusedWindowShareOverlayMovement) {
         guard let snapshot,
               let currentTargetWindowFrame,
               let currentVisibleScreenFrame else { return }
@@ -227,8 +230,8 @@ final class FocusedWindowShareOverlayController {
             visibleScreenFrame: currentVisibleScreenFrame,
             side: rememberedSide(for: snapshot.sourceID)
         )
-        guard animated else {
-            panel.setFrame(frame, display: true)
+        guard movement.isAnimated else {
+            panel.setFrame(frame, display: true, animate: false)
             return
         }
 

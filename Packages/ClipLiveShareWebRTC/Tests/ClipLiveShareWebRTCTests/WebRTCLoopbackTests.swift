@@ -289,6 +289,293 @@ struct WebRTCLoopbackTests {
         #expect(slot.framesSent > 0)
     }
 
+    @Test(
+        "VP9 and AV1 screensharing encoders deliver captured pixel buffers",
+        arguments: [WebRTCVideoCodec.vp9, .av1]
+    )
+    func optionalSoftwareCodecFrameLoopback(codec: WebRTCVideoCodec) async throws {
+        try await assertSoftwareCodecFrameLoopback(
+            preferredCodec: codec,
+            decoderFactory: RTCDefaultVideoDecoderFactory(),
+            expectedCodecName: codec.rtcName
+        )
+    }
+
+    @Test(
+        "VP9 and AV1 fall back to VP8 for a VP8-only viewer",
+        arguments: [WebRTCVideoCodec.vp9, .av1]
+    )
+    func optionalSoftwareCodecVP8Fallback(codec: WebRTCVideoCodec) async throws {
+        try await assertSoftwareCodecFrameLoopback(
+            preferredCodec: codec,
+            decoderFactory: VP8OnlyVideoDecoderFactory(),
+            expectedCodecName: WebRTCVideoCodec.vp8.rtcName
+        )
+    }
+
+    @Test(
+        "VP9 and AV1 serve capable and VP8-only viewers simultaneously",
+        arguments: [WebRTCVideoCodec.vp9, .av1]
+    )
+    func optionalSoftwareCodecMixedViewerLoopback(
+        codec: WebRTCVideoCodec
+    ) async throws {
+        let capableViewerID = "preferred-codec-viewer"
+        let fallbackViewerID = "vp8-only-viewer"
+        let viewerIDs = [capableViewerID, fallbackViewerID]
+        let capableBridge = LoopbackBridge(viewerID: capableViewerID)
+        let fallbackBridge = LoopbackBridge(viewerID: fallbackViewerID)
+        let host = try WebRTCPeerHost(
+            configuration: .init(
+                iceServers: [],
+                senderPolicy: .init(
+                    maximumBitrateBps: 2_000_000,
+                    maximumFramesPerSecond: 30,
+                    maintainsResolution: true
+                ),
+                resourceLimits: .init(answerTimeout: 5),
+                videoCodec: codec
+            ),
+            eventQueue: capableBridge.eventQueue,
+            eventHandler: { event in
+                capableBridge.receive(hostEvent: event)
+                fallbackBridge.receive(hostEvent: event)
+            }
+        )
+        capableBridge.host = host
+        fallbackBridge.host = host
+        defer { host.close() }
+
+        let initialSlot = try #require(host.slotSnapshots.first)
+        let stableTrackID = initialSlot.trackID
+        let stableStreamID = initialSlot.streamID
+        #expect(stableTrackID == "video0")
+        #expect(stableStreamID == "gopeep-stream-0")
+
+        let capableOffer = try await host.createOffer(for: capableViewerID)
+        #expect(capableOffer.sdp.localizedCaseInsensitiveContains(
+            " \(codec.rtcName)/90000"
+        ))
+        #expect(capableOffer.sdp.contains(" VP8/90000"))
+        let capableReceiver = try LoopbackReceiver(bridge: capableBridge)
+        defer { capableReceiver.close() }
+        capableBridge.receiver = capableReceiver.connection
+        let capableAnswer = try await capableReceiver.answer(offer: capableOffer.sdp)
+        #expect(capableAnswer.sdp.localizedCaseInsensitiveContains(
+            " \(codec.rtcName)/90000"
+        ))
+        capableBridge.receiverCanAcceptCandidates()
+        try await host.setRemoteAnswer(capableAnswer, for: capableViewerID)
+        capableBridge.hostCanAcceptCandidates()
+
+        let fallbackOffer = try await host.createOffer(for: fallbackViewerID)
+        #expect(fallbackOffer.sdp.localizedCaseInsensitiveContains(
+            " \(codec.rtcName)/90000"
+        ))
+        #expect(fallbackOffer.sdp.contains(" VP8/90000"))
+        let fallbackReceiver = try LoopbackReceiver(
+            bridge: fallbackBridge,
+            decoderFactory: VP8OnlyVideoDecoderFactory()
+        )
+        defer { fallbackReceiver.close() }
+        fallbackBridge.receiver = fallbackReceiver.connection
+        let fallbackAnswer = try await fallbackReceiver.answer(offer: fallbackOffer.sdp)
+        #expect(fallbackAnswer.sdp.contains(" VP8/90000"))
+        #expect(!fallbackAnswer.sdp.localizedCaseInsensitiveContains(
+            " \(codec.rtcName)/90000"
+        ))
+        fallbackBridge.receiverCanAcceptCandidates()
+        try await host.setRemoteAnswer(fallbackAnswer, for: fallbackViewerID)
+        fallbackBridge.hostCanAcceptCandidates()
+
+        #expect(await waitUntil(timeout: .seconds(5)) {
+            capableBridge.isConnectedAndControlOpen
+                && fallbackBridge.isConnectedAndControlOpen
+        })
+        #expect(host.viewerIDs == viewerIDs)
+        #expect(host.viewerSnapshots.map(\.viewerID) == viewerIDs)
+        #expect(host.connectedViewerCount == 2)
+        #expect(
+            capableBridge.controlChannelLabel
+                == WebRTCRuntimeIdentity.controlDataChannelLabel
+        )
+        #expect(
+            fallbackBridge.controlChannelLabel
+                == WebRTCRuntimeIdentity.controlDataChannelLabel
+        )
+
+        let control = Data(#"{"type":"mixed-codec-loopback"}"#.utf8)
+        let delivery = host.broadcastControl(control)
+        #expect(delivery.deliveredViewerIDs == viewerIDs)
+        #expect(delivery.unavailableViewerIDs.isEmpty)
+        #expect(await waitUntil(timeout: .seconds(2)) {
+            capableBridge.lastControlMessage == control
+                && fallbackBridge.lastControlMessage == control
+        })
+
+        try host.activateSlot(0, metadata: GoPeepV1StreamInfo(
+            trackID: stableTrackID,
+            windowName: "\(codec.rtcName) mixed-viewer fixture",
+            appName: "Clip tests",
+            isFocused: true,
+            width: 320,
+            height: 180
+        ))
+        for index in 0 ..< 60 {
+            #expect(host.send(
+                try makeFixtureFrame(index: index, width: 320, height: 180),
+                toSlot: 0
+            ) == .accepted)
+            try await Task.sleep(for: .milliseconds(12))
+        }
+        #expect(await waitUntil(timeout: .seconds(8)) {
+            capableBridge.receivedVideoFrameCount > 0
+                && fallbackBridge.receivedVideoFrameCount > 0
+        })
+        let capableFrames = capableBridge.receivedVideoFrameCount
+        let fallbackFrames = fallbackBridge.receivedVideoFrameCount
+
+        for index in 60 ..< 120 {
+            #expect(host.send(
+                try makeFixtureFrame(index: index, width: 320, height: 180),
+                toSlot: 0
+            ) == .accepted)
+            try await Task.sleep(for: .milliseconds(12))
+        }
+        #expect(await waitUntil(timeout: .seconds(8)) {
+            capableBridge.receivedVideoFrameCount > capableFrames
+                && fallbackBridge.receivedVideoFrameCount > fallbackFrames
+        })
+        #expect(capableBridge.receivedVideoSize == .init(width: 320, height: 180))
+        #expect(fallbackBridge.receivedVideoSize == .init(width: 320, height: 180))
+
+        var outbound = try await host.outboundSenderStatisticsSnapshot()
+        let clock = ContinuousClock()
+        let statisticsDeadline = clock.now.advanced(by: .seconds(3))
+        while clock.now < statisticsDeadline {
+            let outboundCodecs = Set(
+                outbound[slot: 0]?.viewers.compactMap(\.codec).map {
+                    $0.uppercased()
+                } ?? []
+            )
+            if outboundCodecs == Set([codec.rtcName, WebRTCVideoCodec.vp8.rtcName]) {
+                break
+            }
+            try await Task.sleep(for: .milliseconds(50))
+            outbound = try await host.outboundSenderStatisticsSnapshot()
+        }
+
+        let slot = try #require(outbound[slot: 0])
+        let codecsByViewer = Dictionary(uniqueKeysWithValues: slot.viewers.compactMap {
+            viewer in
+            viewer.codec.map { (viewer.viewerID, $0.uppercased()) }
+        })
+        #expect(outbound.viewerCount == 2)
+        #expect(outbound.connectedViewerCount == 2)
+        #expect(slot.trackID == stableTrackID)
+        #expect(slot.viewers.map(\.viewerID) == viewerIDs)
+        #expect(Set(slot.codecs.map { $0.uppercased() }) == Set([
+            codec.rtcName,
+            WebRTCVideoCodec.vp8.rtcName,
+        ]))
+        #expect(codecsByViewer[capableViewerID] == codec.rtcName)
+        #expect(codecsByViewer[fallbackViewerID] == WebRTCVideoCodec.vp8.rtcName)
+        #expect(slot.viewers.allSatisfy { $0.framesSent > 0 })
+        #expect(slot.viewers.allSatisfy { $0.framesEncoded > 0 })
+
+        let finalSlot = try #require(host.slotSnapshots.first)
+        #expect(host.viewerIDs == viewerIDs)
+        #expect(finalSlot.trackID == stableTrackID)
+        #expect(finalSlot.streamID == stableStreamID)
+        #expect(finalSlot.metadata?.trackID == stableTrackID)
+        #expect(
+            capableBridge.controlChannelLabel
+                == WebRTCRuntimeIdentity.controlDataChannelLabel
+        )
+        #expect(
+            fallbackBridge.controlChannelLabel
+                == WebRTCRuntimeIdentity.controlDataChannelLabel
+        )
+    }
+
+    private func assertSoftwareCodecFrameLoopback(
+        preferredCodec: WebRTCVideoCodec,
+        decoderFactory: any RTCVideoDecoderFactory,
+        expectedCodecName: String
+    ) async throws {
+        let bridge = LoopbackBridge()
+        let host = try WebRTCPeerHost(
+            configuration: .init(
+                iceServers: [],
+                senderPolicy: .init(
+                    maximumBitrateBps: 2_000_000,
+                    maximumFramesPerSecond: 30,
+                    maintainsResolution: true
+                ),
+                resourceLimits: .init(answerTimeout: 5),
+                videoCodec: preferredCodec
+            ),
+            eventQueue: bridge.eventQueue,
+            eventHandler: { event in bridge.receive(hostEvent: event) }
+        )
+        bridge.host = host
+        defer { host.close() }
+
+        let offer = try await host.createOffer(for: "loopback-viewer")
+        #expect(offer.sdp.localizedCaseInsensitiveContains(
+            " \(preferredCodec.rtcName)/90000"
+        ))
+        #expect(offer.sdp.contains(" VP8/90000"))
+        #expect(!offer.sdp.contains(" H264/90000"))
+        let receiver = try LoopbackReceiver(
+            bridge: bridge,
+            decoderFactory: decoderFactory
+        )
+        defer { receiver.close() }
+        bridge.receiver = receiver.connection
+        let answer = try await receiver.answer(offer: offer.sdp)
+        #expect(answer.sdp.localizedCaseInsensitiveContains(
+            " \(expectedCodecName)/90000"
+        ))
+        if expectedCodecName == WebRTCVideoCodec.vp8.rtcName {
+            #expect(!answer.sdp.localizedCaseInsensitiveContains(
+                " \(preferredCodec.rtcName)/90000"
+            ))
+        }
+        bridge.receiverCanAcceptCandidates()
+        try await host.setRemoteAnswer(answer, for: "loopback-viewer")
+        bridge.hostCanAcceptCandidates()
+        #expect(await waitUntil(timeout: .seconds(5)) {
+            bridge.isConnectedAndControlOpen
+        })
+
+        try host.activateSlot(0, metadata: GoPeepV1StreamInfo(
+            trackID: "video0",
+            windowName: "\(preferredCodec.rtcName) fixture",
+            appName: "Clip tests",
+            isFocused: true,
+            width: 320,
+            height: 180
+        ))
+        for index in 0 ..< 60 {
+            #expect(host.send(
+                try makeFixtureFrame(index: index, width: 320, height: 180),
+                toSlot: 0
+            ) == .accepted)
+            try await Task.sleep(for: .milliseconds(12))
+        }
+        #expect(await waitUntil(timeout: .seconds(8)) {
+            bridge.receivedVideoFrameCount > 0
+        })
+        #expect(bridge.receivedVideoSize == .init(width: 320, height: 180))
+        let outbound = try await host.outboundSenderStatisticsSnapshot()
+        let slot = try #require(outbound[slot: 0])
+        #expect(slot.bytesSent > 0)
+        #expect(slot.framesEncoded > 0)
+        #expect(slot.framesSent > 0)
+        #expect(slot.codecs.contains(expectedCodecName))
+    }
+
     @Test("native Retina-sized windows encode and render at source resolution")
     func nativeResolutionLoopback() async throws {
         for size in [
@@ -298,6 +585,18 @@ struct WebRTCLoopbackTests {
         ] {
             try await assertNativeResolution(size)
         }
+    }
+
+    @Test(
+        "VP9 and AV1 preserve a Retina-sized source",
+        arguments: [WebRTCVideoCodec.vp9, .av1]
+    )
+    func optionalCodecNativeResolution(codec: WebRTCVideoCodec) async throws {
+        try await assertNativeResolution(
+            CGSize(width: 2_762, height: 1_202),
+            codec: codec,
+            frameCount: 20
+        )
     }
 
     @Test("host negotiates, sends control data, and delivers a captured pixel buffer")
@@ -383,7 +682,7 @@ struct WebRTCLoopbackTests {
         #expect(slot.viewers.count == 1)
     }
 
-    @Test("active peer switches H264 to VP8 and back without replacing its tracks")
+    @Test("active peer switches every codec without replacing its tracks")
     func liveCodecSwitchLoopback() async throws {
         let bridge = LoopbackBridge()
         let host = try WebRTCPeerHost(
@@ -459,6 +758,38 @@ struct WebRTCLoopbackTests {
         #expect(await waitUntil(timeout: .seconds(5)) {
             bridge.receivedVideoFrameCount > framesBeforeVP8
         })
+        var nextFrameIndex = 60
+        for codec in [WebRTCVideoCodec.vp9, .av1] {
+            let framesBeforeSwitch = bridge.receivedVideoFrameCount
+            let switchCodec = Task { try await host.updateVideoCodec(codec) }
+            #expect(await waitUntil(timeout: .seconds(2)) {
+                host.videoCodec == codec
+            })
+            let offer = try await host.createReoffer(for: "loopback-viewer")
+            #expect(offer.sdp.localizedCaseInsensitiveContains(
+                " \(codec.rtcName)/90000"
+            ))
+            #expect(offer.sdp.contains(" VP8/90000"))
+            #expect(!offer.sdp.contains(" H264/90000"))
+            try await host.setRemoteAnswer(
+                try await receiver.answer(offer: offer.sdp),
+                for: "loopback-viewer"
+            )
+            try await switchCodec.value
+            #expect(host.videoCodec == codec)
+
+            for index in nextFrameIndex ..< nextFrameIndex + 30 {
+                #expect(host.send(
+                    try makeFixtureFrame(index: index, width: 320, height: 180),
+                    toSlot: 0
+                ) == .accepted)
+                try await Task.sleep(for: .milliseconds(12))
+            }
+            nextFrameIndex += 30
+            #expect(await waitUntil(timeout: .seconds(8)) {
+                bridge.receivedVideoFrameCount > framesBeforeSwitch
+            })
+        }
         let framesBeforeH264 = bridge.receivedVideoFrameCount
 
         let switchToH264 = Task { try await host.updateVideoCodec(.h264) }
@@ -474,7 +805,7 @@ struct WebRTCLoopbackTests {
         try await switchToH264.value
         #expect(host.videoCodec == .h264)
 
-        for index in 60 ..< 90 {
+        for index in nextFrameIndex ..< nextFrameIndex + 30 {
             #expect(host.send(
                 try makeFixtureFrame(index: index, width: 320, height: 180),
                 toSlot: 0
@@ -545,10 +876,15 @@ struct WebRTCLoopbackTests {
         #expect(slot.framesSent > 0)
     }
 
-    private func assertNativeResolution(_ size: CGSize) async throws {
+    private func assertNativeResolution(
+        _ size: CGSize,
+        codec: WebRTCVideoCodec = .h264,
+        frameCount: Int = 30
+    ) async throws {
         let width = Int(size.width)
         let height = Int(size.height)
-        let bridge = LoopbackBridge(viewerID: "retina-loopback-viewer")
+        let viewerID = "retina-\(codec.rawValue)-loopback-viewer"
+        let bridge = LoopbackBridge(viewerID: viewerID)
         let host = try WebRTCPeerHost(
             configuration: .init(
                 iceServers: [],
@@ -557,7 +893,8 @@ struct WebRTCLoopbackTests {
                     maximumFramesPerSecond: 30,
                     maintainsResolution: true
                 ),
-                resourceLimits: .init(answerTimeout: 0.05)
+                resourceLimits: .init(answerTimeout: 5),
+                videoCodec: codec
             ),
             eventQueue: bridge.eventQueue,
             eventHandler: { event in bridge.receive(hostEvent: event) }
@@ -565,15 +902,21 @@ struct WebRTCLoopbackTests {
         bridge.host = host
         defer { host.close() }
 
-        let offer = try await host.createOffer(for: "retina-loopback-viewer")
-        #expect(offer.sdp.contains("profile-level-id=640c34"))
+        let offer = try await host.createOffer(for: viewerID)
+        if codec == .h264 {
+            #expect(offer.sdp.contains("profile-level-id=640c34"))
+        } else {
+            #expect(offer.sdp.localizedCaseInsensitiveContains(
+                " \(codec.rtcName)/90000"
+            ))
+        }
         let receiver = try LoopbackReceiver(bridge: bridge)
         defer { receiver.close() }
         bridge.receiver = receiver.connection
 
         let answer = try await receiver.answer(offer: offer.sdp)
         bridge.receiverCanAcceptCandidates()
-        try await host.setRemoteAnswer(answer, for: "retina-loopback-viewer")
+        try await host.setRemoteAnswer(answer, for: viewerID)
         bridge.hostCanAcceptCandidates()
         #expect(await waitUntil(timeout: .seconds(5)) {
             bridge.isConnectedAndControlOpen
@@ -587,7 +930,7 @@ struct WebRTCLoopbackTests {
             width: width,
             height: height
         ))
-        for index in 0 ..< 30 {
+        for index in 0 ..< frameCount {
             let frame = try makeFixtureFrame(
                 index: index,
                 width: width,
@@ -606,6 +949,7 @@ struct WebRTCLoopbackTests {
         #expect(slot.bytesSent > 0)
         #expect(slot.framesEncoded > 0)
         #expect(slot.framesSent > 0)
+        #expect(slot.codecs.contains(codec.rtcName))
     }
 }
 }
@@ -769,6 +1113,18 @@ private actor CodecSwitchCompletionProbe {
     }
 }
 
+private final class VP8OnlyVideoDecoderFactory: NSObject, RTCVideoDecoderFactory {
+    func supportedCodecs() -> [RTCVideoCodecInfo] {
+        RTCVideoDecoderVP8.supportedCodecs()
+    }
+
+    func createDecoder(_ info: RTCVideoCodecInfo) -> (any RTCVideoDecoder)? {
+        guard info.name.caseInsensitiveCompare(WebRTCVideoCodec.vp8.rtcName) == .orderedSame
+        else { return nil }
+        return RTCVideoDecoderVP8.vp8Decoder()
+    }
+}
+
 private final class LoopbackReceiver: NSObject, RTCPeerConnectionDelegate,
     RTCDataChannelDelegate, RTCVideoRenderer, @unchecked Sendable
 {
@@ -779,12 +1135,15 @@ private final class LoopbackReceiver: NSObject, RTCPeerConnectionDelegate,
     private var controlChannel: RTCDataChannel?
     private var videoTracks: [RTCVideoTrack] = []
 
-    init(bridge: LoopbackBridge) throws {
+    init(
+        bridge: LoopbackBridge,
+        decoderFactory: any RTCVideoDecoderFactory = RTCDefaultVideoDecoderFactory()
+    ) throws {
         self.bridge = bridge
         sslLease = try WebRTCSSLRuntimeLease()
         factory = RTCPeerConnectionFactory(
             encoderFactory: RTCDefaultVideoEncoderFactory(),
-            decoderFactory: RTCDefaultVideoDecoderFactory()
+            decoderFactory: decoderFactory
         )
         let configuration = RTCConfiguration()
         configuration.sdpSemantics = .unifiedPlan

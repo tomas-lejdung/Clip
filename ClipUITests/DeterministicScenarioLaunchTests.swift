@@ -29,8 +29,18 @@ final class DeterministicScenarioLaunchTests: XCTestCase {
         try withScenario("menu-popover") { app in
             XCTAssertTrue(app.statusItems["clip.uiScenario.statusItem"].waitForExistence(timeout: 5))
             XCTAssertTrue(app.otherElements["clip.uiScenario.menu-popover"].waitForExistence(timeout: 5))
-            XCTAssertTrue(app.buttons["clip.menu.captureArea"].exists)
+            let captureArea = app.buttons["clip.menu.captureArea"]
+            let liveShare = app.buttons["clip.menu.liveShare"]
+            XCTAssertTrue(captureArea.exists)
+            XCTAssertEqual(captureArea.label, "Capture Area")
+            XCTAssertTrue(liveShare.exists)
+            XCTAssertEqual(liveShare.label, "Live Share")
             XCTAssertTrue(app.buttons["clip.menu.captureApplication"].exists)
+            let orderedButtonIdentifiers = app.buttons.allElementsBoundByIndex.map(\.identifier)
+            XCTAssertLessThan(
+                try XCTUnwrap(orderedButtonIdentifiers.firstIndex(of: "clip.menu.display.2")),
+                try XCTUnwrap(orderedButtonIdentifiers.firstIndex(of: "clip.menu.liveShare"))
+            )
             XCTAssertTrue(app.buttons["clip.menu.recordPrepared"].exists)
             XCTAssertTrue(app.switches["clip.menu.clickHighlights"].exists)
             XCTAssertEqual(app.switches["clip.menu.clickHighlights"].value as? String, "1")

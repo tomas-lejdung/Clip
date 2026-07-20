@@ -48,10 +48,12 @@ struct LiveShareStatusHUDSnapshot: Equatable, Sendable {
     }
 
     var contentSize: CGSize {
-        let baseHeight: CGFloat = hasActiveMedia ? 96 : 66
         return CGSize(
             width: 190,
-            height: baseHeight + (hasCapturePressureWarning ? 24 : 0)
+            // Both idle and active states contain the same two rows. Keeping
+            // one height prevents the top-right panel from gaining empty
+            // vertical padding and visibly jumping when Stop All appears.
+            height: 66 + (hasCapturePressureWarning ? 24 : 0)
         )
     }
 }

@@ -126,11 +126,40 @@ struct WebKitGoPeepViewerAcceptanceTests {
         #expect(lastSnapshot.metadataMatchesFixture)
         #expect(lastSnapshot.streamOrder.contains(0))
 
+        var nextFrameIndex = 480
+        for codec in [WebRTCVideoCodec.vp9, .av1] {
+            let framesBeforeSwitch = lastSnapshot.decodedFrames
+            try await harness.switchVideoCodec(to: codec)
+            let compatibleCodecNames = codec == .av1
+                ? [codec.rtcName, WebRTCVideoCodec.vp9.rtcName, WebRTCVideoCodec.vp8.rtcName]
+                : [codec.rtcName, WebRTCVideoCodec.vp8.rtcName]
+            #expect(await harness.answerAdvertisesAny(compatibleCodecNames))
+            #expect(await harness.viewerID == originalViewerID)
+            for index in nextFrameIndex ..< nextFrameIndex + 240 {
+                try await harness.sendFixtureFrame(index: index)
+                try await Task.sleep(for: .milliseconds(16))
+                if index.isMultiple(of: 8) {
+                    lastSnapshot = try await webKitViewerSnapshot(webView)
+                    if lastSnapshot.decodedFrames >= framesBeforeSwitch + 3 { break }
+                }
+            }
+            nextFrameIndex += 240
+            lastSnapshot = try await webKitViewerSnapshot(webView)
+            #expect(lastSnapshot.decodedFrames >= framesBeforeSwitch + 3)
+            #expect(lastSnapshot.metadataMatchesFixture)
+            #expect(lastSnapshot.streamOrder.contains(0))
+
+            #expect(try await harness.waitForOutboundCodec(
+                among: compatibleCodecNames,
+                timeout: .seconds(3)
+            ) != nil)
+        }
+
         let framesBeforeH264Return = lastSnapshot.decodedFrames
         try await harness.switchVideoCodec(to: .h264)
         #expect(await harness.answerAdvertisesH264)
         #expect(await harness.viewerID == originalViewerID)
-        for index in 480 ..< 720 {
+        for index in nextFrameIndex ..< nextFrameIndex + 240 {
             try await harness.sendFixtureFrame(index: index)
             try await Task.sleep(for: .milliseconds(16))
             if index.isMultiple(of: 8) {
@@ -196,6 +225,16 @@ private actor WebKitGoPeepHostHarness {
 
     var answerAdvertisesVP8: Bool {
         answerSDP.localizedCaseInsensitiveContains("VP8/90000")
+    }
+
+    func answerAdvertises(_ codec: WebRTCVideoCodec) -> Bool {
+        answerSDP.localizedCaseInsensitiveContains("\(codec.rtcName)/90000")
+    }
+
+    func answerAdvertisesAny(_ codecNames: [String]) -> Bool {
+        codecNames.contains {
+            answerSDP.localizedCaseInsensitiveContains("\($0)/90000")
+        }
     }
 
     var viewerID: String? { controlViewerID }
@@ -264,6 +303,31 @@ private actor WebKitGoPeepHostHarness {
                 "native host did not commit the \(codec.rtcName) switch"
             )
         }
+    }
+
+    func outboundCodecNames() async throws -> Set<String> {
+        if let failure {
+            throw WebKitAcceptanceError.runtime(failure)
+        }
+        let snapshot = try await peerHost.outboundSenderStatisticsSnapshot()
+        return Set(snapshot[slot: 0]?.codecs ?? [])
+    }
+
+    func waitForOutboundCodec(
+        among codecNames: [String],
+        timeout: Duration
+    ) async throws -> String? {
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: timeout)
+        while clock.now < deadline {
+            let active = try await outboundCodecNames()
+            if let codec = codecNames.first(where: active.contains) {
+                return codec
+            }
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        let active = try await outboundCodecNames()
+        return codecNames.first(where: active.contains)
     }
 
     /// Mirrors Clip's real first-share order: the browser completes its offer,

@@ -142,6 +142,15 @@ public struct LiveShareStateMachine: Sendable {
   }
 
   @discardableResult
+  public mutating func replaceWindows(
+    with window: LiveShareWindowSource
+  ) -> LiveShareSourceChange {
+    let change = sources.replacingWindows(with: window)
+    sources = change.selection
+    return change
+  }
+
+  @discardableResult
   public mutating func markWindowAsMostRecentlyUsed(
     _ id: LiveShareWindowID
   ) -> LiveShareSourceChange {

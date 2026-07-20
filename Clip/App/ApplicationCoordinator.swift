@@ -536,9 +536,6 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
             do {
                 let coordinator = try LiveShareCoordinator(
                     applicationSupportDirectory: dependencies.directories.applicationSupport,
-                    showsClickHighlights: { [weak self] in
-                        self?.dependencies.settings.settings.showClickHighlights ?? false
-                    },
                     onSessionEnded: { [weak self] in
                         self?.liveShareDidEnd()
                     },

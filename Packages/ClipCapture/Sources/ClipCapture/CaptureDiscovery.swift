@@ -140,6 +140,22 @@ public struct ScreenCaptureContentDiscovery: CaptureContentDiscovering {
     }
 }
 
+/// Identifies user-facing application windows without requiring Accessibility
+/// access. ScreenCaptureKit exposes no role/subrole relationship for sheets or
+/// popovers, but those transient layer-zero surfaces are normally untitled.
+/// Keeping this predicate shared prevents Live Share's focused resolver and
+/// manual window list from disagreeing about what can be selected.
+public enum ShareableApplicationWindowEligibility {
+    public static func isEligible(
+        _ window: ShareableCaptureWindow,
+        minimumPointSize: CGSize = .zero
+    ) -> Bool {
+        !window.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && window.frame.width >= minimumPointSize.width
+            && window.frame.height >= minimumPointSize.height
+    }
+}
+
 public enum FocusedWindowSelection {
     public static func eligibleWindow(
         frontmostProcessID: pid_t?,
@@ -149,8 +165,10 @@ public enum FocusedWindowSelection {
         guard let frontmostProcessID else { return nil }
         return orderedWindows.first {
             $0.processID == frontmostProcessID
-                && $0.frame.width >= minimumPointSize.width
-                && $0.frame.height >= minimumPointSize.height
+                && ShareableApplicationWindowEligibility.isEligible(
+                    $0,
+                    minimumPointSize: minimumPointSize
+                )
         }
     }
 }

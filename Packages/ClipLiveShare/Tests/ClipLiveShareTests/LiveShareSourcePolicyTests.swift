@@ -35,6 +35,24 @@ struct LiveShareSourcePolicyTests {
     #expect(change.removed == [.window(makeWindow(1))])
   }
 
+  @Test("Exclusive window replacement keeps only the requested source")
+  func exclusiveWindowReplacement() {
+    let first = makeWindow(1)
+    let second = makeWindow(2)
+    let third = makeWindow(3)
+    let selection = try! LiveShareSourceSelection(windows: [first, second, third])
+
+    let existing = selection.replacingWindows(with: second)
+    #expect(existing.selection.windows == [second])
+    #expect(existing.added.isEmpty)
+    #expect(existing.removed == [.window(first), .window(third)])
+
+    let replacement = selection.replacingWindows(with: makeWindow(4))
+    #expect(replacement.selection.windows == [makeWindow(4)])
+    #expect(replacement.added == [.window(makeWindow(4))])
+    #expect(replacement.removed == [.window(first), .window(second), .window(third)])
+  }
+
   @Test("Focus recency changes which window is evicted")
   func focusedWindowBecomesMostRecent() {
     var selection = try! LiveShareSourceSelection(

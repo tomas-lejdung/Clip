@@ -36,20 +36,21 @@ tree. That does not close the controlled/external gates below.
 | ID | Lane | Status | Evidence-based outcome |
 | --- | --- | --- | --- |
 | LS-00 | Contract and GoPeep audit | `DONE` | v1 wire behavior, native UI contract, trust boundary, and v2 direction are documented. |
-| LS-01 | Native WebRTC dependency | `DONE` | WebRTC 150.0.0 is pinned and isolated; Clip supplies native VideoToolbox H.264 and libwebrtc VP8 behind one codec-neutral adapter, and the normalized upstream slices match the embedded signed framework payload. |
+| LS-01 | Native WebRTC dependency | `DONE` | WebRTC 150.0.0 is pinned and isolated; Clip supplies native VideoToolbox H.264 plus libwebrtc VP8, VP9 profile 0, and AV1 behind one codec-neutral adapter, and the normalized upstream slices match the embedded signed framework payload. |
 | LS-02 | Domain and source state | `DONE` | Session transitions, four stable slots, fullscreen exclusivity, viewer counts, reconnect state, and stale-operation gates have unit evidence. |
 | LS-03 | Repository boundaries | `DONE` | Live Share, shared transient capture, and the WebRTC adapter are separate targets/folders. Recording was deliberately not mechanically reorganized in this feature. |
 | LS-04 | GoPeep v1 signaling | `DONE` | Exact reserve/join/offer/answer/ICE/password-update routing works against the current local Go service; reconnect and queue bounds have unit evidence. |
-| LS-05 | WebRTC peer host | `IN_PROGRESS` | Native H.264, VP8, transactional live codec switching, a two-frame H.264 submission bound, four preallocated tracks, reliable control channel, viewer/SDP/ICE/DataChannel bounds, low-water durable-state recovery, timeout, and loopback/browser evidence exist. TURN and a browser exercise of all four active tracks remain. |
-| LS-06 | Capture and streaming | `EXTERNAL_GATE` | VP8 preserves native geometry; oversized H.264 is aspect-fitted within the hardware/Level 5.2 envelope, while under-limit odd sources remain native until a lossless one-pixel encoder crop. H.264 Quality uses 0.98 with a soft live average target and no encoder-side hard cap. A two-frame ScreenCaptureKit queue, bounded post-switch stale-geometry disposal, stale-frame rejection, transactional geometry rollback, and visible pressure prevent latency growth without writing an MP4. Real desktop quality and overlay exclusion remain controlled-Mac gates. |
+| LS-05 | WebRTC peer host | `IN_PROGRESS` | Exact H.264/VP8 choices, VP9 → VP8 and AV1 → VP9 → VP8 per-viewer fallback, transactional live codec switching, actual outbound-codec stats, a two-frame H.264 submission bound, four preallocated tracks, reliable control channel, viewer/SDP/ICE/DataChannel bounds, low-water durable-state recovery, timeout, and loopback/browser evidence exist. TURN and a browser exercise of all four active tracks remain. |
+| LS-06 | Capture and streaming | `EXTERNAL_GATE` | Software VP8/VP9/AV1 preserve native geometry; oversized hardware H.264 is aspect-fitted within the Level 5.2 envelope, while under-limit odd sources remain native until a lossless one-pixel encoder crop. H.264 Quality uses 0.98 with a soft live average target and no encoder-side hard cap. A two-frame ScreenCaptureKit queue, bounded post-switch stale-geometry disposal, stale-frame rejection, transactional geometry rollback, and visible pressure prevent latency growth without writing an MP4. Real desktop quality, AV1 CPU cost under production load, and overlay exclusion remain controlled-Mac gates. |
 | LS-07 | Live Share popover | `DONE` | The complete popover switches modes and deterministic scenarios cover Ready, Live, bottom content, Reconnecting, and Failed. |
 | LS-08 | Focused-window overlay | `EXTERNAL_GATE` | Share/Stop, side animation, geometry, ordinary hit testing, and teardown are implemented. Real-window click consumption, secondary-display behavior, and capture exclusion still need controlled-Mac evidence. |
 | LS-09 | Fixed status HUD | `EXTERNAL_GATE` | Four dots, connected-viewer count, Fullscreen, Stop All, placement, and teardown are implemented. Real Spaces/display/capture-exclusion behavior remains. |
 | LS-10 | Source transitions | `EXTERNAL_GATE` | Window operations are serialized/coalesced, stale completions are gated, and ON→OFF Fullscreen rollback restores the prior windows without reviving media after Stop All. Real focus churn remains a controlled-Mac gate. |
 | LS-11 | Reliability and privacy | `EXTERNAL_GATE` | Bounded reconnect, viewer/ICE/SDP/signaling/DataChannel limits, native low-water authoritative-state replay, teardown, secret redaction, and session-only access codes are implemented. Sleep/wake, permission loss, display removal, and soak evidence remain. |
-| LS-12 | Automated acceptance | `IN_PROGRESS` | Native loopback, real local GoPeep signaling, the current WebKit viewer switching H.264 → VP8 → H.264, deterministic UI, 5K/6K geometry policy tests, and package/app tests exist. Real ScreenCaptureKit Live Share and controlled TURN lanes remain. |
+| LS-12 | Automated acceptance | `IN_PROGRESS` | Native loopback, real local GoPeep signaling, and the current WebKit viewer switching H.264 → VP8 → VP9 → AV1 → H.264 in one session with stable viewer/tracks, allowed fallback checks, and authoritative outbound-codec stats exist alongside deterministic UI, 5K/6K geometry policy tests, and package/app tests. Real ScreenCaptureKit Live Share and controlled TURN lanes remain. |
 | LS-13 | Packaging and release | `IN_PROGRESS` | The current tree builds as an Apple Development-signed sandboxed Release app with Sparkle and WebRTC. The clean-source DMG/signature/provenance gate was proven at the prior checkpoint and must be rerun before this feature is published. |
 | LS-20 | Opaque-relay v2 | `DEFERRED` | Future protocol/server/viewer work; it is not silently mixed into GoPeep v1. |
+| LS-21 | Native Clip viewer | `DEFERRED` | Nice-to-have Clip-to-Clip viewing mode. Start with native libwebrtc, VideoToolbox decode, and Metal presentation while retaining browser viewing; consider an optional direct transport only if measured end-to-end latency shows WebRTC is the remaining bottleneck. |
 
 ## Evidence already established
 
@@ -65,7 +66,8 @@ tree. That does not close the controlled/external gates below.
   states, fullscreen/window exclusivity, idempotent removal, viewer counts, and
   exact JSON fixtures.
 - `Packages/ClipLiveShareWebRTC` is the only target that imports the pinned
-  WebRTC framework. It owns the native H.264 and VP8 peer host, four transceivers,
+  WebRTC framework. It owns the hardware H.264 and software VP8/VP9/AV1 peer
+  host, four transceivers, per-viewer preferred-codec negotiation,
   ordered reliable `gopeep-control` channel, signaling transport, statistics,
   ICE validation, resource limits, and the zero-copy pixel-buffer bridge.
   Durable control sends never create an application payload queue: a native
@@ -88,9 +90,16 @@ The lane uses the current sibling GoPeep Go server on loopback. It verifies
 real HTTP room reservation, sharer-secret authentication, access-code join
 gating and replacement, targeted offer/answer routing, and bidirectional ICE.
 It then opens the server's current viewer in an offscreen `WKWebView`,
-negotiates with Clip's native peer host, requires advancing H.264 and VP8 frames
-across live codec renegotiation, and checks that `streams-info`, focus, and cursor metadata reached the browser. It
-does not move the pointer or touch the installed app.
+negotiates with Clip's native peer host, requires advancing frames across the
+H.264 → VP8 → VP9 → AV1 → H.264 preference sequence without replacing the
+session, viewer, or tracks, checks the allowed per-viewer fallbacks and actual
+outbound RTP codec, and checks that `streams-info`, focus, and cursor metadata
+reached the browser. It does not move the pointer or touch the installed app.
+
+H.264 and VP8 are exact choices. VP9 may fall back to VP8, and AV1 may fall back
+to VP9 and then VP8 for each viewer independently. VP8 remains the default;
+VP9 is profile 0, while AV1's higher software-encoding CPU cost remains a
+controlled production-load consideration.
 
 The lower-level native loopback test independently negotiates the native host,
 sends a deterministic `CVPixelBuffer`, and receives control data. Peer-host

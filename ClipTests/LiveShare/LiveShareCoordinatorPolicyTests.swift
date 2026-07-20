@@ -8,6 +8,22 @@ import Testing
 
 @Suite("Live Share coordinator policy")
 struct LiveShareCoordinatorPolicyTests {
+    @Test("Live Share capture never inherits recording click highlights")
+    func liveShareClickHighlightIsolation() {
+        let configuration = LiveShareCoordinatorPolicy.captureVideoConfiguration(
+            width: 1_605,
+            height: 1_108,
+            framesPerSecond: 30,
+            sourceRect: CGRect(x: 10, y: 20, width: 800, height: 600)
+        )
+
+        #expect(configuration.showsCursor)
+        #expect(!configuration.showsClickHighlights)
+        #expect(configuration.width == 1_605)
+        #expect(configuration.height == 1_108)
+        #expect(configuration.sourceRect == CGRect(x: 10, y: 20, width: 800, height: 600))
+    }
+
     @Test("source identifiers are stable and reversible")
     func sourceIdentifiers() {
         let values: [LiveShareSourceID] = [
@@ -135,7 +151,7 @@ struct LiveShareCoordinatorPolicyTests {
         #expect(LiveShareCoordinatorPolicy.videoEncoderCompatibleDimension(1) == 2)
     }
 
-    @Test("H.264 aspect-fits 5K and 6K while VP8 stays native")
+    @Test("H.264 aspect-fits 5K and 6K while software codecs stay native")
     func codecCaptureGeometry() {
         #expect(LiveShareCoordinatorPolicy.captureGeometry(
             sourceWidth: 1_920,
@@ -196,6 +212,17 @@ struct LiveShareCoordinatorPolicyTests {
             sourceHeight: 3_385,
             codec: .vp8
         ) == LiveShareCaptureGeometry(width: 6_017, height: 3_385))
+        for codec in [LiveShareVideoCodec.vp9, .av1] {
+            #expect(LiveShareCoordinatorPolicy.captureGeometry(
+                sourceWidth: 6_017,
+                sourceHeight: 3_385,
+                codec: codec
+            ) == LiveShareCaptureGeometry(width: 6_017, height: 3_385))
+            #expect(LiveShareCoordinatorPolicy.streamGeometry(
+                captureGeometry: LiveShareCaptureGeometry(width: 6_017, height: 3_385),
+                codec: codec
+            ) == LiveShareCaptureGeometry(width: 6_017, height: 3_385))
+        }
     }
 
     @Test("H.264 geometry never exceeds hardware side or luma limits")
@@ -441,7 +468,7 @@ struct LiveShareCoordinatorPolicyTests {
         #expect(plan.focusedSourceID == nil)
     }
 
-    @Test("manual sharing never evicts a fifth window while auto-share may")
+    @Test("manual sharing observes capacity while automatic replacement may proceed")
     func sourceCapacity() {
         #expect(LiveShareCoordinatorPolicy.permitsWindowShare(
             isAlreadyShared: true,

@@ -66,7 +66,7 @@ if [[ "$READY" != "1" ]]; then
   exit 70
 fi
 
-echo "Running real GoPeep routing, H.264/VP8 switching, and control-channel acceptance..."
+echo "Running real GoPeep routing, H.264 -> VP8 -> VP9 -> AV1 -> H.264 switching, and control-channel acceptance..."
 mkdir -p "$MODULE_CACHE"
 export CLANG_MODULE_CACHE_PATH="$MODULE_CACHE"
 export SWIFTPM_MODULECACHE_OVERRIDE="$MODULE_CACHE"
@@ -77,6 +77,7 @@ swift test --package-path "$PACKAGE"
 
 echo "GoPeep interoperability acceptance passed."
 echo "Covered: real reserve/auth/join/offer/answer/ICE routing and served viewer artifact."
-echo "Covered: native H.264 and libwebrtc VP8 encode/decode plus ordered gopeep-control delivery."
-echo "Covered: current viewer execution in WebKit, live H.264/VP8 switching, and control metadata."
+echo "Covered: exact H.264/VP8 plus preferred VP9 -> VP8 and AV1 -> VP9 -> VP8 per-viewer negotiation."
+echo "Covered: hardware H.264 and native-geometry software VP8/VP9-profile-0/AV1 encode/decode."
+echo "Covered: one WebKit session with stable tracks across H.264 -> VP8 -> VP9 -> AV1 -> H.264, actual outbound-codec stats, and ordered gopeep-control metadata."
 echo "Not claimed: remote Internet/TURN traversal."

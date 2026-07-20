@@ -5,6 +5,12 @@ import Testing
 @Suite("Live Share overlay geometry")
 struct LiveShareOverlayGeometryTests {
     @Test
+    func testOnlyExplicitAnchorToggleAnimatesFocusedWindowControl() {
+        #expect(!FocusedWindowShareOverlayMovement.targetRefresh.isAnimated)
+        #expect(FocusedWindowShareOverlayMovement.anchorToggle.isAnimated)
+    }
+
+    @Test
     func testFocusedControlUsesLowerLeftAndLowerRightAnchors() {
         let target = CGRect(x: 100, y: 200, width: 800, height: 600)
         let screen = CGRect(x: 0, y: 0, width: 1_440, height: 900)
@@ -77,6 +83,11 @@ struct LiveShareOverlayGeometryTests {
 
     @Test
     func testHUDSnapshotAlwaysHasFourDotsAndCountsOnlyNonEmptyMedia() {
+        let idle = LiveShareStatusHUDSnapshot(
+            slots: [],
+            connectedViewerCount: 0,
+            fullscreen: .init(isOn: false, displayName: "Main")
+        )
         let snapshot = LiveShareStatusHUDSnapshot(
             slots: [.init(index: 1, state: .live)],
             connectedViewerCount: -2,
@@ -86,7 +97,8 @@ struct LiveShareOverlayGeometryTests {
         #expect(snapshot.slots.map(\.state) == [.empty, .live, .empty, .empty])
         #expect(snapshot.connectedViewerCount == 0)
         #expect(snapshot.hasActiveMedia)
-        #expect(snapshot.contentSize == CGSize(width: 190, height: 96))
+        #expect(idle.contentSize == snapshot.contentSize)
+        #expect(snapshot.contentSize == CGSize(width: 190, height: 66))
     }
 
     @Test
@@ -114,6 +126,6 @@ struct LiveShareOverlayGeometryTests {
         )
 
         #expect(snapshot.hasCapturePressureWarning)
-        #expect(snapshot.contentSize == CGSize(width: 190, height: 120))
+        #expect(snapshot.contentSize == CGSize(width: 190, height: 90))
     }
 }

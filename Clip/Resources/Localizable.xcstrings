@@ -84,9 +84,6 @@
     "%lld of 4 windows" : {
 
     },
-    "%llu capture frames dropped" : {
-
-    },
     "1 day" : {
 
     },
@@ -175,9 +172,6 @@
 
     },
     "Capture Area" : {
-
-    },
-    "Capture Area…" : {
 
     },
     "Capture is dropping frames" : {
@@ -609,9 +603,6 @@
     "Live Share overlays" : {
 
     },
-    "Live Share…" : {
-
-    },
     "Live · %@" : {
 
     },
@@ -619,9 +610,6 @@
 
     },
     "Main Display" : {
-
-    },
-    "Maintains up to four recently focused windows." : {
 
     },
     "Managed Exports" : {
@@ -969,6 +957,9 @@
     "Share Link" : {
 
     },
+    "Shares only the currently focused window." : {
+
+    },
     "Show Clip in the Dock" : {
 
     },
@@ -1081,9 +1072,6 @@
     "The Caches directory is unavailable." : {
 
     },
-    "The H.264 encoder couldn’t start." : {
-
-    },
     "The Live Share connection was lost. Try again." : {
 
     },
@@ -1151,6 +1139,9 @@
 
     },
     "The selected recording is no longer available." : {
+
+    },
+    "The video encoder couldn’t start." : {
 
     },
     "There is no recording in progress." : {

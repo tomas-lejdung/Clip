@@ -9,11 +9,15 @@ import Foundation
 public enum WebRTCVideoCodec: String, CaseIterable, Codable, Equatable, Sendable {
     case h264
     case vp8
+    case vp9
+    case av1
 
     var rtcName: String {
         switch self {
         case .h264: "H264"
         case .vp8: "VP8"
+        case .vp9: "VP9"
+        case .av1: "AV1"
         }
     }
 }

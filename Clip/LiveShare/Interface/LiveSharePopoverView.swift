@@ -311,10 +311,19 @@ struct LiveSharePopoverView: View {
                     }
                 }
             } label: {
-                Label(String(localized: "Add Window"), systemImage: "plus.rectangle.on.rectangle")
+                HStack(spacing: 6) {
+                    Label(
+                        String(localized: "Add Window"),
+                        systemImage: "plus.rectangle.on.rectangle"
+                    )
+                    Image(systemName: "chevron.down")
+                        .font(.caption2.weight(.semibold))
+                        .accessibilityHidden(true)
+                }
                     .frame(maxWidth: .infinity)
             }
             .menuStyle(.button)
+            .menuIndicator(.hidden)
             .disabled(!model.snapshot.canAddWindow)
             .accessibilityIdentifier("clip.liveShare.addWindow")
 
@@ -450,7 +459,7 @@ struct LiveSharePopoverView: View {
             ) {
                 VStack(alignment: .leading, spacing: 1) {
                     Text("Auto-share Focused Windows")
-                    Text("Maintains up to four recently focused windows.")
+                    Text("Shares only the currently focused window.")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                 }

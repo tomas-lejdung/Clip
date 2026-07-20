@@ -128,11 +128,14 @@ Fullscreen is exclusive:
 - Adding an exact window turns fullscreen off first.
 - Stopping fullscreen leaves the room connected and ready for another source.
 
-The source frame geometry delivered by ScreenCaptureKit is used directly by
-WebRTC. Clip does not perform a manual BGRA copy, synthetic timestamp rewrite,
-or silent resize before encoding. Capture-to-WebRTC pressure is bounded and
-observable; Live Share favors the latest frame to prevent latency growth and
-must report sustained overload rather than accumulating an unbounded queue.
+Software VP8, VP9, and AV1 use the native source frame geometry delivered by
+ScreenCaptureKit. Hardware H.264 aspect-fits only sources that exceed its
+4,096-pixel-side, 4,096 × 2,304 luma, or Level 5.2 macroblock envelope; an
+under-limit odd dimension is cropped by at most one final row or column at the
+encoder boundary. Clip does not perform a manual BGRA copy or synthetic
+timestamp rewrite. Capture-to-WebRTC pressure is bounded and observable; Live
+Share favors the latest frame to prevent latency growth and must report
+sustained overload rather than accumulating an unbounded queue.
 
 Signaling, SDP, ICE, viewer IDs, and control DataChannel payloads have explicit
 allocation limits before native peer work. Control delivery also has a native
@@ -187,7 +190,11 @@ service and browser viewer:
 - Signaling uses `/ws/{room}` and the existing JSON join, offer, answer, and ICE
   messages.
 - Every viewer receives its own peer connection containing four preallocated
-  H.264 video tracks and the `gopeep-control` DataChannel.
+  video tracks and the `gopeep-control` DataChannel. The codec picker is a
+  preference: H.264 and VP8 are exact choices, VP9 may fall back to VP8, and
+  AV1 may fall back to VP9 then VP8 for each viewer independently. Actual
+  outbound RTP statistics, not the picker value, identify what each viewer is
+  being sent.
 - Clip admits at most eight pending or connected viewer peers per room and
   bounds unanswered offers and ICE input before allocating indefinitely.
 - Google STUN is used for direct NAT traversal. A TURN relay and force-relay
@@ -206,11 +213,17 @@ encodings are transient. Ending the room stops capture, peer connections,
 signaling, focus observation, and all Live Share overlays.
 
 The GoPeep compatibility acceptance runs the unmodified local signaling server
-and its served browser viewer without pointer control. It proves H.264 frame
-and control-message interoperability on loopback. Real desktop capture,
-overlay exclusion, secondary-display behavior, remote/TURN traversal, soak,
-and the signed Release DMG remain separately recorded gates in
-`docs/live-share-progress.md`.
+and its served browser viewer without pointer control. In one session with the
+same viewer and tracks, it proves advancing frames across H.264 → VP8 → VP9 →
+AV1 → H.264 preference changes, verifies only the allowed per-viewer fallbacks
+and the actual outbound codec, and checks control-message interoperability on
+loopback. Real desktop capture, overlay exclusion, secondary-display behavior,
+remote/TURN traversal, soak, and the signed Release DMG remain separately
+recorded gates in `docs/live-share-progress.md`.
+
+H.264 is hardware encoded and geometry-capped. VP8, VP9 profile 0, and AV1 are
+software encoded at native geometry. AV1 may impose substantially higher CPU
+cost, so VP8 remains the default.
 
 Unavailable options should be hidden. For example, `Display 2` should only appear when a second display is connected.
 
@@ -1154,7 +1167,7 @@ boundaries:
   installation, and relaunch.
 - [`stasel/WebRTC`](https://github.com/stasel/WebRTC) `150.0.0`, pinned exactly
   behind `Packages/ClipLiveShareWebRTC` for ICE, DTLS-SRTP, SCTP DataChannel,
-  congestion control, and native H.264 browser transport.
+  congestion control, and hardware-H.264/software-VP8/VP9/AV1 browser transport.
 
 WebRTC is a media-transport runtime, not Clip's recording/export encoder. Clip
 still bundles no FFmpeg, libx264, or helper media executable. Test-only
@@ -1250,8 +1263,10 @@ A separate Homebrew tap can be added later if needed.
 - Deterministic launch fixtures cover onboarding, the populated menu-bar popover and displays, denied permissions, recording, paused recording, Preview, History, every Settings tab, and a representative failure surface. Their UI-automation assertions compile in the permission-free suite but execute only after an explicit visible-pointer-control opt-in.
 - A pointer-free hosted visual lane renders the production Settings window at the top and fully scrolled bottom of every tab, writes ten PNGs plus scroll-position metadata, and fails if a scrollable form does not reach its bottom.
 - Live Share's pointer-free interoperability lane launches the unmodified local
-  GoPeep signaling server, negotiates Clip's native H.264 host with the
-  unmodified viewer in an offscreen `WKWebView`, requires advancing frames, and
+  GoPeep signaling server, negotiates Clip's native peer host with the
+  unmodified viewer in an offscreen `WKWebView`, requires advancing frames while
+  one session and its tracks switch H.264 → VP8 → VP9 → AV1 → H.264,
+  verifies the allowed per-viewer fallbacks and actual outbound codecs, and
   verifies stream, focus, and cursor control metadata. Native loopback and
   deterministic Ready/Live/Reconnecting/Failed/overlay UI scenarios cover the
   surrounding layers.
@@ -1327,7 +1342,7 @@ A separate Homebrew tap can be added later if needed.
 - A distinct Live Share mode compatible with the GoPeep v1 signaling service
   and browser viewer.
 - Up to four exact-window Live Share sources or one mutually exclusive
-  fullscreen display, sent as transient native H.264 WebRTC video with no
+  fullscreen display, sent as transient preferred-codec WebRTC video with no
   History recording and no audio.
 - A Live Share-specific menu-bar popover, optional session access code,
   connected-viewer state, stream settings/statistics, focused-window Share/Stop

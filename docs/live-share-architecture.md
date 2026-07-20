@@ -12,7 +12,7 @@ The existing recording, Preview, History, export, DMG, and Sparkle update behavi
 ## Implementation and evidence snapshot
 
 The branch now contains the native vertical slice: room reservation and
-signaling, one peer per viewer, four stable H.264/VP8 tracks, the reliable control
+signaling, one peer per viewer, four stable video tracks, the reliable control
 DataChannel, transient ScreenCaptureKit pipelines, the Live Share popover,
 focused-window control, fixed HUD, source switching, settings, reconnect, and
 bounded viewer/negotiation resources. All feature-specific application code is
@@ -21,8 +21,11 @@ three dedicated packages described below.
 
 Automated acceptance uses the current local GoPeep server and its embedded
 viewer. An offscreen `WKWebView` has negotiated with Clip's native peer host,
-presented advancing H.264 and VP8 frames across live codec switches, and consumed
-exact stream, focus, and cursor control metadata. Native loopback, signaling, domain, capture geometry,
+presented advancing frames across the preferred-codec sequence H.264 → VP8 →
+VP9 → AV1 → H.264 without replacing the viewer or tracks, and consumed
+exact stream, focus, and cursor control metadata. The optional codecs may use
+only their documented per-viewer fallbacks, which are confirmed with actual
+outbound RTP statistics. Native loopback, signaling, domain, capture geometry,
 presentation, policy, and deterministic UI suites cover the layers beneath and
 around that browser check.
 
@@ -140,12 +143,20 @@ The audited defaults and choices are:
 | Password | Off/On with generated word-number value | persisted for the session |
 | Auto-share | Off/On; follows focused windows and maintains a four-window pool | persisted |
 
-Clip defaults outgoing video to VP8 through libwebrtc's screen-content encoder
-and also supports hardware H.264. The codec picker remains available while a
-room is live. Changing it updates all stable video transceivers and completes a
+Clip defaults outgoing video to VP8. The live codec picker selects a preferred
+codec rather than asserting the eventual wire format. H.264 and VP8 are exact
+choices. VP9 offers VP9 profile 0 followed by VP8, while AV1 offers AV1 followed
+by VP9 profile 0 and VP8. Each browser viewer answers independently, so two
+viewers may select different compatible codecs for the same preferred setting.
+The actual codec names reported by each sender's `outbound-rtp` statistics, and
+summarized in the stream Statistics row, are authoritative.
+
+Changing the preference updates all stable video transceivers and completes a
 WebRTC reoffer/answer exchange for each connected viewer; it does not replace
 the room, tracks, DataChannel, or ICE transport. A failed exchange restores the
-previous codec. VP9 remains future capability work.
+previous codec and geometry. H.264 uses Clip's VideoToolbox hardware encoder.
+VP8, VP9, and AV1 use libwebrtc software encoders; AV1 can consume substantially
+more CPU, so VP8 remains the default.
 
 ### Current v1 trust boundary
 
@@ -262,7 +273,7 @@ The popover preserves the GoPeep information without imitating a terminal layout
 
 - `Quality`: the eight GoPeep presets and bitrates listed above;
 - `Frame Rate`: 15, 30, or 60 FPS;
-- `Codec`: H.264 or VP8, changeable during an active room;
+- `Codec`: preferred H.264, VP8, VP9, or AV1, changeable during an active room;
 - `Prioritize Focused Window`: Off/On;
 - `Mode`: Performance/Quality;
 - `Auto-share Focused Windows`: Off/On.
@@ -285,19 +296,21 @@ encoder speed. Its native H.264 encoder follows WebRTC's current estimate with
 a live `AverageBitRate` target, but does not set VideoToolbox `DataRateLimits`:
 Apple's normal-window low-latency hardware path rejects that property at session
 preparation. The RTP sender ceiling and WebRTC pacer remain the hard network
-limit. VP8 uses libwebrtc's screen-sharing mode and the same sender-level budget
-and adaptation policy. Codec changes use live renegotiation and briefly pause
-affected streams while connected viewers answer.
+limit. VP8, VP9 profile 0, and AV1 use libwebrtc software encoders with the same
+sender-level budget and adaptation policy. AV1 is available for explicit use,
+but its higher CPU cost is why VP8 remains the default. Codec changes use live
+renegotiation and briefly pause affected streams while connected viewers answer.
 
-VP8 retains the exact native ScreenCaptureKit dimensions, including 5K and 6K.
-Apple's hardware H.264 encoder has a smaller practical geometry envelope, so
-only H.264 aspect-fits oversized sources inside a 4,096-pixel side,
+VP8, VP9, and AV1 retain the exact native ScreenCaptureKit dimensions, including
+5K and 6K. Apple's hardware H.264 encoder has a smaller practical geometry
+envelope, so only H.264 aspect-fits oversized sources inside a 4,096-pixel side,
 4,096 × 2,304 luma, and H.264 Level 5.2 macroblock ceiling. At 60 FPS the same
 policy also respects Level 5.2's macroblocks-per-second limit, so unusual or
-maximum-size sources may be fitted slightly farther. Switching VP8 to H.264
-first reduces capture geometry and then renegotiates; switching back first
-renegotiates and then restores native capture. Either direction restores both
-codec and geometry if the transaction fails.
+maximum-size sources may be fitted slightly farther. Switching any software
+codec to H.264 first reduces capture geometry and then renegotiates; switching
+from H.264 to any software codec first renegotiates and then restores native
+capture. Software-to-software changes retain native geometry. Every direction
+restores both codec and geometry if the transaction fails.
 
 Under that large-frame limit, ScreenCaptureKit always delivers the exact native
 source geometry, including odd dimensions. H.264's required even alignment is
@@ -319,7 +332,7 @@ Live Share settings have their own persisted namespace. They do not reuse record
 ### Viewers and statistics
 
 - Each viewer row shows peer ID, `Connecting`, `P2P`, `TURN`, `Disconnected`, and connected duration as available.
-- A `Statistics` disclosure shows uptime and one row per active stream: app/display name, codec, encoded dimensions, delivered FPS, actual bitrate, WebRTC target, configured ceiling, bytes sent, encode/send delay, capture and WebRTC-reported drops, limitation reason, and focused marker. It also reports the latest aggregate H.264 submission-pressure drops separately because Clip's bounded VideoToolbox gate is shared across encoder instances and cannot truthfully attribute those drops to one stream.
+- A `Statistics` disclosure shows uptime and one row per active stream: app/display name, actual outbound RTP codec or codecs across independently negotiated viewers, encoded dimensions, delivered FPS, actual bitrate, WebRTC target, configured ceiling, bytes sent, encode/send delay, capture and WebRTC-reported drops, limitation reason, and focused marker. The picker is only a preference; these sender statistics are authoritative and may show multiple slash-separated codecs when viewers choose different fallbacks. Statistics also report the latest aggregate H.264 submission-pressure drops separately because Clip's bounded VideoToolbox gate is shared across encoder instances and cannot truthfully attribute those drops to one stream.
 - Statistics are observations and never drive source ownership.
 
 ### Session action
@@ -393,7 +406,7 @@ real-capture suites.
 | Recording | Countdown, pause/resume, VideoToolbox master encoding, MP4 muxing, Preview/History/export lifecycle | Signaling, viewers, live overlays |
 | Live Share domain | State machine, authoritative source slots, viewer states, commands, invariants | AppKit, ScreenCaptureKit, WebSocket concrete types |
 | Live Share signaling | Room reservation, reconnect policy, v1/v2 message codecs and transport | Capture or UI state mutation |
-| `ClipLiveShareWebRTC` | Framework adapters, peer connections, ICE, SDP, H.264 tracks, DataChannel | Source selection policy or SwiftUI |
+| `ClipLiveShareWebRTC` | Framework adapters, peer connections, ICE, SDP, preferred-codec negotiation, four stable video tracks, DataChannel | Source selection policy or SwiftUI |
 | Live Share streaming | Mapping capture sources to four WebRTC slots, encoded settings, backpressure, stats | Menu/window presentation |
 | Live Share UI | State rendering and user intent dispatch | Network calls, direct capture mutation, secrets in logs |
 | Live Share overlay | Window tracking, native hit testing, display-safe positioning | Independent source truth; it dispatches domain commands |
@@ -429,20 +442,41 @@ verifies:
 - supported macOS and architectures;
 - license notices and binary size;
 - Swift 6 concurrency wrapper boundary;
-- H.264 and VP8 browser behavior for the first milestone; VP9 is future capability work;
+- exact H.264/VP8 and fallback-capable VP9/AV1 browser behavior;
 - sandbox and Hardened Runtime compatibility;
 - the exact pin during dependency resolution and a complete third-party notice;
 - that the former “no bundled media dependencies” invariant is intentionally
   replaced by an audited, pinned WebRTC runtime boundary for Live Share.
 
 The local GoPeep acceptance lane uses the current Go signaling service and
-browser viewer, requires advancing frames with both supported codecs, exercises
-live H.264 → VP8 → H.264 renegotiation, and verifies stream, focus, and
-cursor control messages. It proves local browser compatibility without pointer
-control. Remote Internet and configured-TURN traversal remain external network
-acceptance gates and must not be inferred from the loopback result.
+browser viewer, requires advancing frames across the preferred sequence H.264
+→ VP8 → VP9 → AV1 → H.264, retains the same session/viewer/tracks, checks
+each answer against the allowed fallback chain, confirms the actual outbound
+codec from sender statistics, and verifies stream, focus, and cursor control
+messages. It proves local browser compatibility without pointer control. Remote
+Internet and configured-TURN traversal remain external network acceptance gates
+and must not be inferred from the loopback result.
 
-No code should imply that AVFoundation or VideoToolbox alone can provide WebRTC signaling, ICE, DTLS-SRTP, SCTP DataChannels, congestion control, and browser interoperability. The first milestone explicitly supports H.264 and VP8; VP9 remains deferred.
+No code should imply that AVFoundation or VideoToolbox alone can provide WebRTC
+signaling, ICE, DTLS-SRTP, SCTP DataChannels, congestion control, and browser
+interoperability. The first milestone supports hardware H.264 plus software VP8,
+VP9 profile 0, and AV1 with the fallback and CPU caveats above.
+
+## Future native Clip viewer (nice-to-have)
+
+A later milestone may allow Clip to join a share as a native viewer in addition
+to preserving the browser link. Its first implementation should reuse the
+existing GoPeep signaling and native libwebrtc transport, decode H.264 with
+VideoToolbox where supported, and present decoded pixel buffers through Metal
+with bounded, newest-frame-first presentation. This removes browser playback,
+CSS scaling, and compositor uncertainty, and enables honest capture-to-display
+timing; it does not restore detail already discarded by the sender.
+
+Replacing WebRTC is not part of that first viewer milestone. ICE/STUN/TURN,
+DTLS-SRTP, congestion control, RTP loss recovery, codec negotiation, and browser
+compatibility remain valuable. A separate native-only direct transport may be
+investigated later only after measurements show native WebRTC is the remaining
+latency floor. Browser viewing must remain available either way.
 
 ## Future opaque-relay v2
 
@@ -499,7 +533,8 @@ MLS is not needed for the current one-sharer star topology. Revisit [RFC 9420](h
 - No App Store release work; distribution remains signed DMG plus Sparkle/GitHub Releases.
 - No claim that the v1 GoPeep signaling service is opaque, zero knowledge, or protected from its operator.
 - No custom WebRTC implementation and no background Go helper executable.
-- No VP9 release requirement in the first milestone.
+- No requirement that every browser decode VP9 or AV1; the documented
+  per-viewer compatibility fallbacks are part of the milestone.
 - No Accessibility, Automation, global event tap, or pointer-control permission.
 - No broad recording-directory refactor mixed into the first networking commit; folder migration is a separate behavior-preserving lane.
 
@@ -510,9 +545,11 @@ MLS is not needed for the current one-sharer star topology. Revisit [RFC 9420](h
 - Exact GoPeep v1 reserve, sharer join, access-code join gating/replacement,
   targeted offer/answer, and bidirectional ICE routing run against the current
   local Go service.
-- The current served browser viewer negotiates H.264 and VP8 with Clip's native
-  peer host, presents advancing deterministic frames through live codec
-  switches, and consumes stream, focus, and cursor control state.
+- The current served browser viewer presents advancing deterministic frames as
+  one session and stable tracks switch H.264 → VP8 → VP9 → AV1 → H.264,
+  negotiates optional-codec fallbacks independently, and consumes stream,
+  focus, and cursor control state. Actual sender statistics verify the wire
+  codec selected for each fallback-capable step.
 - Unit and native-loopback suites cover stable four-slot identity, fullscreen
   versus window state, reconnect and bounded retry, stale SDP/source
   generations, authoritative control replay, connected-viewer counting,

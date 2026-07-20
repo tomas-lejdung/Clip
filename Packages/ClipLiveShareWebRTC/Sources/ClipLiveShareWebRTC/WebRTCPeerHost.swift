@@ -236,7 +236,9 @@ public final class WebRTCPeerHost: LiveShareVideoSlotHosting, @unchecked Sendabl
         onQueue { activeSenderPolicy }
     }
 
-    /// The codec used for new offers and, after renegotiation, active peers.
+    /// The preferred codec used for new offers and, after renegotiation,
+    /// active peers. Optional software codecs retain VP8 as a compatibility
+    /// fallback for viewers that cannot negotiate the preferred format.
     public var videoCodec: WebRTCVideoCodec {
         onQueue { activeVideoCodec }
     }
@@ -301,8 +303,9 @@ public final class WebRTCPeerHost: LiveShareVideoSlotHosting, @unchecked Sendabl
         }
     }
 
-    /// Selects a codec for every video transceiver and waits until all current
-    /// peers have answered the resulting reoffers. Track IDs, sources, the
+    /// Selects a preferred codec for every video transceiver and waits until
+    /// all current peers have answered the resulting reoffers. VP9 and AV1
+    /// offers retain VP8 as a compatibility fallback. Track IDs, sources, the
     /// control data channel, and the ICE transport remain intact.
     ///
     /// Applying codec preferences raises `negotiationNeeded` for each viewer;
@@ -1205,8 +1208,23 @@ public final class WebRTCPeerHost: LiveShareVideoSlotHosting, @unchecked Sendabl
         viewerID: String,
         slot: Int
     ) throws {
-        let preferences = videoCodecCapabilities.filter {
-            $0.name.caseInsensitiveCompare(codec.rtcName) == .orderedSame
+        let orderedRTCNames: [String]
+        switch codec {
+        case .av1:
+            orderedRTCNames = [
+                codec.rtcName,
+                WebRTCVideoCodec.vp9.rtcName,
+                WebRTCVideoCodec.vp8.rtcName,
+            ]
+        case .vp9:
+            orderedRTCNames = [codec.rtcName, WebRTCVideoCodec.vp8.rtcName]
+        case .h264, .vp8:
+            orderedRTCNames = [codec.rtcName]
+        }
+        let preferences = orderedRTCNames.flatMap { rtcName in
+            videoCodecCapabilities.filter {
+                $0.name.caseInsensitiveCompare(rtcName) == .orderedSame
+            }
         }
         guard !preferences.isEmpty else {
             throw WebRTCPeerHostError.videoCodecUnavailable(codec)
