@@ -110,6 +110,12 @@ Reserving a room is separate from sending pixels. A room can remain available
 with zero active sources so a host may stop and resume sharing without changing
 the viewer URL.
 
+Settings stores one validated Live Share server base address and derives the
+service endpoints from it. Changing that address affects the next room only;
+an active room continues with the configuration it started with. A
+non-destructive connection test checks service reachability without reserving a
+room or starting a share.
+
 The access code is a cryptographically random, session-only value. In the
 GoPeep v1 compatibility protocol it applies to new viewer join attempts and is
 readable by the signaling service. Changing it does not reauthenticate a viewer
@@ -892,7 +898,7 @@ The first presentation explicitly selects **General** and must render every visi
 control, and current value immediately. Opening Settings must not depend on leaving and
 returning focus to complete SwiftUI layout or drawing.
 
-General, Recording, Export, Storage, and Permissions are presented as an always-visible
+General, Recording, Live Share, Export, Storage, and Permissions are presented as an always-visible
 native macOS top tab bar. They must not collapse into a toolbar overflow button at the
 supported initial window size. Clip does not draw a custom segmented selector or glass
 backdrop for these tabs; the system `TabView` supplies the current native appearance,
@@ -918,6 +924,23 @@ exceed the window; controls and labels remain single-line where practical.
 - Default microphone state.
 - Default system-audio state.
 - Current system-default microphone name, shown read-only.
+
+---
+
+## Live Share
+
+- An editable, validated server base address.
+- A non-destructive Test Connection action that does not reserve a room.
+- Reset Server Address, restoring the built-in GoPeep service address.
+- Default video codec, quality/bandwidth rung, frame rate, and Performance or
+  Quality encoding mode.
+- Default System Audio, access-code requirement, Prioritize Focused Window, and
+  Auto-share Focused Windows states.
+- Restore All Live Share Defaults, restoring session defaults without changing
+  the separately managed server address.
+
+Server-address changes apply when the next Live Share session starts and never
+retarget an active session.
 
 ---
 
@@ -968,6 +991,12 @@ Each permission should include a button that opens the relevant macOS System Set
 - Microphone: Off.
 - System audio: Off.
 - Countdown: a silent 3 seconds, with Off, 1, 3, and 5-second choices.
+- Live Share server: `https://gopeep.tineestudio.se`.
+- Live Share video: VP8, Very High quality (`6 Mbps` ceiling), 30 FPS, Quality mode.
+- Live Share System Audio: Off.
+- Live Share access code: Off.
+- Live Share Prioritize Focused Window: On.
+- Live Share Auto-share Focused Windows: Off.
 - History retention: 7 days.
 - Export preset: Crisp.
 - Export qualities: Crisp `98`, Compact `90`, Smallest `70`.

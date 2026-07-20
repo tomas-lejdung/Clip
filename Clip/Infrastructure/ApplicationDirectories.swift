@@ -27,6 +27,7 @@ enum DeterministicUIScenario: String, CaseIterable, Equatable, Sendable {
     case liveShareOverlays = "live-share-overlays"
     case settings
     case settingsRecording = "settings-recording"
+    case settingsLiveShare = "settings-live-share"
     case settingsExport = "settings-export"
     case settingsStorage = "settings-storage"
     case settingsPermissions = "settings-permissions"

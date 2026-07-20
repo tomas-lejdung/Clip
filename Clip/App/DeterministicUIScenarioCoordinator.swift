@@ -29,6 +29,7 @@ final class DeterministicUIScenarioCoordinator {
     private let launchConfiguration: AppLaunchConfiguration
     private let directories: ApplicationDirectories
     private let settings: AppSettingsModel
+    private let liveSharePreferences: LiveSharePreferencesModel
     private let statusBar: NSStatusBar
     private let popover = NSPopover()
 
@@ -70,6 +71,9 @@ final class DeterministicUIScenarioCoordinator {
             homeDirectory: homeDirectory,
             initialSettings: initialSettings,
             directoryBookmarks: DeterministicDirectoryBookmarkService()
+        )
+        liveSharePreferences = try LiveSharePreferencesModel(
+            applicationSupportDirectory: directories.applicationSupport
         )
         self.launchConfiguration = launchConfiguration
         self.statusBar = statusBar
@@ -319,6 +323,7 @@ final class DeterministicUIScenarioCoordinator {
 
         case .settings,
              .settingsRecording,
+             .settingsLiveShare,
              .settingsExport,
              .settingsStorage,
              .settingsPermissions:
@@ -341,6 +346,7 @@ final class DeterministicUIScenarioCoordinator {
             return wrapped(
                 SettingsView(
                     model: settings,
+                    liveSharePreferences: liveSharePreferences,
                     shortcuts: shortcuts,
                     permissions: permissions,
                     audio: audio,
@@ -392,6 +398,7 @@ final class DeterministicUIScenarioCoordinator {
             NSSize(width: 700, height: 430)
         case .settings,
              .settingsRecording,
+             .settingsLiveShare,
              .settingsExport,
              .settingsStorage,
              .settingsPermissions:
@@ -489,6 +496,8 @@ private extension DeterministicUIScenario {
             .general
         case .settingsRecording:
             .recording
+        case .settingsLiveShare:
+            .liveShare
         case .settingsExport:
             .export
         case .settingsStorage:

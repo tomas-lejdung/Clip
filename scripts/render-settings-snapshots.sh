@@ -48,7 +48,7 @@ xcodebuild test-without-building \
   -destination "platform=macOS,arch=arm64" \
   -only-testing:ClipTests/SettingsVisualSnapshotTests/testRenderEverySettingsTabAtTopAndBottom
 
-EXPECTED_SNAPSHOT_COUNT=10
+EXPECTED_SNAPSHOT_COUNT=12
 ACTUAL_SNAPSHOT_COUNT="$(
   find "$OUTPUT_DIRECTORY" \
     -maxdepth 1 \
@@ -59,7 +59,7 @@ ACTUAL_SNAPSHOT_COUNT="$(
 )"
 if [[ "$ACTUAL_SNAPSHOT_COUNT" -ne "$EXPECTED_SNAPSHOT_COUNT" ]] ||
    [[ ! -f "$OUTPUT_DIRECTORY/settings-snapshots.json" ]]; then
-  echo "Expected 10 Settings PNGs and a manifest, found $ACTUAL_SNAPSHOT_COUNT PNGs." >&2
+  echo "Expected $EXPECTED_SNAPSHOT_COUNT Settings PNGs and a manifest, found $ACTUAL_SNAPSHOT_COUNT PNGs." >&2
   exit 1
 fi
 

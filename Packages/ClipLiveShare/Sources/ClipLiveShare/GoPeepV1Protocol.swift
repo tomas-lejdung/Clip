@@ -323,6 +323,40 @@ public enum GoPeepV1ProtocolError: Error, Equatable, Sendable {
   case emptyICEServerURLs
 }
 
+public enum LiveShareServerEndpointError: Error, Equatable, Sendable {
+  case empty
+  case invalidURL(String)
+  case unsupportedScheme(String)
+  case insecureRemoteServer
+  case missingHost
+  case credentialsNotAllowed
+  case pathNotAllowed
+  case queryOrFragmentNotAllowed
+}
+
+extension LiveShareServerEndpointError: LocalizedError {
+  public var errorDescription: String? {
+    switch self {
+    case .empty:
+      "Enter a Live Share server address."
+    case .invalidURL:
+      "Enter a valid Live Share server address."
+    case let .unsupportedScheme(scheme):
+      "The Live Share server address cannot use the \(scheme) scheme."
+    case .insecureRemoteServer:
+      "Remote Live Share servers must use HTTPS. HTTP is available only for local development."
+    case .missingHost:
+      "The Live Share server address must include a host name."
+    case .credentialsNotAllowed:
+      "Remove the username and password from the Live Share server address."
+    case .pathNotAllowed:
+      "Enter the server root address without an additional path."
+    case .queryOrFragmentNotAllowed:
+      "Remove the query or fragment from the Live Share server address."
+    }
+  }
+}
+
 /// GoPeep room codes use `ADJECTIVE-NOUN-NN[N]`, are normalized to uppercase,
 /// and intentionally don't require words to come from the server's current word lists.
 public struct GoPeepV1RoomCode: Codable, Equatable, Hashable, Sendable,
@@ -421,6 +455,105 @@ public struct GoPeepV1ICEServer: Codable, Equatable, Hashable, Sendable {
     self.urls = urls
     self.username = username
     self.credential = credential
+  }
+}
+
+/// A user-facing Live Share service root. The app stores this HTTP(S) value and
+/// derives GoPeep's reservation, WebSocket signaling, and viewer URLs from it.
+/// Keeping the root canonical prevents a custom path or credential from being
+/// silently discarded when those protocol endpoints are constructed.
+public struct LiveShareServerEndpoint: Codable, Equatable, Hashable, Sendable,
+  CustomStringConvertible
+{
+  public let baseURL: URL
+
+  public init(userInput: String) throws {
+    let trimmed = userInput.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty else {
+      throw LiveShareServerEndpointError.empty
+    }
+
+    let candidate = trimmed.contains("://") ? trimmed : "https://\(trimmed)"
+    guard var components = URLComponents(string: candidate) else {
+      throw LiveShareServerEndpointError.invalidURL(trimmed)
+    }
+    let suppliedScheme = components.scheme?.lowercased() ?? ""
+    switch suppliedScheme {
+    case "https", "wss":
+      components.scheme = "https"
+    case "http", "ws":
+      components.scheme = "http"
+    default:
+      throw LiveShareServerEndpointError.unsupportedScheme(
+        suppliedScheme.isEmpty ? "unknown" : suppliedScheme
+      )
+    }
+
+    guard let host = components.host, !host.isEmpty else {
+      throw LiveShareServerEndpointError.missingHost
+    }
+    guard components.user == nil, components.password == nil else {
+      throw LiveShareServerEndpointError.credentialsNotAllowed
+    }
+    guard components.query == nil, components.fragment == nil else {
+      throw LiveShareServerEndpointError.queryOrFragmentNotAllowed
+    }
+    guard components.path.isEmpty || components.path == "/" else {
+      throw LiveShareServerEndpointError.pathNotAllowed
+    }
+
+    let normalizedHost = host.lowercased()
+    if components.scheme == "http", !Self.isLoopbackHost(normalizedHost) {
+      throw LiveShareServerEndpointError.insecureRemoteServer
+    }
+    components.host = normalizedHost
+    components.path = ""
+    guard let baseURL = components.url else {
+      throw LiveShareServerEndpointError.invalidURL(trimmed)
+    }
+    self.baseURL = baseURL
+  }
+
+  public static let goPeepRemote = try! Self(
+    userInput: "https://gopeep.tineestudio.se"
+  )
+
+  public var description: String { baseURL.absoluteString }
+
+  public var configuration: GoPeepV1ServerConfiguration {
+    get throws {
+      var signalingComponents = URLComponents(
+        url: baseURL,
+        resolvingAgainstBaseURL: false
+      )!
+      signalingComponents.scheme = baseURL.scheme == "https" ? "wss" : "ws"
+      return try GoPeepV1ServerConfiguration(
+        signalingServerURL: signalingComponents.url!
+      )
+    }
+  }
+
+  public init(from decoder: any Decoder) throws {
+    let container = try decoder.singleValueContainer()
+    let value = try container.decode(String.self)
+    do {
+      try self.init(userInput: value)
+    } catch {
+      throw DecodingError.dataCorruptedError(
+        in: container,
+        debugDescription: "Invalid Live Share server endpoint."
+      )
+    }
+  }
+
+  public func encode(to encoder: any Encoder) throws {
+    var container = encoder.singleValueContainer()
+    try container.encode(description)
+  }
+
+  private static func isLoopbackHost(_ host: String) -> Bool {
+    host == "localhost" || host == "127.0.0.1" || host == "::1"
+      || host.hasSuffix(".localhost")
   }
 }
 

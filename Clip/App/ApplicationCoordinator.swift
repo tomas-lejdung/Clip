@@ -211,6 +211,8 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
             defer { startupTask = nil }
             await dependencies.settings.load()
             guard !Task.isCancelled, !isPreparingForTermination else { return }
+            await dependencies.liveSharePreferences.load()
+            guard !Task.isCancelled, !isPreparingForTermination else { return }
             await dependencies.audio.refreshDevices()
             guard !Task.isCancelled, !isPreparingForTermination else { return }
             installIdlePopover()
@@ -368,6 +370,7 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
         await waitForTerminalOperationHandoff()
         await persistAndReleasePreviewForTermination()
         await dependencies.settings.flushPendingPersistence()
+        await dependencies.liveSharePreferences.flushPendingPersistence()
     }
 
     private func waitForTerminalOperationHandoff() async {
@@ -534,8 +537,10 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
                 return
             }
             do {
-                let coordinator = try LiveShareCoordinator(
-                    applicationSupportDirectory: dependencies.directories.applicationSupport,
+                let server = try dependencies.liveSharePreferences.serverEndpoint.configuration
+                let coordinator = LiveShareCoordinator(
+                    preferences: dependencies.liveSharePreferences,
+                    server: server,
                     onSessionEnded: { [weak self] in
                         self?.liveShareDidEnd()
                     },
@@ -2256,6 +2261,7 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
         )
         let view = SettingsView(
             model: dependencies.settings,
+            liveSharePreferences: dependencies.liveSharePreferences,
             shortcuts: dependencies.shortcuts,
             permissions: dependencies.permissions,
             audio: dependencies.audio,

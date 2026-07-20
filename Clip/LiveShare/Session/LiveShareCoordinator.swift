@@ -41,7 +41,7 @@ final class LiveShareCoordinator {
         category: "live-share"
     )
 
-    private let settingsRepository: LiveShareSettingsRepository
+    private let preferences: LiveSharePreferencesModel
     private let server: GoPeepV1ServerConfiguration
     private let signaling: GoPeepV1SignalingClient
     private let discovery: any CaptureContentDiscovering
@@ -50,6 +50,7 @@ final class LiveShareCoordinator {
 
     private var state = LiveShareStateMachine()
     private var settings = LiveShareSettings.default
+    private var persistedSettingsBaseline = LiveShareSettings.default
     private var slotAllocation = LiveShareTrackSlotAllocation()
     private var accessCode: String?
     private var accessCodeIsUpdating = false
@@ -64,7 +65,6 @@ final class LiveShareCoordinator {
     private var failureCleanupTask: Task<Void, Never>?
     private var captureRestartTask: Task<Void, Never>?
     private var captureRestartRequestID: UUID?
-    private var settingsSaveTask: Task<Void, Never>?
     private var codecChangeTask: Task<Void, Never>?
     private var systemAudioReconcileTask: Task<Void, Never>?
     private var systemAudioReconcileTaskID: UUID?
@@ -173,15 +173,13 @@ final class LiveShareCoordinator {
     )
 
     init(
-        applicationSupportDirectory: URL,
+        preferences: LiveSharePreferencesModel,
         server: GoPeepV1ServerConfiguration = .goPeepRemote,
         discovery: any CaptureContentDiscovering = ScreenCaptureContentDiscovery(),
         onSessionEnded: @escaping () -> Void,
         onMenuBarStatusChanged: @escaping (LiveShareMenuBarStatus) -> Void = { _ in }
-    ) throws {
-        settingsRepository = try LiveShareSettingsRepository(
-            applicationSupportDirectory: applicationSupportDirectory
-        )
+    ) {
+        self.preferences = preferences
         self.server = server
         self.discovery = discovery
         self.onSessionEnded = onSessionEnded
@@ -267,14 +265,8 @@ final class LiveShareCoordinator {
         didNotifyEnd = false
         publish()
 
-        do {
-            settings = try await settingsRepository.load()
-        } catch {
-            settings = .default
-            Self.logger.error(
-                "Could not load Live Share settings: \(error.localizedDescription, privacy: .public)"
-            )
-        }
+        settings = preferences.settings
+        persistedSettingsBaseline = settings
         do {
             accessCode = settings.accessCodeEnabled
                 ? try LiveShareAccessCode.generate()
@@ -1804,17 +1796,33 @@ final class LiveShareCoordinator {
     }
 
     private func persistSettings() {
-        let repository = settingsRepository
         let value = settings
-        let previous = settingsSaveTask
-        settingsSaveTask = Task {
-            await previous?.value
-            do {
-                try await repository.save(value)
-            } catch {
-                Self.logger.error(
-                    "Could not save Live Share settings: \(error.localizedDescription, privacy: .public)"
-                )
+        let baseline = persistedSettingsBaseline
+        persistedSettingsBaseline = value
+        preferences.updateSettings { stored in
+            if baseline.quality != value.quality {
+                stored.quality = value.quality
+            }
+            if baseline.frameRate != value.frameRate {
+                stored.frameRate = value.frameRate
+            }
+            if baseline.encodingMode != value.encodingMode {
+                stored.encodingMode = value.encodingMode
+            }
+            if baseline.videoCodec != value.videoCodec {
+                stored.videoCodec = value.videoCodec
+            }
+            if baseline.systemAudioEnabled != value.systemAudioEnabled {
+                stored.systemAudioEnabled = value.systemAudioEnabled
+            }
+            if baseline.prioritizeFocusedWindow != value.prioritizeFocusedWindow {
+                stored.prioritizeFocusedWindow = value.prioritizeFocusedWindow
+            }
+            if baseline.autoShareFocusedWindows != value.autoShareFocusedWindows {
+                stored.autoShareFocusedWindows = value.autoShareFocusedWindows
+            }
+            if baseline.accessCodeEnabled != value.accessCodeEnabled {
+                stored.accessCodeEnabled = value.accessCodeEnabled
             }
         }
     }
@@ -1992,8 +2000,6 @@ final class LiveShareCoordinator {
         peerHost?.close()
         peerHost = nil
         await signaling.stop()
-        await settingsSaveTask?.value
-        settingsSaveTask = nil
         focusedWindowOverlay.tearDown()
         statusHUD.tearDown()
         state.disconnect()

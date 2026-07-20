@@ -708,6 +708,9 @@ struct ApplicationDirectoriesTests {
             homeDirectory: root,
             directoryBookmarks: FakeDirectoryBookmarkService(directories: [])
         )
+        let liveSharePreferences = try LiveSharePreferencesModel(
+            applicationSupportDirectory: directories.applicationSupport
+        )
         let permissions = FakePermissionService()
         let audio = FakeAudioService()
         let pasteboard = FakePasteboardService()
@@ -731,6 +734,7 @@ struct ApplicationDirectoriesTests {
             fileSystem: fileSystem,
             clock: SystemClock(),
             settings: settings,
+            liveSharePreferences: liveSharePreferences,
             permissions: permissions,
             audio: audio,
             pasteboard: pasteboard,

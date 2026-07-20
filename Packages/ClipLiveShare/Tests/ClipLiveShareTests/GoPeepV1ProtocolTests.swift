@@ -216,6 +216,67 @@ struct GoPeepV1ProtocolTests {
     #expect(local.reservationURL.absoluteString == "http://localhost:8080/api/reserve")
   }
 
+  @Test("User-facing server roots normalize into exact protocol endpoints")
+  func serverEndpointNormalization() throws {
+    let remote = try LiveShareServerEndpoint(
+      userInput: "  WSS://EXAMPLE.com:8443/  "
+    )
+    #expect(remote.description == "https://example.com:8443")
+
+    let remoteConfiguration = try remote.configuration
+    #expect(remoteConfiguration.signalingServerURL.absoluteString == "wss://example.com:8443")
+    #expect(
+      remoteConfiguration.reservationURL.absoluteString
+        == "https://example.com:8443/api/reserve"
+    )
+
+    let room = try GoPeepV1RoomCode(rawValue: "CRISP-FROG-042")
+    #expect(
+      remoteConfiguration.signalingURL(for: room).absoluteString
+        == "wss://example.com:8443/ws/CRISP-FROG-042"
+    )
+    #expect(
+      remoteConfiguration.viewerURL(for: room).absoluteString
+        == "https://example.com:8443/CRISP-FROG-042"
+    )
+
+    let local = try LiveShareServerEndpoint(userInput: "localhost:8080")
+    #expect(local.description == "https://localhost:8080")
+    let explicitLocal = try LiveShareServerEndpoint(userInput: "http://localhost:8080/")
+    #expect(explicitLocal.description == "http://localhost:8080")
+    #expect(try explicitLocal.configuration.signalingServerURL.absoluteString == "ws://localhost:8080")
+  }
+
+  @Test("Server roots reject values whose components would be discarded")
+  func invalidServerEndpoints() {
+    #expect(throws: LiveShareServerEndpointError.empty) {
+      try LiveShareServerEndpoint(userInput: "  ")
+    }
+    #expect(throws: LiveShareServerEndpointError.unsupportedScheme("ftp")) {
+      try LiveShareServerEndpoint(userInput: "ftp://example.com")
+    }
+    #expect(throws: LiveShareServerEndpointError.insecureRemoteServer) {
+      try LiveShareServerEndpoint(userInput: "http://example.com")
+    }
+    #expect(throws: LiveShareServerEndpointError.credentialsNotAllowed) {
+      try LiveShareServerEndpoint(userInput: "https://person:secret@example.com")
+    }
+    #expect(throws: LiveShareServerEndpointError.pathNotAllowed) {
+      try LiveShareServerEndpoint(userInput: "https://example.com/gopeep")
+    }
+    #expect(throws: LiveShareServerEndpointError.queryOrFragmentNotAllowed) {
+      try LiveShareServerEndpoint(userInput: "https://example.com?room=test")
+    }
+  }
+
+  @Test("Persisted server roots retain validation and canonical spelling")
+  func serverEndpointCodable() throws {
+    let endpoint = try LiveShareServerEndpoint(userInput: "wss://EXAMPLE.com/")
+    let data = try JSONEncoder().encode(endpoint)
+    #expect(try JSONDecoder().decode(String.self, from: data) == "https://example.com")
+    #expect(try JSONDecoder().decode(LiveShareServerEndpoint.self, from: data) == endpoint)
+  }
+
   @Test("Invalid dependency-free transport configuration is rejected")
   func invalidConfiguration() throws {
     let badSignalURL = try #require(URL(string: "https://example.com"))
