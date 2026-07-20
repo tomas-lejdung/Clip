@@ -168,6 +168,9 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
     private var previewLifecycleContext: PreviewLifecycleContext?
     private var historyWindowController: NSWindowController?
     private var onboardingWindowController: NSWindowController?
+    private var liveShareCoordinator: LiveShareCoordinator?
+    private var isStartingLiveShare = false
+    private var isPreparingCapture = false
     private var startupTask: Task<Void, Never>?
     private var captureEventTask: Task<Void, Never>?
     private var maintenanceTask: Task<Void, Never>?
@@ -207,6 +210,8 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
             guard let self else { return }
             defer { startupTask = nil }
             await dependencies.settings.load()
+            guard !Task.isCancelled, !isPreparingForTermination else { return }
+            await dependencies.liveSharePreferences.load()
             guard !Task.isCancelled, !isPreparingForTermination else { return }
             await dependencies.audio.refreshDevices()
             guard !Task.isCancelled, !isPreparingForTermination else { return }
@@ -252,6 +257,16 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
     }
 
     func stop() {
+        stop(preservingLiveShareForTermination: false)
+    }
+
+    private func stop(preservingLiveShareForTermination: Bool) {
+        if preservingLiveShareForTermination {
+            liveShareCoordinator?.hideForApplicationTermination()
+        } else {
+            liveShareCoordinator?.cancelForApplicationStop()
+            liveShareCoordinator = nil
+        }
         startupTask?.cancel()
         startupTask = nil
         captureEventTask?.cancel()
@@ -290,7 +305,7 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
 
     func closeForTermination() {
         isPreparingForTermination = true
-        stop()
+        stop(preservingLiveShareForTermination: true)
     }
 
     /// Flushes user-visible state before AppKit allows process termination.
@@ -302,6 +317,11 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
         isPreparingForTermination = true
         maintenanceTask?.cancel()
         maintenanceTask = nil
+
+        if let liveShareCoordinator {
+            await liveShareCoordinator.endForApplicationTermination()
+            self.liveShareCoordinator = nil
+        }
 
         if pendingRetake != nil, recordingState.phase == .finishing {
             // The in-flight replacement may still finish into History, but the
@@ -350,6 +370,7 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
         await waitForTerminalOperationHandoff()
         await persistAndReleasePreviewForTermination()
         await dependencies.settings.flushPendingPersistence()
+        await dependencies.liveSharePreferences.flushPendingPersistence()
     }
 
     private func waitForTerminalOperationHandoff() async {
@@ -406,6 +427,7 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
     private func installIdlePopover() {
         guard !isPreparingForTermination else { return }
         let actions = MenuBarActions(
+            startLiveShare: { [weak self] in self?.startLiveShare() },
             captureArea: { [weak self] in self?.requestSelection(mode: .captureArea) },
             lastArea: { [weak self] in self?.requestSelection(mode: .lastArea) },
             fullscreen: { [weak self] in self?.requestSelection(mode: .fullscreen) },
@@ -460,6 +482,17 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
         )
     }
 
+    private func installLiveSharePopover(model: LiveSharePresentationModel) {
+        guard !isPreparingForTermination else { return }
+        popover.behavior = .transient
+        popover.animates = true
+        popover.delegate = self
+        popover.contentSize = LiveSharePopoverView.contentSize
+        popover.contentViewController = NSHostingController(
+            rootView: LiveSharePopoverView(model: model)
+        )
+    }
+
     @objc
     private func togglePopover(_ sender: NSStatusBarButton) {
         guard !isPreparingForTermination, dependencies.settings.isLoaded else { return }
@@ -472,16 +505,87 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
     }
 
     func popoverWillShow(_ notification: Notification) {
-        guard !isPreparingForTermination, recordingPresentationModel == nil else { return }
+        guard !isPreparingForTermination,
+              recordingPresentationModel == nil,
+              liveShareCoordinator == nil else { return }
+        Task { @MainActor [weak self] in
+            await self?.refreshMenuBarModel()
+        }
+    }
+
+    private func startLiveShare() {
+        popover.performClose(nil)
+        Task { @MainActor [weak self] in
+            guard let self,
+                  !isStartingLiveShare,
+                  !isPreparingCapture,
+                  liveShareCoordinator == nil,
+                  recordingPresentationModel == nil,
+                  [.idle, .canceled, .failed, .preview].contains(recordingState.phase) else {
+                NSSound.beep()
+                return
+            }
+            isStartingLiveShare = true
+            defer { isStartingLiveShare = false }
+            guard await ensureLiveShareScreenRecordingPermission() else { return }
+            guard liveShareCoordinator == nil,
+                  recordingPresentationModel == nil,
+                  [.idle, .canceled, .failed, .preview].contains(recordingState.phase),
+                  !isPreparingCapture,
+                  !isPreparingForTermination else {
+                NSSound.beep()
+                return
+            }
+            do {
+                let server = try dependencies.liveSharePreferences.serverEndpoint.configuration
+                let coordinator = LiveShareCoordinator(
+                    preferences: dependencies.liveSharePreferences,
+                    server: server,
+                    onSessionEnded: { [weak self] in
+                        self?.liveShareDidEnd()
+                    },
+                    onMenuBarStatusChanged: { [weak self] status in
+                        self?.updateLiveShareStatusIcon(status)
+                    }
+                )
+                liveShareCoordinator = coordinator
+                installLiveSharePopover(model: coordinator.presentationModel)
+                updateLiveShareStatusIcon(.ready)
+                coordinator.start()
+                if let button = statusItem?.button {
+                    popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+                    popover.contentViewController?.view.window?.makeKey()
+                }
+            } catch {
+                presentError(title: "Live Share Couldn’t Start", error: error)
+            }
+        }
+    }
+
+    private func liveShareDidEnd() {
+        guard !isPreparingForTermination else { return }
+        liveShareCoordinator = nil
+        installIdlePopover()
+        updateStatusIcon(symbol: "record.circle", description: String(localized: "Clip"))
         Task { @MainActor [weak self] in
             await self?.refreshMenuBarModel()
         }
     }
 
     private func recordPreparedDisplay(_ displayID: CGDirectDisplayID) {
+        guard liveShareCoordinator == nil, !isStartingLiveShare, !isPreparingCapture else {
+            NSSound.beep()
+            return
+        }
+        isPreparingCapture = true
         popover.performClose(nil)
         Task { @MainActor [weak self] in
             guard let self else { return }
+            defer { isPreparingCapture = false }
+            guard liveShareCoordinator == nil, !isStartingLiveShare else {
+                NSSound.beep()
+                return
+            }
             guard CaptureSelectionPresentationPolicy.permitsSelection(
                 recordingPhase: recordingState.phase,
                 hasVisiblePreview: previewWindowController?.window?.isVisible == true
@@ -706,9 +810,15 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
     }
 
     private func requestSelection(mode: CaptureMode) {
+        guard liveShareCoordinator == nil, !isStartingLiveShare, !isPreparingCapture else {
+            NSSound.beep()
+            return
+        }
+        isPreparingCapture = true
         popover.performClose(nil)
         Task { @MainActor [weak self] in
             guard let self else { return }
+            defer { isPreparingCapture = false }
             await rememberCaptureMode(mode)
             await presentSelection(mode: mode)
         }
@@ -722,6 +832,10 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
     }
 
     private func handleGlobalShortcut(_ action: GlobalShortcutAction) {
+        guard liveShareCoordinator == nil, !isStartingLiveShare else {
+            NSSound.beep()
+            return
+        }
         switch action {
         case .capture:
             guard [.idle, .canceled, .failed, .preview].contains(recordingState.phase) else {
@@ -1528,6 +1642,14 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
         _ recording: PreviewRecording,
         context: PreviewLifecycleContext
     ) async throws -> PreviewRetakeResult? {
+        guard liveShareCoordinator == nil, !isStartingLiveShare else {
+            throw PreviewRetakeCoordinatorError.liveShareActive
+        }
+        guard !isPreparingCapture else {
+            throw PreviewRetakeCoordinatorError.retakeAlreadyActive
+        }
+        isPreparingCapture = true
+        defer { isPreparingCapture = false }
         guard pendingRetake == nil else {
             throw PreviewRetakeCoordinatorError.retakeAlreadyActive
         }
@@ -1535,6 +1657,9 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
             throw PreviewRetakeCoordinatorError.missingCapturePlan
         }
         guard await ensureScreenRecordingPermission() else { return nil }
+        guard liveShareCoordinator == nil, !isStartingLiveShare else {
+            throw PreviewRetakeCoordinatorError.liveShareActive
+        }
 
         let prepared = try await preparedRetakeTarget(for: plan.target)
         let retakeSettings = await resolvedCaptureSettings(plan.settings)
@@ -2136,6 +2261,7 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
         )
         let view = SettingsView(
             model: dependencies.settings,
+            liveSharePreferences: dependencies.liveSharePreferences,
             shortcuts: dependencies.shortcuts,
             permissions: dependencies.permissions,
             audio: dependencies.audio,
@@ -2223,6 +2349,45 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
         alert.messageText = String(localized: "Screen Recording Is Not Allowed")
         alert.informativeText = String(
             localized: "macOS must allow this exact Clip build. If Clip already appears enabled, turn it off and on again, or remove it and re-add /Applications/Clip.app. Then quit and reopen Clip."
+        )
+        alert.addButton(withTitle: String(localized: "Open System Settings"))
+        alert.addButton(withTitle: String(localized: "Cancel"))
+        if alert.runModal() == .alertFirstButtonReturn,
+           let url = URL(
+               string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture"
+           ) {
+            NSWorkspace.shared.open(url)
+        }
+        return false
+    }
+
+    private func ensureLiveShareScreenRecordingPermission() async -> Bool {
+        let permission = dependencies.permissions.currentStatus(for: .screenRecording)
+        let plan = ScreenRecordingPermissionPolicy.explicitCapturePlan(for: permission)
+        if plan.canProceed { return true }
+
+        if plan.shouldShowExplanation {
+            let explanation = NSAlert()
+            explanation.alertStyle = .informational
+            explanation.messageText = String(localized: "Allow Screen Recording")
+            explanation.informativeText = String(
+                localized: "Clip needs Screen & System Audio Recording access to share only the windows or display you choose. Live Share sends selected video and optional system audio to connected viewers over encrypted WebRTC media transport."
+            )
+            explanation.addButton(withTitle: String(localized: "Continue"))
+            explanation.addButton(withTitle: String(localized: "Not Now"))
+            guard explanation.runModal() == .alertFirstButtonReturn else { return false }
+        }
+
+        if plan.shouldRequestAccess,
+           await dependencies.permissions.request(.screenRecording) == .granted {
+            return true
+        }
+
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = String(localized: "Screen Recording Is Not Allowed")
+        alert.informativeText = String(
+            localized: "Allow this exact Clip build in System Settings, then quit and reopen Clip before starting Live Share."
         )
         alert.addButton(withTitle: String(localized: "Open System Settings"))
         alert.addButton(withTitle: String(localized: "Cancel"))
@@ -2380,6 +2545,13 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
         button.image = image
     }
 
+    private func updateLiveShareStatusIcon(_ status: LiveShareMenuBarStatus) {
+        updateStatusIcon(
+            symbol: status.symbolName,
+            description: status.accessibilityDescription
+        )
+    }
+
     private func presentError(title: String, error: any Error) {
         let details = UserFacingErrorPresentation.details(for: error)
         ClipLog.lifecycle.error(
@@ -2529,6 +2701,7 @@ private final class PendingRetake {
 }
 
 private enum PreviewRetakeCoordinatorError: LocalizedError, Sendable {
+    case liveShareActive
     case retakeAlreadyActive
     case missingCapturePlan
     case displayUnavailable(String)
@@ -2537,6 +2710,8 @@ private enum PreviewRetakeCoordinatorError: LocalizedError, Sendable {
 
     var errorDescription: String? {
         switch self {
+        case .liveShareActive:
+            String(localized: "End Live Share before starting a retake.")
         case .retakeAlreadyActive:
             String(localized: "A retake is already in progress.")
         case .missingCapturePlan:

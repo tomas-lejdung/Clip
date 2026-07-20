@@ -29,8 +29,18 @@ final class DeterministicScenarioLaunchTests: XCTestCase {
         try withScenario("menu-popover") { app in
             XCTAssertTrue(app.statusItems["clip.uiScenario.statusItem"].waitForExistence(timeout: 5))
             XCTAssertTrue(app.otherElements["clip.uiScenario.menu-popover"].waitForExistence(timeout: 5))
-            XCTAssertTrue(app.buttons["clip.menu.captureArea"].exists)
+            let captureArea = app.buttons["clip.menu.captureArea"]
+            let liveShare = app.buttons["clip.menu.liveShare"]
+            XCTAssertTrue(captureArea.exists)
+            XCTAssertEqual(captureArea.label, "Capture Area")
+            XCTAssertTrue(liveShare.exists)
+            XCTAssertEqual(liveShare.label, "Live Share")
             XCTAssertTrue(app.buttons["clip.menu.captureApplication"].exists)
+            let orderedButtonIdentifiers = app.buttons.allElementsBoundByIndex.map(\.identifier)
+            XCTAssertLessThan(
+                try XCTUnwrap(orderedButtonIdentifiers.firstIndex(of: "clip.menu.display.2")),
+                try XCTUnwrap(orderedButtonIdentifiers.firstIndex(of: "clip.menu.liveShare"))
+            )
             XCTAssertTrue(app.buttons["clip.menu.recordPrepared"].exists)
             XCTAssertTrue(app.switches["clip.menu.clickHighlights"].exists)
             XCTAssertEqual(app.switches["clip.menu.clickHighlights"].value as? String, "1")
@@ -132,8 +142,22 @@ final class DeterministicScenarioLaunchTests: XCTestCase {
             XCTAssertTrue(app.otherElements["clip.uiScenario.settings"].waitForExistence(timeout: 5))
             XCTAssertTrue(app.otherElements["clip.settings"].exists)
             XCTAssertTrue(app.otherElements["clip.settings.general"].exists)
-            XCTAssertTrue(app.buttons["General"].exists)
-            XCTAssertTrue(app.buttons["Permissions"].exists)
+            for title in [
+                "General",
+                "Recording",
+                "Live Share",
+                "Export",
+                "Storage",
+                "Permissions",
+            ] {
+                let tab = app.buttons[title]
+                XCTAssertTrue(tab.exists, "\(title) Settings tab is missing.")
+                XCTAssertTrue(tab.isHittable, "\(title) Settings tab moved into toolbar overflow.")
+            }
+            XCTAssertFalse(
+                app.popUpButtons["more toolbar items"].exists,
+                "Settings tabs must not collapse into the native toolbar overflow menu."
+            )
             let launchAtLogin = app.descendants(matching: .any)[
                 "clip.settings.general.launchAtLogin"
             ]
@@ -157,6 +181,7 @@ final class DeterministicScenarioLaunchTests: XCTestCase {
         let scenarios: [(scenario: String, title: String, identifier: String)] = [
             ("settings", "General", "clip.settings.general"),
             ("settings-recording", "Recording", "clip.settings.recording"),
+            ("settings-live-share", "Live Share", "clip.settings.liveShare"),
             ("settings-export", "Export", "clip.settings.export"),
             ("settings-storage", "Storage", "clip.settings.storage"),
             ("settings-permissions", "Permissions", "clip.settings.permissions"),
@@ -176,6 +201,17 @@ final class DeterministicScenarioLaunchTests: XCTestCase {
                 if scenario.scenario == "settings-recording" {
                     XCTAssertTrue(
                         app.switches["clip.settings.recording.clickHighlights"].exists
+                    )
+                }
+                if scenario.scenario == "settings-live-share" {
+                    XCTAssertTrue(
+                        app.textFields["clip.settings.liveShare.server.address"].exists
+                    )
+                    XCTAssertTrue(
+                        app.buttons["clip.settings.liveShare.server.test"].exists
+                    )
+                    XCTAssertTrue(
+                        app.buttons["clip.settings.liveShare.server.reset"].exists
                     )
                 }
 

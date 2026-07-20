@@ -14,6 +14,9 @@
         }
       }
     },
+    "%@ Mbps" : {
+
+    },
     "%@ could not use %@. That shortcut may already be used by macOS or another app. Choose another shortcut in Clip Settings." : {
       "localizations" : {
         "en" : {
@@ -30,6 +33,16 @@
     "%@ will be permanently deleted." : {
 
     },
+    "%@ · %@" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "%1$@ · %2$@"
+          }
+        }
+      }
+    },
     "%@, %@" : {
       "localizations" : {
         "en" : {
@@ -41,6 +54,34 @@
       }
     },
     "%lld" : {
+
+    },
+    "%lld FPS" : {
+
+    },
+    "%lld Mbps" : {
+
+    },
+    "%lld connected" : {
+
+    },
+    "%lld connected viewers" : {
+
+    },
+    "%lld kbps" : {
+
+    },
+    "%lld live and %lld starting sources out of 4" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "%1$lld live and %2$lld starting sources out of 4"
+          }
+        }
+      }
+    },
+    "%lld of 4 windows" : {
 
     },
     "1 day" : {
@@ -73,6 +114,15 @@
     "A retake is already in progress." : {
 
     },
+    "A viewer connection couldn’t be established." : {
+
+    },
+    "Access Code" : {
+
+    },
+    "Add Window" : {
+
+    },
     "All visible windows on this display" : {
 
     },
@@ -82,13 +132,22 @@
     "Allow screen recording" : {
 
     },
+    "Allow this exact Clip build in System Settings, then quit and reopen Clip before starting Live Share." : {
+
+    },
     "Allowed" : {
+
+    },
+    "Applies to new viewers; signaling service can read it." : {
 
     },
     "Apply" : {
 
     },
     "Audio is optional" : {
+
+    },
+    "Auto-share Focused Windows" : {
 
     },
     "Back" : {
@@ -115,7 +174,7 @@
     "Capture Area" : {
 
     },
-    "Capture Area…" : {
+    "Capture is dropping frames" : {
 
     },
     "Capture shortcut" : {
@@ -178,6 +237,18 @@
     "Clip History" : {
 
     },
+    "Clip Live Share is live" : {
+
+    },
+    "Clip Live Share is ready" : {
+
+    },
+    "Clip Live Share is reconnecting" : {
+
+    },
+    "Clip Live Share needs attention" : {
+
+    },
     "Clip Settings" : {
 
     },
@@ -208,6 +279,9 @@
     "Clip couldn’t add the shared MP4 to Exports. The file is still available." : {
 
     },
+    "Clip couldn’t capture the selected source." : {
+
+    },
     "Clip couldn’t complete this action. Try again." : {
 
     },
@@ -215,6 +289,15 @@
 
     },
     "Clip countdown" : {
+
+    },
+    "Clip is dropping many capture frames. Lower the frame rate or quality." : {
+
+    },
+    "Clip is dropping many frames from %@. Lower the frame rate or quality." : {
+
+    },
+    "Clip is dropping many frames from %lld sources. Lower the frame rate or quality." : {
 
     },
     "Clip is paused" : {
@@ -229,6 +312,9 @@
     "Clip needs Screen & System Audio Recording access to record only the area or display you choose. Recordings stay local on this Mac." : {
 
     },
+    "Clip needs Screen & System Audio Recording access to share only the windows or display you choose. Live Share sends selected video and optional system audio to connected viewers over encrypted WebRTC media transport." : {
+
+    },
     "Clip never removes files you create with Save As." : {
 
     },
@@ -241,13 +327,49 @@
     "Close Preview after explicit Copy" : {
 
     },
+    "Codec" : {
+
+    },
     "Compact" : {
+
+    },
+    "Connected" : {
+
+    },
+    "Connected viewers" : {
+
+    },
+    "Connecting" : {
+
+    },
+    "Connecting…" : {
 
     },
     "Continue" : {
 
     },
+    "Copied" : {
+
+    },
     "Copy" : {
+
+    },
+    "Copy Code" : {
+
+    },
+    "Copy Link" : {
+
+    },
+    "Couldn’t create a share link. Try again." : {
+
+    },
+    "Couldn’t update the access code. Try again." : {
+
+    },
+    "Creating share link…" : {
+
+    },
+    "Creating…" : {
 
     },
     "Crisp" : {
@@ -319,6 +441,9 @@
     "Discard this recording?" : {
 
     },
+    "Disconnected" : {
+
+    },
     "Dismiss error" : {
 
     },
@@ -343,10 +468,22 @@
     "Draw an area" : {
 
     },
+    "Dropping capture frames" : {
+
+    },
     "Each preset uses its own H.264 quality value from 1 through 100. File size varies with the recording." : {
 
     },
     "Elapsed time: %@" : {
+
+    },
+    "Empty source slot" : {
+
+    },
+    "Encoder selected automatically" : {
+
+    },
+    "End Live Share before starting a retake." : {
 
     },
     "Enter a filename format, such as clip-YYYYMMDD-HHmmss." : {
@@ -365,6 +502,12 @@
 
     },
     "Exports" : {
+
+    },
+    "Extreme" : {
+
+    },
+    "Failed" : {
 
     },
     "File names" : {
@@ -388,6 +531,12 @@
     "Finishing…" : {
 
     },
+    "Focused" : {
+
+    },
+    "Frame Rate" : {
+
+    },
     "Frame rate" : {
 
     },
@@ -406,6 +555,12 @@
     "Global shortcuts" : {
 
     },
+    "Hardware accelerated" : {
+
+    },
+    "High" : {
+
+    },
     "History" : {
 
     },
@@ -416,6 +571,9 @@
 
     },
     "Input unavailable" : {
+
+    },
+    "Insane" : {
 
     },
     "Keep Recording" : {
@@ -433,10 +591,37 @@
     "Launch Clip at login" : {
 
     },
+    "Live" : {
+
+    },
+    "Live Share" : {
+
+    },
+    "Live Share couldn’t complete this action. Try again." : {
+
+    },
+    "Live Share overlays" : {
+
+    },
+    "Live · %@" : {
+
+    },
+    "Low" : {
+
+    },
+    "Main Display" : {
+
+    },
     "Managed Exports" : {
 
     },
     "Managed history" : {
+
+    },
+    "Max" : {
+
+    },
+    "Medium" : {
 
     },
     "Microphone" : {
@@ -451,7 +636,16 @@
     "Microphone: Off" : {
 
     },
+    "Mode" : {
+
+    },
     "More Actions" : {
+
+    },
+    "Move control to the other side" : {
+
+    },
+    "Move share control to the other side" : {
 
     },
     "No Exports" : {
@@ -460,10 +654,16 @@
     "No Recordings" : {
 
     },
+    "No viewers connected yet." : {
+
+    },
     "No visible application windows are available to record." : {
 
     },
     "Not Now" : {
+
+    },
+    "Not connected" : {
 
     },
     "Not requested" : {
@@ -506,6 +706,9 @@
     "Paused time is excluded from the clip." : {
 
     },
+    "Performance" : {
+
+    },
     "Permission denied" : {
 
     },
@@ -530,6 +733,9 @@
     "Previous Area" : {
 
     },
+    "Prioritize Focused Window" : {
+
+    },
     "Quality" : {
 
     },
@@ -545,11 +751,24 @@
     "Ready to record" : {
 
     },
+    "Ready to share" : {
+
+    },
     "Ready when you are" : {
 
     },
     "Recent Recordings" : {
 
+    },
+    "Reconnecting %lld/%lld…" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Reconnecting %1$lld/%2$lld…"
+          }
+        }
+      }
     },
     "Record" : {
 
@@ -627,6 +846,9 @@
     "Rename…" : {
 
     },
+    "Replace" : {
+
+    },
     "Request Screen Recording Access" : {
 
     },
@@ -646,6 +868,9 @@
 
     },
     "Retake" : {
+
+    },
+    "Retry" : {
 
     },
     "Reveal" : {
@@ -713,6 +938,31 @@
     "Settings" : {
 
     },
+    "Share" : {
+
+    },
+    "Share %@: %@" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Share %1$@: %2$@"
+          }
+        }
+      }
+    },
+    "Share Focused Window" : {
+
+    },
+    "Share Link" : {
+
+    },
+    "Shares app audio, or system audio in Fullscreen." : {
+
+    },
+    "Shares only the currently focused window." : {
+
+    },
     "Show Clip in the Dock" : {
 
     },
@@ -728,7 +978,19 @@
     "Smallest" : {
 
     },
+    "Software encoding" : {
+
+    },
     "Source deleted" : {
+
+    },
+    "Source live" : {
+
+    },
+    "Source starting" : {
+
+    },
+    "Sources" : {
 
     },
     "Space" : {
@@ -737,10 +999,62 @@
     "Start Using Clip" : {
 
     },
+    "Starting" : {
+
+    },
+    "Starting fullscreen stops the current window shares." : {
+
+    },
+    "Starting…" : {
+
+    },
+    "Statistics" : {
+
+    },
+    "Statistics appear after a source starts sending." : {
+
+    },
+    "Stop" : {
+
+    },
+    "Stop All" : {
+
+    },
+    "Stop Screen Share" : {
+
+    },
+    "Stop Session" : {
+
+    },
+    "Stop sharing %@" : {
+
+    },
+    "Stop sharing %@: %@" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Stop sharing %1$@: %2$@"
+          }
+        }
+      }
+    },
+    "Stop sharing this window" : {
+
+    },
+    "Stopping" : {
+
+    },
+    "Stopping…" : {
+
+    },
     "Storage" : {
 
     },
     "Storage usage and cleanup are unavailable until history services finish starting." : {
+
+    },
+    "Stream Settings" : {
 
     },
     "System Audio" : {
@@ -759,6 +1073,9 @@
 
     },
     "The Caches directory is unavailable." : {
+
+    },
+    "The Live Share connection was lost. Try again." : {
 
     },
     "The captured video will be permanently discarded." : {
@@ -827,6 +1144,9 @@
     "The selected recording is no longer available." : {
 
     },
+    "The video encoder couldn’t start." : {
+
+    },
     "There is no recording in progress." : {
 
     },
@@ -863,7 +1183,19 @@
     "Type Shortcut" : {
 
     },
+    "Ultra" : {
+
+    },
     "Unavailable" : {
+
+    },
+    "Untitled Window" : {
+
+    },
+    "Uptime %@" : {
+
+    },
+    "Very High" : {
 
     },
     "Video continues without microphone audio." : {
@@ -875,7 +1207,13 @@
     "Video timeline" : {
 
     },
+    "Viewers" : {
+
+    },
     "Waiting for the first video frame…" : {
+
+    },
+    "Waiting for the share link…" : {
 
     },
     "Welcome to Clip" : {

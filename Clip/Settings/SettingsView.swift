@@ -1,12 +1,14 @@
 import AppKit
 import Carbon.HIToolbox
 import ClipCore
+import ClipLiveShare
 import OSLog
 import SwiftUI
 
 enum SettingsTab: String, CaseIterable, Hashable, Sendable {
     case general
     case recording
+    case liveShare
     case export
     case storage
     case permissions
@@ -75,6 +77,7 @@ struct SettingsExternalActions: Sendable {
     let chooseDefaultSaveDirectory: @MainActor @Sendable (URL) async -> URL?
     let openSystemSettings: @MainActor @Sendable (URL) -> Void
     let revealHistoryDirectory: @MainActor @Sendable (URL) -> Void
+    let testLiveShareServer: @MainActor @Sendable (LiveShareServerEndpoint) async throws -> Void
 
     init(
         chooseDefaultSaveDirectory: @escaping @MainActor @Sendable (URL) async -> URL? = {
@@ -98,22 +101,38 @@ struct SettingsExternalActions: Sendable {
         },
         revealHistoryDirectory: @escaping @MainActor @Sendable (URL) -> Void = { url in
             NSWorkspace.shared.activateFileViewerSelecting([url])
+        },
+        testLiveShareServer: @escaping @MainActor @Sendable (
+            LiveShareServerEndpoint
+        ) async throws -> Void = { endpoint in
+            try await LiveShareServerConnectionProbe.live.test(endpoint)
         }
     ) {
         self.chooseDefaultSaveDirectory = chooseDefaultSaveDirectory
         self.openSystemSettings = openSystemSettings
         self.revealHistoryDirectory = revealHistoryDirectory
+        self.testLiveShareServer = testLiveShareServer
     }
 
     static let inert = SettingsExternalActions(
         chooseDefaultSaveDirectory: { _ in nil },
         openSystemSettings: { _ in },
-        revealHistoryDirectory: { _ in }
+        revealHistoryDirectory: { _ in },
+        testLiveShareServer: { _ in }
     )
 }
 
+private enum LiveShareServerTestStatus: Equatable {
+    case idle
+    case testing
+    case reachable
+    case failed(String)
+}
+
 struct SettingsView: View {
-    static let contentSize = CGSize(width: 640, height: 520)
+    // Six native navigation tabs need enough title-bar room to remain visible.
+    // Below this width macOS moves them into its "more toolbar items" menu.
+    static let contentSize = CGSize(width: 760, height: 520)
 
     static func filenameTemplateEditorText(
         for template: RecordingFilenameTemplate
@@ -122,6 +141,7 @@ struct SettingsView: View {
     }
 
     @ObservedObject var model: AppSettingsModel
+    @ObservedObject var liveSharePreferences: LiveSharePreferencesModel
     @ObservedObject var shortcuts: GlobalShortcutService
     let permissions: any PermissionServicing
     let audio: any AudioServicing
@@ -136,11 +156,17 @@ struct SettingsView: View {
     @State private var isChoosingSaveDirectory = false
     @State private var saveDirectorySelectionError: String?
     @State private var filenameTemplateText: String
+    @State private var liveShareServerAddressText: String
+    @State private var liveShareServerValidationError: String?
+    @State private var liveShareServerTestStatus = LiveShareServerTestStatus.idle
+    @State private var liveShareServerTestID: UUID?
     @State private var selectedTab: SettingsTab
     @FocusState private var isFilenameTemplateFocused: Bool
+    @FocusState private var isLiveShareServerAddressFocused: Bool
 
     init(
         model: AppSettingsModel,
+        liveSharePreferences: LiveSharePreferencesModel,
         shortcuts: GlobalShortcutService,
         permissions: any PermissionServicing,
         audio: any AudioServicing,
@@ -150,6 +176,7 @@ struct SettingsView: View {
         initialTab: SettingsTab = .initial
     ) {
         _model = ObservedObject(wrappedValue: model)
+        _liveSharePreferences = ObservedObject(wrappedValue: liveSharePreferences)
         _shortcuts = ObservedObject(wrappedValue: shortcuts)
         self.permissions = permissions
         self.audio = audio
@@ -160,6 +187,9 @@ struct SettingsView: View {
             initialValue: Self.filenameTemplateEditorText(
                 for: model.settings.defaultFilenameTemplate
             )
+        )
+        _liveShareServerAddressText = State(
+            initialValue: liveSharePreferences.serverEndpoint.description
         )
         _selectedTab = State(initialValue: initialTab)
     }
@@ -173,6 +203,14 @@ struct SettingsView: View {
             Tab("Recording", systemImage: "record.circle", value: SettingsTab.recording) {
                 recording
                     .accessibilityIdentifier(SettingsTab.recording.accessibilityIdentifier)
+            }
+            Tab(
+                "Live Share",
+                systemImage: "dot.radiowaves.left.and.right",
+                value: SettingsTab.liveShare
+            ) {
+                liveShare
+                    .accessibilityIdentifier(SettingsTab.liveShare.accessibilityIdentifier)
             }
             Tab("Export", systemImage: "square.and.arrow.up", value: SettingsTab.export) {
                 export
@@ -271,6 +309,193 @@ struct SettingsView: View {
             }
         }
         .formStyle(.grouped)
+    }
+
+    private var liveShare: some View {
+        Form {
+            Section {
+                LabeledContent("Server address") {
+                    HStack(spacing: 8) {
+                        TextField(
+                            "Server address",
+                            text: $liveShareServerAddressText,
+                            prompt: Text("https://example.com")
+                        )
+                            .labelsHidden()
+                            .multilineTextAlignment(.leading)
+                            .textFieldStyle(.roundedBorder)
+                            .frame(minWidth: 250, idealWidth: 290, maxWidth: 320)
+                            .focused($isLiveShareServerAddressFocused)
+                            .accessibilityIdentifier("clip.settings.liveShare.server.address")
+                            .onSubmit {
+                                applyLiveShareServerAddress()
+                            }
+                            .onChange(of: liveShareServerAddressText) { _, _ in
+                                validateLiveShareServerDraft()
+                                liveShareServerTestID = nil
+                                liveShareServerTestStatus = .idle
+                            }
+                        Button("Apply") {
+                            applyLiveShareServerAddress()
+                        }
+                        .disabled(
+                            liveShareServerCandidate == nil
+                                || liveShareServerCandidate
+                                    == liveSharePreferences.serverEndpoint
+                        )
+                        .accessibilityIdentifier("clip.settings.liveShare.server.apply")
+                    }
+                }
+
+                if let liveShareServerValidationError {
+                    Label(liveShareServerValidationError, systemImage: "exclamationmark.triangle")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                        .accessibilityIdentifier("clip.settings.liveShare.server.validation")
+                }
+
+                HStack {
+                    Button {
+                        testLiveShareServer()
+                    } label: {
+                        if liveShareServerTestStatus == .testing {
+                            HStack(spacing: 6) {
+                                ProgressView()
+                                    .controlSize(.small)
+                                Text("Testing…")
+                            }
+                        } else {
+                            Text("Test Connection")
+                        }
+                    }
+                    .disabled(
+                        liveShareServerCandidate == nil
+                            || liveShareServerTestStatus == .testing
+                    )
+                    .accessibilityIdentifier("clip.settings.liveShare.server.test")
+
+                    Spacer()
+
+                    Button("Reset Server Address") {
+                        resetLiveShareServerAddress()
+                    }
+                    .disabled(
+                        liveSharePreferences.serverEndpoint == .goPeepRemote
+                            && liveShareServerAddressText
+                                == LiveShareServerEndpoint.goPeepRemote.description
+                    )
+                    .accessibilityIdentifier("clip.settings.liveShare.server.reset")
+                }
+
+                switch liveShareServerTestStatus {
+                case .idle, .testing:
+                    EmptyView()
+                case .reachable:
+                    Label("Server is reachable.", systemImage: "checkmark.circle.fill")
+                        .font(.caption)
+                        .foregroundStyle(.green)
+                        .accessibilityIdentifier("clip.settings.liveShare.server.status")
+                case let .failed(message):
+                    Label(message, systemImage: "exclamationmark.triangle")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                        .accessibilityIdentifier("clip.settings.liveShare.server.status")
+                }
+            } header: {
+                Text("Server")
+            } footer: {
+                Text("Clip derives the reservation, signaling, and viewer addresses from this server root. Changes apply to the next Live Share session.")
+            }
+
+            Section("Default stream") {
+                Picker(
+                    "Codec",
+                    selection: liveShareSetting(\.videoCodec)
+                ) {
+                    ForEach(LiveShareVideoCodec.allCases) { codec in
+                        Text(codec.displayName).tag(codec)
+                    }
+                }
+                .accessibilityIdentifier("clip.settings.liveShare.codec")
+
+                Picker(
+                    "Quality",
+                    selection: liveShareSetting(\.quality)
+                ) {
+                    ForEach(LiveShareQualityPreset.allCases) { quality in
+                        Text(liveShareQualityLabel(quality)).tag(quality)
+                    }
+                }
+                .accessibilityIdentifier("clip.settings.liveShare.quality")
+
+                Picker(
+                    "Frame rate",
+                    selection: liveShareSetting(\.frameRate)
+                ) {
+                    ForEach(LiveShareFrameRate.allCases) { frameRate in
+                        Text("\(frameRate.rawValue) FPS").tag(frameRate)
+                    }
+                }
+                .accessibilityIdentifier("clip.settings.liveShare.frameRate")
+
+                Picker(
+                    "Mode",
+                    selection: liveShareSetting(\.encodingMode)
+                ) {
+                    Text("Performance").tag(LiveShareEncodingMode.performance)
+                    Text("Quality").tag(LiveShareEncodingMode.quality)
+                }
+                .accessibilityIdentifier("clip.settings.liveShare.mode")
+
+                Toggle(
+                    "Share system audio",
+                    isOn: liveShareSetting(\.systemAudioEnabled)
+                )
+                .accessibilityIdentifier("clip.settings.liveShare.systemAudio")
+            }
+
+            Section {
+                Toggle(
+                    "Require an access code",
+                    isOn: liveShareSetting(\.accessCodeEnabled)
+                )
+                .accessibilityIdentifier("clip.settings.liveShare.accessCode")
+                Toggle(
+                    "Prioritize focused window",
+                    isOn: liveShareSetting(\.prioritizeFocusedWindow)
+                )
+                .accessibilityIdentifier("clip.settings.liveShare.prioritizeFocused")
+                Toggle(
+                    "Auto-share focused windows",
+                    isOn: liveShareSetting(\.autoShareFocusedWindows)
+                )
+                .accessibilityIdentifier("clip.settings.liveShare.autoShare")
+            } header: {
+                Text("Sharing behavior")
+            } footer: {
+                Text("These are defaults for new sessions. Controls in the Live Share popover can still change the active session.")
+            }
+
+            if let error = liveSharePreferences.lastPersistenceError {
+                Label(error, systemImage: "exclamationmark.triangle")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+            }
+
+            Button("Restore All Live Share Defaults") {
+                liveSharePreferences.restoreSessionDefaults()
+            }
+            .disabled(liveSharePreferences.settings == .default)
+            .accessibilityIdentifier("clip.settings.liveShare.defaults.reset")
+        }
+        .formStyle(.grouped)
+        .onChange(of: liveSharePreferences.serverEndpoint) { _, endpoint in
+            guard !isLiveShareServerAddressFocused else { return }
+            liveShareServerAddressText = endpoint.description
+            liveShareServerValidationError = nil
+            liveShareServerTestID = nil
+            liveShareServerTestStatus = .idle
+        }
     }
 
     private var export: some View {
@@ -540,6 +765,107 @@ struct SettingsView: View {
                 }
             }
         )
+    }
+
+    private func liveShareSetting<Value: Sendable>(
+        _ keyPath: WritableKeyPath<LiveShareSettings, Value>
+    ) -> Binding<Value> {
+        Binding(
+            get: { liveSharePreferences.settings[keyPath: keyPath] },
+            set: { newValue in
+                liveSharePreferences.updateSettings {
+                    $0[keyPath: keyPath] = newValue
+                }
+            }
+        )
+    }
+
+    private var liveShareServerCandidate: LiveShareServerEndpoint? {
+        try? LiveShareServerEndpoint(userInput: liveShareServerAddressText)
+    }
+
+    private func validateLiveShareServerDraft() {
+        do {
+            _ = try LiveShareServerEndpoint(userInput: liveShareServerAddressText)
+            liveShareServerValidationError = nil
+        } catch let error as LocalizedError {
+            liveShareServerValidationError = error.errorDescription
+        } catch {
+            liveShareServerValidationError = String(
+                localized: "Enter a valid Live Share server address."
+            )
+        }
+    }
+
+    private func applyLiveShareServerAddress() {
+        do {
+            let endpoint = try LiveShareServerEndpoint(
+                userInput: liveShareServerAddressText
+            )
+            isLiveShareServerAddressFocused = false
+            liveShareServerAddressText = endpoint.description
+            liveShareServerValidationError = nil
+            liveShareServerTestID = nil
+            liveShareServerTestStatus = .idle
+            liveSharePreferences.setServerEndpoint(endpoint)
+        } catch {
+            validateLiveShareServerDraft()
+            NSSound.beep()
+        }
+    }
+
+    private func testLiveShareServer() {
+        guard liveShareServerTestStatus != .testing else { return }
+        do {
+            let endpoint = try LiveShareServerEndpoint(
+                userInput: liveShareServerAddressText
+            )
+            liveShareServerValidationError = nil
+            let testID = UUID()
+            liveShareServerTestID = testID
+            liveShareServerTestStatus = .testing
+            Task { @MainActor in
+                do {
+                    try await externalActions.testLiveShareServer(endpoint)
+                    guard liveShareServerTestID == testID else { return }
+                    liveShareServerTestStatus = .reachable
+                } catch is CancellationError {
+                    guard liveShareServerTestID == testID else { return }
+                    liveShareServerTestStatus = .idle
+                } catch {
+                    guard liveShareServerTestID == testID else { return }
+                    liveShareServerTestStatus = .failed(
+                        reportSettingsError(
+                            error,
+                            operation: "Test Live Share server"
+                        )
+                    )
+                }
+            }
+        } catch {
+            validateLiveShareServerDraft()
+            NSSound.beep()
+        }
+    }
+
+    private func resetLiveShareServerAddress() {
+        isLiveShareServerAddressFocused = false
+        liveShareServerAddressText = LiveShareServerEndpoint.goPeepRemote.description
+        liveShareServerValidationError = nil
+        liveShareServerTestID = nil
+        liveShareServerTestStatus = .idle
+        liveSharePreferences.resetServerEndpoint()
+    }
+
+    private func liveShareQualityLabel(
+        _ quality: LiveShareQualityPreset
+    ) -> String {
+        let megabits = Double(quality.maximumBitrateBitsPerSecond) / 1_000_000
+        let fractionLength = megabits.rounded() == megabits ? 0 : 1
+        let bitrate = megabits.formatted(
+            .number.precision(.fractionLength(fractionLength))
+        )
+        return "\(quality.name) · \(bitrate) Mbps"
     }
 
     private var microphoneBinding: Binding<Bool> {

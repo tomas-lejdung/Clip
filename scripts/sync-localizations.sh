@@ -8,6 +8,10 @@ CATALOG="$ROOT/Clip/Resources/Localizable.xcstrings"
 MODULE_CACHE="$ROOT/.build/LocalizationModuleCache"
 CORE_MODULES="$ROOT/Packages/ClipCore/.build/arm64-apple-macosx/debug/Modules"
 MEDIA_MODULES="$ROOT/Packages/ClipMedia/.build/arm64-apple-macosx/debug/Modules"
+LIVE_SHARE_BUILD="$ROOT/Packages/ClipLiveShareWebRTC/.build/arm64-apple-macosx/debug"
+LIVE_SHARE_MODULES="$LIVE_SHARE_BUILD/Modules"
+LIVE_SHARE_AUDIO_BRIDGE_MODULE_MAP="$LIVE_SHARE_BUILD/ClipLiveShareWebRTCAudioBridge.build/module.modulemap"
+WEBRTC_FRAMEWORKS="$ROOT/Packages/ClipLiveShareWebRTC/.build/artifacts/webrtc/WebRTC/WebRTC.xcframework/macos-x86_64_arm64"
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/clip-localization.XXXXXX")"
 STRINGS_DATA="$WORK/stringsdata"
 SOURCES=()
@@ -23,6 +27,7 @@ export SWIFTPM_MODULECACHE_OVERRIDE="$MODULE_CACHE"
 
 swift build --package-path "$ROOT/Packages/ClipCore" >/dev/null
 swift build --package-path "$ROOT/Packages/ClipMedia" >/dev/null
+swift build --package-path "$ROOT/Packages/ClipLiveShareWebRTC" >/dev/null
 
 while IFS= read -r -d '' source; do
   SOURCES+=("$source")
@@ -43,6 +48,9 @@ xcrun swiftc \
   -module-cache-path "$MODULE_CACHE" \
   -I "$CORE_MODULES" \
   -I "$MEDIA_MODULES" \
+  -I "$LIVE_SHARE_MODULES" \
+  -Xcc "-fmodule-map-file=$LIVE_SHARE_AUDIO_BRIDGE_MODULE_MAP" \
+  -F "$WEBRTC_FRAMEWORKS" \
   "${SOURCES[@]}"
 
 xcrun xcstringstool sync \

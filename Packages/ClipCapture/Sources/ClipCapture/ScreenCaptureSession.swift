@@ -1,0 +1,365 @@
+@preconcurrency import ScreenCaptureKit
+import CoreGraphics
+import CoreMedia
+import CoreVideo
+import Foundation
+
+public final class ScreenCaptureSession: NSObject, @unchecked Sendable {
+    static let liveQueueDepth = 2
+
+    public typealias FrameConsumer = @Sendable (BorrowedCaptureVideoFrame) -> CaptureFrameDisposition
+    public typealias EventConsumer = @Sendable (CaptureSessionEvent) -> Void
+
+    private let lock = NSLock()
+    private let queue: DispatchQueue
+    private let frameConsumer: FrameConsumer
+    private let eventConsumer: EventConsumer
+    private var stream: SCStream?
+    private var request: CaptureSessionRequest?
+    private var pendingUpdate: (id: UUID, request: CaptureSessionRequest)?
+    private var dimensionTransition = CaptureFrameDimensionTransitionState()
+    private var backpressure = CaptureBackpressureCounter()
+
+    public init(
+        queueLabel: String = "com.tomaslejdung.clip.capture.raw-video",
+        frameConsumer: @escaping FrameConsumer,
+        eventConsumer: @escaping EventConsumer = { _ in }
+    ) {
+        queue = DispatchQueue(label: queueLabel, qos: .userInteractive)
+        self.frameConsumer = frameConsumer
+        self.eventConsumer = eventConsumer
+        super.init()
+    }
+
+    public var isRunning: Bool {
+        lock.withLock { stream != nil }
+    }
+
+    public var statistics: CaptureDeliveryStatistics {
+        lock.withLock { backpressure.statistics }
+    }
+
+    public func start(_ request: CaptureSessionRequest) async throws {
+        guard lock.withLock({ self.stream == nil }) else {
+            throw CaptureSessionError.alreadyRunning
+        }
+
+        let content = try await SCShareableContent.excludingDesktopWindows(
+            false,
+            onScreenWindowsOnly: false
+        )
+        let filter = try Self.makeFilter(for: request.target, content: content)
+        let configuration = Self.makeConfiguration(for: request.video)
+        let stream = SCStream(filter: filter, configuration: configuration, delegate: self)
+        try stream.addStreamOutput(self, type: .screen, sampleHandlerQueue: queue)
+
+        let reserved = lock.withLock { () -> Bool in
+            guard self.stream == nil else { return false }
+            self.stream = stream
+            self.request = request
+            pendingUpdate = nil
+            dimensionTransition.reset()
+            backpressure = CaptureBackpressureCounter()
+            return true
+        }
+        guard reserved else {
+            throw CaptureSessionError.alreadyRunning
+        }
+
+        do {
+            try await stream.startCapture()
+            eventConsumer(.started(request.identifier))
+        } catch {
+            lock.withLock {
+                if self.stream === stream {
+                    self.stream = nil
+                    self.request = nil
+                    self.pendingUpdate = nil
+                    self.dimensionTransition.reset()
+                }
+            }
+            throw error
+        }
+    }
+
+    public func stop() async throws {
+        let active = lock.withLock { () -> (SCStream, UUID)? in
+            guard let stream, let request else { return nil }
+            self.stream = nil
+            self.request = nil
+            pendingUpdate = nil
+            dimensionTransition.reset()
+            return (stream, request.identifier)
+        }
+        guard let active else { throw CaptureSessionError.notRunning }
+        try await active.0.stopCapture()
+        eventConsumer(.stopped(active.1, statistics))
+    }
+
+    public func update(
+        target: CaptureTarget,
+        video: CaptureVideoConfiguration
+    ) async throws {
+        let content = try await SCShareableContent.excludingDesktopWindows(
+            false,
+            onScreenWindowsOnly: false
+        )
+        let filter = try Self.makeFilter(for: target, content: content)
+        let configuration = Self.makeConfiguration(for: video)
+        let updateID = UUID()
+        let active = lock.withLock { () -> (SCStream, CaptureSessionRequest)? in
+            guard let stream, var request else { return nil }
+            request.target = target
+            request.video = video
+            pendingUpdate = (updateID, request)
+            return (stream, request)
+        }
+        guard let active else { throw CaptureSessionError.notRunning }
+        do {
+            try await active.0.updateContentFilter(filter)
+            try await active.0.updateConfiguration(configuration)
+            let commitPresentationTime = CMClockGetTime(CMClockGetHostTimeClock())
+            let committed = lock.withLock { () -> Bool in
+                guard stream === active.0,
+                      pendingUpdate?.id == updateID,
+                      let previousVideo = request?.video else { return false }
+                request = active.1
+                pendingUpdate = nil
+                dimensionTransition.commit(
+                    previousWidth: previousVideo.width,
+                    previousHeight: previousVideo.height,
+                    currentWidth: active.1.video.width,
+                    currentHeight: active.1.video.height,
+                    commitPresentationTime: commitPresentationTime,
+                    framesPerSecond: active.1.video.framesPerSecond
+                )
+                return true
+            }
+            guard committed else { throw CaptureSessionError.notRunning }
+            eventConsumer(.updated(active.1.identifier))
+        } catch {
+            lock.withLock {
+                if pendingUpdate?.id == updateID {
+                    pendingUpdate = nil
+                }
+            }
+            throw error
+        }
+    }
+
+    private static func makeConfiguration(
+        for video: CaptureVideoConfiguration
+    ) -> SCStreamConfiguration {
+        let configuration = SCStreamConfiguration()
+        configuration.width = video.width
+        configuration.height = video.height
+        configuration.minimumFrameInterval = CMTime(
+            value: 1,
+            timescale: CMTimeScale(video.framesPerSecond)
+        )
+        // Live Share is freshness-first. Two frames absorb a short scheduling
+        // hiccup without allowing roughly five frame intervals of stale video
+        // to accumulate under encoder pressure.
+        configuration.queueDepth = liveQueueDepth
+        configuration.pixelFormat = kCVPixelFormatType_32BGRA
+        configuration.captureResolution = .best
+        // Live Share may intentionally request an aspect-fitted H.264 frame
+        // below the native 5K/6K source size. Equal source/output dimensions
+        // (the VP8 path) remain exact and do not incur scaling.
+        configuration.scalesToFit = true
+        configuration.preservesAspectRatio = true
+        configuration.showsCursor = video.showsCursor
+        configuration.showMouseClicks = video.showsClickHighlights
+        if let sourceRect = video.sourceRect {
+            configuration.sourceRect = sourceRect
+        }
+        return configuration
+    }
+
+    private static func makeFilter(
+        for target: CaptureTarget,
+        content: SCShareableContent
+    ) throws -> SCContentFilter {
+        switch target {
+        case let .display(id, excludedBundleIdentifier):
+            guard let display = content.displays.first(where: { $0.displayID == id }) else {
+                throw CaptureSessionError.displayUnavailable(id)
+            }
+            let excluded = excludedBundleIdentifier.map { identifier in
+                content.applications.filter { $0.bundleIdentifier == identifier }
+            } ?? []
+            return SCContentFilter(
+                display: display,
+                excludingApplications: excluded,
+                exceptingWindows: []
+            )
+
+        case let .application(displayID, bundleIdentifier):
+            guard let display = content.displays.first(where: { $0.displayID == displayID }) else {
+                throw CaptureSessionError.displayUnavailable(displayID)
+            }
+            let applications = content.applications.filter {
+                $0.bundleIdentifier == bundleIdentifier
+            }
+            guard !applications.isEmpty else {
+                throw CaptureSessionError.applicationUnavailable(bundleIdentifier)
+            }
+            return SCContentFilter(
+                display: display,
+                including: applications,
+                exceptingWindows: []
+            )
+
+        case let .window(id):
+            guard let window = content.windows.first(where: { $0.windowID == id }) else {
+                throw CaptureSessionError.windowUnavailable(id)
+            }
+            return SCContentFilter(desktopIndependentWindow: window)
+        }
+    }
+}
+
+public enum CaptureSessionEvent: Equatable, Sendable {
+    case started(UUID)
+    case updated(UUID)
+    case stopped(UUID, CaptureDeliveryStatistics)
+    case failed(UUID?, CaptureSessionError)
+}
+
+extension ScreenCaptureSession: SCStreamOutput {
+    public func stream(
+        _ stream: SCStream,
+        didOutputSampleBuffer sampleBuffer: CMSampleBuffer,
+        of outputType: SCStreamOutputType
+    ) {
+        guard outputType == .screen,
+              Self.isDeliverableVideoSample(sampleBuffer),
+              let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else {
+            return
+        }
+        let active = lock.withLock { () -> (
+            request: CaptureSessionRequest,
+            pendingVideo: CaptureVideoConfiguration?
+        )? in
+            guard self.stream === stream else { return nil }
+            guard let request else { return nil }
+            return (request, pendingUpdate?.request.video)
+        }
+        guard let active else { return }
+        let presentationTime = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
+        let activeFrameRate = active.pendingVideo?.framesPerSecond
+            ?? active.request.video.framesPerSecond
+        if CaptureFrameFreshnessPolicy.isStale(
+            presentationTime: presentationTime,
+            hostTime: CMClockGetTime(CMClockGetHostTimeClock()),
+            framesPerSecond: activeFrameRate
+        ) {
+            lock.withLock {
+                guard self.stream === stream else { return }
+                backpressure.record(.droppedBackpressure)
+            }
+            return
+        }
+
+        let routing = lock.withLock { () -> (
+            identifier: UUID,
+            result: Result<CaptureFrameDimensionAction, CaptureSessionError>
+        )? in
+            guard self.stream === stream, let request else { return nil }
+            do {
+                return (
+                    request.identifier,
+                    .success(try dimensionTransition.classify(
+                        actualWidth: CVPixelBufferGetWidth(pixelBuffer),
+                        actualHeight: CVPixelBufferGetHeight(pixelBuffer),
+                        presentationTime: presentationTime,
+                        currentWidth: request.video.width,
+                        currentHeight: request.video.height,
+                        pendingWidth: pendingUpdate?.request.video.width,
+                        pendingHeight: pendingUpdate?.request.video.height
+                    ))
+                )
+            } catch let error as CaptureSessionError {
+                return (request.identifier, .failure(error))
+            } catch {
+                return (
+                    request.identifier,
+                    .failure(.streamStopped(error.localizedDescription))
+                )
+            }
+        }
+        guard let routing else { return }
+
+        switch routing.result {
+        case .success(.deliver):
+            let disposition = frameConsumer(BorrowedCaptureVideoFrame(
+                sampleBuffer: sampleBuffer,
+                pixelBuffer: pixelBuffer,
+                presentationTime: presentationTime
+            ))
+            lock.withLock {
+                guard self.stream === stream else { return }
+                backpressure.record(disposition)
+            }
+
+        case .success(.dropRetired):
+            lock.withLock {
+                guard self.stream === stream else { return }
+                backpressure.record(.droppedBackpressure)
+            }
+
+        case let .failure(error):
+            eventConsumer(.failed(routing.identifier, error))
+        }
+    }
+
+    /// ScreenCaptureKit marks the first image emitted by a new stream as
+    /// `.started`, not `.complete`. Rejecting that status leaves a static
+    /// window with no retained frame: every later callback may be `.idle`
+    /// because the window has not changed. Live consumers need both newly
+    /// started and subsequently updated image-bearing frames.
+    private static func isDeliverableVideoSample(_ sampleBuffer: CMSampleBuffer) -> Bool {
+        guard sampleBuffer.isValid,
+              CMSampleBufferGetImageBuffer(sampleBuffer) != nil else {
+            return false
+        }
+        let attachments = CMSampleBufferGetSampleAttachmentsArray(
+            sampleBuffer,
+            createIfNecessary: false
+        ) as? [[SCStreamFrameInfo: Any]]
+        let status = attachments?.first?[.status] as? NSNumber
+        return isDeliverableFrameStatus(status?.intValue)
+    }
+
+    static func isDeliverableFrameStatus(_ rawValue: Int?) -> Bool {
+        guard let rawValue, let status = SCFrameStatus(rawValue: rawValue) else {
+            return false
+        }
+        return switch status {
+        case .started, .complete:
+            true
+        case .idle, .blank, .suspended, .stopped:
+            false
+        @unknown default:
+            false
+        }
+    }
+}
+
+extension ScreenCaptureSession: SCStreamDelegate {
+    public func stream(_ stream: SCStream, didStopWithError error: any Error) {
+        let identifier = lock.withLock { () -> UUID? in
+            guard self.stream === stream else { return nil }
+            let identifier = request?.identifier
+            self.stream = nil
+            request = nil
+            pendingUpdate = nil
+            dimensionTransition.reset()
+            return identifier
+        }
+        eventConsumer(.failed(
+            identifier,
+            .streamStopped(error.localizedDescription)
+        ))
+    }
+}

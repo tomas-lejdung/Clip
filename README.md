@@ -1,10 +1,47 @@
 # Clip
 
-Clip is a native Apple-Silicon macOS menu-bar recorder for short screen clips. Its core workflow is:
+Clip is a native Apple-Silicon macOS menu-bar recorder for short screen clips. Its core recording workflow is:
 
 > Select an area or application, record, trim, then drag or copy an MP4.
 
-The app is local-only: it has no account, cloud upload, analytics, AI processing, or third-party runtime dependencies. See [spec.md](spec.md) for the product contract, [ARCHITECTURE.md](ARCHITECTURE.md) for technical boundaries, and [PROGRESS.md](PROGRESS.md) for implementation and verification status.
+Recordings remain local: Clip has no account, cloud upload, analytics, or AI
+processing. Live Share is a separate, explicit network mode that sends transient
+screen frames and optional system audio to viewers over WebRTC through the
+unchanged GoPeep signaling service; it never writes that media to History. See
+[spec.md](spec.md) for the product contract,
+[ARCHITECTURE.md](ARCHITECTURE.md) for recording boundaries, and
+[docs/live-share-architecture.md](docs/live-share-architecture.md) for the
+network protocol and trust boundary.
+
+Live Share can send up to four application windows or one fullscreen display.
+It uses native Swift/AppKit/SwiftUI and ScreenCaptureKit, with a pinned native
+WebRTC framework. VP8 remains the default. The live codec picker selects a
+preference: H.264 and VP8 are exact choices, VP9 may fall back to VP8, and AV1
+may fall back to VP9 and then VP8. Each browser viewer negotiates independently,
+so the actual outbound RTP codec shown in Statistics is authoritative. H.264
+uses hardware encoding and caps oversized capture geometry; software VP8, VP9
+profile 0, and AV1 retain native capture geometry. AV1 can consume substantially
+more CPU. The current GoPeep v1 signaling service can read room credentials and
+signaling metadata; the media channel is encrypted by WebRTC, but the service
+is not zero-knowledge.
+
+The pointer-free acceptance lane has kept one browser viewer, session, and set
+of tracks alive while switching the preference H.264 → VP8 → VP9 → AV1
+→ H.264 through the unmodified GoPeep server and viewer on loopback. The lane
+accepts only the documented per-viewer fallbacks and verifies the codec actually
+reported by outbound WebRTC statistics. Real desktop Live Share capture,
+overlay exclusion, remote Internet/TURN traversal, soak, and lifecycle stress
+remain separate controlled gates; the stable-signed, sandboxed Release DMG has
+passed its clean-source packaging gate. See the [Live Share progress
+board](docs/live-share-progress.md). Live Share system audio defaults to Off and
+persists independently from recording settings. Window sharing captures audio
+at application scope for the unique owning apps; Fullscreen captures system
+audio while excluding Clip. ScreenCaptureKit's 48 kHz stereo samples
+feed one stable Opus WebRTC send track through Clip's native bridge. There is no
+microphone sharing. The current GoPeep browser viewer intentionally does not
+render or play this track, so browser-audible support awaits the planned viewer
+rewrite. Thirty FPS is the supported default, 15 FPS is selectable, and 60 FPS
+is an optional capability rather than a release requirement.
 
 Click Highlights can be enabled from the menu-bar quick controls or Recording
 Settings. The option uses ScreenCaptureKit's native recorded click indicator,
@@ -49,6 +86,9 @@ The repository keeps generated build output under `.build/`.
 
 # Permission-free objective master/Crisp/Compact fidelity gate
 ./scripts/run-quality-acceptance.sh
+
+# Native host + unmodified GoPeep server/browser-viewer interoperability
+./scripts/run-gopeep-interop-acceptance.sh
 
 # Opt-in Release benchmark for Preview readiness and Compact export
 ./scripts/benchmark-performance.sh
@@ -154,8 +194,8 @@ anything.
 
 ```bash
 ./scripts/prepare-github-release.sh \
-  --tag v1.1.0 \
-  --release-notes docs/releases/1.1.0.md \
+  --tag v1.2.0 \
+  --release-notes docs/releases/1.2.0.md \
   --keychain-account ed25519
 ```
 

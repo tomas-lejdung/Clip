@@ -178,6 +178,7 @@ final class MenuBarPopoverModel: ObservableObject {
 
 @MainActor
 struct MenuBarActions {
+    let startLiveShare: () -> Void
     let captureArea: () -> Void
     let lastArea: () -> Void
     let fullscreen: () -> Void
@@ -194,6 +195,7 @@ struct MenuBarActions {
     let quit: () -> Void
 
     init(
+        startLiveShare: @escaping () -> Void = {},
         captureArea: @escaping () -> Void,
         lastArea: @escaping () -> Void,
         fullscreen: @escaping () -> Void,
@@ -209,6 +211,7 @@ struct MenuBarActions {
         checkForUpdates: @escaping () -> Void = {},
         quit: @escaping () -> Void
     ) {
+        self.startLiveShare = startLiveShare
         self.captureArea = captureArea
         self.lastArea = lastArea
         self.fullscreen = fullscreen
@@ -304,7 +307,7 @@ struct MenuBarPopoverView: View {
     private var captureTargets: some View {
         VStack(spacing: 2) {
             menuButton(
-                "Capture Area…",
+                "Capture Area",
                 systemImage: "viewfinder",
                 identifier: "clip.menu.captureArea",
                 action: actions.captureArea
@@ -360,6 +363,13 @@ struct MenuBarPopoverView: View {
                 .accessibilityLabel("\(display.name), \(display.resolution)")
                 .accessibilityIdentifier("clip.menu.display.\(display.id)")
             }
+
+            menuButton(
+                "Live Share",
+                systemImage: "dot.radiowaves.left.and.right",
+                identifier: "clip.menu.liveShare",
+                action: actions.startLiveShare
+            )
         }
     }
 

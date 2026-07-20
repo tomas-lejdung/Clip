@@ -18,8 +18,11 @@ if [[ -z "$APP" || ! -d "$APP" ]]; then
 fi
 
 SPARKLE_FRAMEWORK="$APP/Contents/Frameworks/Sparkle.framework"
+WEBRTC_FRAMEWORK="$APP/Contents/Frameworks/WebRTC.framework"
 [[ -d "$SPARKLE_FRAMEWORK" ]] \
   || fail "Sparkle.framework is missing from the production app"
+[[ -d "$WEBRTC_FRAMEWORK" ]] \
+  || fail "WebRTC.framework is missing from the Live Share build"
 
 # Build a release entitlement plist from the checked-in source instead of
 # preserving Xcode's development signature. Apple Development builds inject
@@ -97,6 +100,23 @@ codesign \
   --options runtime \
   --timestamp=none \
   "$SPARKLE_FRAMEWORK"
+
+# Dynamic Swift package products do not carry Clip's distribution identity.
+# Sign every top-level framework or dylib explicitly before signing the host;
+# WebRTC is currently the only such package product, but the loop also makes a
+# newly added dynamic package impossible to leave covered only by --deep.
+for COMPONENT in \
+  "$APP/Contents/Frameworks/"*.framework \
+  "$APP/Contents/Frameworks/"*.dylib; do
+  [[ -e "$COMPONENT" ]] || continue
+  [[ "$COMPONENT" == "$SPARKLE_FRAMEWORK" ]] && continue
+  codesign \
+    --force \
+    --sign "$CLIP_CODE_SIGN_IDENTITY" \
+    --options runtime \
+    --timestamp=none \
+    "$COMPONENT"
+done
 codesign \
   --force \
   --sign "$CLIP_CODE_SIGN_IDENTITY" \
@@ -106,6 +126,18 @@ codesign \
   --entitlements "$RESOLVED_ENTITLEMENTS" \
   "$APP"
 
+for COMPONENT in \
+  "$INSTALLER" \
+  "$DOWNLOADER" \
+  "$AUTOUPDATE" \
+  "$UPDATER" \
+  "$SPARKLE_FRAMEWORK" \
+  "$APP/Contents/Frameworks/"*.framework \
+  "$APP/Contents/Frameworks/"*.dylib; do
+  [[ -e "$COMPONENT" ]] || continue
+  codesign --verify --strict --verbose=2 "$COMPONENT" \
+    || fail "nested code has an invalid signature: $COMPONENT"
+done
 codesign --verify --deep --strict --verbose=2 "$APP"
 
 SIGNED_ENTITLEMENTS="$(
@@ -116,6 +148,22 @@ if grep -Fq 'invalid entitlements blob' "$ENTITLEMENT_DIAGNOSTICS"; then
 fi
 plutil -lint /dev/stdin <<<"$SIGNED_ENTITLEMENTS" >/dev/null \
   || fail "Clip's final signed entitlements are malformed"
+for KEY in \
+  com.apple.security.app-sandbox \
+  com.apple.security.network.client \
+  com.apple.security.network.server; do
+  VALUE=""
+  if ! VALUE="$(
+    /usr/libexec/PlistBuddy -c "Print :$KEY" /dev/stdin \
+      <<<"$SIGNED_ENTITLEMENTS" 2>/dev/null
+  )" || [[ "$VALUE" != "true" ]]; then
+    fail "Clip's final signature is missing required entitlement '$KEY'"
+  fi
+done
+for SERVICE in "$BUNDLE_IDENTIFIER-spks" "$BUNDLE_IDENTIFIER-spki"; do
+  grep -Fq "<string>$SERVICE</string>" <<<"$SIGNED_ENTITLEMENTS" \
+    || fail "Clip's final signature is missing Sparkle service '$SERVICE'"
+done
 if /usr/libexec/PlistBuddy \
     -c 'Print :com.apple.security.get-task-allow' \
     /dev/stdin <<<"$SIGNED_ENTITLEMENTS" >/dev/null 2>&1; then

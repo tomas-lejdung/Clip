@@ -74,6 +74,31 @@
 		U1B100000000000000000001 /* ApplicationUpdater.swift in Sources */ = {isa = PBXBuildFile; fileRef = U1F100000000000000000001 /* ApplicationUpdater.swift */; };
 		U1B100000000000000000002 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = U1A200000000000000000001 /* Sparkle */; };
 		U1B100000000000000000003 /* ApplicationUpdateConfigurationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = U1F100000000000000000002 /* ApplicationUpdateConfigurationTests.swift */; };
+		L1B100000000000000000001 /* ClipCapture in Frameworks */ = {isa = PBXBuildFile; productRef = L1A200000000000000000001 /* ClipCapture */; };
+		L1B100000000000000000002 /* ClipLiveShare in Frameworks */ = {isa = PBXBuildFile; productRef = L1A200000000000000000002 /* ClipLiveShare */; };
+		L1B100000000000000000003 /* ClipLiveShareWebRTC in Frameworks */ = {isa = PBXBuildFile; productRef = L1A200000000000000000003 /* ClipLiveShareWebRTC */; };
+		L1B100000000000000000004 /* ClipCapture in Frameworks */ = {isa = PBXBuildFile; productRef = L1A200000000000000000004 /* ClipCapture */; };
+		L1B100000000000000000005 /* ClipLiveShare in Frameworks */ = {isa = PBXBuildFile; productRef = L1A200000000000000000005 /* ClipLiveShare */; };
+		L1B100000000000000000006 /* ClipLiveShareWebRTC in Frameworks */ = {isa = PBXBuildFile; productRef = L1A200000000000000000006 /* ClipLiveShareWebRTC */; };
+		L2B100000000000000000001 /* LiveShareCursorPosition.swift in Sources */ = {isa = PBXBuildFile; fileRef = L2F100000000000000000001 /* LiveShareCursorPosition.swift */; };
+		L2B100000000000000000002 /* LiveShareFocusedWindowMonitor.swift in Sources */ = {isa = PBXBuildFile; fileRef = L2F100000000000000000002 /* LiveShareFocusedWindowMonitor.swift */; };
+		L2B100000000000000000003 /* LiveShareAccessCode.swift in Sources */ = {isa = PBXBuildFile; fileRef = L2F100000000000000000003 /* LiveShareAccessCode.swift */; };
+		L2B100000000000000000004 /* LiveShareSettingsRepository.swift in Sources */ = {isa = PBXBuildFile; fileRef = L2F100000000000000000004 /* LiveShareSettingsRepository.swift */; };
+		L2B100000000000000000005 /* LiveSharePopoverView.swift in Sources */ = {isa = PBXBuildFile; fileRef = L2F100000000000000000005 /* LiveSharePopoverView.swift */; };
+		L2B100000000000000000006 /* LiveSharePresentationModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = L2F100000000000000000006 /* LiveSharePresentationModel.swift */; };
+		L2B100000000000000000007 /* LiveSharePresentationModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = L2F100000000000000000007 /* LiveSharePresentationModels.swift */; };
+		L2B100000000000000000008 /* FocusedWindowShareOverlay.swift in Sources */ = {isa = PBXBuildFile; fileRef = L2F100000000000000000008 /* FocusedWindowShareOverlay.swift */; };
+		L2B100000000000000000009 /* LiveShareOverlayGeometry.swift in Sources */ = {isa = PBXBuildFile; fileRef = L2F100000000000000000009 /* LiveShareOverlayGeometry.swift */; };
+		L2B10000000000000000000A /* LiveShareStatusHUD.swift in Sources */ = {isa = PBXBuildFile; fileRef = L2F10000000000000000000A /* LiveShareStatusHUD.swift */; };
+		L2B10000000000000000000B /* LiveShareAccessCodeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = L2F10000000000000000000B /* LiveShareAccessCodeTests.swift */; };
+		L2B10000000000000000000C /* LiveShareCursorPositionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = L2F10000000000000000000C /* LiveShareCursorPositionTests.swift */; };
+		L2B10000000000000000000D /* LiveShareOverlayGeometryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = L2F10000000000000000000D /* LiveShareOverlayGeometryTests.swift */; };
+		L2B10000000000000000000E /* LiveSharePresentationModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = L2F10000000000000000000E /* LiveSharePresentationModelTests.swift */; };
+		L2B10000000000000000000F /* LiveShareWindowCoordinateTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = L2F10000000000000000000F /* LiveShareWindowCoordinateTests.swift */; };
+		L2B100000000000000000010 /* ThirdPartyNotices.txt in Resources */ = {isa = PBXBuildFile; fileRef = L2F100000000000000000010 /* ThirdPartyNotices.txt */; };
+		L2B100000000000000000011 /* LiveShareCoordinatorPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = L2F100000000000000000011 /* LiveShareCoordinatorPolicy.swift */; };
+		L2B100000000000000000012 /* LiveShareCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = L2F100000000000000000012 /* LiveShareCoordinator.swift */; };
+		L2B100000000000000000013 /* LiveShareCoordinatorPolicyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = L2F100000000000000000013 /* LiveShareCoordinatorPolicyTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -162,6 +187,25 @@
 		E1F100000000000000000002 /* CaptureRecoveryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CaptureRecoveryTests.swift; sourceTree = "<group>"; };
 		U1F100000000000000000001 /* ApplicationUpdater.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ApplicationUpdater.swift; sourceTree = "<group>"; };
 		U1F100000000000000000002 /* ApplicationUpdateConfigurationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ApplicationUpdateConfigurationTests.swift; sourceTree = "<group>"; };
+		L2F100000000000000000001 /* LiveShareCursorPosition.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveShareCursorPosition.swift; sourceTree = "<group>"; };
+		L2F100000000000000000002 /* LiveShareFocusedWindowMonitor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveShareFocusedWindowMonitor.swift; sourceTree = "<group>"; };
+		L2F100000000000000000003 /* LiveShareAccessCode.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveShareAccessCode.swift; sourceTree = "<group>"; };
+		L2F100000000000000000004 /* LiveShareSettingsRepository.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveShareSettingsRepository.swift; sourceTree = "<group>"; };
+		L2F100000000000000000005 /* LiveSharePopoverView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveSharePopoverView.swift; sourceTree = "<group>"; };
+		L2F100000000000000000006 /* LiveSharePresentationModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveSharePresentationModel.swift; sourceTree = "<group>"; };
+		L2F100000000000000000007 /* LiveSharePresentationModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveSharePresentationModels.swift; sourceTree = "<group>"; };
+		L2F100000000000000000008 /* FocusedWindowShareOverlay.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FocusedWindowShareOverlay.swift; sourceTree = "<group>"; };
+		L2F100000000000000000009 /* LiveShareOverlayGeometry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveShareOverlayGeometry.swift; sourceTree = "<group>"; };
+		L2F10000000000000000000A /* LiveShareStatusHUD.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveShareStatusHUD.swift; sourceTree = "<group>"; };
+		L2F10000000000000000000B /* LiveShareAccessCodeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveShareAccessCodeTests.swift; sourceTree = "<group>"; };
+		L2F10000000000000000000C /* LiveShareCursorPositionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveShareCursorPositionTests.swift; sourceTree = "<group>"; };
+		L2F10000000000000000000D /* LiveShareOverlayGeometryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveShareOverlayGeometryTests.swift; sourceTree = "<group>"; };
+		L2F10000000000000000000E /* LiveSharePresentationModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveSharePresentationModelTests.swift; sourceTree = "<group>"; };
+		L2F10000000000000000000F /* LiveShareWindowCoordinateTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveShareWindowCoordinateTests.swift; sourceTree = "<group>"; };
+		L2F100000000000000000010 /* ThirdPartyNotices.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = ThirdPartyNotices.txt; sourceTree = "<group>"; };
+		L2F100000000000000000011 /* LiveShareCoordinatorPolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveShareCoordinatorPolicy.swift; sourceTree = "<group>"; };
+		L2F100000000000000000012 /* LiveShareCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveShareCoordinator.swift; sourceTree = "<group>"; };
+		L2F100000000000000000013 /* LiveShareCoordinatorPolicyTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveShareCoordinatorPolicyTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -171,6 +215,9 @@
 			files = (
 				B20000000000000000000001 /* ClipCore in Frameworks */,
 				B20000000000000000000002 /* ClipMedia in Frameworks */,
+				L1B100000000000000000001 /* ClipCapture in Frameworks */,
+				L1B100000000000000000002 /* ClipLiveShare in Frameworks */,
+				L1B100000000000000000003 /* ClipLiveShareWebRTC in Frameworks */,
 				U1B100000000000000000002 /* Sparkle in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -181,6 +228,9 @@
 			files = (
 				B20000000000000000000003 /* ClipCore in Frameworks */,
 				B20000000000000000000004 /* ClipMedia in Frameworks */,
+				L1B100000000000000000004 /* ClipCapture in Frameworks */,
+				L1B100000000000000000005 /* ClipLiveShare in Frameworks */,
+				L1B100000000000000000006 /* ClipLiveShareWebRTC in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -216,6 +266,7 @@
 			isa = PBXGroup;
 			children = (
 				G00000000000000000000003 /* App */,
+				L2G100000000000000000001 /* LiveShare */,
 				G10000000000000000000001 /* Capture */,
 				G10000000000000000000002 /* Recording */,
 				G10000000000000000000003 /* Preview */,
@@ -280,6 +331,7 @@
 			children = (
 				F00000000000000000000009 /* Assets.xcassets */,
 				F0000000000000000000000A /* Localizable.xcstrings */,
+				L2F100000000000000000010 /* ThirdPartyNotices.txt */,
 				F0000000000000000000000B /* Info.plist */,
 				F0000000000000000000000C /* Clip.entitlements */,
 			);
@@ -368,9 +420,69 @@
 			path = Onboarding;
 			sourceTree = "<group>";
 		};
+		L2G100000000000000000001 /* LiveShare */ = {
+			isa = PBXGroup;
+			children = (
+				L2G100000000000000000002 /* Capture */,
+				L2G100000000000000000003 /* Configuration */,
+				L2G100000000000000000004 /* Interface */,
+				L2G100000000000000000005 /* Overlay */,
+				L2G100000000000000000007 /* Session */,
+			);
+			path = LiveShare;
+			sourceTree = "<group>";
+		};
+		L2G100000000000000000002 /* Capture */ = {
+			isa = PBXGroup;
+			children = (
+				L2F100000000000000000001 /* LiveShareCursorPosition.swift */,
+				L2F100000000000000000002 /* LiveShareFocusedWindowMonitor.swift */,
+			);
+			path = Capture;
+			sourceTree = "<group>";
+		};
+		L2G100000000000000000003 /* Configuration */ = {
+			isa = PBXGroup;
+			children = (
+				L2F100000000000000000003 /* LiveShareAccessCode.swift */,
+				L2F100000000000000000004 /* LiveShareSettingsRepository.swift */,
+			);
+			path = Configuration;
+			sourceTree = "<group>";
+		};
+		L2G100000000000000000004 /* Interface */ = {
+			isa = PBXGroup;
+			children = (
+				L2F100000000000000000005 /* LiveSharePopoverView.swift */,
+				L2F100000000000000000006 /* LiveSharePresentationModel.swift */,
+				L2F100000000000000000007 /* LiveSharePresentationModels.swift */,
+			);
+			path = Interface;
+			sourceTree = "<group>";
+		};
+		L2G100000000000000000005 /* Overlay */ = {
+			isa = PBXGroup;
+			children = (
+				L2F100000000000000000008 /* FocusedWindowShareOverlay.swift */,
+				L2F100000000000000000009 /* LiveShareOverlayGeometry.swift */,
+				L2F10000000000000000000A /* LiveShareStatusHUD.swift */,
+			);
+			path = Overlay;
+			sourceTree = "<group>";
+		};
+		L2G100000000000000000007 /* Session */ = {
+			isa = PBXGroup;
+			children = (
+				L2F100000000000000000012 /* LiveShareCoordinator.swift */,
+				L2F100000000000000000011 /* LiveShareCoordinatorPolicy.swift */,
+			);
+			path = Session;
+			sourceTree = "<group>";
+		};
 		G00000000000000000000008 /* ClipTests */ = {
 			isa = PBXGroup;
 			children = (
+				L2G100000000000000000006 /* LiveShare */,
 				U1F100000000000000000002 /* ApplicationUpdateConfigurationTests.swift */,
 				F0000000000000000000000D /* ApplicationDirectoriesTests.swift */,
 				E1F100000000000000000002 /* CaptureRecoveryTests.swift */,
@@ -385,6 +497,19 @@
 				F5B200000000000000000001 /* SettingsVisualSnapshotTests.swift */,
 			);
 			path = ClipTests;
+			sourceTree = "<group>";
+		};
+		L2G100000000000000000006 /* LiveShare */ = {
+			isa = PBXGroup;
+			children = (
+				L2F10000000000000000000B /* LiveShareAccessCodeTests.swift */,
+				L2F100000000000000000013 /* LiveShareCoordinatorPolicyTests.swift */,
+				L2F10000000000000000000C /* LiveShareCursorPositionTests.swift */,
+				L2F10000000000000000000D /* LiveShareOverlayGeometryTests.swift */,
+				L2F10000000000000000000E /* LiveSharePresentationModelTests.swift */,
+				L2F10000000000000000000F /* LiveShareWindowCoordinateTests.swift */,
+			);
+			path = LiveShare;
 			sourceTree = "<group>";
 		};
 		G00000000000000000000009 /* ClipUITests */ = {
@@ -438,6 +563,9 @@
 			packageProductDependencies = (
 				A20000000000000000000001 /* ClipCore */,
 				A20000000000000000000002 /* ClipMedia */,
+				L1A200000000000000000001 /* ClipCapture */,
+				L1A200000000000000000002 /* ClipLiveShare */,
+				L1A200000000000000000003 /* ClipLiveShareWebRTC */,
 				U1A200000000000000000001 /* Sparkle */,
 			);
 			productName = Clip;
@@ -461,6 +589,9 @@
 			packageProductDependencies = (
 				A20000000000000000000003 /* ClipCore */,
 				A20000000000000000000004 /* ClipMedia */,
+				L1A200000000000000000004 /* ClipCapture */,
+				L1A200000000000000000005 /* ClipLiveShare */,
+				L1A200000000000000000006 /* ClipLiveShareWebRTC */,
 			);
 			productName = ClipTests;
 			productReference = F00000000000000000000011 /* ClipTests.xctest */;
@@ -539,6 +670,9 @@
 			packageReferences = (
 				A10000000000000000000001 /* XCLocalSwiftPackageReference "Packages/ClipCore" */,
 				A10000000000000000000002 /* XCLocalSwiftPackageReference "Packages/ClipMedia" */,
+				L1A100000000000000000001 /* XCLocalSwiftPackageReference "Packages/ClipCapture" */,
+				L1A100000000000000000002 /* XCLocalSwiftPackageReference "Packages/ClipLiveShare" */,
+				L1A100000000000000000003 /* XCLocalSwiftPackageReference "Packages/ClipLiveShareWebRTC" */,
 				U1A100000000000000000001 /* XCRemoteSwiftPackageReference "Sparkle" */,
 			);
 			productRefGroup = G0000000000000000000000B /* Products */;
@@ -560,6 +694,7 @@
 			files = (
 				B00000000000000000000009 /* Assets.xcassets in Resources */,
 				B0000000000000000000000A /* Localizable.xcstrings in Resources */,
+				L2B100000000000000000010 /* ThirdPartyNotices.txt in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -591,6 +726,18 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				L2B100000000000000000003 /* LiveShareAccessCode.swift in Sources */,
+				L2B100000000000000000012 /* LiveShareCoordinator.swift in Sources */,
+				L2B100000000000000000011 /* LiveShareCoordinatorPolicy.swift in Sources */,
+				L2B100000000000000000001 /* LiveShareCursorPosition.swift in Sources */,
+				L2B100000000000000000002 /* LiveShareFocusedWindowMonitor.swift in Sources */,
+				L2B100000000000000000004 /* LiveShareSettingsRepository.swift in Sources */,
+				L2B100000000000000000005 /* LiveSharePopoverView.swift in Sources */,
+				L2B100000000000000000006 /* LiveSharePresentationModel.swift in Sources */,
+				L2B100000000000000000007 /* LiveSharePresentationModels.swift in Sources */,
+				L2B100000000000000000008 /* FocusedWindowShareOverlay.swift in Sources */,
+				L2B100000000000000000009 /* LiveShareOverlayGeometry.swift in Sources */,
+				L2B10000000000000000000A /* LiveShareStatusHUD.swift in Sources */,
 				U1B100000000000000000001 /* ApplicationUpdater.swift in Sources */,
 				B00000000000000000000001 /* ClipApp.swift in Sources */,
 				B00000000000000000000002 /* AppDelegate.swift in Sources */,
@@ -639,6 +786,12 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				L2B10000000000000000000B /* LiveShareAccessCodeTests.swift in Sources */,
+				L2B100000000000000000013 /* LiveShareCoordinatorPolicyTests.swift in Sources */,
+				L2B10000000000000000000C /* LiveShareCursorPositionTests.swift in Sources */,
+				L2B10000000000000000000D /* LiveShareOverlayGeometryTests.swift in Sources */,
+				L2B10000000000000000000E /* LiveSharePresentationModelTests.swift in Sources */,
+				L2B10000000000000000000F /* LiveShareWindowCoordinateTests.swift in Sources */,
 				U1B100000000000000000003 /* ApplicationUpdateConfigurationTests.swift in Sources */,
 				B0000000000000000000000B /* ApplicationDirectoriesTests.swift in Sources */,
 				E1B100000000000000000002 /* CaptureRecoveryTests.swift in Sources */,
@@ -699,6 +852,18 @@
 			isa = XCLocalSwiftPackageReference;
 			relativePath = Packages/ClipMedia;
 		};
+		L1A100000000000000000001 /* XCLocalSwiftPackageReference "Packages/ClipCapture" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = Packages/ClipCapture;
+		};
+		L1A100000000000000000002 /* XCLocalSwiftPackageReference "Packages/ClipLiveShare" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = Packages/ClipLiveShare;
+		};
+		L1A100000000000000000003 /* XCLocalSwiftPackageReference "Packages/ClipLiveShareWebRTC" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = Packages/ClipLiveShareWebRTC;
+		};
 /* End XCLocalSwiftPackageReference section */
 
 /* Begin XCRemoteSwiftPackageReference section */
@@ -737,6 +902,36 @@
 			isa = XCSwiftPackageProductDependency;
 			package = U1A100000000000000000001 /* XCRemoteSwiftPackageReference "Sparkle" */;
 			productName = Sparkle;
+		};
+		L1A200000000000000000001 /* ClipCapture */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = L1A100000000000000000001 /* XCLocalSwiftPackageReference "Packages/ClipCapture" */;
+			productName = ClipCapture;
+		};
+		L1A200000000000000000002 /* ClipLiveShare */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = L1A100000000000000000002 /* XCLocalSwiftPackageReference "Packages/ClipLiveShare" */;
+			productName = ClipLiveShare;
+		};
+		L1A200000000000000000003 /* ClipLiveShareWebRTC */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = L1A100000000000000000003 /* XCLocalSwiftPackageReference "Packages/ClipLiveShareWebRTC" */;
+			productName = ClipLiveShareWebRTC;
+		};
+		L1A200000000000000000004 /* ClipCapture */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = L1A100000000000000000001 /* XCLocalSwiftPackageReference "Packages/ClipCapture" */;
+			productName = ClipCapture;
+		};
+		L1A200000000000000000005 /* ClipLiveShare */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = L1A100000000000000000002 /* XCLocalSwiftPackageReference "Packages/ClipLiveShare" */;
+			productName = ClipLiveShare;
+		};
+		L1A200000000000000000006 /* ClipLiveShareWebRTC */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = L1A100000000000000000003 /* XCLocalSwiftPackageReference "Packages/ClipLiveShareWebRTC" */;
+			productName = ClipLiveShareWebRTC;
 		};
 /* End XCSwiftPackageProductDependency section */
 
@@ -857,7 +1052,7 @@
 				CODE_SIGN_IDENTITY = "-";
 				CODE_SIGN_STYLE = Manual;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 3;
+				CURRENT_PROJECT_VERSION = 4;
 				ENABLE_APP_SANDBOX = YES;
 				ENABLE_HARDENED_RUNTIME = YES;
 				ENABLE_PREVIEWS = YES;
@@ -868,7 +1063,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 1.1.0;
+				MARKETING_VERSION = 1.2.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.tomaslejdung.clip;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
@@ -885,7 +1080,7 @@
 				CODE_SIGN_IDENTITY = "-";
 				CODE_SIGN_STYLE = Manual;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 3;
+				CURRENT_PROJECT_VERSION = 4;
 				ENABLE_APP_SANDBOX = YES;
 				ENABLE_HARDENED_RUNTIME = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -895,7 +1090,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 1.1.0;
+				MARKETING_VERSION = 1.2.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.tomaslejdung.clip;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;

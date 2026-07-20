@@ -134,6 +134,7 @@ struct AppDependencies {
     let fileSystem: any FileSystemServicing
     let clock: any ClockServicing
     let settings: AppSettingsModel
+    let liveSharePreferences: LiveSharePreferencesModel
     let permissions: any PermissionServicing
     let audio: any AudioServicing
     let pasteboard: any PasteboardServicing
@@ -178,6 +179,9 @@ struct AppDependencies {
                 homeDirectory: homeDirectory
             )
         )
+        let liveSharePreferences = try LiveSharePreferencesModel(
+            applicationSupportDirectory: directories.applicationSupport
+        )
         let permissions = LivePermissionService(defaults: defaults)
         let audio = LiveAudioService()
         let pasteboard = LivePasteboardService()
@@ -203,6 +207,7 @@ struct AppDependencies {
             fileSystem: fileSystem,
             clock: SystemClock(),
             settings: settings,
+            liveSharePreferences: liveSharePreferences,
             permissions: permissions,
             audio: audio,
             pasteboard: pasteboard,

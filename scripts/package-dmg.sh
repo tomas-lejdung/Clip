@@ -17,6 +17,7 @@ RELEASE_PACKAGE_CACHE=""
 source "$ROOT/scripts/signing-config.sh"
 source "$ROOT/scripts/version-config.sh"
 source "$ROOT/scripts/sparkle-config.sh"
+source "$ROOT/scripts/webrtc-config.sh"
 clip_warn_if_ad_hoc_signing
 
 if [[ "${CLIP_MANUAL_BUILD:-0}" == "1" ]]; then
@@ -94,6 +95,66 @@ grep -Fq 'let url = "https://github.com/sparkle-project/Sparkle/releases/downloa
   "$SPARKLE_PACKAGE_MANIFEST" \
   || { echo "Sparkle package manifest has an unexpected artifact URL." >&2; exit 1; }
 
+WEBRTC_CHECKOUT="$RELEASE_SOURCE_PACKAGES/checkouts/WebRTC"
+WEBRTC_ARTIFACT="$RELEASE_SOURCE_PACKAGES/artifacts/webrtc/WebRTC/WebRTC.xcframework"
+WEBRTC_PACKAGE_MANIFEST="$WEBRTC_CHECKOUT/Package.swift"
+WEBRTC_ARTIFACT_EXECUTABLE="$WEBRTC_ARTIFACT/macos-x86_64_arm64/WebRTC.framework/Versions/A/WebRTC"
+[[ -d "$WEBRTC_CHECKOUT/.git" ]] \
+  || { echo "Fresh WebRTC source checkout is missing." >&2; exit 1; }
+[[ -d "$WEBRTC_ARTIFACT" ]] \
+  || { echo "Fresh WebRTC binary artifact is missing." >&2; exit 1; }
+WEBRTC_CHECKOUT_REVISION="$(git -C "$WEBRTC_CHECKOUT" rev-parse HEAD)"
+[[ "$WEBRTC_CHECKOUT_REVISION" == "$CLIP_WEBRTC_WRAPPER_REVISION" ]] \
+  || { echo "Fresh WebRTC checkout has an unexpected revision." >&2; exit 1; }
+[[ -z "$(git -C "$WEBRTC_CHECKOUT" status --porcelain --untracked-files=all)" ]] \
+  || { echo "Fresh WebRTC checkout is modified." >&2; exit 1; }
+WEBRTC_CHECKOUT_ORIGIN="$(git -C "$WEBRTC_CHECKOUT" remote get-url origin)"
+WEBRTC_RESOLUTION_ORIGIN="$WEBRTC_CHECKOUT_ORIGIN"
+if [[ "$WEBRTC_CHECKOUT_ORIGIN" != "$CLIP_WEBRTC_REPOSITORY_URL" &&
+      "$WEBRTC_CHECKOUT_ORIGIN" != "$CLIP_WEBRTC_REPOSITORY_URL.git" ]]; then
+  [[ -d "$WEBRTC_CHECKOUT_ORIGIN" ]] \
+    || { echo "Fresh WebRTC checkout has an unexpected repository origin." >&2; exit 1; }
+  WEBRTC_RESOLUTION_ORIGIN="$(git -C "$WEBRTC_CHECKOUT_ORIGIN" remote get-url origin)"
+fi
+[[ "$WEBRTC_RESOLUTION_ORIGIN" == "$CLIP_WEBRTC_REPOSITORY_URL" ||
+   "$WEBRTC_RESOLUTION_ORIGIN" == "$CLIP_WEBRTC_REPOSITORY_URL.git" ]] \
+  || { echo "Fresh WebRTC resolution did not originate from the reviewed repository." >&2; exit 1; }
+grep -Fq "releases/download/$CLIP_WEBRTC_VERSION/WebRTC-M150.xcframework.zip" \
+  "$WEBRTC_PACKAGE_MANIFEST" \
+  || { echo "WebRTC package manifest has an unexpected artifact URL." >&2; exit 1; }
+grep -Fq "checksum: \"$CLIP_WEBRTC_ARTIFACT_CHECKSUM\"" \
+  "$WEBRTC_PACKAGE_MANIFEST" \
+  || { echo "WebRTC package manifest has an unexpected checksum." >&2; exit 1; }
+[[ -f "$WEBRTC_ARTIFACT_EXECUTABLE" ]] \
+  || { echo "Fresh WebRTC artifact has no macOS executable." >&2; exit 1; }
+WEBRTC_ARTIFACT_EXECUTABLE_SHA256="$(
+  shasum -a 256 "$WEBRTC_ARTIFACT_EXECUTABLE" | awk '{print $1}'
+)"
+[[ "$WEBRTC_ARTIFACT_EXECUTABLE_SHA256" == \
+   "$CLIP_WEBRTC_MACOS_EXECUTABLE_SHA256" ]] \
+  || { echo "Fresh WebRTC macOS executable has an unexpected payload hash." >&2; exit 1; }
+UNSIGNED_EMBEDDED_WEBRTC_EXECUTABLE="$APP/Contents/Frameworks/WebRTC.framework/Versions/A/WebRTC"
+[[ -f "$UNSIGNED_EMBEDDED_WEBRTC_EXECUTABLE" ]] \
+  || { echo "Xcode did not embed the WebRTC macOS executable." >&2; exit 1; }
+WEBRTC_SOURCE_ARCHITECTURES="$(lipo -archs "$WEBRTC_ARTIFACT_EXECUTABLE")"
+WEBRTC_EMBEDDED_ARCHITECTURES="$(lipo -archs "$UNSIGNED_EMBEDDED_WEBRTC_EXECUTABLE")"
+[[ "$WEBRTC_EMBEDDED_ARCHITECTURES" == "$WEBRTC_SOURCE_ARCHITECTURES" ]] \
+  || { echo "Xcode embedded unexpected WebRTC architecture slices." >&2; exit 1; }
+for ARCHITECTURE in $WEBRTC_SOURCE_ARCHITECTURES; do
+  SOURCE_PAYLOAD_SHA256="$(
+    clip_webrtc_normalized_payload_sha256 \
+      "$WEBRTC_ARTIFACT_EXECUTABLE" \
+      "$ARCHITECTURE"
+  )" || { echo "Could not normalize the reviewed WebRTC $ARCHITECTURE payload." >&2; exit 1; }
+  EMBEDDED_PAYLOAD_SHA256="$(
+    clip_webrtc_normalized_payload_sha256 \
+      "$UNSIGNED_EMBEDDED_WEBRTC_EXECUTABLE" \
+      "$ARCHITECTURE"
+  )" || { echo "Could not normalize the embedded WebRTC $ARCHITECTURE payload." >&2; exit 1; }
+  [[ "$EMBEDDED_PAYLOAD_SHA256" == "$SOURCE_PAYLOAD_SHA256" ]] \
+    || { echo "Xcode embedded a modified WebRTC $ARCHITECTURE code payload." >&2; exit 1; }
+done
+
 # Re-sign Sparkle's helpers, framework, and host from the inside out. Sparkle
 # explicitly forbids deep signing for this sandboxed integration.
 "$ROOT/scripts/sign-app-bundle.sh" "$APP"
@@ -134,6 +195,8 @@ fi
 
 APP_INFO="$APP/Contents/Info.plist"
 APP_EXECUTABLE="$APP/Contents/MacOS/Clip"
+WEBRTC_EXECUTABLE="$APP/Contents/Frameworks/WebRTC.framework/Versions/A/WebRTC"
+THIRD_PARTY_NOTICES="$APP/Contents/Resources/ThirdPartyNotices.txt"
 SPARKLE_INFO="$APP/Contents/Frameworks/Sparkle.framework/Versions/Current/Resources/Info.plist"
 PACKAGED_VERSION="$(
   plutil -extract CFBundleShortVersionString raw -o - "$APP_INFO"
@@ -151,11 +214,19 @@ SPARKLE_VERSION="$(
   || { echo "Packaged bundle identifier is unexpected." >&2; exit 1; }
 [[ "$SPARKLE_VERSION" == "$CLIP_SPARKLE_VERSION" ]] \
   || { echo "Packaged Sparkle runtime is not $CLIP_SPARKLE_VERSION." >&2; exit 1; }
+[[ -f "$WEBRTC_EXECUTABLE" ]] \
+  || { echo "Packaged WebRTC runtime is missing." >&2; exit 1; }
+[[ -f "$THIRD_PARTY_NOTICES" ]] \
+  || { echo "Packaged third-party notices are missing." >&2; exit 1; }
+file "$WEBRTC_EXECUTABLE" | grep -q 'arm64' \
+  || { echo "Packaged WebRTC runtime has no arm64 slice." >&2; exit 1; }
 APP_EXECUTABLE_SHA256="$(shasum -a 256 "$APP_EXECUTABLE" | awk '{print $1}')"
+WEBRTC_EXECUTABLE_SHA256="$(shasum -a 256 "$WEBRTC_EXECUTABLE" | awk '{print $1}')"
+THIRD_PARTY_NOTICES_SHA256="$(shasum -a 256 "$THIRD_PARTY_NOTICES" | awk '{print $1}')"
 DMG_SHA256="$(shasum -a 256 "$OUTPUT" | awk '{print $1}')"
 PROVENANCE_TEMP="$(mktemp "$(dirname "$OUTPUT")/.clip-provenance.XXXXXX")"
 cat >"$PROVENANCE_TEMP" <<EOF
-schema=2
+schema=3
 git_commit=$GIT_COMMIT_AFTER
 git_tree=$GIT_TREE_AFTER
 source_clean=$SOURCE_CLEAN
@@ -168,6 +239,14 @@ sparkle_version=$SPARKLE_VERSION
 sparkle_revision=$SPARKLE_CHECKOUT_REVISION
 sparkle_repository=$CLIP_SPARKLE_REPOSITORY_URL
 sparkle_artifact_checksum=$CLIP_SPARKLE_ARTIFACT_CHECKSUM
+webrtc_version=$CLIP_WEBRTC_VERSION
+webrtc_wrapper_revision=$WEBRTC_CHECKOUT_REVISION
+webrtc_upstream_revision=$CLIP_WEBRTC_UPSTREAM_REVISION
+webrtc_repository=$CLIP_WEBRTC_REPOSITORY_URL
+webrtc_artifact_checksum=$CLIP_WEBRTC_ARTIFACT_CHECKSUM
+webrtc_artifact_executable_sha256=$WEBRTC_ARTIFACT_EXECUTABLE_SHA256
+webrtc_executable_sha256=$WEBRTC_EXECUTABLE_SHA256
+third_party_notices_sha256=$THIRD_PARTY_NOTICES_SHA256
 swift_package_resolution=fresh
 app_executable_sha256=$APP_EXECUTABLE_SHA256
 dmg_sha256=$DMG_SHA256

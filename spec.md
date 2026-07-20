@@ -30,7 +30,8 @@ Clip should be:
 - Optimized for short recordings.
 - Designed around sharing rather than video production.
 - Simple enough that users rarely need to open a settings window.
-- Local-first, with no account or cloud service required.
+- Local-first recording with no account or upload service; Live Share is a
+  separate explicit mode that requires the configured signaling service.
 - Able to produce compact files while preserving readable interface text.
 
 ---
@@ -51,6 +52,12 @@ By default:
 - Version 1.0 is English-only and uses a String Catalog so later localization remains straightforward.
 
 Clicking the menu-bar icon opens the main Clip popover.
+
+Clip also provides a distinct **Live Share** workflow for sending one or more
+macOS windows, or one entire display, to viewers through a browser. Live Share
+uses the existing GoPeep room and viewer service for its first release while
+keeping its client implementation isolated so the signaling service can be
+replaced later.
 
 ---
 
@@ -76,6 +83,171 @@ Recent Recordings
 Settings
 Quit Clip
 ```
+
+The idle popover includes an entry to begin Live Share. Once a room is being
+prepared or hosted, the entire popover switches to Live Share status and
+controls rather than mixing recording and sharing actions in one menu.
+
+---
+
+# Live Share
+
+## Starting a room
+
+Choosing **Start Live Share** reserves a room from the configured GoPeep
+service and connects Clip as its authenticated sharer. The popover shows:
+
+- The room code and browser share URL, each with a Copy action.
+- An optional generated room password that can be enabled, copied, replaced,
+  or disabled.
+- The connection state and current viewer count.
+- The active source list and its stable `video0` through `video3` slots.
+- Add Window, Share Fullscreen, Stop Sharing, and End Room actions.
+- Live quality, frame cadence, and adaptive-network status.
+- A persisted **System Audio** toggle, defaulting to Off.
+
+Reserving a room is separate from sending pixels. A room can remain available
+with zero active sources so a host may stop and resume sharing without changing
+the viewer URL.
+
+Settings stores one validated Live Share server base address and derives the
+service endpoints from it. Changing that address affects the next room only;
+an active room continues with the configuration it started with. A
+non-destructive connection test checks service reachability without reserving a
+room or starting a share.
+
+The access code is a cryptographically random, session-only value. In the
+GoPeep v1 compatibility protocol it applies to new viewer join attempts and is
+readable by the signaling service. Changing it does not reauthenticate a viewer
+that already joined and is still completing negotiation.
+
+## Sources
+
+Clip shares exact windows rather than every window owned by an application.
+The host may share up to four windows concurrently. Each source keeps its
+stable WebRTC track slot for the lifetime of the room so adding or removing a
+window does not require viewer renegotiation.
+
+Fullscreen is exclusive:
+
+- Enabling fullscreen stops all exact-window capture sessions and uses one
+  display source.
+- Adding an exact window turns fullscreen off first.
+- Stopping fullscreen leaves the room connected and ready for another source.
+
+Software VP8, VP9, and AV1 use the native source frame geometry delivered by
+ScreenCaptureKit. Hardware H.264 aspect-fits only sources that exceed its
+4,096-pixel-side, 4,096 × 2,304 luma, or Level 5.2 macroblock envelope; an
+under-limit odd dimension is cropped by at most one final row or column at the
+encoder boundary. Clip does not perform a manual BGRA copy or synthetic
+timestamp rewrite. Capture-to-WebRTC pressure is bounded and observable; Live
+Share favors the latest frame to prevent latency growth and must report
+sustained overload rather than accumulating an unbounded queue.
+
+Signaling, SDP, ICE, viewer IDs, and control DataChannel payloads have explicit
+allocation limits before native peer work. Control delivery also has a native
+DataChannel high-water limit. Durable state is regenerated from the latest
+authoritative source snapshot after libwebrtc reports a low-water drain; Clip
+does not retain an application payload queue. Cursor samples remain ephemeral
+and may be superseded under pressure.
+
+## Window sharing controls
+
+While a Live Share room is active, the currently focused eligible window gets
+a small capture-excluded overlay with **Share** or **Stop**. An arrow button
+animates the control between the left and right side of the window. Clip-owned,
+hidden, desktop, protected, and otherwise unshareable windows never receive
+the control.
+
+A fixed capture-excluded status overlay appears in the top-right of the active
+display. It contains:
+
+- One dot per active exact-window source.
+- Viewer count.
+- A fullscreen share toggle.
+
+Both overlays remain operable without Accessibility permission. They use
+AppKit window discovery and ordinary button input and never install a global
+event tap or take control of the pointer.
+
+## Focus and cursor context
+
+Clip observes the frontmost application and focused shareable window. It sends
+focus changes and normalized cursor position for the focused shared source over
+the ordered, reliable `gopeep-control` WebRTC DataChannel. These messages let
+the existing viewer follow the host's focus or cursor; they do not remotely
+control either computer.
+
+An optional Auto Share setting may follow eligible focused windows. It obeys
+the same four-source limit and uses deterministic least-recently-focused
+replacement when the pool is full. Manual source management remains the
+default.
+
+Live Share can optionally send system audio. The setting defaults to Off and
+persists independently from recording audio settings. With exact-window
+sources, ScreenCaptureKit captures audio for the unique owning applications of
+all shared windows; macOS filters this at application scope, so audio cannot be
+isolated to one particular window when that application owns several windows.
+Fullscreen captures system audio while excluding Clip itself. Multiple windows
+from the same application never create duplicate
+audio capture or WebRTC tracks.
+
+Live Share does not send microphone audio and cannot run at the same time as a
+recording. ScreenCaptureKit delivers 48 kHz stereo system audio to Clip's
+native PCM bridge, which feeds one stable Opus WebRTC send track for the room.
+The current GoPeep browser viewer deliberately does not render or play that
+track; audible end-to-end browser support is deferred to the planned viewer
+rewrite. Thirty FPS is the supported video default and 15 FPS is selectable.
+Sixty FPS may be exposed when the current hardware path supports it, but it is
+not a release requirement.
+
+## Compatibility and privacy
+
+The first Live Share release is wire-compatible with the current GoPeep v1
+service and browser viewer:
+
+- Room reservation uses `POST /api/reserve`.
+- Signaling uses `/ws/{room}` and the existing JSON join, offer, answer, and ICE
+  messages.
+- Every viewer receives its own peer connection containing four preallocated
+  video tracks, one stable Opus system-audio send track, and the
+  `gopeep-control` DataChannel. The codec picker is a video preference: H.264
+  and VP8 are exact choices, VP9 may fall back to VP8, and AV1 may fall back to
+  VP9 then VP8 for each viewer independently. Actual outbound RTP statistics,
+  not the picker value, identify what each viewer is being sent. The current
+  GoPeep browser viewer ignores the audio track until its planned rewrite.
+- Clip admits at most eight pending or connected viewer peers per room and
+  bounds unanswered offers and ICE input before allocating indefinitely.
+- Google STUN is used for direct NAT traversal. A TURN relay and force-relay
+  mode can be supplied through validated configuration, but remote Internet
+  and TURN traversal require their own controlled acceptance and are not
+  implied by local browser interoperability.
+
+The current compatibility service receives the optional room password because
+that is part of its v1 contract. A future protocol will treat the Go server as
+an opaque room registry/relay: the host client decides admission and signaling
+is authenticated and encrypted end-to-end so the server never receives a room
+password. A room name alone is not treated as a security boundary.
+
+No recording is written to History during Live Share. Raw frames, PCM audio,
+and network encodings are transient. The unchanged GoPeep signaling service
+only introduces peers and does not receive or process the WebRTC audio media;
+its existing v1 signaling visibility and trust boundary remain unchanged.
+Ending the room stops capture, peer connections, signaling, focus observation,
+and all Live Share overlays.
+
+The GoPeep compatibility acceptance runs the unmodified local signaling server
+and its served browser viewer without pointer control. In one session with the
+same viewer and tracks, it proves advancing frames across H.264 → VP8 → VP9 →
+AV1 → H.264 preference changes, verifies only the allowed per-viewer fallbacks
+and the actual outbound codec, and checks control-message interoperability on
+loopback. Real desktop capture, overlay exclusion, secondary-display behavior,
+remote/TURN traversal, soak, and the signed Release DMG remain separately
+recorded gates in `docs/live-share-progress.md`.
+
+H.264 is hardware encoded and geometry-capped. VP8, VP9 profile 0, and AV1 are
+software encoded at native geometry. AV1 may impose substantially higher CPU
+cost, so VP8 remains the default.
 
 Unavailable options should be hidden. For example, `Display 2` should only appear when a second display is connected.
 
@@ -726,7 +898,7 @@ The first presentation explicitly selects **General** and must render every visi
 control, and current value immediately. Opening Settings must not depend on leaving and
 returning focus to complete SwiftUI layout or drawing.
 
-General, Recording, Export, Storage, and Permissions are presented as an always-visible
+General, Recording, Live Share, Export, Storage, and Permissions are presented as an always-visible
 native macOS top tab bar. They must not collapse into a toolbar overflow button at the
 supported initial window size. Clip does not draw a custom segmented selector or glass
 backdrop for these tabs; the system `TabView` supplies the current native appearance,
@@ -752,6 +924,23 @@ exceed the window; controls and labels remain single-line where practical.
 - Default microphone state.
 - Default system-audio state.
 - Current system-default microphone name, shown read-only.
+
+---
+
+## Live Share
+
+- An editable, validated server base address.
+- A non-destructive Test Connection action that does not reserve a room.
+- Reset Server Address, restoring the built-in GoPeep service address.
+- Default video codec, quality/bandwidth rung, frame rate, and Performance or
+  Quality encoding mode.
+- Default System Audio, access-code requirement, Prioritize Focused Window, and
+  Auto-share Focused Windows states.
+- Restore All Live Share Defaults, restoring session defaults without changing
+  the separately managed server address.
+
+Server-address changes apply when the next Live Share session starts and never
+retarget an active session.
 
 ---
 
@@ -802,6 +991,12 @@ Each permission should include a button that opens the relevant macOS System Set
 - Microphone: Off.
 - System audio: Off.
 - Countdown: a silent 3 seconds, with Off, 1, 3, and 5-second choices.
+- Live Share server: `https://gopeep.tineestudio.se`.
+- Live Share video: VP8, Very High quality (`6 Mbps` ceiling), 30 FPS, Quality mode.
+- Live Share System Audio: Off.
+- Live Share access code: Off.
+- Live Share Prioritize Focused Window: On.
+- Live Share Auto-share Focused Windows: Off.
 - History retention: 7 days.
 - Export preset: Crisp.
 - Export qualities: Crisp `98`, Compact `90`, Smallest `70`.
@@ -888,16 +1083,21 @@ Clip should target:
 
 # Privacy
 
-Clip is local-first.
+Clip's recording workflow is local-first. Recording, Preview, History, and
+exports do not upload media. Live Share is the sole explicit networking mode:
+when the user starts a room, selected transient screen frames, optional system
+audio, and control metadata leave the Mac over WebRTC and GoPeep v1 signaling
+metadata passes through the configured service.
 
-The MVP includes:
+The recording workflow includes:
 
 - No user account.
 - No cloud upload.
 - No analytics by default.
 - No AI processing.
 - No remote processing.
-- No recording data leaving the Mac.
+- No recording data leaving the Mac unless the user explicitly starts Live
+  Share; a Live Share is not saved as a recording.
 
 Any future telemetry must be optional and transparent.
 
@@ -914,7 +1114,7 @@ Any future telemetry must be optional and transparent.
 - Xcode 26.6, build 17F113.
 - macOS 15.0 or later deployment target.
 - Apple Silicon (`arm64`).
-- Version 1.1.0.
+- Version 1.2.0 (build 4).
 
 ## User interface
 
@@ -1007,14 +1207,23 @@ SQLite is not required for the MVP unless the recording-history model grows sign
 
 - Swift Package Manager.
 
-Sparkle 2 is the sole third-party runtime dependency and is pinned to an exact
-version through Swift Package Manager. It is used only for application update
-discovery, download, verification, installation, and relaunch. Clip bundles no
-third-party media encoder or other media runtime. Test-only dependencies should
-also be avoided unless they materially improve deterministic verification.
-Publishable DMGs resolve that exact Sparkle revision and its reviewed binary
-checksum in a fresh isolated package cache; ignored development-package state
-is not accepted as release provenance.
+Runtime dependencies are deliberately limited to two audited Swift Package
+boundaries:
+
+- Sparkle 2, pinned exactly for update discovery, download, verification,
+  installation, and relaunch.
+- [`stasel/WebRTC`](https://github.com/stasel/WebRTC) `150.0.0`, pinned exactly
+  behind `Packages/ClipLiveShareWebRTC` for ICE, DTLS-SRTP, SCTP DataChannel,
+  congestion control, Opus system-audio transport, and
+  hardware-H.264/software-VP8/VP9/AV1 browser transport.
+
+WebRTC is a media-transport runtime, not Clip's recording/export encoder. Clip
+still bundles no FFmpeg, libx264, or helper media executable. Test-only
+dependencies should be avoided unless they materially improve deterministic
+verification. Publishable DMGs resolve both exact revisions and reviewed binary
+checksums in a fresh isolated package cache, compare the embedded WebRTC
+payload with that reviewed artifact, and include complete third-party notices;
+ignored development-package state is not accepted as release provenance.
 
 ## Development environment
 
@@ -1026,10 +1235,12 @@ is not accepted as release provenance.
 
 - App Sandbox enabled.
 - Hardened Runtime enabled.
-- Entitlements limited to the capabilities Clip actually uses, including microphone input and user-selected file access.
-- Clip uses its outbound network entitlement only for the Sparkle update feed
-  and release download path; the sandboxed Sparkle installer receives only its
-  documented installer-service and mach-lookup exceptions.
+- Entitlements limited to the capabilities Clip actually uses, including
+  microphone input, user-selected file access, outbound networking for Sparkle
+  and Live Share, and inbound networking required by WebRTC ICE connectivity.
+- The sandboxed Sparkle installer receives only its documented
+  installer-service and mach-lookup exceptions. Live Share networking remains
+  inside Clip and does not launch a Go or media helper process.
 - No Accessibility permission is requested.
 
 
@@ -1099,7 +1310,21 @@ A separate Homebrew tap can be added later if needed.
 - `--ui-scenario=<name>` fixtures are honored only with `--ui-testing`. They use isolated defaults and storage plus inert permission, audio, capture, display, pasteboard, shortcut, and external-AppKit actions; they never request privacy access or enter the real-capture lane.
 - Deterministic launch fixtures cover onboarding, the populated menu-bar popover and displays, denied permissions, recording, paused recording, Preview, History, every Settings tab, and a representative failure surface. Their UI-automation assertions compile in the permission-free suite but execute only after an explicit visible-pointer-control opt-in.
 - A pointer-free hosted visual lane renders the production Settings window at the top and fully scrolled bottom of every tab, writes ten PNGs plus scroll-position metadata, and fails if a scrollable form does not reach its bottom.
+- Live Share's pointer-free interoperability lane launches the unmodified local
+  GoPeep signaling server, negotiates Clip's native peer host with the
+  unmodified viewer in an offscreen `WKWebView`, requires advancing frames while
+  one session and its tracks switch H.264 → VP8 → VP9 → AV1 → H.264,
+  verifies the allowed per-viewer fallbacks and actual outbound codecs, and
+  verifies stream, focus, and cursor control metadata. Native loopback and
+  deterministic Ready/Live/Reconnecting/Failed/overlay UI scenarios cover the
+  surrounding layers. Native audio loopback separately verifies Clip's stable
+  Opus sender and large 48 kHz stereo PCM batches; the current browser viewer
+  intentionally provides no audio playback evidence.
 - Real ScreenCaptureKit, microphone, system-audio, clipboard, drag, Save As, history, and DMG smoke tests run on the development Mac.
+- Real Live Share acceptance separately covers the production ScreenCaptureKit
+  coordinator path, one through four windows, Fullscreen, resize, overlay
+  exclusion and hit testing, remote/TURN traversal, repeated start/stop, and a
+  ten-minute soak. Loopback browser evidence cannot substitute for those gates.
 - Application-update verification checks the embedded feed URL/public key,
   sandbox services and entitlements, nested code signatures, exact app/build
   versions, immutable enclosure URL, archive length, and Sparkle EdDSA
@@ -1164,8 +1389,27 @@ A separate Homebrew tap can be added later if needed.
 - Local launchable DMG distribution.
 - Signed application updates from immutable GitHub Release DMGs, with periodic
   automatic checks and an on-demand **Check for Updates…** action.
+- A distinct Live Share mode compatible with the GoPeep v1 signaling service
+  and browser viewer.
+- Up to four exact-window Live Share sources or one mutually exclusive
+  fullscreen display, sent as transient preferred-codec WebRTC video with no
+  History recording.
+- Optional persisted Live Share system audio, defaulting to Off: unique owning
+  applications for window sharing or system audio for Fullscreen, excluding
+  Clip, sent as one stable Opus track. No microphone audio is sent, and the
+  current GoPeep browser viewer does not play the track until its planned
+  rewrite.
+- A Live Share-specific menu-bar popover, optional session access code,
+  connected-viewer state, stream settings/statistics, focused-window Share/Stop
+  control, fixed source/viewer HUD, auto-share, reconnect, and Stop All without
+  ending the room.
 
-The release-critical path is: install and launch from DMG → select → record → preview → trim → drag or copy. Other included items remain planned for v1 and should be completed where feasible, but they do not prevent validating the core workflow incrementally.
+The recording release-critical path is: install and launch from DMG → select →
+record → preview → trim → drag or copy. The independent Live Share path is:
+start room → share window/display → open browser viewer → verify advancing
+video/context → change/stop sources → end room. A recording release may remain
+valid without the networking feature, but a release advertising Live Share
+must pass the Live Share controlled and packaging gates above.
 
 ---
 
@@ -1174,7 +1418,7 @@ The release-critical path is: install and launch from DMG → select → record 
 Potential later additions:
 
 - Saved named capture regions.
-- Individual-window capture.
+- Individual-window recording (Live Share already targets exact windows).
 - GIF export.
 - Webcam bubble.
 - Custom click animations beyond the native system click-highlight rings.
@@ -1202,7 +1446,7 @@ Clip will not initially provide:
 - Multi-clip timelines.
 - Cloud accounts.
 - Team workspaces.
-- Collaboration.
+- Multi-party editing or collaboration beyond view-only Live Share.
 - Comments.
 - Hosted video links.
 - Mac App Store distribution.
@@ -1242,7 +1486,7 @@ clip
 ## Version
 
 ```text
-1.1.0
+1.2.0 (build 4)
 ```
 
 ## Bundle identifier

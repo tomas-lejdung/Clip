@@ -9,6 +9,8 @@ DESIGNATED_REQUIREMENT_SIDECAR="$DMG.designated-requirement"
 
 source "$ROOT/scripts/signing-config.sh"
 source "$ROOT/scripts/version-config.sh"
+source "$ROOT/scripts/sparkle-config.sh"
+source "$ROOT/scripts/webrtc-config.sh"
 
 fail() {
   echo "DMG verification failed: $*" >&2
@@ -60,7 +62,7 @@ SPARKLE_VERSION="$(
   plutil -extract CFBundleShortVersionString raw -o - \
     "$SPARKLE_FRAMEWORK/Versions/Current/Resources/Info.plist"
 )"
-[[ "$SPARKLE_VERSION" == "2.9.4" ]] \
+[[ "$SPARKLE_VERSION" == "$CLIP_SPARKLE_VERSION" ]] \
   || fail "unexpected embedded Sparkle version '$SPARKLE_VERSION'"
 for COMPONENT in \
   "$SPARKLE_FRAMEWORK/Versions/Current/XPCServices/Installer.xpc" \
@@ -71,6 +73,47 @@ for COMPONENT in \
   codesign --verify --strict "$COMPONENT" \
     || fail "embedded Sparkle component has an invalid signature: $COMPONENT"
 done
+WEBRTC_FRAMEWORK="$APP/Contents/Frameworks/WebRTC.framework"
+WEBRTC_EXECUTABLE="$WEBRTC_FRAMEWORK/Versions/A/WebRTC"
+test -d "$WEBRTC_FRAMEWORK" || fail "WebRTC.framework is missing"
+test -f "$WEBRTC_EXECUTABLE" || fail "WebRTC executable is missing"
+codesign --verify --strict "$WEBRTC_FRAMEWORK" \
+  || fail "embedded WebRTC.framework has an invalid signature"
+file "$WEBRTC_EXECUTABLE" | grep -q 'arm64' \
+  || fail "embedded WebRTC runtime has no arm64 slice"
+WEBRTC_IDENTIFIER="$(
+  plutil -extract CFBundleIdentifier raw -o - \
+    "$WEBRTC_FRAMEWORK/Versions/A/Resources/Info.plist"
+)"
+[[ "$WEBRTC_IDENTIFIER" == "org.webrtc.WebRTC" ]] \
+  || fail "embedded WebRTC framework has an unexpected bundle identifier"
+
+THIRD_PARTY_NOTICES="$APP/Contents/Resources/ThirdPartyNotices.txt"
+test -f "$THIRD_PARTY_NOTICES" || fail "third-party notices are missing"
+grep -Fq "Source: $CLIP_SPARKLE_REPOSITORY_URL, version $CLIP_SPARKLE_VERSION" \
+  "$THIRD_PARTY_NOTICES" \
+  || fail "packaged Sparkle notice has an unexpected source or version"
+grep -Fq "Source revision: $CLIP_SPARKLE_REVISION" "$THIRD_PARTY_NOTICES" \
+  || fail "packaged Sparkle notice has an unexpected revision"
+grep -Fq 'EXTERNAL LICENSES' "$THIRD_PARTY_NOTICES" \
+  || fail "packaged Sparkle external licenses are missing"
+for MARKER in \
+  'bspatch.c and bsdiff.c, from bsdiff 4.3' \
+  'sais.c and sais.h, from sais-lite' \
+  'Portable C implementation of Ed25519' \
+  'SUSignatureVerifier.m:'; do
+  grep -Fq "$MARKER" "$THIRD_PARTY_NOTICES" \
+    || fail "packaged Sparkle external license section is missing: $MARKER"
+done
+grep -Fq "Source: $CLIP_WEBRTC_REPOSITORY_URL, version $CLIP_WEBRTC_VERSION" \
+  "$THIRD_PARTY_NOTICES" \
+  || fail "packaged WebRTC notice has an unexpected source or version"
+grep -Fq "Source revision: $CLIP_WEBRTC_WRAPPER_REVISION" \
+  "$THIRD_PARTY_NOTICES" \
+  || fail "packaged WebRTC notice has an unexpected wrapper revision"
+grep -Fq "Source commit: $CLIP_WEBRTC_UPSTREAM_REVISION" \
+  "$THIRD_PARTY_NOTICES" \
+  || fail "packaged WebRTC notice has an unexpected upstream revision"
 
 INFO_XML="$(plutil -convert xml1 -o - "$INFO")"
 if grep -Fq '$(' <<<"$INFO_XML"; then
@@ -91,7 +134,8 @@ for KEY in \
   com.apple.security.device.audio-input \
   com.apple.security.files.user-selected.read-write \
   com.apple.security.files.bookmarks.app-scope \
-  com.apple.security.network.client; do
+  com.apple.security.network.client \
+  com.apple.security.network.server; do
   VALUE=""
   if ! VALUE="$(
     /usr/libexec/PlistBuddy -c "Print :$KEY" /dev/stdin \

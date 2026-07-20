@@ -2,7 +2,7 @@
 
 This file tracks implementation against [spec.md](spec.md). The specification is the product source of truth; this board records execution state and verification evidence.
 
-Last updated: 2026-07-19
+Last updated: 2026-07-20
 
 ## Status model
 
@@ -44,6 +44,16 @@ v1.0.1 (build 2) as the deliberate update-test client. The native click-ring
 appearance matrix moves to that client's post-update acceptance.
 
 ## Verification snapshot
+
+Current Live Share Settings evidence completed on 2026-07-20:
+
+- The common Settings window now has a sixth native Live Share tab with a
+  validated server address, non-destructive connection test, independent server
+  reset, persisted session defaults, and a separate restore-all-defaults action.
+- Package and hosted app tests pass endpoint normalization/derivation,
+  persistence and reset behavior, non-destructive probing, and the shared
+  Settings-to-session preference model. A running session keeps its starting
+  endpoint; changes are picked up by the next session.
 
 Current Click Highlights evidence completed on 2026-07-19:
 
@@ -183,7 +193,7 @@ Evidence:
 - Lane: Platform
 - Owner: Codex
 
-- [x] Build General, Recording, Export, Storage, and Permissions settings sections.
+- [x] Build General, Recording, Live Share, Export, Storage, and Permissions settings sections.
 - [x] Implement every initial default in `spec.md`, including Capture Area, 30 FPS, cursor On, audio Off, three-second countdown, seven-day retention, and Crisp export.
 - [x] Add a remembered native Click Highlights toggle, default Off, in both Recording Settings and the menu quick controls.
 - [x] Add independent 1–100 Crisp, Compact, and Smallest quality controls with a Reset Quality Defaults action restoring `98`, `90`, and `70`; do not impose ordering constraints.
@@ -203,12 +213,15 @@ Evidence:
 - [x] Keep each Video Quality label on one line and give every numeric quality value an explicit bordered editor.
 - [x] Remove the filename field's duplicate visible prompt and give the editable format an explicit bordered editor.
 - [x] Keep the protected `.mp4` suffix outside the filename editor while appending and persisting it automatically.
-- [x] Add direct deterministic launches for all five Settings tabs plus top-and-fully-scrolled-bottom visual snapshots for each tab.
+- [x] Add a validated editable Live Share server address, non-destructive connection test, and independent Reset Server Address action; apply address changes to the next session only.
+- [x] Persist Live Share defaults for codec, quality, FPS, mode, System Audio, access code, Prioritize Focused Window, and Auto-share Focused Windows.
+- [x] Restore all Live Share session defaults independently from the server-address reset.
+- [x] Add direct deterministic launches for all six Settings tabs plus top-and-fully-scrolled-bottom visual snapshots for each tab.
 
 Evidence:
 
 - The 81 passing ClipCore tests cover defaults, Click Highlights missing-key compatibility and snapshots, Capture App persistence, filename formatting and schema migration, validation, shortcut conflicts, history, migrations, Remove audio persistence and legacy decoding, and the multi-hour 10,000-cycle Pause/Resume state soak. Executed app tests cover immediate and ordered quick-setting persistence, filename-template persistence/use, Carbon registration, and security-scoped bookmark restoration.
-- Settings presentation has a deterministic initial-tab/content-size seam, stable control identifiers, an extensionless filename editor adapter, inert external actions for scenario launches, and compile-only assertions for every tab. The pointer-free visual lane renders ten top/bottom PNGs; its manifest verifies Export reaches its exact bottom while the other four tabs fit without overflow.
+- Settings presentation has a deterministic initial-tab/content-size seam, stable control identifiers, an extensionless filename editor adapter, inert external actions for scenario launches, and compile-only assertions for every tab. The 760-point native tab bar keeps all six panes outside macOS toolbar overflow, enforced by a pointer-free hosted AppKit regression. The visual lane covers twelve top/bottom PNGs, and its manifest verifies each scrollable form can reach its bottom.
 - Runtime checks for login-item registration, Dock switching, and sandbox bookmark restoration remain in the installed-app pass.
 
 ### CAP-01 — Displays and capture selection

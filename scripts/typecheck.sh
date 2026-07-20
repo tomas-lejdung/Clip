@@ -12,8 +12,17 @@ TESTING_PLUGIN="$DEVELOPER_DIR/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift
 MODULE_CACHE="$ROOT/.build/TypecheckModuleCache"
 CORE_MODULES="$ROOT/Packages/ClipCore/.build/arm64-apple-macosx/debug/Modules"
 MEDIA_MODULES="$ROOT/Packages/ClipMedia/.build/arm64-apple-macosx/debug/Modules"
+LIVE_SHARE_BUILD="$ROOT/Packages/ClipLiveShareWebRTC/.build/arm64-apple-macosx/debug"
+LIVE_SHARE_MODULES="$LIVE_SHARE_BUILD/Modules"
+LIVE_SHARE_AUDIO_BRIDGE_BUILD="$LIVE_SHARE_BUILD/ClipLiveShareWebRTCAudioBridge.build"
+LIVE_SHARE_AUDIO_BRIDGE_MODULE_MAP="$LIVE_SHARE_AUDIO_BRIDGE_BUILD/module.modulemap"
+WEBRTC_FRAMEWORKS="$ROOT/Packages/ClipLiveShareWebRTC/.build/artifacts/webrtc/WebRTC/WebRTC.xcframework/macos-x86_64_arm64"
 CORE_OBJECTS=("$ROOT"/Packages/ClipCore/.build/arm64-apple-macosx/debug/ClipCore.build/*.swift.o)
 MEDIA_OBJECTS=("$ROOT"/Packages/ClipMedia/.build/arm64-apple-macosx/debug/ClipMedia.build/*.swift.o)
+CAPTURE_OBJECTS=("$LIVE_SHARE_BUILD"/ClipCapture.build/*.swift.o)
+LIVE_SHARE_OBJECTS=("$LIVE_SHARE_BUILD"/ClipLiveShare.build/*.swift.o)
+LIVE_SHARE_WEBRTC_OBJECTS=("$LIVE_SHARE_BUILD"/ClipLiveShareWebRTC.build/*.swift.o)
+LIVE_SHARE_AUDIO_BRIDGE_OBJECTS=("$LIVE_SHARE_AUDIO_BRIDGE_BUILD"/*.o)
 MANUAL_BUILD="$ROOT/.build/Manual"
 SOURCES=()
 TEST_SOURCES=()
@@ -37,6 +46,9 @@ done < <(find "$ROOT/ClipUITests" -type f -name '*.swift' -print0)
 
 swift test --package-path "$ROOT/Packages/ClipCore"
 swift test --package-path "$ROOT/Packages/ClipMedia"
+swift test --package-path "$ROOT/Packages/ClipCapture"
+swift test --package-path "$ROOT/Packages/ClipLiveShare"
+swift test --package-path "$ROOT/Packages/ClipLiveShareWebRTC"
 
 xcrun swiftc \
   -typecheck \
@@ -47,6 +59,9 @@ xcrun swiftc \
   -module-cache-path "$MODULE_CACHE" \
   -I "$CORE_MODULES" \
   -I "$MEDIA_MODULES" \
+  -I "$LIVE_SHARE_MODULES" \
+  -Xcc "-fmodule-map-file=$LIVE_SHARE_AUDIO_BRIDGE_MODULE_MAP" \
+  -F "$WEBRTC_FRAMEWORKS" \
   "${SOURCES[@]}"
 
 # Type checking does not exercise Swift IR generation. Link a real arm64
@@ -62,9 +77,21 @@ xcrun swiftc \
   -module-cache-path "$MODULE_CACHE" \
   -I "$CORE_MODULES" \
   -I "$MEDIA_MODULES" \
+  -I "$LIVE_SHARE_MODULES" \
+  -Xcc "-fmodule-map-file=$LIVE_SHARE_AUDIO_BRIDGE_MODULE_MAP" \
+  -F "$WEBRTC_FRAMEWORKS" \
   "${SOURCES[@]}" \
   "${CORE_OBJECTS[@]}" \
-  "${MEDIA_OBJECTS[@]}"
+  "${MEDIA_OBJECTS[@]}" \
+  "${CAPTURE_OBJECTS[@]}" \
+  "${LIVE_SHARE_OBJECTS[@]}" \
+  "${LIVE_SHARE_WEBRTC_OBJECTS[@]}" \
+  "${LIVE_SHARE_AUDIO_BRIDGE_OBJECTS[@]}" \
+  -framework AudioToolbox \
+  -framework CoreMedia \
+  -framework WebRTC \
+  -Xlinker -rpath \
+  -Xlinker @executable_path/../Frameworks
 
 file "$MANUAL_BUILD/Clip" | grep -q "Mach-O 64-bit executable arm64"
 
@@ -84,6 +111,9 @@ xcrun swiftc \
   -module-cache-path "$MODULE_CACHE" \
   -I "$CORE_MODULES" \
   -I "$MEDIA_MODULES" \
+  -I "$LIVE_SHARE_MODULES" \
+  -Xcc "-fmodule-map-file=$LIVE_SHARE_AUDIO_BRIDGE_MODULE_MAP" \
+  -F "$WEBRTC_FRAMEWORKS" \
   "${SOURCES[@]}"
 
 xcrun swiftc \
@@ -97,6 +127,9 @@ xcrun swiftc \
   -I "$MANUAL_BUILD" \
   -I "$CORE_MODULES" \
   -I "$MEDIA_MODULES" \
+  -I "$LIVE_SHARE_MODULES" \
+  -Xcc "-fmodule-map-file=$LIVE_SHARE_AUDIO_BRIDGE_MODULE_MAP" \
+  -F "$WEBRTC_FRAMEWORKS" \
   -I "$XCTEST_MODULES" \
   -F "$TEST_FRAMEWORKS" \
   -load-plugin-library "$TESTING_PLUGIN" \

@@ -17,6 +17,19 @@ final class SettingsVisualSnapshotTests: XCTestCase {
     private static let outputEnvironmentKey = "CLIP_SETTINGS_SNAPSHOT_DIRECTORY"
 
     @MainActor
+    func testNativeSettingsTabsRemainOutsideToolbarOverflow() async throws {
+        let fixture = try makeFixture(initialTab: .general)
+        defer { fixture.close() }
+
+        try await Task.sleep(for: .milliseconds(150))
+        fixture.layout()
+        XCTAssertTrue(
+            fixture.hasNoToolbarOverflow,
+            "The native Settings tab bar collapsed into the toolbar overflow menu."
+        )
+    }
+
+    @MainActor
     func testRenderEverySettingsTabAtTopAndBottom() async throws {
         guard let requestedOutputDirectory = ProcessInfo.processInfo.environment[
             Self.outputEnvironmentKey
@@ -114,6 +127,12 @@ final class SettingsVisualSnapshotTests: XCTestCase {
             homeDirectory: homeDirectory,
             initialSettings: settings
         )
+        let liveSharePreferences = try LiveSharePreferencesModel(
+            applicationSupportDirectory: stateDirectory.appendingPathComponent(
+                "Application Support",
+                isDirectory: true
+            )
+        )
         let shortcuts = GlobalShortcutService(registrar: SnapshotGlobalHotKeyRegistrar())
         let storageSnapshot = SettingsStorageSnapshot(
             recordingCount: 3,
@@ -124,6 +143,7 @@ final class SettingsVisualSnapshotTests: XCTestCase {
         )
         let settingsView = SettingsView(
             model: model,
+            liveSharePreferences: liveSharePreferences,
             shortcuts: shortcuts,
             permissions: SnapshotPermissionService(),
             audio: SnapshotAudioService(),
@@ -255,6 +275,13 @@ private final class SettingsSnapshotFixture {
         snapshotView.layoutSubtreeIfNeeded()
         hostingController.view.displayIfNeeded()
         snapshotView.displayIfNeeded()
+    }
+
+    var hasNoToolbarOverflow: Bool {
+        guard let toolbar = window.toolbar else { return false }
+        let allItems = Set(toolbar.items.map(\.itemIdentifier))
+        let visibleItems = Set((toolbar.visibleItems ?? []).map(\.itemIdentifier))
+        return allItems.isSubset(of: visibleItems)
     }
 
     /// Selects the visible Form's scroll view. SwiftUI can retain inactive tab hierarchies, so
