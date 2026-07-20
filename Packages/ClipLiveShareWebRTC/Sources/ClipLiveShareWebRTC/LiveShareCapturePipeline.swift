@@ -20,6 +20,16 @@ public protocol LiveShareVideoSlotHosting: AnyObject, Sendable {
         captureGeometry: WebRTCVideoCaptureGeometry
     ) throws
     func deactivateSlot(_ slot: Int)
+
+    /// Enables the one session-wide WebRTC audio sender. The sender is
+    /// negotiated once and remains stable while its ScreenCaptureKit input is
+    /// started, updated, or stopped.
+    func setSystemAudioEnabled(_ enabled: Bool)
+
+    /// Feeds one borrowed ScreenCaptureKit LPCM sample into the WebRTC audio
+    /// device. The host must synchronously consume or copy the sample.
+    @discardableResult
+    func send(_ sample: BorrowedCaptureAudioSample) -> Bool
 }
 
 protocol LiveShareCaptureSession: AnyObject, Sendable {
@@ -35,6 +45,16 @@ protocol LiveShareCaptureSession: AnyObject, Sendable {
 }
 
 extension ScreenCaptureSession: LiveShareCaptureSession {}
+
+protocol LiveShareAudioCaptureSession: AnyObject, Sendable {
+    var isRunning: Bool { get }
+
+    func start(_ request: CaptureAudioSessionRequest) async throws
+    func stop() async throws
+    func update(_ request: CaptureAudioSessionRequest) async throws
+}
+
+extension ScreenCaptureAudioSession: LiveShareAudioCaptureSession {}
 
 private final class LiveShareCaptureStartCompletion: @unchecked Sendable {
     private let lock = NSLock()
@@ -108,6 +128,7 @@ public enum LiveShareCapturePipelineEvent: Sendable {
         generation: UUID,
         message: String
     )
+    case systemAudioFailed(message: String)
 }
 
 public enum LiveShareCapturePipelineError: Error, Equatable, Sendable {
@@ -150,6 +171,10 @@ public actor LiveShareCapturePipeline {
         _ frameConsumer: @escaping ScreenCaptureSession.FrameConsumer,
         _ eventConsumer: @escaping ScreenCaptureSession.EventConsumer
     ) -> any LiveShareCaptureSession
+    typealias AudioSessionFactory = @Sendable (
+        _ sampleConsumer: @escaping ScreenCaptureAudioSession.SampleConsumer,
+        _ eventConsumer: @escaping ScreenCaptureAudioSession.EventConsumer
+    ) -> any LiveShareAudioCaptureSession
 
     private struct ActiveSource: @unchecked Sendable {
         let descriptor: LiveShareCaptureDescriptor
@@ -158,11 +183,34 @@ public actor LiveShareCapturePipeline {
         let startCompletion: LiveShareCaptureStartCompletion
     }
 
+    private struct ActiveAudio: @unchecked Sendable {
+        let request: CaptureAudioSessionRequest
+        let session: any LiveShareAudioCaptureSession
+        let startCompletion: LiveShareCaptureStartCompletion
+    }
+
+    private final class AudioSampleFailureGate: @unchecked Sendable {
+        private let lock = NSLock()
+        private var didReportFailure = false
+
+        func reportOnce(_ operation: () -> Void) {
+            let shouldReport = lock.withLock { () -> Bool in
+                guard !didReportFailure else { return false }
+                didReportFailure = true
+                return true
+            }
+            if shouldReport { operation() }
+        }
+    }
+
     private let host: any LiveShareVideoSlotHosting
     private let eventHandler: EventHandler
     private let sessionFactory: SessionFactory
+    private let audioSessionFactory: AudioSessionFactory
     private var active: [Int: ActiveSource] = [:]
     private var retiringSlots = Set<Int>()
+    private var activeAudio: ActiveAudio?
+    private var audioRetirementCompletion: LiveShareCaptureStartCompletion?
 
     public init(
         host: any LiveShareVideoSlotHosting,
@@ -177,20 +225,125 @@ public actor LiveShareCapturePipeline {
                 eventConsumer: eventConsumer
             )
         }
+        audioSessionFactory = { sampleConsumer, eventConsumer in
+            ScreenCaptureAudioSession(
+                sampleConsumer: sampleConsumer,
+                eventConsumer: eventConsumer
+            )
+        }
     }
 
     init(
         host: any LiveShareVideoSlotHosting,
         eventHandler: @escaping EventHandler = { _ in },
-        sessionFactory: @escaping SessionFactory
+        sessionFactory: @escaping SessionFactory,
+        audioSessionFactory: @escaping AudioSessionFactory = { sampleConsumer, eventConsumer in
+            ScreenCaptureAudioSession(
+                sampleConsumer: sampleConsumer,
+                eventConsumer: eventConsumer
+            )
+        }
     ) {
         self.host = host
         self.eventHandler = eventHandler
         self.sessionFactory = sessionFactory
+        self.audioSessionFactory = audioSessionFactory
     }
 
     public var activeSlots: [Int] {
         active.keys.sorted()
+    }
+
+    public var isSystemAudioActive: Bool {
+        activeAudio?.session.isRunning == true
+    }
+
+    /// Reconciles the single application-filtered system-audio stream. A nil
+    /// request disables audio; a changed request updates ScreenCaptureKit in
+    /// place so adding or removing a window never creates duplicate app audio.
+    public func setSystemAudio(
+        _ request: CaptureAudioSessionRequest?
+    ) async throws {
+        guard let request else {
+            try await stopSystemAudioIfNeeded()
+            return
+        }
+
+        if let current = activeAudio {
+            await current.startCompletion.wait()
+            guard let latest = activeAudio,
+                  latest.session === current.session else {
+                // A concurrent stop owns retirement. Its caller will reconcile
+                // the newest desired state after the stop drains.
+                return
+            }
+            guard latest.request != request || !latest.session.isRunning else {
+                host.setSystemAudioEnabled(true)
+                return
+            }
+            try await latest.session.update(request)
+            guard let committed = activeAudio,
+                  committed.session === latest.session else { return }
+            activeAudio = ActiveAudio(
+                request: request,
+                session: latest.session,
+                startCompletion: latest.startCompletion
+            )
+            host.setSystemAudioEnabled(true)
+            return
+        }
+
+        if let retirement = audioRetirementCompletion {
+            await retirement.wait()
+            try await setSystemAudio(request)
+            return
+        }
+        let host = host
+        let eventHandler = eventHandler
+        let failureGate = AudioSampleFailureGate()
+        let startCompletion = LiveShareCaptureStartCompletion()
+        let session = audioSessionFactory(
+            { sample in
+                guard host.send(sample) else {
+                    failureGate.reportOnce {
+                        eventHandler(.systemAudioFailed(
+                            message: "WebRTC rejected the captured system-audio format."
+                        ))
+                    }
+                    return
+                }
+            },
+            { event in
+                if case let .failed(_, error) = event {
+                    failureGate.reportOnce {
+                        eventHandler(.systemAudioFailed(
+                            message: error.localizedDescription
+                        ))
+                    }
+                }
+            }
+        )
+        activeAudio = ActiveAudio(
+            request: request,
+            session: session,
+            startCompletion: startCompletion
+        )
+        host.setSystemAudioEnabled(true)
+        defer { startCompletion.signal() }
+        do {
+            try await session.start(request)
+            guard let current = activeAudio, current.session === session else {
+                if session.isRunning { try? await session.stop() }
+                return
+            }
+        } catch {
+            if activeAudio?.session === session {
+                activeAudio = nil
+            }
+            host.setSystemAudioEnabled(false)
+            if session.isRunning { try? await session.stop() }
+            throw error
+        }
     }
 
     public func start(
@@ -382,9 +535,34 @@ public actor LiveShareCapturePipeline {
     }
 
     public func stopAll() async {
+        try? await stopSystemAudioIfNeeded()
         let slots = active.keys.sorted()
         for slot in slots {
             try? await stop(slot: slot)
+        }
+    }
+
+    private func stopSystemAudioIfNeeded() async throws {
+        guard let current = activeAudio else {
+            host.setSystemAudioEnabled(false)
+            if let retirement = audioRetirementCompletion {
+                await retirement.wait()
+            }
+            return
+        }
+        activeAudio = nil
+        let retirement = LiveShareCaptureStartCompletion()
+        audioRetirementCompletion = retirement
+        host.setSystemAudioEnabled(false)
+        await current.startCompletion.wait()
+        defer {
+            if audioRetirementCompletion === retirement {
+                audioRetirementCompletion = nil
+            }
+            retirement.signal()
+        }
+        if current.session.isRunning {
+            try await current.session.stop()
         }
     }
 

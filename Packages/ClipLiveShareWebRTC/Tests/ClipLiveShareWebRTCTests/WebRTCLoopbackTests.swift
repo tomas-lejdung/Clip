@@ -10,6 +10,104 @@ import Testing
 extension NativeMediaResourceTests {
 @Suite("Native WebRTC loopback", .serialized)
 struct WebRTCLoopbackTests {
+    @Test("system audio can be enabled after a viewer negotiates the default-Off track")
+    func systemAudioEnablesAfterNegotiation() async throws {
+        let bridge = LoopbackBridge()
+        let host = try WebRTCPeerHost(
+            configuration: .init(
+                iceServers: [],
+                resourceLimits: .init(answerTimeout: 5),
+                videoCodec: .vp8
+            ),
+            eventQueue: bridge.eventQueue,
+            eventHandler: { event in bridge.receive(hostEvent: event) }
+        )
+        bridge.host = host
+        defer { host.close() }
+
+        let offer = try await host.createOffer(for: "loopback-viewer")
+        let receiver = try LoopbackReceiver(bridge: bridge)
+        defer { receiver.close() }
+        bridge.receiver = receiver.connection
+        let answer = try await receiver.answer(offer: offer.sdp)
+        bridge.receiverCanAcceptCandidates()
+        try await host.setRemoteAnswer(answer, for: "loopback-viewer")
+        bridge.hostCanAcceptCandidates()
+        #expect(await waitUntil(timeout: .seconds(5)) {
+            bridge.isConnectedAndControlOpen && bridge.receivedSystemAudioTrack
+        })
+        #expect(!host.systemAudioSnapshot.isEnabled)
+
+        host.setSystemAudioEnabled(true)
+        #expect(await waitUntil(timeout: .seconds(5)) {
+            host.systemAudioSnapshot.isDeviceRecording
+        })
+        let bytesBefore = await receiver.inboundSystemAudioBytesReceived()
+        #expect(host.send(BorrowedCaptureAudioSample(
+            sampleBuffer: try makeSystemAudioFixture(frameCount: 4_800)
+        )))
+        try await Task.sleep(for: .milliseconds(250))
+        #expect(await receiver.inboundSystemAudioBytesReceived() > bytesBefore)
+    }
+
+    @Test("system audio sends one Opus track without dropping a routine large batch")
+    func systemAudioLoopback() async throws {
+        let bridge = LoopbackBridge()
+        let host = try WebRTCPeerHost(
+            configuration: .init(
+                iceServers: [],
+                resourceLimits: .init(answerTimeout: 5),
+                videoCodec: .vp8
+            ),
+            eventQueue: bridge.eventQueue,
+            eventHandler: { event in bridge.receive(hostEvent: event) }
+        )
+        bridge.host = host
+        defer { host.close() }
+        host.setSystemAudioEnabled(true)
+
+        let offer = try await host.createOffer(for: "loopback-viewer")
+        #expect(offer.sdp.localizedCaseInsensitiveContains(" opus/48000/2"))
+        #expect(offer.sdp.contains("gopeep-system-audio audio0"))
+        let receiver = try LoopbackReceiver(bridge: bridge)
+        defer { receiver.close() }
+        bridge.receiver = receiver.connection
+        let answer = try await receiver.answer(offer: offer.sdp)
+        bridge.receiverCanAcceptCandidates()
+        try await host.setRemoteAnswer(answer, for: "loopback-viewer")
+        bridge.hostCanAcceptCandidates()
+        let audioReady = await waitUntil(timeout: .seconds(5)) {
+            bridge.isConnectedAndControlOpen
+                && bridge.receivedSystemAudioTrack
+                && host.systemAudioSnapshot.isDeviceRecording
+        }
+        #expect(audioReady, Comment(rawValue:
+            "connected=\(bridge.isConnectedAndControlOpen), "
+                + "track=\(bridge.receivedSystemAudioTrack), "
+                + "device=\(host.systemAudioSnapshot)"
+        ))
+
+        // ScreenCaptureKit can deliver >512 ms of audio in one callback.
+        // The one-second queue must accept the complete batch, not truncate it
+        // to a short low-latency video-style queue and replace the rest with
+        // silence.
+        let frameCount = 30_000
+        let before = host.systemAudioSnapshot
+        #expect(host.send(BorrowedCaptureAudioSample(
+            sampleBuffer: try makeSystemAudioFixture(frameCount: frameCount)
+        )))
+        let after = host.systemAudioSnapshot
+        #expect(after.acceptedFrameCount - before.acceptedFrameCount == frameCount)
+        #expect(after.droppedFrameCount == before.droppedFrameCount)
+        #expect(after.queuedFrameCount > 24_576)
+        try await Task.sleep(for: .milliseconds(250))
+        #expect(await receiver.inboundSystemAudioBytesReceived() > 0)
+
+        host.setSystemAudioEnabled(false)
+        #expect(!host.systemAudioSnapshot.isEnabled)
+        #expect(host.systemAudioSnapshot.queuedFrameCount == 0)
+    }
+
     @Test("idle peer renegotiates H264 to VP8 without replacing transports")
     func idleCodecRenegotiation() async throws {
         let bridge = LoopbackBridge()
@@ -973,6 +1071,7 @@ private final class LoopbackBridge: @unchecked Sendable {
     private var storedControlMessage: Data?
     private var storedFrameCount = 0
     private var storedVideoSize = CGSize.zero
+    private var storedSystemAudioTrack = false
     private var storedNegotiationNeededCount = 0
 
     init(viewerID: String = "loopback-viewer") {
@@ -998,6 +1097,9 @@ private final class LoopbackBridge: @unchecked Sendable {
     var lastControlMessage: Data? { lock.withLock { storedControlMessage } }
     var receivedVideoFrameCount: Int { lock.withLock { storedFrameCount } }
     var receivedVideoSize: CGSize { lock.withLock { storedVideoSize } }
+    var receivedSystemAudioTrack: Bool {
+        lock.withLock { storedSystemAudioTrack }
+    }
     var negotiationNeededCount: Int {
         lock.withLock { storedNegotiationNeededCount }
     }
@@ -1082,6 +1184,10 @@ private final class LoopbackBridge: @unchecked Sendable {
         }
     }
 
+    func receiverAddedSystemAudioTrack() {
+        lock.withLock { storedSystemAudioTrack = true }
+    }
+
     private func deliverToReceiver(_ candidate: WebRTCICECandidate) {
         let receiver: RTCPeerConnection? = lock.withLock {
             guard receiverCandidateReady else {
@@ -1134,6 +1240,7 @@ private final class LoopbackReceiver: NSObject, RTCPeerConnectionDelegate,
     let connection: RTCPeerConnection
     private var controlChannel: RTCDataChannel?
     private var videoTracks: [RTCVideoTrack] = []
+    private var audioTracks: [RTCAudioTrack] = []
 
     init(
         bridge: LoopbackBridge,
@@ -1179,7 +1286,26 @@ private final class LoopbackReceiver: NSObject, RTCPeerConnectionDelegate,
         controlChannel?.close()
         for track in videoTracks { track.remove(self) }
         videoTracks.removeAll()
+        for track in audioTracks { track.isEnabled = false }
+        audioTracks.removeAll()
         connection.close()
+    }
+
+    func inboundSystemAudioBytesReceived() async -> UInt64 {
+        await withCheckedContinuation { continuation in
+            connection.statistics { report in
+                let bytes = report.statistics.values.reduce(into: UInt64(0)) {
+                    total, statistic in
+                    guard statistic.type == "inbound-rtp" else { return }
+                    let kind = (statistic.values["kind"] as? NSString) as String?
+                        ?? (statistic.values["mediaType"] as? NSString) as String?
+                    guard kind == "audio" else { return }
+                    total += (statistic.values["bytesReceived"] as? NSNumber)?
+                        .uint64Value ?? 0
+                }
+                continuation.resume(returning: bytes)
+            }
+        }
     }
 
     private func setRemoteDescription(_ description: RTCSessionDescription) async throws {
@@ -1275,6 +1401,15 @@ private final class LoopbackReceiver: NSObject, RTCPeerConnectionDelegate,
         didAdd rtpReceiver: RTCRtpReceiver,
         streams mediaStreams: [RTCMediaStream]
     ) {
+        if let audioTrack = rtpReceiver.track as? RTCAudioTrack,
+           audioTrack.trackId == WebRTCRuntimeIdentity.systemAudioTrackID {
+            // Receiving the track proves negotiation without allowing a test
+            // tone to reach the machine's speakers.
+            audioTrack.isEnabled = false
+            audioTracks.append(audioTrack)
+            bridge.receiverAddedSystemAudioTrack()
+            return
+        }
         guard let track = rtpReceiver.track as? RTCVideoTrack,
               track.trackId == "video0" else { return }
         videoTracks.append(track)
@@ -1299,6 +1434,94 @@ private final class LoopbackReceiver: NSObject, RTCPeerConnectionDelegate,
             height: CGFloat(frame.height)
         ))
     }
+}
+
+private enum SystemAudioFixtureError: Error {
+    case blockBuffer(OSStatus)
+    case fillBlockBuffer(OSStatus)
+    case format(OSStatus)
+    case sample(OSStatus)
+}
+
+func makeSystemAudioFixture(frameCount: Int) throws -> CMSampleBuffer {
+    let channels = 2
+    var samples = [Float](repeating: 0, count: frameCount * channels)
+    for frame in 0 ..< frameCount {
+        let value = Float(sin(2 * .pi * 440 * Double(frame) / 48_000) * 0.05)
+        samples[frame * channels] = value
+        samples[frame * channels + 1] = value
+    }
+    let byteCount = samples.count * MemoryLayout<Float>.size
+    var blockBuffer: CMBlockBuffer?
+    let blockStatus = CMBlockBufferCreateWithMemoryBlock(
+        allocator: kCFAllocatorDefault,
+        memoryBlock: nil,
+        blockLength: byteCount,
+        blockAllocator: kCFAllocatorDefault,
+        customBlockSource: nil,
+        offsetToData: 0,
+        dataLength: byteCount,
+        flags: 0,
+        blockBufferOut: &blockBuffer
+    )
+    guard blockStatus == kCMBlockBufferNoErr, let blockBuffer else {
+        throw SystemAudioFixtureError.blockBuffer(blockStatus)
+    }
+    let fillStatus = samples.withUnsafeBytes { bytes in
+        CMBlockBufferReplaceDataBytes(
+            with: bytes.baseAddress!,
+            blockBuffer: blockBuffer,
+            offsetIntoDestination: 0,
+            dataLength: byteCount
+        )
+    }
+    guard fillStatus == kCMBlockBufferNoErr else {
+        throw SystemAudioFixtureError.fillBlockBuffer(fillStatus)
+    }
+
+    let bytesPerFrame = UInt32(channels * MemoryLayout<Float>.size)
+    var description = AudioStreamBasicDescription(
+        mSampleRate: 48_000,
+        mFormatID: kAudioFormatLinearPCM,
+        mFormatFlags: kAudioFormatFlagIsFloat | kAudioFormatFlagIsPacked,
+        mBytesPerPacket: bytesPerFrame,
+        mFramesPerPacket: 1,
+        mBytesPerFrame: bytesPerFrame,
+        mChannelsPerFrame: UInt32(channels),
+        mBitsPerChannel: 32,
+        mReserved: 0
+    )
+    var format: CMAudioFormatDescription?
+    let formatStatus = CMAudioFormatDescriptionCreate(
+        allocator: kCFAllocatorDefault,
+        asbd: &description,
+        layoutSize: 0,
+        layout: nil,
+        magicCookieSize: 0,
+        magicCookie: nil,
+        extensions: nil,
+        formatDescriptionOut: &format
+    )
+    guard formatStatus == noErr, let format else {
+        throw SystemAudioFixtureError.format(formatStatus)
+    }
+    var sample: CMSampleBuffer?
+    let sampleStatus = CMAudioSampleBufferCreateWithPacketDescriptions(
+        allocator: kCFAllocatorDefault,
+        dataBuffer: blockBuffer,
+        dataReady: true,
+        makeDataReadyCallback: nil,
+        refcon: nil,
+        formatDescription: format,
+        sampleCount: frameCount,
+        presentationTimeStamp: .zero,
+        packetDescriptions: nil,
+        sampleBufferOut: &sample
+    )
+    guard sampleStatus == noErr, let sample else {
+        throw SystemAudioFixtureError.sample(sampleStatus)
+    }
+    return sample
 }
 
 private func waitUntil(

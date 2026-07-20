@@ -124,6 +124,33 @@ struct LiveSharePresentationModelTests {
     }
 
     @Test
+    func testSystemAudioToggleUsesPresentationCapabilityGate() {
+        var changes: [Bool] = []
+        let model = LiveSharePresentationModel(
+            snapshot: LiveShareViewSnapshot(
+                phase: .live(elapsedSeconds: 12),
+                settings: .init(
+                    systemAudioEnabled: false,
+                    canChangeSystemAudio: true
+                )
+            ),
+            actions: .init(setSystemAudioEnabled: { changes.append($0) })
+        )
+
+        model.setSystemAudioEnabled(true)
+        model.update(LiveShareViewSnapshot(
+            phase: .reconnecting(attempt: 1, maximumAttempts: 5),
+            settings: .init(
+                systemAudioEnabled: true,
+                canChangeSystemAudio: false
+            )
+        ))
+        model.setSystemAudioEnabled(false)
+
+        #expect(changes == [true])
+    }
+
+    @Test
     func testHardwareCodecDetailRemainsAvailable() {
         let verified = LiveShareCodecViewSnapshot(acceleration: .hardware)
         #expect(verified.detail == "Hardware accelerated")

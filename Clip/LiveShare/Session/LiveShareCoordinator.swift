@@ -66,6 +66,8 @@ final class LiveShareCoordinator {
     private var captureRestartRequestID: UUID?
     private var settingsSaveTask: Task<Void, Never>?
     private var codecChangeTask: Task<Void, Never>?
+    private var systemAudioReconcileTask: Task<Void, Never>?
+    private var systemAudioReconcileTaskID: UUID?
     private var sourceTransitionTask: Task<Void, Never>?
     private var sourceTransitionTaskID: UUID?
     private var sourceTransitionGeneration = 0
@@ -94,6 +96,8 @@ final class LiveShareCoordinator {
     private var controlReplayTask: Task<Void, Never>?
     private var controlReplayTaskID: UUID?
     private var publishedMenuBarStatus: LiveShareMenuBarStatus?
+    private let systemAudioRequestIdentifier = UUID()
+    private var desiredSystemAudioRequest: CaptureAudioSessionRequest?
 
     private lazy var focusedWindowMonitor = LiveShareFocusedWindowMonitor(
         discovery: discovery,
@@ -151,6 +155,9 @@ final class LiveShareCoordinator {
             setFrameRate: { [weak self] frameRate in self?.setFrameRate(frameRate) },
             setCodec: { [weak self] codec in
                 self?.requestVideoCodecChange(codec)
+            },
+            setSystemAudioEnabled: { [weak self] enabled in
+                self?.setSystemAudioEnabled(enabled)
             },
             setPrioritizeFocusedWindow: { [weak self] enabled in
                 self?.setPrioritizeFocusedWindow(enabled)
@@ -237,11 +244,13 @@ final class LiveShareCoordinator {
         statusHUD.tearDown()
         codecChangeTask?.cancel()
         codecChangeTask = nil
+        let systemAudioTask = cancelSystemAudioReconciliation()
         peerHost?.close()
         let pipeline = capturePipeline
         capturePipeline = nil
         capturePressure.removeAll()
         Task {
+            await systemAudioTask?.value
             await pipeline?.stopAll()
             await signaling.stop()
         }
@@ -311,6 +320,8 @@ final class LiveShareCoordinator {
 
     private func installNativeRuntime() throws {
         cancelAuthoritativeControlReplay()
+        _ = cancelSystemAudioReconciliation()
+        desiredSystemAudioRequest = nil
         peerHost?.close()
         let configuration = WebRTCPeerHostConfiguration(
             iceServers: server.iceServers.map {
@@ -630,6 +641,9 @@ final class LiveShareCoordinator {
         case let .sourceFailed(_, source, generation, message):
             guard captureGenerations[source.id] == generation else { return }
             await handleUnexpectedSourceFailure(source, message: message)
+
+        case let .systemAudioFailed(message):
+            await handleSystemAudioFailure(message)
         }
     }
 
@@ -1401,6 +1415,88 @@ final class LiveShareCoordinator {
         applySenderPolicyAndPersist()
     }
 
+    private func setSystemAudioEnabled(_ enabled: Bool) {
+        settings.systemAudioEnabled = enabled
+        persistSettings()
+        publish()
+    }
+
+    private func scheduleSystemAudioReconciliation() {
+        guard let pipeline = capturePipeline else {
+            desiredSystemAudioRequest = nil
+            return
+        }
+        let domain = state.snapshot
+        let supportsActiveCapture = !isEnding && [
+            LiveSharePhase.ready,
+            .starting,
+            .sharing,
+            .reconnecting,
+        ].contains(domain.phase)
+        let request = LiveShareCoordinatorPolicy.captureAudioRequest(
+            systemAudioEnabled: settings.systemAudioEnabled && supportsActiveCapture,
+            sources: domain.sources,
+            knownWindows: windowsByID,
+            filterDisplayID: CGMainDisplayID(),
+            clipBundleIdentifier: ApplicationDirectories.bundleIdentifier,
+            requestIdentifier: systemAudioRequestIdentifier
+        )
+        guard request != desiredSystemAudioRequest else { return }
+        desiredSystemAudioRequest = request
+
+        let previous = systemAudioReconcileTask
+        let taskID = UUID()
+        systemAudioReconcileTaskID = taskID
+        systemAudioReconcileTask = Task { @MainActor [weak self] in
+            // Enabling and filter changes stay ordered, but a disable must
+            // preempt an in-flight ScreenCaptureKit start/update immediately.
+            // The pipeline's retirement gate then drains that older operation
+            // without allowing another audio sample onto the sender.
+            if request != nil {
+                await previous?.value
+            }
+            guard let self,
+                  !Task.isCancelled,
+                  systemAudioReconcileTaskID == taskID,
+                  desiredSystemAudioRequest == request,
+                  capturePipeline === pipeline else { return }
+            do {
+                try await pipeline.setSystemAudio(request)
+            } catch {
+                guard systemAudioReconcileTaskID == taskID,
+                      desiredSystemAudioRequest == request else { return }
+                await handleSystemAudioFailure(error.localizedDescription)
+            }
+            if systemAudioReconcileTaskID == taskID {
+                systemAudioReconcileTaskID = nil
+                systemAudioReconcileTask = nil
+            }
+        }
+    }
+
+    private func handleSystemAudioFailure(_ message: String) async {
+        Self.logger.error(
+            "Live Share system audio stopped: \(message, privacy: .public)"
+        )
+        guard settings.systemAudioEnabled else { return }
+        settings.systemAudioEnabled = false
+        desiredSystemAudioRequest = nil
+        try? await capturePipeline?.setSystemAudio(nil)
+        persistSettings()
+        NSSound.beep()
+        publish()
+    }
+
+    @discardableResult
+    private func cancelSystemAudioReconciliation() -> Task<Void, Never>? {
+        let task = systemAudioReconcileTask
+        task?.cancel()
+        systemAudioReconcileTask = nil
+        systemAudioReconcileTaskID = nil
+        desiredSystemAudioRequest = nil
+        return task
+    }
+
     private func setFrameRate(_ frameRate: LiveShareFrameRate) {
         guard codecChangeTask == nil,
               availableFrameRates.contains(frameRate) else { return }
@@ -1821,10 +1917,12 @@ final class LiveShareCoordinator {
         captureRestartRequestID = nil
         codecChangeTask?.cancel()
         codecChangeTask = nil
+        let systemAudioTask = cancelSystemAudioReconciliation()
         failureCleanupTask?.cancel()
         failureCleanupTask = nil
         cancelAuthoritativeControlReplay()
         focusedWindowMonitor.stop()
+        await systemAudioTask?.value
         await capturePipeline?.stopAll()
         capturePipeline = nil
         peerHost?.close()
@@ -1872,6 +1970,7 @@ final class LiveShareCoordinator {
         captureRestartRequestID = nil
         codecChangeTask?.cancel()
         codecChangeTask = nil
+        let systemAudioTask = cancelSystemAudioReconciliation()
         retryTask?.cancel()
         retryTask = nil
         isRetrying = false
@@ -1882,6 +1981,7 @@ final class LiveShareCoordinator {
         failureCleanup?.cancel()
         await failureCleanup?.value
         cancelAuthoritativeControlReplay()
+        await systemAudioTask?.value
 
         if !state.snapshot.sources.isEmpty {
             _ = try? peerHost?.broadcastControl(GoPeepV1Message(type: .sharerStopped))
@@ -2413,6 +2513,7 @@ final class LiveShareCoordinator {
         captureRestartRequestID = nil
         codecChangeTask?.cancel()
         codecChangeTask = nil
+        let systemAudioTask = cancelSystemAudioReconciliation()
         statisticsTask?.cancel()
         statisticsTask = nil
         cursorTask?.cancel()
@@ -2420,6 +2521,7 @@ final class LiveShareCoordinator {
         signalingEventTask?.cancel()
         signalingEventTask = nil
         cancelAuthoritativeControlReplay()
+        await systemAudioTask?.value
         if !state.snapshot.sources.isEmpty {
             _ = try? peerHost?.broadcastControl(GoPeepV1Message(type: .sharerStopped))
         }
@@ -2458,6 +2560,7 @@ final class LiveShareCoordinator {
     }
 
     private func publish() {
+        scheduleSystemAudioReconciliation()
         let snapshot = makeViewSnapshot()
         presentationModel.update(snapshot)
         renderOverlays(snapshot)
@@ -2630,6 +2733,7 @@ final class LiveShareCoordinator {
                     codec: settings.videoCodec,
                     acceleration: settings.videoCodec == .h264 ? .hardware : .software
                 ),
+                systemAudioEnabled: settings.systemAudioEnabled,
                 prioritizeFocusedWindow: settings.prioritizeFocusedWindow,
                 mode: settings.encodingMode,
                 autoShareFocusedWindows: settings.autoShareFocusedWindows,
@@ -2637,6 +2741,7 @@ final class LiveShareCoordinator {
                 canChangeFrameRate: canChangeSettings && codecChangeTask == nil,
                 availableFrameRates: availableFrameRates,
                 canChangeCodec: canChangeSettings && codecChangeTask == nil,
+                canChangeSystemAudio: canChangeSettings,
                 canChangePrioritizeFocusedWindow: canChangeSettings,
                 canChangeMode: canChangeSettings && codecChangeTask == nil,
                 canChangeAutoShare: canOperateSources && fullscreenSource == nil

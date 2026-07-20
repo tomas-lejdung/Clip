@@ -23,10 +23,22 @@ let package = Package(
     ],
     targets: [
         .target(
+            name: "ClipLiveShareWebRTCAudioBridge",
+            dependencies: [
+                .product(name: "WebRTC", package: "WebRTC"),
+            ],
+            publicHeadersPath: "include",
+            linkerSettings: [
+                .linkedFramework("AudioToolbox"),
+                .linkedFramework("CoreMedia"),
+            ]
+        ),
+        .target(
             name: "ClipLiveShareWebRTC",
             dependencies: [
                 "ClipCapture",
                 "ClipLiveShare",
+                "ClipLiveShareWebRTCAudioBridge",
                 .product(name: "WebRTC", package: "WebRTC"),
             ]
         ),

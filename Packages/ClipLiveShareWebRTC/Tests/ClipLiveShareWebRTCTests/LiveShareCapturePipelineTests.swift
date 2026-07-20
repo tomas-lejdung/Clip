@@ -1,5 +1,6 @@
 import ClipCapture
 import ClipLiveShare
+import AudioToolbox
 import CoreMedia
 import CoreVideo
 import Foundation
@@ -276,6 +277,154 @@ struct LiveShareCapturePipelineTests {
         try await pipeline.stop(slot: 0)
     }
 
+    @Test("system audio enables its negotiated sender before capture starts")
+    func systemAudioEnableBeforeStart() async throws {
+        let host = FakeSlotHost()
+        let factory = FixtureAudioSessionFactory(deliversStartupSample: true)
+        let pipeline = Self.pipeline(host: host, audioFactory: factory)
+        let request = Self.audioRequest(
+            identifier: UUID(uuidString: "00000000-0000-0000-0000-000000000001")!
+        )
+
+        try await pipeline.setSystemAudio(request)
+
+        #expect(host.timeline == [
+            .systemAudioEnabled(true),
+            .systemAudioSent,
+        ])
+        #expect(factory.latestSession?.startRequests == [request])
+        #expect(await pipeline.isSystemAudioActive)
+        try await pipeline.setSystemAudio(nil)
+    }
+
+    @Test("application audio scope updates in place and deduplicates identical requests")
+    func systemAudioApplicationScopeUpdate() async throws {
+        let host = FakeSlotHost()
+        let factory = FixtureAudioSessionFactory()
+        let pipeline = Self.pipeline(host: host, audioFactory: factory)
+        let initial = Self.audioRequest(
+            identifier: UUID(uuidString: "00000000-0000-0000-0000-000000000002")!,
+            bundleIdentifiers: ["com.example.browser"]
+        )
+        let updated = Self.audioRequest(
+            identifier: UUID(uuidString: "00000000-0000-0000-0000-000000000003")!,
+            bundleIdentifiers: [
+                "com.example.browser",
+                " com.example.browser ",
+                "com.example.player",
+            ]
+        )
+
+        try await pipeline.setSystemAudio(initial)
+        try await pipeline.setSystemAudio(updated)
+        try await pipeline.setSystemAudio(updated)
+
+        #expect(factory.creationCount == 1)
+        #expect(factory.latestSession?.startRequests == [initial])
+        #expect(factory.latestSession?.updateRequests == [updated])
+        #expect(updated.scope == .applications(
+            displayID: 42,
+            bundleIdentifiers: ["com.example.browser", "com.example.player"]
+        ))
+        #expect(factory.latestSession?.stopCount == 0)
+        try await pipeline.setSystemAudio(nil)
+    }
+
+    @Test("disabling system audio stops capture and disables its sender")
+    func systemAudioDisable() async throws {
+        let host = FakeSlotHost()
+        let factory = FixtureAudioSessionFactory()
+        let pipeline = Self.pipeline(host: host, audioFactory: factory)
+
+        try await pipeline.setSystemAudio(Self.audioRequest())
+        try await pipeline.setSystemAudio(nil)
+        try await pipeline.setSystemAudio(nil)
+
+        #expect(factory.latestSession?.stopCount == 1)
+        #expect(host.timeline == [
+            .systemAudioEnabled(true),
+            .systemAudioEnabled(false),
+            .systemAudioEnabled(false),
+        ])
+        #expect(!(await pipeline.isSystemAudioActive))
+    }
+
+    @Test("system-audio startup failure rolls back capture and sender state")
+    func systemAudioStartupFailureRollback() async {
+        let host = FakeSlotHost()
+        let factory = FixtureAudioSessionFactory(
+            startupError: .audioStartFailed,
+            runsBeforeStartupFailure: true
+        )
+        let pipeline = Self.pipeline(host: host, audioFactory: factory)
+        let request = Self.audioRequest()
+
+        await #expect(throws: FixtureCaptureError.audioStartFailed) {
+            try await pipeline.setSystemAudio(request)
+        }
+
+        #expect(factory.latestSession?.startRequests == [request])
+        #expect(factory.latestSession?.stopCount == 1)
+        #expect(host.timeline == [
+            .systemAudioEnabled(true),
+            .systemAudioEnabled(false),
+        ])
+        #expect(!(await pipeline.isSystemAudioActive))
+    }
+
+    @Test("stopAll drains system audio together with active video slots")
+    func stopAllIncludesSystemAudio() async throws {
+        let host = FakeSlotHost()
+        let factory = FixtureAudioSessionFactory()
+        let pipeline = Self.pipeline(host: host, audioFactory: factory)
+
+        try await pipeline.start(Self.descriptor(), inSlot: 0)
+        try await pipeline.setSystemAudio(Self.audioRequest())
+        await pipeline.stopAll()
+
+        #expect(factory.latestSession?.stopCount == 1)
+        #expect(host.timeline == [
+            .activated(0),
+            .sent(0),
+            .systemAudioEnabled(true),
+            .systemAudioEnabled(false),
+            .deactivated(0),
+        ])
+        #expect(await pipeline.activeSlots.isEmpty)
+        #expect(!(await pipeline.isSystemAudioActive))
+    }
+
+    private static func pipeline(
+        host: FakeSlotHost,
+        audioFactory: FixtureAudioSessionFactory
+    ) -> LiveShareCapturePipeline {
+        LiveShareCapturePipeline(
+            host: host,
+            sessionFactory: { _, frameConsumer, _ in
+                FixtureCaptureSession(frameConsumer: frameConsumer)
+            },
+            audioSessionFactory: { sampleConsumer, eventConsumer in
+                audioFactory.make(
+                    sampleConsumer: sampleConsumer,
+                    eventConsumer: eventConsumer
+                )
+            }
+        )
+    }
+
+    private static func audioRequest(
+        identifier: UUID = UUID(),
+        bundleIdentifiers: Set<String> = ["com.example.browser"]
+    ) -> CaptureAudioSessionRequest {
+        CaptureAudioSessionRequest(
+            identifier: identifier,
+            scope: .applications(
+                displayID: 42,
+                bundleIdentifiers: bundleIdentifiers
+            )
+        )
+    }
+
     private static func descriptor() -> LiveShareCaptureDescriptor {
         let source = LiveShareWindowSource(
             id: LiveShareWindowID(rawValue: 42),
@@ -313,6 +462,8 @@ private final class FakeSlotHost: LiveShareVideoSlotHosting, @unchecked Sendable
         case sent(Int)
         case metadataUpdated(slot: Int, width: Int, height: Int)
         case deactivated(Int)
+        case systemAudioEnabled(Bool)
+        case systemAudioSent
     }
 
     private let lock = NSLock()
@@ -401,10 +552,136 @@ private final class FakeSlotHost: LiveShareVideoSlotHosting, @unchecked Sendable
             storedTimeline.append(.deactivated(slot))
         }
     }
+
+    func setSystemAudioEnabled(_ enabled: Bool) {
+        lock.withLock {
+            storedTimeline.append(.systemAudioEnabled(enabled))
+        }
+    }
+
+    func send(_ sample: BorrowedCaptureAudioSample) -> Bool {
+        lock.withLock {
+            storedTimeline.append(.systemAudioSent)
+            return true
+        }
+    }
+}
+
+private final class FixtureAudioSessionFactory: @unchecked Sendable {
+    private let lock = NSLock()
+    private let startupError: FixtureCaptureError?
+    private let runsBeforeStartupFailure: Bool
+    private let deliversStartupSample: Bool
+    private var storedSessions: [FixtureAudioSession] = []
+
+    init(
+        startupError: FixtureCaptureError? = nil,
+        runsBeforeStartupFailure: Bool = false,
+        deliversStartupSample: Bool = false
+    ) {
+        self.startupError = startupError
+        self.runsBeforeStartupFailure = runsBeforeStartupFailure
+        self.deliversStartupSample = deliversStartupSample
+    }
+
+    var creationCount: Int {
+        lock.withLock { storedSessions.count }
+    }
+
+    var latestSession: FixtureAudioSession? {
+        lock.withLock { storedSessions.last }
+    }
+
+    func make(
+        sampleConsumer: @escaping ScreenCaptureAudioSession.SampleConsumer,
+        eventConsumer: @escaping ScreenCaptureAudioSession.EventConsumer
+    ) -> any LiveShareAudioCaptureSession {
+        let session = FixtureAudioSession(
+            sampleConsumer: sampleConsumer,
+            eventConsumer: eventConsumer,
+            startupError: startupError,
+            runsBeforeStartupFailure: runsBeforeStartupFailure,
+            deliversStartupSample: deliversStartupSample
+        )
+        lock.withLock { storedSessions.append(session) }
+        return session
+    }
+}
+
+private final class FixtureAudioSession: LiveShareAudioCaptureSession, @unchecked Sendable {
+    private let lock = NSLock()
+    private let sampleConsumer: ScreenCaptureAudioSession.SampleConsumer
+    private let eventConsumer: ScreenCaptureAudioSession.EventConsumer
+    private let startupError: FixtureCaptureError?
+    private let runsBeforeStartupFailure: Bool
+    private let deliversStartupSample: Bool
+    private var running = false
+    private var storedStartRequests: [CaptureAudioSessionRequest] = []
+    private var storedUpdateRequests: [CaptureAudioSessionRequest] = []
+    private var storedStopCount = 0
+
+    init(
+        sampleConsumer: @escaping ScreenCaptureAudioSession.SampleConsumer,
+        eventConsumer: @escaping ScreenCaptureAudioSession.EventConsumer,
+        startupError: FixtureCaptureError?,
+        runsBeforeStartupFailure: Bool,
+        deliversStartupSample: Bool
+    ) {
+        self.sampleConsumer = sampleConsumer
+        self.eventConsumer = eventConsumer
+        self.startupError = startupError
+        self.runsBeforeStartupFailure = runsBeforeStartupFailure
+        self.deliversStartupSample = deliversStartupSample
+    }
+
+    var isRunning: Bool {
+        lock.withLock { running }
+    }
+
+    var startRequests: [CaptureAudioSessionRequest] {
+        lock.withLock { storedStartRequests }
+    }
+
+    var updateRequests: [CaptureAudioSessionRequest] {
+        lock.withLock { storedUpdateRequests }
+    }
+
+    var stopCount: Int {
+        lock.withLock { storedStopCount }
+    }
+
+    func start(_ request: CaptureAudioSessionRequest) async throws {
+        lock.withLock {
+            storedStartRequests.append(request)
+            if startupError == nil || runsBeforeStartupFailure {
+                running = true
+            }
+        }
+        if let startupError { throw startupError }
+        if deliversStartupSample {
+            sampleConsumer(BorrowedCaptureAudioSample(
+                sampleBuffer: try makeFixtureAudioSample()
+            ))
+        }
+        eventConsumer(.started(request.identifier))
+    }
+
+    func stop() async throws {
+        lock.withLock {
+            running = false
+            storedStopCount += 1
+        }
+    }
+
+    func update(_ request: CaptureAudioSessionRequest) async throws {
+        lock.withLock { storedUpdateRequests.append(request) }
+        eventConsumer(.updated(request.identifier))
+    }
 }
 
 private enum FixtureCaptureError: Error, Equatable {
     case startFailed
+    case audioStartFailed
     case metadataUpdateFailed
 }
 
@@ -572,4 +849,76 @@ private func makeFixtureFrame() throws -> BorrowedCaptureVideoFrame {
         pixelBuffer: pixelBuffer,
         presentationTime: presentationTime
     )
+}
+
+private enum FixtureAudioError: Error {
+    case blockBuffer(OSStatus)
+    case format(OSStatus)
+    case sample(OSStatus)
+}
+
+private func makeFixtureAudioSample() throws -> CMSampleBuffer {
+    let frameCount = 16
+    let channelCount: UInt32 = 2
+    let bytesPerFrame = channelCount * UInt32(MemoryLayout<Float>.size)
+    let byteCount = frameCount * Int(bytesPerFrame)
+    var blockBuffer: CMBlockBuffer?
+    let blockStatus = CMBlockBufferCreateWithMemoryBlock(
+        allocator: kCFAllocatorDefault,
+        memoryBlock: nil,
+        blockLength: byteCount,
+        blockAllocator: kCFAllocatorDefault,
+        customBlockSource: nil,
+        offsetToData: 0,
+        dataLength: byteCount,
+        flags: 0,
+        blockBufferOut: &blockBuffer
+    )
+    guard blockStatus == kCMBlockBufferNoErr, let blockBuffer else {
+        throw FixtureAudioError.blockBuffer(blockStatus)
+    }
+
+    var description = AudioStreamBasicDescription(
+        mSampleRate: 48_000,
+        mFormatID: kAudioFormatLinearPCM,
+        mFormatFlags: kAudioFormatFlagIsFloat | kAudioFormatFlagIsPacked,
+        mBytesPerPacket: bytesPerFrame,
+        mFramesPerPacket: 1,
+        mBytesPerFrame: bytesPerFrame,
+        mChannelsPerFrame: channelCount,
+        mBitsPerChannel: 32,
+        mReserved: 0
+    )
+    var formatDescription: CMAudioFormatDescription?
+    let formatStatus = CMAudioFormatDescriptionCreate(
+        allocator: kCFAllocatorDefault,
+        asbd: &description,
+        layoutSize: 0,
+        layout: nil,
+        magicCookieSize: 0,
+        magicCookie: nil,
+        extensions: nil,
+        formatDescriptionOut: &formatDescription
+    )
+    guard formatStatus == noErr, let formatDescription else {
+        throw FixtureAudioError.format(formatStatus)
+    }
+
+    var sampleBuffer: CMSampleBuffer?
+    let sampleStatus = CMAudioSampleBufferCreateWithPacketDescriptions(
+        allocator: kCFAllocatorDefault,
+        dataBuffer: blockBuffer,
+        dataReady: true,
+        makeDataReadyCallback: nil,
+        refcon: nil,
+        formatDescription: formatDescription,
+        sampleCount: frameCount,
+        presentationTimeStamp: .zero,
+        packetDescriptions: nil,
+        sampleBufferOut: &sampleBuffer
+    )
+    guard sampleStatus == noErr, let sampleBuffer else {
+        throw FixtureAudioError.sample(sampleStatus)
+    }
+    return sampleBuffer
 }

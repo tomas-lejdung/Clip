@@ -31,9 +31,9 @@
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Clip uses the microphone when you choose to include your voice in a recording.</string>
 	<key>NSAudioCaptureUsageDescription</key>
-	<string>Clip records system audio only when you turn on System Audio for a screen recording.</string>
+	<string>Clip captures system audio only when you turn on System Audio for a recording or Live Share.</string>
 	<key>NSScreenCaptureUsageDescription</key>
-	<string>Clip records the area or display that you choose so you can share a screen clip.</string>
+	<string>Clip captures only the windows, area, or display you choose for recordings and Live Share.</string>
 	<key>NSPrincipalClass</key>
 	<string>NSApplication</string>
 	<key>SUEnableAutomaticChecks</key>

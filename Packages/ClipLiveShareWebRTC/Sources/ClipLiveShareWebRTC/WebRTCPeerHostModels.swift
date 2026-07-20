@@ -249,9 +249,10 @@ public extension WebRTCICECandidate {
                 maximumBytes: limits.maximumICECandidatePayloadBytes
             )
         }
-        // Four video m-lines plus the reliable data-channel m-line are the only
-        // negotiated sections in Clip's GoPeep-compatible offer.
-        guard (0 ... Int32(WebRTCRuntimeIdentity.maximumVideoSlots)).contains(sdpMLineIndex) else {
+        // Four video m-lines, system audio, and the reliable data-channel
+        // m-line are the only negotiated sections in Clip's offer.
+        guard (0 ... Int32(WebRTCRuntimeIdentity.maximumMediaLineIndex))
+            .contains(sdpMLineIndex) else {
             throw WebRTCICECandidateValidationError.invalidMediaLineIndex(sdpMLineIndex)
         }
         if let sdpMid {
@@ -329,6 +330,28 @@ public struct WebRTCStreamSlotSnapshot: Equatable, Sendable, Identifiable {
         self.streamID = streamID
         self.metadata = metadata
         self.captureGeometry = captureGeometry
+    }
+}
+
+public struct WebRTCSystemAudioSnapshot: Equatable, Sendable {
+    public let isEnabled: Bool
+    public let isDeviceRecording: Bool
+    public let queuedFrameCount: UInt
+    public let acceptedFrameCount: UInt64
+    public let droppedFrameCount: UInt64
+
+    public init(
+        isEnabled: Bool,
+        isDeviceRecording: Bool,
+        queuedFrameCount: UInt,
+        acceptedFrameCount: UInt64,
+        droppedFrameCount: UInt64
+    ) {
+        self.isEnabled = isEnabled
+        self.isDeviceRecording = isDeviceRecording
+        self.queuedFrameCount = queuedFrameCount
+        self.acceptedFrameCount = acceptedFrameCount
+        self.droppedFrameCount = droppedFrameCount
     }
 }
 
@@ -627,6 +650,9 @@ public enum WebRTCPeerHostError: Error, Equatable, LocalizedError, Sendable {
     case peerConnectionCreationFailed(String)
     case dataChannelCreationFailed(String)
     case trackCreationFailed(slot: Int)
+    case systemAudioTrackCreationFailed
+    case systemAudioCodecUnavailable
+    case systemAudioCodecPreferenceFailed(viewerID: String, message: String)
     case h264Unavailable
     case h264PreferenceFailed(slot: Int, message: String)
     case videoCodecUnavailable(WebRTCVideoCodec)
@@ -678,6 +704,12 @@ public enum WebRTCPeerHostError: Error, Equatable, LocalizedError, Sendable {
             "The control data channel could not be created: \(message)"
         case .trackCreationFailed(let slot):
             "The video track for slot \(slot) could not be created."
+        case .systemAudioTrackCreationFailed:
+            "The system-audio track could not be created."
+        case .systemAudioCodecUnavailable:
+            "The WebRTC runtime does not expose an Opus audio sender codec."
+        case let .systemAudioCodecPreferenceFailed(viewerID, message):
+            "Opus could not be selected for viewer \(viewerID): \(message)"
         case .h264Unavailable:
             "The WebRTC runtime does not expose an H.264 sender codec."
         case .h264PreferenceFailed(let slot, let message):

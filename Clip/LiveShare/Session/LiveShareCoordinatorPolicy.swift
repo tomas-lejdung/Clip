@@ -148,6 +148,51 @@ enum LiveShareCoordinatorPolicy {
         }
     }
 
+    /// Builds the one mixed system-audio capture request for the current Live
+    /// Share selection. Window audio is application-scoped in ScreenCaptureKit,
+    /// so several shared windows from one application deliberately contribute
+    /// only one bundle identifier. The caller owns the request identifier so a
+    /// source refresh can update an existing audio session without changing its
+    /// logical identity.
+    static func captureAudioRequest(
+        systemAudioEnabled: Bool,
+        sources: LiveShareSourceSelection,
+        knownWindows: [LiveShareWindowID: ShareableCaptureWindow],
+        filterDisplayID: CGDirectDisplayID,
+        clipBundleIdentifier: String,
+        requestIdentifier: UUID
+    ) -> CaptureAudioSessionRequest? {
+        guard systemAudioEnabled else { return nil }
+
+        if let fullscreen = sources.fullscreen {
+            return CaptureAudioSessionRequest(
+                identifier: requestIdentifier,
+                scope: .system(
+                    displayID: fullscreen.id.rawValue,
+                    excludedBundleIdentifier: clipBundleIdentifier
+                )
+            )
+        }
+
+        let bundleIdentifiers: Set<String> = Set(
+            sources.windows.compactMap { source in
+                guard let window = knownWindows[source.id] else { return nil }
+                let identifier = window.bundleIdentifier
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                return identifier.isEmpty ? nil : identifier
+            }
+        )
+        guard !bundleIdentifiers.isEmpty else { return nil }
+
+        return CaptureAudioSessionRequest(
+            identifier: requestIdentifier,
+            scope: .applications(
+                displayID: filterDisplayID,
+                bundleIdentifiers: bundleIdentifiers
+            )
+        )
+    }
+
     static func senderPolicy(
         for settings: LiveShareSettings,
         maximumBitrateBps: Int? = nil,

@@ -1,5 +1,6 @@
 import ClipCapture
 import ClipLiveShare
+import ClipLiveShareWebRTCAudioBridge
 import Foundation
 @preconcurrency import WebRTC
 
@@ -48,6 +49,8 @@ public final class WebRTCPeerHost: LiveShareVideoSlotHosting, @unchecked Sendabl
         let connection: RTCPeerConnection
         let delegate: WebRTCPeerDelegate
         let controlChannel: RTCDataChannel
+        let systemAudioSender: RTCRtpSender
+        let systemAudioTransceiver: RTCRtpTransceiver
         let sendersBySlot: [Int: RTCRtpSender]
         let transceiversBySlot: [Int: RTCRtpTransceiver]
         var isClosing = false
@@ -69,6 +72,8 @@ public final class WebRTCPeerHost: LiveShareVideoSlotHosting, @unchecked Sendabl
             connection: RTCPeerConnection,
             delegate: WebRTCPeerDelegate,
             controlChannel: RTCDataChannel,
+            systemAudioSender: RTCRtpSender,
+            systemAudioTransceiver: RTCRtpTransceiver,
             sendersBySlot: [Int: RTCRtpSender],
             transceiversBySlot: [Int: RTCRtpTransceiver]
         ) {
@@ -76,6 +81,8 @@ public final class WebRTCPeerHost: LiveShareVideoSlotHosting, @unchecked Sendabl
             self.connection = connection
             self.delegate = delegate
             self.controlChannel = controlChannel
+            self.systemAudioSender = systemAudioSender
+            self.systemAudioTransceiver = systemAudioTransceiver
             self.sendersBySlot = sendersBySlot
             self.transceiversBySlot = transceiversBySlot
         }
@@ -141,8 +148,11 @@ public final class WebRTCPeerHost: LiveShareVideoSlotHosting, @unchecked Sendabl
     private let queueKey = DispatchSpecificKey<UInt8>()
     private let sslLease: WebRTCSSLRuntimeLease
     private let h264EncoderFactory: WebRTCH264EncoderFactory
+    private let systemAudioDevice: ClipLiveShareWebRTCSystemAudioDevice
     private let factory: RTCPeerConnectionFactory
     private let videoCodecCapabilities: [RTCRtpCodecCapability]
+    private let audioCodecCapabilities: [RTCRtpCodecCapability]
+    private let systemAudioTrack: RTCAudioTrack
     private let slots: [Slot]
     private var peers: [String: PeerContext] = [:]
     private var previousOutboundCounters: [
@@ -151,6 +161,7 @@ public final class WebRTCPeerHost: LiveShareVideoSlotHosting, @unchecked Sendabl
     private var previousH264SubmissionBackpressureDrops: UInt64?
     private var activeVideoCodec: WebRTCVideoCodec
     private var activeVideoEncodingMode: LiveShareEncodingMode
+    private var systemAudioEnabled = false
     private var pendingVideoCodecSwitch: PendingVideoCodecSwitch?
     private var pendingVideoCodecRestoration: PendingVideoCodecRestoration?
     private var isClosed = false
@@ -181,13 +192,18 @@ public final class WebRTCPeerHost: LiveShareVideoSlotHosting, @unchecked Sendabl
             )
         )
         h264EncoderFactory = nativeH264Factory
-        let peerFactory = RTCPeerConnectionFactory(
-            encoderFactory: WebRTCVideoEncoderFactory(
-                preferredCodec: configuration.videoCodec,
-                h264Factory: nativeH264Factory
-            ),
-            decoderFactory: RTCDefaultVideoDecoderFactory()
+        let audioDevice = ClipLiveShareWebRTCSystemAudioDevice()
+        let videoEncoderFactory = WebRTCVideoEncoderFactory(
+            preferredCodec: configuration.videoCodec,
+            h264Factory: nativeH264Factory
         )
+        let videoDecoderFactory = RTCDefaultVideoDecoderFactory()
+        let peerFactory = ClipLiveShareWebRTCCreatePeerConnectionFactory(
+            videoEncoderFactory,
+            videoDecoderFactory,
+            audioDevice
+        )
+        systemAudioDevice = audioDevice
         factory = peerFactory
         let codecs = peerFactory
             .rtpSenderCapabilities(forKind: kRTCMediaStreamTrackKindVideo)
@@ -198,6 +214,32 @@ public final class WebRTCPeerHost: LiveShareVideoSlotHosting, @unchecked Sendabl
         }) else {
             throw WebRTCPeerHostError.videoCodecUnavailable(configuration.videoCodec)
         }
+        let audioCodecs = peerFactory
+            .rtpSenderCapabilities(forKind: kRTCMediaStreamTrackKindAudio)
+            .codecs
+        audioCodecCapabilities = audioCodecs
+        guard audioCodecs.contains(where: {
+            $0.name.caseInsensitiveCompare("opus") == .orderedSame
+        }) else {
+            throw WebRTCPeerHostError.systemAudioCodecUnavailable
+        }
+        let audioConstraints = RTCMediaConstraints(
+            mandatoryConstraints: [
+                "googAutoGainControl": kRTCMediaConstraintsValueFalse,
+                "googEchoCancellation": kRTCMediaConstraintsValueFalse,
+                "googHighpassFilter": kRTCMediaConstraintsValueFalse,
+                "googNoiseSuppression": kRTCMediaConstraintsValueFalse,
+            ],
+            optionalConstraints: nil
+        )
+        let audioSource = peerFactory.audioSource(with: audioConstraints)
+        let audioTrack = peerFactory.audioTrack(
+            with: audioSource,
+            trackId: WebRTCRuntimeIdentity.systemAudioTrackID
+        )
+        audioTrack.isEnabled = false
+        systemAudioTrack = audioTrack
+        audioDevice.setInputEnabled(false)
         slots = (0 ..< WebRTCRuntimeIdentity.maximumVideoSlots).map {
             Slot(index: $0, factory: peerFactory)
         }
@@ -253,6 +295,34 @@ public final class WebRTCPeerHost: LiveShareVideoSlotHosting, @unchecked Sendabl
 
     public var slotSnapshots: [WebRTCStreamSlotSnapshot] {
         onQueue { slots.map(\.snapshot) }
+    }
+
+    public var isSystemAudioEnabled: Bool {
+        onQueue { systemAudioEnabled }
+    }
+
+    public var systemAudioSnapshot: WebRTCSystemAudioSnapshot {
+        onQueue {
+            WebRTCSystemAudioSnapshot(
+                isEnabled: systemAudioEnabled,
+                isDeviceRecording: systemAudioDevice.isRecording,
+                queuedFrameCount: systemAudioDevice.queuedFrameCount,
+                acceptedFrameCount: systemAudioDevice.acceptedFrameCount,
+                droppedFrameCount: systemAudioDevice.droppedFrameCount
+            )
+        }
+    }
+
+    /// Enables the pre-negotiated Opus sender without replacing tracks or
+    /// renegotiating active peers. Disabling also removes any queued PCM so a
+    /// later re-enable cannot replay stale desktop audio.
+    public func setSystemAudioEnabled(_ enabled: Bool) {
+        onQueue {
+            guard !isClosed else { return }
+            systemAudioEnabled = enabled
+            systemAudioTrack.isEnabled = enabled
+            systemAudioDevice.setInputEnabled(enabled)
+        }
     }
 
     /// Applies a new quality envelope immediately to every current sender and
@@ -630,7 +700,20 @@ public final class WebRTCPeerHost: LiveShareVideoSlotHosting, @unchecked Sendabl
                 slot.track.isEnabled = false
                 slot.frameSource.clearLatestFrame()
             }
+            systemAudioEnabled = false
+            systemAudioTrack.isEnabled = false
+            systemAudioDevice.setInputEnabled(false)
         }
+    }
+
+    /// Copies one borrowed ScreenCaptureKit LPCM callback into the bounded
+    /// WebRTC audio device queue. Conversion is synchronous so the borrowed
+    /// CMSampleBuffer never escapes its capture callback.
+    @discardableResult
+    public func send(_ sample: BorrowedCaptureAudioSample) -> Bool {
+        let acceptsAudio = onQueue { !isClosed && systemAudioEnabled }
+        guard acceptsAudio else { return false }
+        return systemAudioDevice.enqueue(sample.sampleBuffer)
     }
 
     @discardableResult
@@ -965,6 +1048,22 @@ public final class WebRTCPeerHost: LiveShareVideoSlotHosting, @unchecked Sendabl
                 transceivers[slot.index] = transceiver
             }
 
+            let audioTransceiverConfiguration = RTCRtpTransceiverInit()
+            audioTransceiverConfiguration.direction = .sendOnly
+            audioTransceiverConfiguration.streamIds = [
+                WebRTCRuntimeIdentity.systemAudioStreamID,
+            ]
+            guard let audioTransceiver = connection.addTransceiver(
+                with: systemAudioTrack,
+                init: audioTransceiverConfiguration
+            ) else {
+                throw WebRTCPeerHostError.systemAudioTrackCreationFailed
+            }
+            try setSystemAudioCodecPreference(
+                on: audioTransceiver,
+                viewerID: viewerID
+            )
+
             let dataConfiguration = RTCDataChannelConfiguration()
             dataConfiguration.isOrdered = true
             dataConfiguration.maxPacketLifeTime = -1
@@ -983,6 +1082,8 @@ public final class WebRTCPeerHost: LiveShareVideoSlotHosting, @unchecked Sendabl
                 connection: connection,
                 delegate: delegate,
                 controlChannel: dataChannel,
+                systemAudioSender: audioTransceiver.sender,
+                systemAudioTransceiver: audioTransceiver,
                 sendersBySlot: senders,
                 transceiversBySlot: transceivers
             )
@@ -1236,6 +1337,26 @@ public final class WebRTCPeerHost: LiveShareVideoSlotHosting, @unchecked Sendabl
                 codec: codec,
                 viewerID: viewerID,
                 slot: slot,
+                message: error.localizedDescription
+            )
+        }
+    }
+
+    private func setSystemAudioCodecPreference(
+        on transceiver: RTCRtpTransceiver,
+        viewerID: String
+    ) throws {
+        let opus = audioCodecCapabilities.filter {
+            $0.name.caseInsensitiveCompare("opus") == .orderedSame
+        }
+        guard !opus.isEmpty else {
+            throw WebRTCPeerHostError.systemAudioCodecUnavailable
+        }
+        do {
+            try transceiver.setCodecPreferences(opus, error: ())
+        } catch {
+            throw WebRTCPeerHostError.systemAudioCodecPreferenceFailed(
+                viewerID: viewerID,
                 message: error.localizedDescription
             )
         }

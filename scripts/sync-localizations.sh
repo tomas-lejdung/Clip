@@ -10,6 +10,7 @@ CORE_MODULES="$ROOT/Packages/ClipCore/.build/arm64-apple-macosx/debug/Modules"
 MEDIA_MODULES="$ROOT/Packages/ClipMedia/.build/arm64-apple-macosx/debug/Modules"
 LIVE_SHARE_BUILD="$ROOT/Packages/ClipLiveShareWebRTC/.build/arm64-apple-macosx/debug"
 LIVE_SHARE_MODULES="$LIVE_SHARE_BUILD/Modules"
+LIVE_SHARE_AUDIO_BRIDGE_MODULE_MAP="$LIVE_SHARE_BUILD/ClipLiveShareWebRTCAudioBridge.build/module.modulemap"
 WEBRTC_FRAMEWORKS="$ROOT/Packages/ClipLiveShareWebRTC/.build/artifacts/webrtc/WebRTC/WebRTC.xcframework/macos-x86_64_arm64"
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/clip-localization.XXXXXX")"
 STRINGS_DATA="$WORK/stringsdata"
@@ -48,6 +49,7 @@ xcrun swiftc \
   -I "$CORE_MODULES" \
   -I "$MEDIA_MODULES" \
   -I "$LIVE_SHARE_MODULES" \
+  -Xcc "-fmodule-map-file=$LIVE_SHARE_AUDIO_BRIDGE_MODULE_MAP" \
   -F "$WEBRTC_FRAMEWORKS" \
   "${SOURCES[@]}"
 

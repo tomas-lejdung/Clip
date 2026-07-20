@@ -38,6 +38,149 @@ struct LiveShareCoordinatorPolicyTests {
         #expect(LiveShareCoordinatorPolicy.sourceID(from: "unknown:7") == nil)
     }
 
+    @Test("fullscreen system audio uses its display and excludes Clip")
+    func fullscreenSystemAudioRequest() throws {
+        let identifier = try #require(UUID(uuidString: "74B3454B-617D-4605-BD56-34D71A92A659"))
+        let sources = try LiveShareSourceSelection(fullscreen: LiveShareDisplaySource(
+            id: LiveShareDisplayID(rawValue: 42),
+            displayName: "Studio Display"
+        ))
+
+        let request = try #require(LiveShareCoordinatorPolicy.captureAudioRequest(
+            systemAudioEnabled: true,
+            sources: sources,
+            knownWindows: [:],
+            filterDisplayID: 99,
+            clipBundleIdentifier: "com.example.Clip",
+            requestIdentifier: identifier
+        ))
+
+        #expect(request.identifier == identifier)
+        #expect(request.scope == .system(
+            displayID: 42,
+            excludedBundleIdentifier: "com.example.Clip"
+        ))
+        #expect(request.configuration.excludesCurrentProcessAudio)
+    }
+
+    @Test("window system audio resolves, trims, and deduplicates owning applications")
+    func windowSystemAudioRequest() throws {
+        let identifier = try #require(UUID(uuidString: "033B5F54-D40B-4A49-B4D4-77356F05977B"))
+        let sources = try LiveShareSourceSelection(windows: [
+            LiveShareWindowSource(
+                id: LiveShareWindowID(rawValue: 10),
+                windowName: "First",
+                appName: "Browser"
+            ),
+            LiveShareWindowSource(
+                id: LiveShareWindowID(rawValue: 11),
+                windowName: "Second",
+                appName: "Browser"
+            ),
+            LiveShareWindowSource(
+                id: LiveShareWindowID(rawValue: 12),
+                windowName: "Blank",
+                appName: "Unknown"
+            ),
+            LiveShareWindowSource(
+                id: LiveShareWindowID(rawValue: 13),
+                windowName: "Unresolved",
+                appName: "Missing"
+            ),
+        ])
+        let knownWindows = [
+            LiveShareWindowID(rawValue: 10): makeCaptureWindow(
+                id: 10,
+                title: "First",
+                applicationName: "Browser",
+                bundleIdentifier: " com.example.browser "
+            ),
+            LiveShareWindowID(rawValue: 11): makeCaptureWindow(
+                id: 11,
+                title: "Second",
+                applicationName: "Browser",
+                bundleIdentifier: "com.example.browser"
+            ),
+            LiveShareWindowID(rawValue: 12): makeCaptureWindow(
+                id: 12,
+                title: "Blank",
+                applicationName: "Unknown",
+                bundleIdentifier: " \n "
+            ),
+        ]
+
+        let request = try #require(LiveShareCoordinatorPolicy.captureAudioRequest(
+            systemAudioEnabled: true,
+            sources: sources,
+            knownWindows: knownWindows,
+            filterDisplayID: 7,
+            clipBundleIdentifier: "com.example.Clip",
+            requestIdentifier: identifier
+        ))
+
+        #expect(request.identifier == identifier)
+        #expect(request.scope == .applications(
+            displayID: 7,
+            bundleIdentifiers: ["com.example.browser"]
+        ))
+    }
+
+    @Test("system audio request is absent when disabled or has no resolvable source")
+    func absentSystemAudioRequest() throws {
+        let identifier = UUID()
+        let fullscreen = try LiveShareSourceSelection(fullscreen: LiveShareDisplaySource(
+            id: LiveShareDisplayID(rawValue: 42),
+            displayName: "Studio Display"
+        ))
+        #expect(LiveShareCoordinatorPolicy.captureAudioRequest(
+            systemAudioEnabled: false,
+            sources: fullscreen,
+            knownWindows: [:],
+            filterDisplayID: 7,
+            clipBundleIdentifier: "com.example.Clip",
+            requestIdentifier: identifier
+        ) == nil)
+        #expect(LiveShareCoordinatorPolicy.captureAudioRequest(
+            systemAudioEnabled: true,
+            sources: .empty,
+            knownWindows: [:],
+            filterDisplayID: 7,
+            clipBundleIdentifier: "com.example.Clip",
+            requestIdentifier: identifier
+        ) == nil)
+
+        let unresolvedWindows = try LiveShareSourceSelection(windows: [
+            LiveShareWindowSource(
+                id: LiveShareWindowID(rawValue: 404),
+                windowName: "Missing",
+                appName: "Missing"
+            ),
+        ])
+        #expect(LiveShareCoordinatorPolicy.captureAudioRequest(
+            systemAudioEnabled: true,
+            sources: unresolvedWindows,
+            knownWindows: [:],
+            filterDisplayID: 7,
+            clipBundleIdentifier: "com.example.Clip",
+            requestIdentifier: identifier
+        ) == nil)
+        #expect(LiveShareCoordinatorPolicy.captureAudioRequest(
+            systemAudioEnabled: true,
+            sources: unresolvedWindows,
+            knownWindows: [
+                LiveShareWindowID(rawValue: 404): makeCaptureWindow(
+                    id: 404,
+                    title: "Missing",
+                    applicationName: "Missing",
+                    bundleIdentifier: " \t "
+                ),
+            ],
+            filterDisplayID: 7,
+            clipBundleIdentifier: "com.example.Clip",
+            requestIdentifier: identifier
+        ) == nil)
+    }
+
     @Test("sender policy keeps quality, cadence, and degradation independent")
     func senderPolicy() {
         let quality = LiveShareCoordinatorPolicy.senderPolicy(for: LiveShareSettings(
@@ -814,14 +957,16 @@ struct LiveShareCoordinatorPolicyTests {
 private func makeCaptureWindow(
     id: UInt32,
     title: String,
-    applicationName: String
+    applicationName: String,
+    bundleIdentifier: String? = nil
 ) -> ShareableCaptureWindow {
     ShareableCaptureWindow(
         id: id,
         frame: CGRect(x: 20, y: 40, width: 800, height: 600),
         title: title,
         applicationName: applicationName,
-        bundleIdentifier: "com.example.\(applicationName.lowercased())",
+        bundleIdentifier: bundleIdentifier
+            ?? "com.example.\(applicationName.lowercased())",
         processID: pid_t(id),
         pixelWidth: 1_600,
         pixelHeight: 1_200

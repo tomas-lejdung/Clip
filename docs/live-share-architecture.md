@@ -13,11 +13,11 @@ The existing recording, Preview, History, export, DMG, and Sparkle update behavi
 
 The branch now contains the native vertical slice: room reservation and
 signaling, one peer per viewer, four stable video tracks, the reliable control
-DataChannel, transient ScreenCaptureKit pipelines, the Live Share popover,
-focused-window control, fixed HUD, source switching, settings, reconnect, and
-bounded viewer/negotiation resources. All feature-specific application code is
-under `Clip/LiveShare`; protocol/domain and framework boundaries live in the
-three dedicated packages described below.
+DataChannel, one stable Opus system-audio send track, transient ScreenCaptureKit
+pipelines, the Live Share popover, focused-window control, fixed HUD, source
+switching, settings, reconnect, and bounded viewer/negotiation resources. All
+feature-specific application code is under `Clip/LiveShare`; protocol/domain
+and framework boundaries live in the three dedicated packages described below.
 
 Automated acceptance uses the current local GoPeep server and its embedded
 viewer. An offscreen `WKWebView` has negotiated with Clip's native peer host,
@@ -48,6 +48,8 @@ Clip Live Share will:
 - provide a fixed top-right status HUD with four source dots, the connected-viewer count, and a Fullscreen toggle;
 - make Fullscreen and window sharing mutually exclusive: enabling Fullscreen stops every window stream before starting the primary-display stream;
 - preserve GoPeep's useful source, viewer, connection, quality, frame-rate, codec, password, focused-window prioritization, quality/performance, auto-share, and stream-stat information in a native Clip presentation;
+- optionally capture system audio, defaulting to Off with a persisted Live
+  Share-specific setting, and send it on one stable Opus WebRTC track;
 - use native Swift/AppKit/SwiftUI for Clip UI and ScreenCaptureKit for capture;
 - keep all feature-specific code under an obvious `LiveShare` boundary.
 
@@ -129,7 +131,26 @@ GoPeep preallocates four video-track slots. Clip's compatible milestone must pre
 
 ### Media behavior
 
-GoPeep captures BGRA frames with ScreenCaptureKit, encodes each active stream as VP8, VP9, or H.264, and writes the encoded output to a WebRTC video track. It has no audio path. The viewer uses a DataChannel for stream metadata, focus, size, and cursor control.
+The audited GoPeep host captures BGRA frames with ScreenCaptureKit, encodes each
+active stream as VP8, VP9, or H.264, and writes the encoded output to a WebRTC
+video track. Its host and viewer have no audio path. Clip extends only its native
+sharer: ScreenCaptureKit supplies 48 kHz stereo system audio to a native PCM
+bridge, which feeds one stable Opus WebRTC send track. The unchanged GoPeep
+signaling server remains media-opaque: it only routes the existing signaling
+messages, never receives the WebRTC audio media, and requires no audio-specific
+message. The current GoPeep browser viewer
+deliberately does not render or play the track; browser-audible support belongs
+to the planned viewer rewrite. The viewer continues to use a DataChannel for
+stream metadata, focus, size, and cursor control.
+
+System audio is optional, persisted independently from recording settings, and
+Off by default. Exact-window sharing derives a unique set of owning application
+bundle identifiers across every shared window and asks ScreenCaptureKit for
+application-scoped audio. It cannot isolate one window's audio from another
+window owned by the same application. Fullscreen captures system audio while
+excluding Clip. Live Share does not capture microphone
+audio, and multiple shared windows from one application never create duplicate
+audio sessions or tracks.
 
 The audited defaults and choices are:
 
@@ -222,6 +243,13 @@ Definitions:
 - `Stop Screen Share` ends the whole session: it tells connected viewers the sharer stopped, closes all peers and capture, clears the room secret/access code from memory, removes overlays, and restores the normal Clip popover.
 - Starting, stopping, source changes, reconnects, and stale callbacks are generation-identified and idempotent.
 - Live frames and signaling secrets are never written to History, the recording cache, preferences, logs, crash attachments, or analytics.
+- Live system-audio PCM and Opus media are transient and never enter History,
+  recording exports, logs, or preferences. Only the Off/On preference persists.
+- One room owns at most one system-audio capture session and one stable Opus send
+  track. Window-source changes update its deduplicated owning-application filter
+  in place; Fullscreen replaces that filter with system audio excluding Clip.
+- Disabling System Audio stops delivery and disables the stable track without
+  changing the room, video slots, peer identities, or signaling protocol.
 - A room admits at most eight pending or connected viewer peers. Admission is checked before allocating a peer connection's four video transceivers.
 - A viewer must answer an offer within 15 seconds or its native peer is closed and its capacity is released.
 - Each negotiation accepts at most 256 local and 256 remote ICE candidates per peer. Candidate strings are limited to 4,096 UTF-8 bytes and structurally validated before reaching libwebrtc; viewer identifiers are limited to 128 bytes. These ceilings are comfortably above ordinary browser ICE gathering while bounding hostile signaling input.
@@ -274,6 +302,7 @@ The popover preserves the GoPeep information without imitating a terminal layout
 - `Quality`: the eight GoPeep presets and bitrates listed above;
 - `Frame Rate`: 15, 30, or 60 FPS;
 - `Codec`: preferred H.264, VP8, VP9, or AV1, changeable during an active room;
+- `System Audio`: Off/On, persisted independently and defaulting to Off;
 - `Prioritize Focused Window`: Off/On;
 - `Mode`: Performance/Quality;
 - `Auto-share Focused Windows`: Off/On.
@@ -328,6 +357,15 @@ queue bound without mistaking a normal asynchronous hardware callback for a
 wedged encoder and repeatedly rebuilding its reference chain.
 
 Live Share settings have their own persisted namespace. They do not reuse recording's Crisp/Compact/Smallest export values because those are offline file-quality settings with different semantics.
+
+The System Audio toggle changes capture without renegotiating source ownership.
+For window sharing, its filter follows the unique applications that own active
+windows; for Fullscreen, it captures system audio and excludes Clip.
+The fixed 48 kHz stereo PCM path crosses a native audio-device bridge and feeds
+the same stable Opus send track for the life of each viewer peer. There is no
+microphone input. Since the current GoPeep browser viewer does not attach or
+play this track, the toggle currently establishes sender-side capability only;
+audible browser behavior is deferred to the viewer rewrite.
 
 ### Viewers and statistics
 
@@ -384,11 +422,12 @@ Clip/
 
 Packages/
   ClipCapture/
-    Sources/ClipCapture/        Reusable ScreenCaptureKit discovery, geometry and frames
+    Sources/ClipCapture/        Reusable ScreenCaptureKit discovery, video frames and system audio
   ClipLiveShare/
     Sources/ClipLiveShare/      Domain, v1 codec, settings and stable slot policy
   ClipLiveShareWebRTC/
-    Sources/ClipLiveShareWebRTC/ Signaling transport, peer host, capture adapter, stats
+    Sources/ClipLiveShareWebRTC/ Signaling transport, peer host, media adapters, stats
+    Sources/ClipLiveShareWebRTCAudioBridge/ Native PCM-to-WebRTC audio-device bridge
 ```
 
 The existing recording source tree was not reorganized in this networking
@@ -402,12 +441,12 @@ real-capture suites.
 
 | Boundary | Owns | Must not own |
 | --- | --- | --- |
-| `ClipCapture` | Reusable target discovery, stable source identity, pixel-aligned geometry, ScreenCaptureKit frame delivery, cursor option | AVAssetWriter, History, WebRTC peers, room state |
+| `ClipCapture` | Reusable target discovery, stable source identity, pixel-aligned geometry, ScreenCaptureKit video delivery, fixed-format system-audio capture, cursor option | AVAssetWriter, History, WebRTC peers, room state |
 | Recording | Countdown, pause/resume, VideoToolbox master encoding, MP4 muxing, Preview/History/export lifecycle | Signaling, viewers, live overlays |
 | Live Share domain | State machine, authoritative source slots, viewer states, commands, invariants | AppKit, ScreenCaptureKit, WebSocket concrete types |
 | Live Share signaling | Room reservation, reconnect policy, v1/v2 message codecs and transport | Capture or UI state mutation |
-| `ClipLiveShareWebRTC` | Framework adapters, peer connections, ICE, SDP, preferred-codec negotiation, four stable video tracks, DataChannel | Source selection policy or SwiftUI |
-| Live Share streaming | Mapping capture sources to four WebRTC slots, encoded settings, backpressure, stats | Menu/window presentation |
+| `ClipLiveShareWebRTC` | Framework adapters, peer connections, ICE, SDP, preferred-codec negotiation, four stable video tracks, one stable Opus audio track, native PCM bridge, DataChannel | Source selection policy or SwiftUI |
+| Live Share streaming | Mapping capture sources to four WebRTC video slots, deriving one application-scoped or Fullscreen system-audio filter, encoded settings, backpressure, stats | Menu/window presentation |
 | Live Share UI | State rendering and user intent dispatch | Network calls, direct capture mutation, secrets in logs |
 | Live Share overlay | Window tracking, native hit testing, display-safe positioning | Independent source truth; it dispatches domain commands |
 
@@ -418,13 +457,21 @@ never routes it through a file writer. Recording keeps its existing transient
 capture-to-VideoToolbox/AVAssetWriter pipeline. The two modes share neither a
 capture session nor file, cache, or lifecycle state.
 
+For Live Share audio, `ClipCapture` likewise exposes borrowed ScreenCaptureKit
+audio samples at 48 kHz stereo. `ClipLiveShareWebRTC` converts those samples to
+the custom native audio device's PCM contract, which supplies the stable Opus
+sender. Samples remain memory-only, and the GoPeep signaling protocol does not
+gain an audio message.
+
 ```mermaid
 flowchart TD
     UI["LiveShare UI + overlays"] --> D["LiveShare domain state machine"]
     D --> SIG["Signaling client"]
     D --> STR["Four-slot streaming coordinator"]
-    STR --> CAP["Shared ScreenCaptureKit frame source"]
+    STR --> CAP["Shared ScreenCaptureKit media source"]
     STR --> RTC["WebRTC peer manager"]
+    CAP --> AUD["48 kHz stereo system audio"]
+    AUD --> RTC
     SIG --> RTC
     RTC --> NET["GoPeep v1 service + browser viewer"]
     REC["Recording coordinator"] --> RCAP["Existing recording capture path"]
@@ -443,6 +490,8 @@ verifies:
 - license notices and binary size;
 - Swift 6 concurrency wrapper boundary;
 - exact H.264/VP8 and fallback-capable VP9/AV1 browser behavior;
+- stable Opus sender behavior through Clip's custom 48 kHz stereo audio-device
+  bridge;
 - sandbox and Hardened Runtime compatibility;
 - the exact pin during dependency resolution and a complete third-party notice;
 - that the former “no bundled media dependencies” invariant is intentionally
@@ -455,7 +504,10 @@ each answer against the allowed fallback chain, confirms the actual outbound
 codec from sender statistics, and verifies stream, focus, and cursor control
 messages. It proves local browser compatibility without pointer control. Remote
 Internet and configured-TURN traversal remain external network acceptance gates
-and must not be inferred from the loopback result.
+and must not be inferred from the loopback result. The native loopback suite
+also proves that the stable Opus track accepts large PCM capture batches. The
+current browser viewer does not render or play it, so this is sender-side
+transport evidence rather than an audible browser claim.
 
 No code should imply that AVFoundation or VideoToolbox alone can provide WebRTC
 signaling, ICE, DTLS-SRTP, SCTP DataChannels, congestion control, and browser
@@ -471,6 +523,11 @@ VideoToolbox where supported, and present decoded pixel buffers through Metal
 with bounded, newest-frame-first presentation. This removes browser playback,
 CSS scaling, and compositor uncertainty, and enables honest capture-to-display
 timing; it does not restore detail already discarded by the sender.
+
+That viewer milestone also owns audio rendering: attach the existing stable
+Opus receive track, use a bounded native output path, and verify A/V timing.
+Until then, the current GoPeep browser viewer deliberately remains silent even
+when a Clip host enables System Audio.
 
 Replacing WebRTC is not part of that first viewer milestone. ICE/STUN/TURN,
 DTLS-SRTP, congestion control, RTP loss recovery, codec negotiation, and browser
@@ -525,7 +582,9 @@ MLS is not needed for the current one-sharer star topology. Revisit [RFC 9420](h
 ## Explicit non-goals for the first compatible milestone
 
 - No simultaneous recording and Live Share.
-- No audio sharing; this matches the audited GoPeep transport.
+- No microphone sharing, per-window audio isolation, or multiple audio tracks.
+- No audible output in the current GoPeep browser viewer; its planned rewrite
+  will consume the host's stable Opus system-audio track.
 - No remote keyboard, mouse, clipboard, annotation, or control channel.
 - No camera, microphone conference, chat, or viewer-to-viewer media.
 - No more than four window streams and no multi-display Fullscreen share.
@@ -554,7 +613,9 @@ MLS is not needed for the current one-sharer star topology. Revisit [RFC 9420](h
   versus window state, reconnect and bounded retry, stale SDP/source
   generations, authoritative control replay, connected-viewer counting,
   signaling queue overflow, viewer admission/answer timeout, and bounded
-  validated ICE.
+  validated ICE. They also cover application/Fullscreen audio-filter policy and a
+  stable Opus sender accepting large 48 kHz stereo PCM batches through the
+  native audio-device bridge.
 - Deterministic app scenarios exercise the full popover for Ready, Live,
   Reconnecting, Failed, and scrolled-bottom content, plus the overlay/HUD
   presentation, without pointer control or privacy permission.
@@ -563,6 +624,10 @@ MLS is not needed for the current one-sharer star topology. Revisit [RFC 9420](h
 
 - Exercise the production coordinator with real ScreenCaptureKit content at 15
   and 30 FPS. Sixty FPS is an optional capability and is not a release blocker.
+- Exercise real application-scoped and Fullscreen system-audio capture through
+  the production coordinator, prove Clip is excluded, and decode the Opus track
+  with a native test receiver. Audible playback in the current GoPeep browser
+  viewer is intentionally deferred to its planned rewrite.
 - Share one through four real windows, dynamically add/remove and resize them,
   switch to and from Fullscreen, and stress rapid focus/auto-share transitions
   while retaining stable slot identity.

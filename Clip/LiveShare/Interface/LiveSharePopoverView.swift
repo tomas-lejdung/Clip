@@ -355,6 +355,22 @@ struct LiveSharePopoverView: View {
         VStack(alignment: .leading, spacing: 10) {
             sectionHeader(String(localized: "Stream Settings"), systemImage: "slider.horizontal.3")
 
+            Toggle(
+                isOn: Binding(
+                    get: { model.snapshot.settings.systemAudioEnabled },
+                    set: { model.setSystemAudioEnabled($0) }
+                )
+            ) {
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("System Audio")
+                    Text("Shares app audio, or system audio in Fullscreen.")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .disabled(!model.snapshot.settings.canChangeSystemAudio)
+            .accessibilityIdentifier("clip.liveShare.systemAudio")
+
             LiveShareSettingRow(title: String(localized: "Quality")) {
                 Picker(
                     String(localized: "Quality"),

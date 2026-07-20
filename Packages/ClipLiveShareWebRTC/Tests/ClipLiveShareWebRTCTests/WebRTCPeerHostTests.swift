@@ -1,3 +1,4 @@
+import ClipCapture
 import ClipLiveShare
 import Foundation
 import Testing
@@ -20,6 +21,22 @@ struct WebRTCPeerHostTests {
             "gopeep-stream-2", "gopeep-stream-3",
         ])
         #expect(host.slotSnapshots.allSatisfy { !$0.isActive })
+    }
+
+    @Test("valid audio before the first viewer is accepted without retaining backlog")
+    func preViewerSystemAudioDoesNotBacklog() throws {
+        let host = try WebRTCPeerHost(eventQueue: .global())
+        defer { host.close() }
+        host.setSystemAudioEnabled(true)
+
+        let frameCount = 960
+        #expect(host.send(BorrowedCaptureAudioSample(
+            sampleBuffer: try makeSystemAudioFixture(frameCount: frameCount)
+        )))
+        let snapshot = host.systemAudioSnapshot
+        #expect(snapshot.acceptedFrameCount == 0)
+        #expect(snapshot.droppedFrameCount == frameCount)
+        #expect(snapshot.queuedFrameCount == 0)
     }
 
     @Test("slot activation validates bounds and stable track identity")
@@ -72,6 +89,9 @@ struct WebRTCPeerHostTests {
         #expect(!offer.sdp.contains(" VP8/90000"))
         #expect(!offer.sdp.contains(" VP9/90000"))
         #expect(!offer.sdp.contains(" AV1/90000"))
+        #expect(Self.occurrences(of: "m=audio", in: offer.sdp) == 1)
+        #expect(offer.sdp.localizedCaseInsensitiveContains(" opus/48000/2"))
+        #expect(offer.sdp.contains("gopeep-system-audio audio0"))
         #expect(offer.sdp.contains("m=application"))
         #expect(host.viewerIDs == ["viewer-fixture"])
         await #expect(throws: WebRTCPeerHostError.duplicateViewer("viewer-fixture")) {
@@ -282,11 +302,16 @@ struct WebRTCPeerHostTests {
                 sdpMLineIndex: 0
             ).validate(resourceLimits: limits)
         }
-        #expect(throws: WebRTCICECandidateValidationError.invalidMediaLineIndex(5)) {
+        try WebRTCICECandidate(
+            candidate: "candidate:3 1 udp 1 192.0.2.1 41001 typ host",
+            sdpMid: "5",
+            sdpMLineIndex: 5
+        ).validate(resourceLimits: limits)
+        #expect(throws: WebRTCICECandidateValidationError.invalidMediaLineIndex(6)) {
             try WebRTCICECandidate(
                 candidate: "candidate:1 1 udp 1 192.0.2.1 41000 typ host",
-                sdpMid: "5",
-                sdpMLineIndex: 5
+                sdpMid: "6",
+                sdpMLineIndex: 6
             ).validate(resourceLimits: limits)
         }
         #expect(throws: WebRTCICECandidateValidationError.malformedCandidate) {

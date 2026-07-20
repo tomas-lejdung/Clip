@@ -6,10 +6,11 @@ Clip is a native Apple-Silicon macOS menu-bar recorder for short screen clips. I
 
 Recordings remain local: Clip has no account, cloud upload, analytics, or AI
 processing. Live Share is a separate, explicit network mode that sends transient
-screen frames to browser viewers over WebRTC through the GoPeep signaling
-service; it never writes those frames to History. See [spec.md](spec.md) for the
-product contract, [ARCHITECTURE.md](ARCHITECTURE.md) for recording boundaries,
-and [docs/live-share-architecture.md](docs/live-share-architecture.md) for the
+screen frames and optional system audio to viewers over WebRTC through the
+unchanged GoPeep signaling service; it never writes that media to History. See
+[spec.md](spec.md) for the product contract,
+[ARCHITECTURE.md](ARCHITECTURE.md) for recording boundaries, and
+[docs/live-share-architecture.md](docs/live-share-architecture.md) for the
 network protocol and trust boundary.
 
 Live Share can send up to four application windows or one fullscreen display.
@@ -32,9 +33,15 @@ reported by outbound WebRTC statistics. Real desktop Live Share capture,
 overlay exclusion, remote Internet/TURN traversal, soak, and lifecycle stress
 remain separate controlled gates; the stable-signed, sandboxed Release DMG has
 passed its clean-source packaging gate. See the [Live Share progress
-board](docs/live-share-progress.md). Live Share carries no audio. Thirty FPS is
-the supported default, 15 FPS is selectable, and 60 FPS is an optional
-capability rather than a release requirement.
+board](docs/live-share-progress.md). Live Share system audio defaults to Off and
+persists independently from recording settings. Window sharing captures audio
+at application scope for the unique owning apps; Fullscreen captures system
+audio while excluding Clip. ScreenCaptureKit's 48 kHz stereo samples
+feed one stable Opus WebRTC send track through Clip's native bridge. There is no
+microphone sharing. The current GoPeep browser viewer intentionally does not
+render or play this track, so browser-audible support awaits the planned viewer
+rewrite. Thirty FPS is the supported default, 15 FPS is selectable, and 60 FPS
+is an optional capability rather than a release requirement.
 
 Click Highlights can be enabled from the menu-bar quick controls or Recording
 Settings. The option uses ScreenCaptureKit's native recorded click indicator,

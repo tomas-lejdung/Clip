@@ -80,6 +80,7 @@ public struct LiveShareSettings: Codable, Equatable, Sendable {
     public var frameRate: LiveShareFrameRate
     public var encodingMode: LiveShareEncodingMode
     public var videoCodec: LiveShareVideoCodec
+    public var systemAudioEnabled: Bool
     public var prioritizeFocusedWindow: Bool
     public var autoShareFocusedWindows: Bool
     public var accessCodeEnabled: Bool
@@ -89,6 +90,7 @@ public struct LiveShareSettings: Codable, Equatable, Sendable {
         frameRate: LiveShareFrameRate = .thirty,
         encodingMode: LiveShareEncodingMode = .quality,
         videoCodec: LiveShareVideoCodec = .vp8,
+        systemAudioEnabled: Bool = false,
         prioritizeFocusedWindow: Bool = true,
         autoShareFocusedWindows: Bool = false,
         accessCodeEnabled: Bool = false
@@ -97,6 +99,7 @@ public struct LiveShareSettings: Codable, Equatable, Sendable {
         self.frameRate = frameRate
         self.encodingMode = encodingMode
         self.videoCodec = videoCodec
+        self.systemAudioEnabled = systemAudioEnabled
         self.prioritizeFocusedWindow = prioritizeFocusedWindow
         self.autoShareFocusedWindows = autoShareFocusedWindows
         self.accessCodeEnabled = accessCodeEnabled
@@ -109,6 +112,7 @@ public struct LiveShareSettings: Codable, Equatable, Sendable {
         case frameRate
         case encodingMode
         case videoCodec
+        case systemAudioEnabled
         case prioritizeFocusedWindow
         case adaptiveBitrateEnabled
         case autoShareFocusedWindows
@@ -121,6 +125,7 @@ public struct LiveShareSettings: Codable, Equatable, Sendable {
         frameRate = try container.decodeIfPresent(LiveShareFrameRate.self, forKey: .frameRate) ?? .thirty
         encodingMode = try container.decodeIfPresent(LiveShareEncodingMode.self, forKey: .encodingMode) ?? .quality
         videoCodec = try container.decodeIfPresent(LiveShareVideoCodec.self, forKey: .videoCodec) ?? .vp8
+        systemAudioEnabled = try container.decodeIfPresent(Bool.self, forKey: .systemAudioEnabled) ?? false
         prioritizeFocusedWindow = try container.decodeIfPresent(Bool.self, forKey: .prioritizeFocusedWindow)
             ?? container.decodeIfPresent(Bool.self, forKey: .adaptiveBitrateEnabled)
             ?? true
@@ -134,6 +139,7 @@ public struct LiveShareSettings: Codable, Equatable, Sendable {
         try container.encode(frameRate, forKey: .frameRate)
         try container.encode(encodingMode, forKey: .encodingMode)
         try container.encode(videoCodec, forKey: .videoCodec)
+        try container.encode(systemAudioEnabled, forKey: .systemAudioEnabled)
         try container.encode(prioritizeFocusedWindow, forKey: .prioritizeFocusedWindow)
         try container.encode(autoShareFocusedWindows, forKey: .autoShareFocusedWindows)
         try container.encode(accessCodeEnabled, forKey: .accessCodeEnabled)
