@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Clip viewer protocol tests</title>
+  </head>
+  <body>
+    <pre id="result">Running…</pre>
+    <script type="module">
+      import {
+        canonicalManifest,
+        createAuthProof,
+        createViewerKeyPair,
+        decodeBase64URL,
+        deriveRouteKeys,
+        encodeBase64URL,
+        EncryptedRoute,
+        normalizeRoom,
+        signalingAAD,
+      } from "./clip-protocol.js";
+
+      const assertions = [];
+      const assert = (condition, message) => {
+        if (!condition) throw new Error(message);
+        assertions.push(message);
+      };
+
+      try {
+        assert(normalizeRoom(" ab-c ") === "AB-C", "normalizes room names");
+        const bytes = crypto.getRandomValues(new Uint8Array(32));
+        assert(
+          decodeBase64URL(encodeBase64URL(bytes), 32).every((value, index) => value === bytes[index]),
+          "round-trips base64url",
+        );
+
+        const host = await createViewerKeyPair();
+        const viewer = await createViewerKeyPair();
+        const routeId = encodeBase64URL(new Uint8Array(16).fill(7));
+        const viewerKeys = await deriveRouteKeys({
+          privateKey: viewer.privateKey,
+          roomPublicKey: host.publicKey,
+          room: "ABC",
+          routeId,
+        });
+        const hostKeys = await deriveRouteKeys({
+          privateKey: host.privateKey,
+          roomPublicKey: viewer.publicKey,
+          room: "ABC",
+          routeId,
+        });
+        const viewerRoute = new EncryptedRoute({ room: "ABC", routeId, ...viewerKeys });
+        const nonce = crypto.getRandomValues(new Uint8Array(12));
+        const hostCiphertext = await crypto.subtle.encrypt(
+          {
+            name: "AES-GCM",
+            iv: nonce,
+            additionalData: signalingAAD("ABC", routeId, "host-to-viewer", 1),
+            tagLength: 128,
+          },
+          hostKeys.inboundKey,
+          new TextEncoder().encode(JSON.stringify({ type: "fixture", version: 1, sessionId: "s" })),
+        );
+        const opened = await viewerRoute.open({
+          type: "relay",
+          routeId,
+          sequence: 1,
+          nonce: encodeBase64URL(nonce),
+          ciphertext: encodeBase64URL(hostCiphertext),
+        });
+        assert(opened.type === "fixture", "encrypts and authenticates a route message");
+
+        const proof = await createAuthProof({
+          accessCode: " abcd ",
+          challenge: encodeBase64URL(new Uint8Array(32)),
+          sessionId: "fixture-session",
+        });
+        assert(decodeBase64URL(proof, 32).length === 32, "creates a 256-bit access-code proof");
+
+        const manifest = canonicalManifest({
+          streams: [
+            { id: "opaque-b", mediaTrackId: "browser-b", active: true, focused: false, appName: "B", windowName: "B", width: 800, height: 600, order: 2 },
+            { id: "opaque-a", mediaTrackId: "browser-a", active: true, focused: true, appName: "A", windowName: "A", width: 1280, height: 720, order: 1 },
+          ],
+        });
+        assert(
+          manifest.map((entry) => entry.id).join(",") === "opaque-a,opaque-b",
+          "maps manifest streams by opaque identity",
+        );
+
+        document.getElementById("result").textContent = `PASS — ${assertions.length} assertions\n${assertions.join("\n")}`;
+        document.body.dataset.result = "pass";
+      } catch (error) {
+        document.getElementById("result").textContent = `FAIL\n${error.stack || error}`;
+        document.body.dataset.result = "fail";
+      }
+    </script>
+  </body>
+</html>

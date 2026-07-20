@@ -69,10 +69,10 @@ public enum LiveShareSourcePolicyError: Error, Equatable, Sendable {
   case duplicateWindow(LiveShareWindowID)
 }
 
-/// GoPeep's source policy represented as an immutable value.
+/// Clip's source-selection policy represented as an immutable value.
 ///
 /// Windows are ordered from least to most recently added. Adding a fifth window
-/// evicts the first one, matching GoPeep's four-source LRU behavior. Fullscreen is
+/// evicts the first one, preserving Clip's four-source LRU behavior. Fullscreen is
 /// mutually exclusive with every window source.
 public struct LiveShareSourceSelection: Codable, Equatable, Hashable, Sendable {
   public static let maximumWindowCount = 4

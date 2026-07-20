@@ -6,8 +6,9 @@ Clip is a native Apple-Silicon macOS menu-bar recorder for short screen clips. I
 
 Recordings remain local: Clip has no account, cloud upload, analytics, or AI
 processing. Live Share is a separate, explicit network mode that sends transient
-screen frames and optional system audio to viewers over WebRTC through the
-unchanged GoPeep signaling service; it never writes that media to History. See
+screen frames and optional system audio to viewers over WebRTC. Clip's in-repo
+Go service advertises rooms, serves the browser viewer, and relays only bounded
+end-to-end-encrypted signaling; Live Share never writes media to History. See
 [spec.md](spec.md) for the product contract,
 [ARCHITECTURE.md](ARCHITECTURE.md) for recording boundaries, and
 [docs/live-share-architecture.md](docs/live-share-architecture.md) for the
@@ -21,15 +22,20 @@ may fall back to VP9 and then VP8. Each browser viewer negotiates independently,
 so the actual outbound RTP codec shown in Statistics is authoritative. H.264
 uses hardware encoding and caps oversized capture geometry; software VP8, VP9
 profile 0, and AV1 retain native capture geometry. AV1 can consume substantially
-more CPU. The current GoPeep v1 signaling service can read room credentials and
-signaling metadata; the media channel is encrypted by WebRTC, but the service
-is not zero-knowledge.
+more CPU. SDP, ICE, access-code proofs, stream metadata, and control state are
+encrypted between the browser and Clip before reaching the signaling service.
+Once the reliable `clip-control-v1` DataChannel opens, signaling for that viewer
+closes and subsequent control and renegotiation are peer-to-peer. A configured
+TURN relay may still carry encrypted WebRTC traffic when a direct route is not
+possible.
 
-The pointer-free acceptance lane has kept one browser viewer, session, and set
-of tracks alive while switching the preference H.264 → VP8 → VP9 → AV1
-→ H.264 through the unmodified GoPeep server and viewer on loopback. The lane
-accepts only the documented per-viewer fallbacks and verifies the codec actually
-reported by outbound WebRTC statistics. Real desktop Live Share capture,
+The pointer-free acceptance lane builds the in-repo server and viewer, exercises
+the encrypted signaling protocol and browser cryptography on loopback, and runs
+the native package suites without opening the installed app or controlling the
+pointer. Codec tests keep a browser viewer, session, and set of tracks alive
+while switching H.264 → VP8 → VP9 → AV1 → H.264, accept only the
+documented per-viewer fallbacks, and verify the codec reported by outbound
+WebRTC statistics. Real desktop Live Share capture,
 overlay exclusion, remote Internet/TURN traversal, soak, and lifecycle stress
 remain separate controlled gates; the stable-signed, sandboxed Release DMG has
 passed its clean-source packaging gate. See the [Live Share progress
@@ -38,10 +44,11 @@ persists independently from recording settings. Window sharing captures audio
 at application scope for the unique owning apps; Fullscreen captures system
 audio while excluding Clip. ScreenCaptureKit's 48 kHz stereo samples
 feed one stable Opus WebRTC send track through Clip's native bridge. There is no
-microphone sharing. The current GoPeep browser viewer intentionally does not
-render or play this track, so browser-audible support awaits the planned viewer
-rewrite. Thirty FPS is the supported default, 15 FPS is selectable, and 60 FPS
-is an optional capability rather than a release requirement.
+microphone sharing. The embedded viewer attaches the received audio track and
+provides mute and volume controls, with an explicit click-to-enable path when a
+browser blocks autoplay. Thirty FPS is the supported default, 15 FPS is
+selectable, and 60 FPS is an optional capability rather than a release
+requirement.
 
 Click Highlights can be enabled from the menu-bar quick controls or Recording
 Settings. The option uses ScreenCaptureKit's native recorded click indicator,
@@ -56,6 +63,9 @@ Accessibility permission.
 - No paid Apple Developer membership is required; permission-free builds need
   no Team ID, while a free Personal Team can provide stable signing for real
   permission-backed testing
+- Go 1.25 or newer and Node.js are required only for the in-repository Live
+  Share server/viewer acceptance lane; Docker Buildx is optional for publishing
+  the self-hosted service image
 
 If a newly updated Xcode reports that first-launch components are missing, initialize it once from an administrator account:
 
@@ -87,8 +97,8 @@ The repository keeps generated build output under `.build/`.
 # Permission-free objective master/Crisp/Compact fidelity gate
 ./scripts/run-quality-acceptance.sh
 
-# Native host + unmodified GoPeep server/browser-viewer interoperability
-./scripts/run-gopeep-interop-acceptance.sh
+# In-repo encrypted Live Share server/viewer and native transport acceptance
+./scripts/run-live-share-acceptance.sh
 
 # Opt-in Release benchmark for Preview readiness and Compact export
 ./scripts/benchmark-performance.sh
@@ -115,8 +125,9 @@ The repository keeps generated build output under `.build/`.
 
 `verify-release.sh` is the single unattended release-candidate command. It
 combines the strict source gate, package and app unit tests, deterministic media
-acceptance, Release packaging, read-only DMG mounting/inspection, signature and
-entitlement checks, and a SHA-256 checksum. It never starts XCTest UI
+acceptance, in-repository Live Share server/viewer/WebKit acceptance, Release
+packaging, read-only DMG mounting/inspection, signature and entitlement checks,
+and a SHA-256 checksum. It never starts XCTest UI
 automation; the pointer-driving lanes remain separate and explicitly opt-in.
 
 `benchmark-performance.sh` generates the exact 30-second, 1,440 × 900, 30 FPS
@@ -143,6 +154,49 @@ and shared exports. The real-audio lane separately exercises microphone-only,
 system-audio-only, and combined recording. Both wrappers require their explicit
 permission-and-pointer acknowledgement; the fixture contains synthetic content
 only, and seeing it during a run is expected.
+
+## Run the Live Share service
+
+The complete privacy-minimal signaling service and browser viewer live in the
+top-level [`server`](server) folder. They do not depend on another checkout.
+For local development:
+
+```bash
+cd server
+go run ./cmd/clip-live-share-server
+```
+
+The default address is `http://localhost:8080`. Set that address in Clip's Live
+Share Settings, then use **Test Connection**. The server keeps room
+advertisements in memory, exposes process-only `/healthz` and `/version`
+endpoints, and serves deployment capabilities at
+`/.well-known/clip-live-share`.
+
+For a self-hosted deployment, terminate TLS at a reverse proxy and expose the
+service through HTTPS/WSS. A single server instance is intentional for v1; a
+restart clears its in-memory room registry and Clip re-advertises. Build the
+non-root container locally with:
+
+```bash
+cd server
+docker build --build-arg VERSION=development -t clip-live-share-server .
+docker run --rm -p 8080:8080 clip-live-share-server
+```
+
+`server/scripts/publish-docker.sh VERSION` publishes `linux/amd64` and
+`linux/arm64` images through Docker Buildx. Full configuration, including
+origin policy, leases, resource ceilings, and STUN/TURN capabilities, is in
+[`server/README.md`](server/README.md).
+
+The viewer link contains the room's ephemeral P-256 public key in the URL
+fragment (`#v=1&key=...`). Browsers do not send URL fragments in HTTP requests,
+so the signaling service does not receive that key through normal routing. The
+viewer combines it with a fresh private key to derive per-viewer AES-GCM keys;
+this prevents an honest-but-curious relay from reading or changing signaling.
+The fragment is not a password, and the viewer HTML is trusted as part of the
+chosen deployment: an operator who replaces that JavaScript can read the page's
+fragment. Users who do not trust the hosted deployment can run the same server
+and embedded viewer themselves.
 
 ## Create the local DMG
 

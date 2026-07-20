@@ -8,9 +8,8 @@ enum LiveShareAccessCodeError: Error, Equatable {
 enum LiveShareAccessCode {
     typealias RandomByteFiller = (UnsafeMutableRawBufferPointer) -> OSStatus
 
-    /// A cryptographically random 80-bit value. GoPeep v1 can read this access
-    /// code, so UI calls it protection against accidental access rather than
-    /// end-to-end authentication.
+    /// A cryptographically random 80-bit value. Clip verifies access locally;
+    /// the signaling service receives only encrypted admission messages.
     static func generate(
         using fillRandomBytes: RandomByteFiller = fillWithSystemRandomBytes
     ) throws -> String {

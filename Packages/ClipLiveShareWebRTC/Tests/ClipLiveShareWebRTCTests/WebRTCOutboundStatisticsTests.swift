@@ -11,7 +11,7 @@ struct WebRTCOutboundStatisticsTests {
             WebRTCStreamSlotSnapshot(
                 index: $0,
                 trackID: "video\($0)",
-                streamID: "gopeep-stream-\($0)",
+                streamID: "clip-stream-\($0)",
                 metadata: nil
             )
         }
@@ -124,7 +124,7 @@ struct WebRTCOutboundStatisticsTests {
             slots: [.init(
                 index: 0,
                 trackID: "video0",
-                streamID: "gopeep-stream-0",
+                streamID: "clip-stream-0",
                 metadata: nil
             )],
             connectedViewerCount: 1,

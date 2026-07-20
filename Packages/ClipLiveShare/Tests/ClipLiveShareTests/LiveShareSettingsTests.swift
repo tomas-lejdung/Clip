@@ -4,7 +4,7 @@ import Testing
 
 @Suite("Live Share settings")
 struct LiveShareSettingsTests {
-    @Test("quality presets preserve GoPeep's eight sender ceilings")
+    @Test("quality presets preserve Clip's eight sender ceilings")
     func qualityPresets() {
         #expect(LiveShareQualityPreset.allCases.map(\.maximumBitrateBitsPerSecond) == [
             500_000,

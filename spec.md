@@ -55,9 +55,10 @@ Clicking the menu-bar icon opens the main Clip popover.
 
 Clip also provides a distinct **Live Share** workflow for sending one or more
 macOS windows, or one entire display, to viewers through a browser. Live Share
-uses the existing GoPeep room and viewer service for its first release while
-keeping its client implementation isolated so the signaling service can be
-replaced later.
+uses Clip's in-repository Go room service and embedded browser viewer. The
+service routes bounded end-to-end-encrypted signaling and never receives
+plaintext access codes, SDP, ICE, stream metadata, media, or authoritative
+viewer state.
 
 ---
 
@@ -94,14 +95,16 @@ controls rather than mixing recording and sharing actions in one menu.
 
 ## Starting a room
 
-Choosing **Start Live Share** reserves a room from the configured GoPeep
-service and connects Clip as its authenticated sharer. The popover shows:
+Choosing **Start Live Share** advertises an ephemeral room through the
+configured Clip Live Share service and connects Clip as its authenticated
+host. The popover shows:
 
 - The room code and browser share URL, each with a Copy action.
-- An optional generated room password that can be enabled, copied, replaced,
+- An optional generated access code that can be enabled, copied, replaced,
   or disabled.
 - The connection state and current viewer count.
-- The active source list and its stable `video0` through `video3` slots.
+- The active source list. Stream and media-track identifiers are opaque random
+  values rather than fixed public slot names.
 - Add Window, Share Fullscreen, Stop Sharing, and End Room actions.
 - Live quality, frame cadence, and adaptive-network status.
 - A persisted **System Audio** toggle, defaulting to Off.
@@ -116,10 +119,10 @@ an active room continues with the configuration it started with. A
 non-destructive connection test checks service reachability without reserving a
 room or starting a share.
 
-The access code is a cryptographically random, session-only value. In the
-GoPeep v1 compatibility protocol it applies to new viewer join attempts and is
-readable by the signaling service. Changing it does not reauthenticate a viewer
-that already joined and is still completing negotiation.
+The access code is a cryptographically random, session-only value. Clip checks
+it locally through a random HMAC challenge inside the encrypted route; the
+service never receives the code or plaintext proof. Changing it applies to new
+viewer admissions and does not eject an already connected viewer.
 
 ## Sources
 
@@ -174,8 +177,8 @@ event tap or take control of the pointer.
 
 Clip observes the frontmost application and focused shareable window. It sends
 focus changes and normalized cursor position for the focused shared source over
-the ordered, reliable `gopeep-control` WebRTC DataChannel. These messages let
-the existing viewer follow the host's focus or cursor; they do not remotely
+the ordered, reliable `clip-control-v1` WebRTC DataChannel. These messages let
+the browser viewer follow the host's focus or cursor; they do not remotely
 control either computer.
 
 An optional Auto Share setting may follow eligible focused windows. It obeys
@@ -195,55 +198,62 @@ audio capture or WebRTC tracks.
 Live Share does not send microphone audio and cannot run at the same time as a
 recording. ScreenCaptureKit delivers 48 kHz stereo system audio to Clip's
 native PCM bridge, which feeds one stable Opus WebRTC send track for the room.
-The current GoPeep browser viewer deliberately does not render or play that
-track; audible end-to-end browser support is deferred to the planned viewer
-rewrite. Thirty FPS is the supported video default and 15 FPS is selectable.
+The embedded browser viewer attaches that track and provides mute, volume, and
+an explicit user-gesture recovery when autoplay is blocked. Thirty FPS is the
+supported video default and 15 FPS is selectable.
 Sixty FPS may be exposed when the current hardware path supports it, but it is
 not a release requirement.
 
-## Compatibility and privacy
+## Protocol and privacy
 
-The first Live Share release is wire-compatible with the current GoPeep v1
-service and browser viewer:
+Clip Live Share Protocol v1 is the only supported signaling contract:
 
-- Room reservation uses `POST /api/reserve`.
-- Signaling uses `/ws/{room}` and the existing JSON join, offer, answer, and ICE
-  messages.
-- Every viewer receives its own peer connection containing four preallocated
-  video tracks, one stable Opus system-audio send track, and the
-  `gopeep-control` DataChannel. The codec picker is a video preference: H.264
-  and VP8 are exact choices, VP9 may fall back to VP8, and AV1 may fall back to
-  VP9 then VP8 for each viewer independently. Actual outbound RTP statistics,
-  not the picker value, identify what each viewer is being sent. The current
-  GoPeep browser viewer ignores the audio track until its planned rewrite.
-- Clip admits at most eight pending or connected viewer peers per room and
-  bounds unanswered offers and ICE input before allocating indefinitely.
-- Google STUN is used for direct NAT traversal. A TURN relay and force-relay
-  mode can be supplied through validated configuration, but remote Internet
-  and TURN traversal require their own controlled acceptance and are not
-  implied by local browser interoperability.
+- Clip advertises a client-generated room using
+  `PUT /api/v1/rooms/{room}` and authenticates the host WebSocket with a random
+  32-byte owner token. The server stores only the token's SHA-256 hash.
+- The browser link carries the host's ephemeral P-256 public key only in the
+  URL fragment. The fragment is not sent in the HTTP request. Every viewer
+  creates a fresh P-256 key and derives independent directional AES-GCM keys
+  with Clip through ECDH and HKDF-SHA256.
+- Admission, SDP, ICE, source/control metadata, and codec negotiation are
+  encrypted before crossing the server. The outer relay sees only bounded room,
+  route, sequence, nonce, ciphertext-size, timing, and network metadata.
+- Every viewer receives its own peer connection with four random-identity video
+  tracks, one optional Opus system-audio track, and the reliable ordered
+  `clip-control-v1` DataChannel. H.264 and VP8 are exact choices; VP9 may fall
+  back to VP8, and AV1 may fall back to VP9 then VP8 for each viewer
+  independently. Actual outbound RTP statistics identify what each viewer is
+  being sent.
+- Clip admits at most eight pending or connected peers, enforces a 15-second
+  initial answer timeout, and bounds WebSocket frames, decrypted messages, ICE,
+  SDP, control payloads, and native queue pressure.
+- The deployment advertises its STUN/TURN configuration through validated
+  capabilities. Remote Internet and TURN traversal require controlled
+  acceptance and are not implied by loopback tests.
 
-The current compatibility service receives the optional room password because
-that is part of its v1 contract. A future protocol will treat the Go server as
-an opaque room registry/relay: the host client decides admission and signaling
-is authenticated and encrypted end-to-end so the server never receives a room
-password. A room name alone is not treated as a security boundary.
+After the reliable DataChannel opens, the temporary viewer signaling route
+closes. Later control and renegotiation are peer-to-peer; only an ICE-selected
+TURN relay may carry encrypted WebRTC traffic. Clip counts connected peers and
+the server has no authoritative viewer count.
 
 No recording is written to History during Live Share. Raw frames, PCM audio,
-and network encodings are transient. The unchanged GoPeep signaling service
-only introduces peers and does not receive or process the WebRTC audio media;
-its existing v1 signaling visibility and trust boundary remain unchanged.
-Ending the room stops capture, peer connections, signaling, focus observation,
-and all Live Share overlays.
+and network encodings are transient. Ending the room stops capture, peer
+connections, signaling, focus observation, overlays, and the server
+advertisement.
 
-The GoPeep compatibility acceptance runs the unmodified local signaling server
-and its served browser viewer without pointer control. In one session with the
-same viewer and tracks, it proves advancing frames across H.264 → VP8 → VP9 →
-AV1 → H.264 preference changes, verifies only the allowed per-viewer fallbacks
-and the actual outbound codec, and checks control-message interoperability on
-loopback. Real desktop capture, overlay exclusion, secondary-display behavior,
-remote/TURN traversal, soak, and the signed Release DMG remain separately
-recorded gates in `docs/live-share-progress.md`.
+The browser viewer is trusted as part of the selected deployment. Although the
+URL fragment is absent from normal HTTP requests, an operator who replaces the
+served JavaScript can read `location.hash`. A user who does not trust the
+default deployment can run the same in-repository Go service and embedded
+viewer. The relay can still deny service and observe IP addresses, timing and
+traffic shape; end-to-end signaling encryption does not prevent that.
+
+The local acceptance lane builds the in-repository server/viewer, exercises
+strict opaque WebSocket routing, cross-language cryptography, encrypted
+signaling and native packages without pointer control. Real desktop capture,
+browser audio, overlay exclusion, secondary-display behavior, remote/TURN
+traversal, soak, and the signed Release DMG remain separately recorded gates in
+`docs/live-share-progress.md`.
 
 H.264 is hardware encoded and geometry-capped. VP8, VP9 profile 0, and AV1 are
 software encoded at native geometry. AV1 may impose substantially higher CPU
@@ -931,7 +941,7 @@ exceed the window; controls and labels remain single-line where practical.
 
 - An editable, validated server base address.
 - A non-destructive Test Connection action that does not reserve a room.
-- Reset Server Address, restoring the built-in GoPeep service address.
+- Reset Server Address, restoring the built-in Clip Live Share service address.
 - Default video codec, quality/bandwidth rung, frame rate, and Performance or
   Quality encoding mode.
 - Default System Audio, access-code requirement, Prioritize Focused Window, and
@@ -991,7 +1001,7 @@ Each permission should include a button that opens the relevant macOS System Set
 - Microphone: Off.
 - System audio: Off.
 - Countdown: a silent 3 seconds, with Off, 1, 3, and 5-second choices.
-- Live Share server: `https://gopeep.tineestudio.se`.
+- Live Share server: `https://clip.tineestudio.se`.
 - Live Share video: VP8, Very High quality (`6 Mbps` ceiling), 30 FPS, Quality mode.
 - Live Share System Audio: Off.
 - Live Share access code: Off.
@@ -1086,8 +1096,9 @@ Clip should target:
 Clip's recording workflow is local-first. Recording, Preview, History, and
 exports do not upload media. Live Share is the sole explicit networking mode:
 when the user starts a room, selected transient screen frames, optional system
-audio, and control metadata leave the Mac over WebRTC and GoPeep v1 signaling
-metadata passes through the configured service.
+audio, and control metadata leave the Mac over encrypted WebRTC. The configured
+service sees room/routing metadata and bounded end-to-end-encrypted signaling
+envelopes, not plaintext admission, SDP, ICE, stream/control data, or media.
 
 The recording workflow includes:
 
@@ -1225,10 +1236,28 @@ checksums in a fresh isolated package cache, compare the embedded WebRTC
 payload with that reviewed artifact, and include complete third-party notices;
 ignored development-package state is not accepted as release provenance.
 
+## Live Share service deployment
+
+- The top-level `server/` folder is an independent Go 1.25 module containing
+  the room registry, opaque signaling relay, embedded browser viewer, tests,
+  Dockerfile, and Docker Hub publication script.
+- Server room state is in-memory and intentionally single-replica in protocol
+  v1. A restart clears advertisements; an active Clip host reconnects and
+  re-advertises its room.
+- Internet deployments terminate TLS at a reverse proxy and expose HTTPS/WSS.
+  The service publishes validated ICE-server capabilities to both peers.
+- The container is CGO-free, non-root, health-checked, and published for
+  `linux/amd64` and `linux/arm64` with Buildx provenance and SBOM metadata.
+- The Go service is deployed separately and is never bundled in `Clip.app` or
+  launched as a local helper. Users can select the hosted default or configure
+  a self-hosted endpoint in Live Share Settings.
+
 ## Development environment
 
 - Source editing can be done in Codex, Cursor, VS Code, Zed, or another editor.
 - Xcode 26.6 and Apple command-line tools provide the macOS 26.5 SDK, Swift 6.3.3, local signing, building, and DMG creation.
+- Go 1.25 and Node.js provide the local server/viewer acceptance lane; Docker
+  Buildx is required only to publish the service image.
 - The project should support command-line builds.
 
 ## Security configuration
@@ -1310,16 +1339,14 @@ A separate Homebrew tap can be added later if needed.
 - `--ui-scenario=<name>` fixtures are honored only with `--ui-testing`. They use isolated defaults and storage plus inert permission, audio, capture, display, pasteboard, shortcut, and external-AppKit actions; they never request privacy access or enter the real-capture lane.
 - Deterministic launch fixtures cover onboarding, the populated menu-bar popover and displays, denied permissions, recording, paused recording, Preview, History, every Settings tab, and a representative failure surface. Their UI-automation assertions compile in the permission-free suite but execute only after an explicit visible-pointer-control opt-in.
 - A pointer-free hosted visual lane renders the production Settings window at the top and fully scrolled bottom of every tab, writes ten PNGs plus scroll-position metadata, and fails if a scrollable form does not reach its bottom.
-- Live Share's pointer-free interoperability lane launches the unmodified local
-  GoPeep signaling server, negotiates Clip's native peer host with the
-  unmodified viewer in an offscreen `WKWebView`, requires advancing frames while
-  one session and its tracks switch H.264 → VP8 → VP9 → AV1 → H.264,
-  verifies the allowed per-viewer fallbacks and actual outbound codecs, and
-  verifies stream, focus, and cursor control metadata. Native loopback and
-  deterministic Ready/Live/Reconnecting/Failed/overlay UI scenarios cover the
-  surrounding layers. Native audio loopback separately verifies Clip's stable
-  Opus sender and large 48 kHz stereo PCM batches; the current browser viewer
-  intentionally provides no audio playback evidence.
+- Live Share's pointer-free lane builds the in-repository Go service and
+  embedded viewer, exercises real loopback HTTP/WebSocket routing, validates
+  cross-language encrypted-signaling vectors, and runs Clip's native core and
+  peer-host suites. It verifies one session and random-identity tracks while
+  preferences switch H.264 → VP8 → VP9 → AV1 → H.264, checks allowed
+  per-viewer fallbacks and actual outbound codecs, and verifies authoritative
+  stream, focus, cursor, admission and audio-control state. It does not touch
+  the installed app or control the pointer.
 - Real ScreenCaptureKit, microphone, system-audio, clipboard, drag, Save As, history, and DMG smoke tests run on the development Mac.
 - Real Live Share acceptance separately covers the production ScreenCaptureKit
   coordinator path, one through four windows, Fullscreen, resize, overlay
@@ -1389,16 +1416,16 @@ A separate Homebrew tap can be added later if needed.
 - Local launchable DMG distribution.
 - Signed application updates from immutable GitHub Release DMGs, with periodic
   automatic checks and an on-demand **Check for Updates…** action.
-- A distinct Live Share mode compatible with the GoPeep v1 signaling service
-  and browser viewer.
+- A distinct Live Share mode using the in-repository Clip Live Share Protocol
+  v1 Go service and embedded browser viewer, with end-to-end-encrypted
+  signaling and no compatibility fallback.
 - Up to four exact-window Live Share sources or one mutually exclusive
   fullscreen display, sent as transient preferred-codec WebRTC video with no
   History recording.
 - Optional persisted Live Share system audio, defaulting to Off: unique owning
   applications for window sharing or system audio for Fullscreen, excluding
-  Clip, sent as one stable Opus track. No microphone audio is sent, and the
-  current GoPeep browser viewer does not play the track until its planned
-  rewrite.
+  Clip, sent as one stable Opus track. No microphone audio is sent. The browser
+  viewer provides mute, volume, and autoplay-unlock controls.
 - A Live Share-specific menu-bar popover, optional session access code,
   connected-viewer state, stream settings/statistics, focused-window Share/Stop
   control, fixed source/viewer HUD, auto-share, reconnect, and Stop All without

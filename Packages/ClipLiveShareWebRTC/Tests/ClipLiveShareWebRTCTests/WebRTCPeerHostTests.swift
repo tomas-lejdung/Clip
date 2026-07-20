@@ -8,18 +8,17 @@ import Testing
 extension NativeMediaResourceTests {
 @Suite("Native WebRTC peer host", .serialized)
 struct WebRTCPeerHostTests {
-    @Test("four stable GoPeep slots are preallocated")
+    @Test("four stable slots receive opaque per-session WebRTC identities")
     func stableSlots() throws {
         let host = try WebRTCPeerHost(eventQueue: .global())
         defer { host.close() }
 
-        #expect(host.slotSnapshots.map(\.trackID) == [
-            "video0", "video1", "video2", "video3",
-        ])
-        #expect(host.slotSnapshots.map(\.streamID) == [
-            "gopeep-stream-0", "gopeep-stream-1",
-            "gopeep-stream-2", "gopeep-stream-3",
-        ])
+        let trackIDs = host.slotSnapshots.map(\.trackID)
+        let streamIDs = host.slotSnapshots.map(\.streamID)
+        #expect(Set(trackIDs).count == 4)
+        #expect(Set(streamIDs).count == 4)
+        #expect(trackIDs.allSatisfy { ClipLiveShareBase64URL.decode($0)?.count == 16 })
+        #expect(streamIDs.allSatisfy { ClipLiveShareBase64URL.decode($0)?.count == 16 })
         #expect(host.slotSnapshots.allSatisfy { !$0.isActive })
     }
 
@@ -43,7 +42,7 @@ struct WebRTCPeerHostTests {
     func slotActivation() throws {
         let host = try WebRTCPeerHost(eventQueue: .global())
         defer { host.close() }
-        let metadata = Self.metadata(slot: 1)
+        let metadata = Self.metadata(for: host.slotSnapshots[1])
 
         try host.activateSlot(1, metadata: metadata)
         #expect(host.slotSnapshots[1].metadata == metadata)
@@ -52,13 +51,18 @@ struct WebRTCPeerHostTests {
         }
         #expect(throws: WebRTCPeerHostError.slotTrackMismatch(
             slot: 2,
-            expected: "video2",
-            actual: "video1"
+            expected: host.slotSnapshots[2].trackID,
+            actual: host.slotSnapshots[1].trackID
         )) {
             try host.activateSlot(2, metadata: metadata)
         }
         #expect(throws: WebRTCPeerHostError.invalidSlot(4)) {
-            try host.activateSlot(4, metadata: Self.metadata(slot: 4))
+            try host.activateSlot(
+                4,
+                metadata: ClipLiveShareWebRTCTestFixtures.streamDescriptor(
+                    mediaTrackID: "out-of-range-track"
+                )
+            )
         }
 
         host.deactivateSlot(1)
@@ -66,7 +70,7 @@ struct WebRTCPeerHostTests {
     }
 
     @Test("offer contains all stable streams, H264, and the data channel")
-    func goPeepOfferShape() async throws {
+    func clipOfferShape() async throws {
         let encoderFormats = WebRTCH264EncoderFactory().supportedCodecs()
         #expect(encoderFormats.map { $0.parameters["profile-level-id"] } == [
             "640c34", "42e034",
@@ -78,8 +82,8 @@ struct WebRTCPeerHostTests {
 
         #expect(offer.kind == .offer)
         #expect(Self.occurrences(of: "m=video", in: offer.sdp) == 4)
-        for slot in 0 ..< 4 {
-            #expect(offer.sdp.contains("gopeep-stream-\(slot) video\(slot)"))
+        for slot in host.slotSnapshots {
+            #expect(offer.sdp.contains("\(slot.streamID) \(slot.trackID)"))
         }
         #expect(offer.sdp.contains(" H264/90000"))
         #expect(offer.sdp.contains("profile-level-id=640c34"))
@@ -91,7 +95,8 @@ struct WebRTCPeerHostTests {
         #expect(!offer.sdp.contains(" AV1/90000"))
         #expect(Self.occurrences(of: "m=audio", in: offer.sdp) == 1)
         #expect(offer.sdp.localizedCaseInsensitiveContains(" opus/48000/2"))
-        #expect(offer.sdp.contains("gopeep-system-audio audio0"))
+        let audio = host.systemAudioSnapshot
+        #expect(offer.sdp.contains("\(audio.streamID) \(audio.trackID)"))
         #expect(offer.sdp.contains("m=application"))
         #expect(host.viewerIDs == ["viewer-fixture"])
         await #expect(throws: WebRTCPeerHostError.duplicateViewer("viewer-fixture")) {
@@ -211,8 +216,8 @@ struct WebRTCPeerHostTests {
         #expect(!offer.sdp.contains(" H264/90000"))
         #expect(!offer.sdp.contains(" VP9/90000"))
         #expect(!offer.sdp.contains(" AV1/90000"))
-        for slot in 0 ..< 4 {
-            #expect(offer.sdp.contains("gopeep-stream-\(slot) video\(slot)"))
+        for slot in host.slotSnapshots {
+            #expect(offer.sdp.contains("\(slot.streamID) \(slot.trackID)"))
         }
     }
 
@@ -346,8 +351,8 @@ struct WebRTCPeerHostTests {
             maximumControlMessagePayloadBytes: 400_000,
             maximumControlBufferedAmountBytes: 1
         ).normalized
-        #expect(normalized.maximumControlMessagePayloadBytes == 262_144)
-        #expect(normalized.maximumControlBufferedAmountBytes == 262_144)
+        #expect(normalized.maximumControlMessagePayloadBytes == 196_400)
+        #expect(normalized.maximumControlBufferedAmountBytes == 196_400)
     }
 
     @Test("viewer admission is capped before allocating another peer")
@@ -408,8 +413,8 @@ struct WebRTCPeerHostTests {
         let configuration = WebRTCPeerHostConfiguration(
             iceServers: [],
             resourceLimits: .init(
-                maximumViewerCount: 1,
-                answerTimeout: 5,
+                maximumViewerCount: 2,
+                answerTimeout: 15,
                 maximumICECandidatesPerPeer: 1,
                 maximumICECandidatePayloadBytes: 1_024,
                 maximumViewerIDBytes: 32
@@ -417,6 +422,7 @@ struct WebRTCPeerHostTests {
         )
         let host = try WebRTCPeerHost(configuration: configuration, eventQueue: .global())
         defer { host.close() }
+        _ = try await host.createOffer(for: "healthy-viewer")
         _ = try await host.createOffer(for: "viewer-1")
 
         let first = WebRTCICECandidate(
@@ -433,6 +439,7 @@ struct WebRTCPeerHostTests {
         )) {
             try await host.addRemoteICECandidate(first, for: "viewer-1")
         }
+        #expect(host.viewerIDs == ["healthy-viewer"])
 
         let malformed = WebRTCICECandidate(
             candidate: "not-an-ice-candidate",
@@ -442,10 +449,11 @@ struct WebRTCPeerHostTests {
         await #expect(throws: WebRTCPeerHostError.invalidICECandidate(
             WebRTCICECandidateValidationError.malformedCandidate.localizedDescription
         )) {
-            host.removePeer("viewer-1")
             _ = try await host.createOffer(for: "viewer-1")
             try await host.addRemoteICECandidate(malformed, for: "viewer-1")
         }
+        #expect(host.viewerIDs == ["healthy-viewer"])
+        _ = try await host.createReoffer(for: "healthy-viewer")
     }
 
     @Test("remote session descriptions have a hard allocation bound")
@@ -453,8 +461,8 @@ struct WebRTCPeerHostTests {
         let configuration = WebRTCPeerHostConfiguration(
             iceServers: [],
             resourceLimits: .init(
-                maximumViewerCount: 1,
-                answerTimeout: 5,
+                maximumViewerCount: 2,
+                answerTimeout: 15,
                 maximumICECandidatesPerPeer: 8,
                 maximumICECandidatePayloadBytes: 1_024,
                 maximumViewerIDBytes: 32,
@@ -463,6 +471,7 @@ struct WebRTCPeerHostTests {
         )
         let host = try WebRTCPeerHost(configuration: configuration, eventQueue: .global())
         defer { host.close() }
+        _ = try await host.createOffer(for: "healthy-viewer")
         _ = try await host.createOffer(for: "viewer-1")
 
         await #expect(throws: WebRTCPeerHostError.sessionDescriptionPayloadTooLarge(
@@ -473,11 +482,42 @@ struct WebRTCPeerHostTests {
                 for: "viewer-1"
             )
         }
+        #expect(host.viewerIDs == ["healthy-viewer"])
+        _ = try await host.createReoffer(for: "healthy-viewer")
+    }
+
+    @Test("oversized remote control data removes only the sending peer")
+    func remoteControlPayloadIsolation() async throws {
+        let configuration = WebRTCPeerHostConfiguration(
+            iceServers: [],
+            resourceLimits: .init(
+                maximumViewerCount: 2,
+                answerTimeout: 15,
+                maximumICECandidatesPerPeer: 8,
+                maximumICECandidatePayloadBytes: 1_024,
+                maximumViewerIDBytes: 32,
+                maximumSDPPayloadBytes: 4_096,
+                maximumControlMessagePayloadBytes: 1_024
+            )
+        )
+        let host = try WebRTCPeerHost(configuration: configuration, eventQueue: .global())
+        defer { host.close() }
+        _ = try await host.createOffer(for: "healthy-viewer")
+        _ = try await host.createOffer(for: "hostile-viewer")
+
+        host.receiveRemoteControlMessage(
+            Data(repeating: 0x41, count: 1_025),
+            from: "hostile-viewer"
+        )
+
+        #expect(host.viewerIDs == ["healthy-viewer"])
+        _ = try await host.createReoffer(for: "healthy-viewer")
     }
 
     @Test("closed hosts reject new work and close is idempotent")
     func idempotentClose() async throws {
         let host = try WebRTCPeerHost(eventQueue: .global())
+        let metadata = Self.metadata(for: host.slotSnapshots[0])
         host.close()
         host.close()
 
@@ -485,7 +525,7 @@ struct WebRTCPeerHostTests {
             try await host.createOffer(for: "late-viewer")
         }
         #expect(throws: WebRTCPeerHostError.hostClosed) {
-            try host.activateSlot(0, metadata: Self.metadata(slot: 0))
+            try host.activateSlot(0, metadata: metadata)
         }
     }
 
@@ -523,15 +563,15 @@ struct WebRTCPeerHostTests {
 
     @Test("sender and ICE defaults are explicit and injectable")
     func configurationPolicy() throws {
-        #expect(WebRTCPeerHostConfiguration.goPeepDefault.senderPolicy == .goPeepDefault)
-        #expect(WebRTCSenderPolicy.goPeepDefault.maintainsResolution)
-        #expect(WebRTCSenderPolicy.goPeepDefault.bitratePriority == 1)
-        #expect(WebRTCSenderPolicy.goPeepDefault.maximumFramesPerSecond == 30)
-        #expect(WebRTCSenderPolicy.goPeepDefault.maximumBitrateBps == 12_000_000)
-        #expect(WebRTCPeerHostConfiguration.goPeepDefault.iceServers.count == 3)
-        #expect(WebRTCPeerHostConfiguration.goPeepDefault.resourceLimits == .goPeepDefault)
-        #expect(WebRTCPeerResourceLimits.goPeepDefault.maximumViewerCount == 8)
-        #expect(WebRTCPeerResourceLimits.goPeepDefault.answerTimeout == 15)
+        #expect(WebRTCPeerHostConfiguration.clipDefault.senderPolicy == .clipDefault)
+        #expect(WebRTCSenderPolicy.clipDefault.maintainsResolution)
+        #expect(WebRTCSenderPolicy.clipDefault.bitratePriority == 1)
+        #expect(WebRTCSenderPolicy.clipDefault.maximumFramesPerSecond == 30)
+        #expect(WebRTCSenderPolicy.clipDefault.maximumBitrateBps == 12_000_000)
+        #expect(WebRTCPeerHostConfiguration.clipDefault.iceServers.count == 3)
+        #expect(WebRTCPeerHostConfiguration.clipDefault.resourceLimits == .clipDefault)
+        #expect(WebRTCPeerResourceLimits.clipDefault.maximumViewerCount == 8)
+        #expect(WebRTCPeerResourceLimits.clipDefault.answerTimeout == 15)
         let hardMaximums = WebRTCPeerResourceLimits(
             maximumViewerCount: .max,
             answerTimeout: .infinity,
@@ -548,7 +588,7 @@ struct WebRTCPeerHostTests {
         #expect(hardMaximums.maximumICECandidatePayloadBytes == 16_384)
         #expect(hardMaximums.maximumViewerIDBytes == 512)
         #expect(hardMaximums.maximumSDPPayloadBytes == 1_048_576)
-        #expect(hardMaximums.maximumControlMessagePayloadBytes == 262_144)
+        #expect(hardMaximums.maximumControlMessagePayloadBytes == 196_400)
         #expect(hardMaximums.maximumControlBufferedAmountBytes == 4_194_304)
 
         let custom = WebRTCPeerHostConfiguration(
@@ -593,14 +633,13 @@ struct WebRTCPeerHostTests {
         #expect(host.senderPolicy(forSlot: 1) == background)
     }
 
-    private static func metadata(slot: Int) -> GoPeepV1StreamInfo {
-        GoPeepV1StreamInfo(
-            trackID: "video\(slot)",
-            windowName: "Fixture",
-            appName: "Tests",
-            isFocused: slot == 0,
-            width: 1_280,
-            height: 720
+    private static func metadata(
+        for slot: WebRTCStreamSlotSnapshot
+    ) -> ClipLiveShareStreamDescriptor {
+        ClipLiveShareWebRTCTestFixtures.streamDescriptor(
+            for: slot,
+            focused: slot.index == 0,
+            appName: "Tests"
         )
     }
 

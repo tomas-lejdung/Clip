@@ -27,7 +27,7 @@ actor LiveShareSettingsRepository {
 }
 
 actor LiveShareServerEndpointRepository {
-    private let store: AtomicJSONFileStore<LiveShareServerEndpoint>
+    private let store: AtomicJSONFileStore<ClipLiveShareServerEndpoint>
 
     init(
         applicationSupportDirectory: URL,
@@ -40,11 +40,11 @@ actor LiveShareServerEndpointRepository {
         )
     }
 
-    func load() async throws -> LiveShareServerEndpoint {
-        try await store.load() ?? .goPeepRemote
+    func load() async throws -> ClipLiveShareServerEndpoint {
+        try await store.load() ?? .official
     }
 
-    func save(_ endpoint: LiveShareServerEndpoint) async throws {
+    func save(_ endpoint: ClipLiveShareServerEndpoint) async throws {
         try await store.save(endpoint)
     }
 }
@@ -64,14 +64,14 @@ final class LiveSharePreferencesModel: ObservableObject {
     private var endpointPersistenceError: String?
 
     @Published private(set) var settings: LiveShareSettings
-    @Published private(set) var serverEndpoint: LiveShareServerEndpoint
+    @Published private(set) var serverEndpoint: ClipLiveShareServerEndpoint
     @Published private(set) var isLoaded = false
     @Published private(set) var lastPersistenceError: String?
 
     init(
         applicationSupportDirectory: URL,
         initialSettings: LiveShareSettings = .default,
-        initialServerEndpoint: LiveShareServerEndpoint = .goPeepRemote,
+        initialServerEndpoint: ClipLiveShareServerEndpoint = .official,
         settingsFileSystem: any AtomicFileSystem = LocalAtomicFileSystem(),
         endpointFileSystem: any AtomicFileSystem = LocalAtomicFileSystem()
     ) throws {
@@ -104,7 +104,7 @@ final class LiveSharePreferencesModel: ObservableObject {
         do {
             serverEndpoint = try await endpointRepository.load()
         } catch {
-            serverEndpoint = .goPeepRemote
+            serverEndpoint = .official
             do {
                 try await endpointRepository.save(serverEndpoint)
             } catch {
@@ -135,18 +135,18 @@ final class LiveSharePreferencesModel: ObservableObject {
         replaceSettings(with: .default)
     }
 
-    func setServerEndpoint(_ endpoint: LiveShareServerEndpoint) {
+    func setServerEndpoint(_ endpoint: ClipLiveShareServerEndpoint) {
         guard serverEndpoint != endpoint else { return }
         serverEndpoint = endpoint
         enqueueEndpointPersistence(endpoint)
     }
 
     func setServerAddress(_ address: String) throws {
-        setServerEndpoint(try LiveShareServerEndpoint(userInput: address))
+        setServerEndpoint(try ClipLiveShareServerEndpoint(userInput: address))
     }
 
     func resetServerEndpoint() {
-        setServerEndpoint(.goPeepRemote)
+        setServerEndpoint(.official)
     }
 
     func flushPendingPersistence() async {
@@ -175,7 +175,7 @@ final class LiveSharePreferencesModel: ObservableObject {
     }
 
     private func enqueueEndpointPersistence(
-        _ snapshot: LiveShareServerEndpoint
+        _ snapshot: ClipLiveShareServerEndpoint
     ) {
         let previous = endpointPersistenceTail
         let repository = endpointRepository
@@ -205,6 +205,7 @@ enum LiveShareServerConnectionProbeError: LocalizedError, Equatable, Sendable {
     case unreachable
     case invalidResponse
     case incompatibleStatus(Int)
+    case incompatibleProtocol
 
     var errorDescription: String? {
         switch self {
@@ -214,17 +215,24 @@ enum LiveShareServerConnectionProbeError: LocalizedError, Equatable, Sendable {
             String(localized: "The Live Share server returned an invalid response.")
         case let .incompatibleStatus(status):
             String(
-                localized: "The server does not expose a compatible reservation endpoint (HTTP \(status))."
+                localized: "The server does not expose Clip Live Share capabilities (HTTP \(status))."
             )
+        case .incompatibleProtocol:
+            String(localized: "The server does not support Clip Live Share Protocol v1.")
         }
     }
 }
 
-/// A HEAD request verifies the configured reservation route and TLS connection
-/// without allocating a room. GoPeep v1 answers HEAD with 405 because the route
-/// deliberately accepts POST only; a future health-aware server may answer 2xx.
+struct LiveShareServerProbeResponse: Sendable {
+    let statusCode: Int
+    let data: Data
+}
+
+/// Validates the public capability document without allocating a room.
 struct LiveShareServerConnectionProbe: Sendable {
-    typealias Execute = @Sendable (URLRequest) async throws -> Int
+    typealias Execute = @Sendable (URLRequest) async throws -> LiveShareServerProbeResponse
+
+    private static let maximumResponseBytes = 65_536
 
     private let execute: Execute
 
@@ -232,23 +240,30 @@ struct LiveShareServerConnectionProbe: Sendable {
         self.execute = execute
     }
 
-    func test(_ endpoint: LiveShareServerEndpoint) async throws {
-        let server = try endpoint.configuration
-        var request = URLRequest(url: server.reservationURL)
-        request.httpMethod = "HEAD"
+    func test(_ endpoint: ClipLiveShareServerEndpoint) async throws {
+        var request = URLRequest(url: endpoint.capabilitiesURL)
+        request.httpMethod = "GET"
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
         request.timeoutInterval = 5
         request.cachePolicy = .reloadIgnoringLocalAndRemoteCacheData
 
-        let status: Int
+        let response: LiveShareServerProbeResponse
         do {
-            status = try await execute(request)
+            response = try await execute(request)
         } catch is CancellationError {
             throw CancellationError()
         } catch {
             throw LiveShareServerConnectionProbeError.unreachable
         }
-        guard (200..<300).contains(status) || status == 405 else {
-            throw LiveShareServerConnectionProbeError.incompatibleStatus(status)
+        guard response.statusCode == 200 else {
+            throw LiveShareServerConnectionProbeError.incompatibleStatus(response.statusCode)
+        }
+        guard !response.data.isEmpty, response.data.count <= Self.maximumResponseBytes,
+              (try? JSONDecoder().decode(
+                ClipLiveShareCapabilities.self,
+                from: response.data
+              )) != nil else {
+            throw LiveShareServerConnectionProbeError.incompatibleProtocol
         }
     }
 
@@ -260,10 +275,28 @@ struct LiveShareServerConnectionProbe: Sendable {
         configuration.timeoutIntervalForResource = 5
         let session = URLSession(configuration: configuration)
         defer { session.invalidateAndCancel() }
-        let (_, response) = try await session.data(for: request)
+        let (bytes, response) = try await session.bytes(for: request)
         guard let response = response as? HTTPURLResponse else {
             throw LiveShareServerConnectionProbeError.invalidResponse
         }
-        return response.statusCode
+        guard response.expectedContentLength <= Int64(Self.maximumResponseBytes) else {
+            throw LiveShareServerConnectionProbeError.invalidResponse
+        }
+        var data = Data()
+        if response.expectedContentLength > 0 {
+            data.reserveCapacity(
+                min(Self.maximumResponseBytes, Int(response.expectedContentLength))
+            )
+        }
+        for try await byte in bytes {
+            guard data.count < Self.maximumResponseBytes else {
+                throw LiveShareServerConnectionProbeError.invalidResponse
+            }
+            data.append(byte)
+        }
+        return LiveShareServerProbeResponse(
+            statusCode: response.statusCode,
+            data: data
+        )
     }
 }

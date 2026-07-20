@@ -91,13 +91,18 @@ final class LiveSharePresentationModel: ObservableObject {
     }
 
     func copyLink() {
-        guard let value = snapshot.room?.viewerURL.absoluteString else { return }
+        guard let room = snapshot.room,
+              room.isAvailable else { return }
+        let value = room.viewerURL.absoluteString
         actions.copyText(value)
         showCopied(.link)
     }
 
     func copyRoomCode() {
-        guard let value = snapshot.room?.roomCode, !value.isEmpty else { return }
+        guard let room = snapshot.room,
+              room.isAvailable,
+              !room.roomCode.isEmpty else { return }
+        let value = room.roomCode
         actions.copyText(value)
         showCopied(.roomCode)
     }

@@ -91,7 +91,7 @@ struct WebRTCH264BitrateEnvelope: Equatable, Sendable {
 }
 
 enum WebRTCH264BitratePolicy {
-    /// Quality mirrors GoPeep: the user's selected Mbps is VideoToolbox's soft
+    /// The user's selected Mbps is VideoToolbox's soft
     /// target, while WebRTC adapts delivery with its frame dropper and pacer.
     /// Performance follows WebRTC's current estimate inside that ceiling.
     static func encoderTargetBitsPerSecond(

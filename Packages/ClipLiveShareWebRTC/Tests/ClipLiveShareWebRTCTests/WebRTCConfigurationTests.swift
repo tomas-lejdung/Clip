@@ -6,6 +6,6 @@ struct WebRTCConfigurationTests {
     @Test("the adapter links the pinned WebRTC framework")
     func frameworkLinks() {
         #expect(WebRTCRuntimeIdentity.frameworkName == "WebRTC")
-        #expect(WebRTCRuntimeIdentity.controlDataChannelLabel == "gopeep-control")
+        #expect(WebRTCRuntimeIdentity.controlDataChannelLabel == "clip-control-v1")
     }
 }

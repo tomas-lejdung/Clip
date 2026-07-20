@@ -1,71 +1,71 @@
 # Clip acceptance harness
 
-## GoPeep v1 local interoperability
+## Native Live Share local acceptance
 
-Run the deterministic, pointer-free GoPeep compatibility lane with:
+Run the deterministic, pointer-free in-repository lane with:
 
 ```sh
-./scripts/run-gopeep-interop-acceptance.sh
+./scripts/run-live-share-acceptance.sh
 ```
 
-The script builds and launches the current sibling GoPeep Go signaling server on
-loopback, then runs Clip's package tests with the real production HTTP and WebSocket
-transports. It verifies room reservation, sharer-secret authentication, viewer password
-gating and replacement, viewer joins, targeted offer/answer routing, bidirectional ICE
-routing, and that the embedded browser viewer artifact is served. It then loads that
-current viewer in an offscreen `WKWebView`, negotiates directly with Clip's native
-WebRTC host, requires deterministic frames to advance through an H.264 → VP8 →
-VP9 → AV1 → H.264 preferred-codec live switch, and retains the same session,
-viewer, and track identities. H.264 and VP8 are negotiated exactly. A VP9
-preference permits VP8 fallback; an AV1 preference permits VP9 and then VP8.
-Each browser viewer answers independently, and the lane checks actual
-`outbound-rtp` codec statistics rather than treating the picker value as proof
-of what was sent. The browser snapshot also verifies that exact `streams-info`,
-focus, and cursor metadata sent over the ordered `gopeep-control` channel was
-consumed by the viewer. The same lane retains native libwebrtc loopback checks
-for VP9 profile 0, native VP9/AV1 delivery, VP8-only-viewer fallback, and one
-stable Opus sender accepting large 48 kHz stereo PCM batches from Clip's native
-audio-device bridge. The current GoPeep browser viewer deliberately does not
-render or play that audio track, so this lane does not claim audible browser
-output.
+The script needs no sibling checkout. It runs the complete Go server suite and
+browser protocol tests, builds the real `server/cmd/clip-live-share-server`
+binary, launches it on an unused loopback port, and validates `/healthz`,
+`/version`, `/.well-known/clip-live-share`, and the embedded viewer. It then
+runs the `ClipLiveShare` and `ClipLiveShareWebRTC` Swift package suites against
+the same repository source. The WebRTC suite receives the loopback endpoint
+through `CLIP_LIVE_SHARE_ACCEPTANCE_ENDPOINT` and enables its offscreen native
+WebKit end-to-end case with `CLIP_RUN_NATIVE_WEBKIT_ACCEPTANCE=1`.
 
-The WebKit window is placed offscreen and the lane never uses pointer control or touches
-the installed app. It does not capture the real desktop or prove remote Internet/TURN
-traversal; those remain separate acceptance surfaces.
+The Go tests include actual localhost WebSocket routing and cover room
+advertisement, owner-token-hash authentication, leases, reconnect grace,
+pending-route isolation, monotonic relay sequences, origin policy, security
+headers, strict JSON and resource ceilings. Swift and browser tests share
+deterministic P-256 ECDH, HKDF-SHA256 and AES-GCM vectors. They verify
+directional keys, authenticated route context, tamper/replay/sequence rejection,
+encrypted admission/SDP/ICE envelopes and the exact 196,400-byte inner-message
+ceiling.
+
+Native WebRTC coverage includes four random-identity video transceivers, exact
+H.264/VP8 choices, preferred VP9 → VP8 and AV1 → VP9 → VP8 chains, one
+Opus system-audio send track, transactional live codec switching, actual
+outbound-codec statistics, bounded SDP/ICE/control input, reliable ordered
+`clip-control-v1`, authoritative low-water replay and idempotent teardown. The
+viewer tests cover encrypted host admission, opaque manifest-to-track binding,
+focus/cursor state, audio attachment, mute/volume and autoplay recovery.
+
+The offscreen WebKit viewer does not expose or move a pointer. The lane never
+opens the installed app, calls ScreenCaptureKit, requests a
+privacy permission, uses the general clipboard, or controls the keyboard or
+pointer. It does not establish production service availability, real desktop
+quality, audible hardware output, overlay exclusion, remote Internet ICE, TURN,
+sleep/wake behavior or soak stability.
 
 ### Live Share evidence map
 
 | Surface | Current automated evidence | Not established by that evidence |
 | --- | --- | --- |
-| GoPeep protocol | Current local Go service handles reserve, secret authentication, new-viewer access-code checks, targeted SDP, and bidirectional ICE. | Production service availability, hostile-server security, or remote NAT traversal. |
-| Native WebRTC | Four stable video transceivers with exact H.264/VP8 choices, preferred VP9 → VP8 and AV1 → VP9 → VP8 chains, one stable Opus system-audio send transceiver, transactional live switching, reliable ordered control, native loopback media, actual outbound-codec stats, viewer/answer/ICE/SDP/control bounds, low-water durable-state replay, and idempotent close. | A controlled TURN relay, four simultaneously active browser-rendered sources, or audio playback in the current browser viewer. |
-| Browser viewer | Current served viewer in offscreen WebKit presents advancing frames across the H.264 → VP8 → VP9 → AV1 → H.264 preference sequence without replacing the viewer or tracks, consumes stream/focus/cursor state, reports selected-track buffer/decode latency, applies low-latency receiver hints, and attempts a live-edge playback reset when sustained backlog is visible. VP9 and AV1 may use only their documented fallback chains. | Real desktop content, audio rendering/playback, 15/60 FPS capability, remote Internet, or subjective text quality. |
-| Capture | Package tests require native VP8/VP9/AV1 dimensions, bounded Level 5.2 hardware-H.264 geometry for 5K/6K/ultrawide/portrait sources, safe transactional codec/resize rollback, a two-frame capture queue, stale-frame rejection, observable latest-frame pressure, and fixed 48 kHz stereo audio capture policy. Audio-filter policy deduplicates owning applications for window sharing and excludes Clip from Fullscreen audio. Hosted tests require sustained pressure to appear in the popover and HUD and recover after healthy intervals. | Production Live Share ScreenCaptureKit permission, real application/Fullscreen audio, overlay exclusion, window/display loss, or real encoder/network overload. |
-| UI | Injected Ready, Live, scrolled-bottom, Reconnecting, Failed, focused-overlay, and HUD scenarios use production presentation code. | Real-window hit consumption, secondary displays, Spaces, or capture exclusion. |
-| Lifecycle | Unit tests cover state transitions, reconnect, stale work, Stop All, Fullscreen rollback, viewer admission, and bounded authoritative-state replay after native channel drain. | Sleep/wake, permission revocation, ten-minute soak, and runtime resource scans. |
-| Distribution | The clean-source release gate enforces dependency pinning/notices, sandbox entitlements, normalized WebRTC provenance, nested signatures/runtime paths, mounted-DMG validation, and a recorded checksum. | Developer ID notarization and publication, which are outside this local Apple Development-signed milestone. |
+| Encrypted protocol | Cross-language crypto vectors, typed bounds, replay/tamper rejection, encrypted admission/SDP/ICE, opaque random stream identities and DataChannel handoff. | A malicious viewer deployment, traffic-analysis resistance or service availability. |
+| Go service | In-memory ownership/leases, authenticated host replacement, route isolation, strict opaque relay, origin policy, embedded assets and real localhost WebSockets. | Multi-replica routing, production TLS/reverse proxy or remote NAT traversal. |
+| Native WebRTC | Per-viewer negotiation, documented codec fallbacks, bounded capture/control queues, RTP statistics, Opus input and teardown. | Four simultaneous real browser-rendered sources, real system audio or controlled TURN. |
+| Browser viewer | Protocol crypto, admission UI, opaque manifest binding, multi-stream state, audio controls and reconnect behavior. | Subjective text/audio quality or every target browser/OS combination. |
+| UI and capture | Deterministic state/policy tests for popover, overlays, source rules, geometry and audio filters. | Production ScreenCaptureKit permission, Spaces/displays, click consumption and capture exclusion. |
+| Distribution | Source audits cover dependency pins, sandbox entitlements and server container structure. | Final signed DMG, published image provenance and notarization. |
 
-The current GoPeep v1 access code is visible to the signaling service and
-applies to new join attempts. The server does not reauthenticate a viewer that
-already joined before the code changed. Optional Live Share system audio is
-persisted and defaults to Off. Window sharing captures application-scoped audio
-for the unique owning apps rather than isolating one window; Fullscreen captures
-system audio while excluding Clip. ScreenCaptureKit's 48 kHz stereo
-samples enter one stable Opus WebRTC track through a native bridge. Live Share
-does not capture a microphone. The signaling server remains unchanged and does
-not process the WebRTC media. The current GoPeep browser viewer intentionally
-does not play the audio track, so host-side transport evidence is not an
-end-to-end audible result. Thirty FPS is the supported default; 60 FPS is
-optional and not a release blocker. VP8 remains the default video codec. VP9
-and AV1 use libwebrtc software encoders at native geometry, with VP9 restricted
-to profile 0; AV1 can impose materially higher CPU cost and is not the default.
+The optional access code is generated and checked by Clip inside an encrypted
+route; its text is never sent to the server. Changing it applies to new
+admissions and does not eject a connected peer. Window sharing captures audio
+at application scope for unique owning apps, while Fullscreen captures system
+audio excluding Clip. The embedded viewer attaches the stable Opus track and
+offers mute, volume and autoplay-unlock controls. Live Share never captures a
+microphone.
 
 Before release, the controlled-Mac lane must share real ScreenCaptureKit content
-through the production `LiveShareCoordinator`, exercise one through four
-windows plus Fullscreen and resize, prove both overlays are absent from shared
-pixels, and stop cleanly. Remote Internet/TURN traversal, a repeated-start/stop
-run, and a ten-minute soak remain separate gates. Until those run, the loopback
-lane must not be described as complete real-world Live Share acceptance.
+through the production coordinator, exercise one through four windows plus
+Fullscreen and resize, verify synchronized browser audio, prove both overlays
+are absent from shared pixels, and stop cleanly. Remote Internet/TURN traversal,
+repeated start/stop, and a ten-minute soak remain separate gates. Until those
+run, loopback must not be described as complete real-world Live Share evidence.
 
 The default acceptance lane is deterministic and permission-free:
 
@@ -107,6 +107,7 @@ that bounded held-frame cadence repair keeps all original timestamps as an
 exact subsequence while leaving long sparse VFR timelines untouched.
 
 The complete permission-free release gate is `./scripts/verify-release.sh`.
+It includes the local Live Share lane above before packaging the app.
 App-hosted unit tests detect XCTest injection and suppress normal production
 startup before Clip creates its coordinator, status item, onboarding, system
 integrations, or production-state services. Conditional real UI sources are

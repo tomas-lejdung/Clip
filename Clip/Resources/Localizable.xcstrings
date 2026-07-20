@@ -138,7 +138,7 @@
     "Allowed" : {
 
     },
-    "Applies to new viewers; signaling service can read it." : {
+    "Verified by this Mac; the server never receives the code." : {
 
     },
     "Apply" : {
@@ -760,15 +760,8 @@
     "Recent Recordings" : {
 
     },
-    "Reconnecting %lld/%lld…" : {
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "new",
-            "value" : "Reconnecting %1$lld/%2$lld…"
-          }
-        }
-      }
+    "Reconnecting…" : {
+
     },
     "Record" : {
 
@@ -955,6 +948,9 @@
 
     },
     "Share Link" : {
+
+    },
+    "Share link temporarily unavailable. Existing viewers stay connected." : {
 
     },
     "Shares app audio, or system audio in Fullscreen." : {

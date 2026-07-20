@@ -31,8 +31,8 @@ enum LiveShareViewPhase: Equatable, Sendable {
             String(localized: "Starting…")
         case let .live(elapsedSeconds):
             String(localized: "Live · \(LiveShareDurationFormatting.string(elapsedSeconds))")
-        case let .reconnecting(attempt, maximumAttempts):
-            String(localized: "Reconnecting \(max(1, attempt))/\(max(1, maximumAttempts))…")
+        case .reconnecting:
+            String(localized: "Reconnecting…")
         case .stopping:
             String(localized: "Stopping…")
         case let .failed(message):
@@ -58,6 +58,17 @@ enum LiveShareViewPhase: Equatable, Sendable {
 struct LiveShareRoomViewSnapshot: Equatable, Sendable {
     let viewerURL: URL
     let roomCode: String
+    let isAvailable: Bool
+
+    init(
+        viewerURL: URL,
+        roomCode: String,
+        isAvailable: Bool = true
+    ) {
+        self.viewerURL = viewerURL
+        self.roomCode = roomCode
+        self.isAvailable = isAvailable
+    }
 }
 
 enum LiveShareSourceViewStatus: String, Equatable, Sendable {

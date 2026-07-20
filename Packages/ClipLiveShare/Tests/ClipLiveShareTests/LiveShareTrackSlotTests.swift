@@ -1,7 +1,7 @@
 import Testing
 @testable import ClipLiveShare
 
-@Suite("Stable GoPeep track slots")
+@Suite("Stable Clip track slots")
 struct LiveShareTrackSlotTests {
     @Test("surviving sources never change track identity")
     func stableAfterRemoval() throws {
@@ -15,11 +15,12 @@ struct LiveShareTrackSlotTests {
         try allocation.apply(addTwo)
         selection = addTwo.selection
 
-        #expect(allocation.slot(for: .window(one.id))?.trackID == "video0")
-        #expect(allocation.slot(for: .window(two.id))?.trackID == "video1")
+        let firstIdentity = try #require(allocation.slot(for: .window(one.id))?.streamIdentity)
+        let secondIdentity = try #require(allocation.slot(for: .window(two.id))?.streamIdentity)
+        #expect(firstIdentity != secondIdentity)
 
         try allocation.apply(selection.removing(.window(one.id)))
-        #expect(allocation.slot(for: .window(two.id))?.trackID == "video1")
+        #expect(allocation.slot(for: .window(two.id))?.streamIdentity == secondIdentity)
     }
 
     @Test("fullscreen clears windows and always occupies video zero")
@@ -35,10 +36,12 @@ struct LiveShareTrackSlotTests {
             displayName: "Studio Display"
         )
         let fullscreen = selection.adding(.fullscreen(display))
+        let slotZeroIdentity = allocation.slots[0].streamIdentity
         try allocation.apply(fullscreen)
 
         #expect(allocation.activeSlots.count == 1)
-        #expect(allocation.activeSlots.first?.trackID == "video0")
+        #expect(allocation.activeSlots.first?.index == 0)
+        #expect(allocation.activeSlots.first?.streamIdentity == slotZeroIdentity)
         #expect(allocation.activeSlots.first?.source?.id == .fullscreen(display.id))
     }
 
@@ -53,10 +56,38 @@ struct LiveShareTrackSlotTests {
         }
 
         allocation.focus(.window(LiveShareWindowID(rawValue: 2)))
-        #expect(allocation.activeSlots.filter(\.isFocused).map(\.trackID) == ["video1"])
+        #expect(allocation.activeSlots.filter(\.isFocused).map(\.index) == [1])
 
         allocation.focus(nil)
         #expect(allocation.activeSlots.filter(\.isFocused).count == 1)
+    }
+
+    @Test("Stop All preserves per-session opaque identities")
+    func stopAllPreservesIdentities() throws {
+        var selection = LiveShareSourceSelection.empty
+        var allocation = LiveShareTrackSlotAllocation()
+        let identities = allocation.slots.map(\.streamIdentity)
+        let change = selection.adding(.window(window(1)))
+        try allocation.apply(change)
+        selection = change.selection
+
+        allocation.clear()
+
+        #expect(allocation.activeSlots.isEmpty)
+        #expect(allocation.slots.map(\.streamIdentity) == identities)
+        #expect(Set(identities).count == LiveShareTrackSlotAllocation.slotCount)
+        #expect(identities.allSatisfy { !$0.rawValue.hasPrefix("video") })
+    }
+
+    @Test("a new session allocation receives fresh opaque identities")
+    func newSessionRegeneratesIdentities() {
+        let firstSession = LiveShareTrackSlotAllocation()
+        let secondSession = LiveShareTrackSlotAllocation()
+
+        #expect(
+            Set(firstSession.slots.map(\.streamIdentity))
+                .isDisjoint(with: Set(secondSession.slots.map(\.streamIdentity)))
+        )
     }
 
     private func window(_ id: UInt32) -> LiveShareWindowSource {

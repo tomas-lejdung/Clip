@@ -690,6 +690,45 @@ struct LiveShareCoordinatorPolicyTests {
         #expect(message.contains("connection"))
     }
 
+    @Test("viewer admission counts pending and allocated copies of one route once")
+    func viewerAdmissionCapacityUsesDistinctRoutes() {
+        let allocated = ["viewer-1", "viewer-2", "viewer-3", "viewer-4"]
+        let pending = ["viewer-1", "viewer-2", "viewer-3", "viewer-4"]
+
+        #expect(LiveShareViewerAdmissionCapacity.canBegin(
+            routeID: "viewer-5",
+            allocatedViewerIDs: allocated,
+            pendingRouteIDs: pending,
+            maximumViewers: 8
+        ))
+        #expect(!LiveShareViewerAdmissionCapacity.canBegin(
+            routeID: "viewer-1",
+            allocatedViewerIDs: allocated,
+            pendingRouteIDs: pending,
+            maximumViewers: 8
+        ))
+        #expect(!LiveShareViewerAdmissionCapacity.canBegin(
+            routeID: "viewer-9",
+            allocatedViewerIDs: allocated + ["viewer-5", "viewer-6", "viewer-7", "viewer-8"],
+            pendingRouteIDs: pending,
+            maximumViewers: 8
+        ))
+    }
+
+    @Test("signaling handoff stays admission-pending until the host control channel opens")
+    func viewerAdmissionWaitsForNativeControlChannel() {
+        var progress = LiveShareViewerAdmissionProgress()
+        #expect(progress.remainsPending)
+
+        progress.receiveSignalingHandoff()
+        #expect(progress.didReceiveSignalingHandoff)
+        #expect(progress.remainsPending)
+
+        progress.openControlDataChannel()
+        #expect(progress.didOpenControlDataChannel)
+        #expect(!progress.remainsPending)
+    }
+
     @Test("signaling server errors are redacted before public diagnostics")
     func signalingServerErrorRedaction() {
         let serverControlled = "password=SECRET room=HIDDEN-ROOM-42 sdp=v=0"
@@ -720,7 +759,7 @@ struct LiveShareCoordinatorPolicyTests {
         #expect(firstOffer != nil)
         #expect(ledger.beginOffer(for: "viewer-1") == nil)
         #expect(ledger.receiveLocalICE(local, for: "viewer-1") == nil)
-        #expect(ledger.receiveRemoteICE(remote, for: "viewer-1") == nil)
+        #expect(ledger.receiveRemoteICE(remote, for: "viewer-1") == .buffered)
         if let firstOffer {
             let becameAnswerEligible = ledger.markOfferAnswerEligible(
                 for: "viewer-1",
@@ -750,7 +789,7 @@ struct LiveShareCoordinatorPolicyTests {
         let offer = try #require(offerValue)
 
         #expect(ledger.receiveLocalICE(local, for: "viewer-1") == nil)
-        #expect(ledger.receiveRemoteICE(remote, for: "viewer-1") == nil)
+        #expect(ledger.receiveRemoteICE(remote, for: "viewer-1") == .buffered)
         #expect(ledger.tokenAwaitingAnswer(for: "viewer-1") == nil)
 
         // This is the exact suspension window in `signaling.send(offer)`: the
@@ -797,9 +836,9 @@ struct LiveShareCoordinatorPolicyTests {
                 sdpMLineIndex: 0
             )
         }
-        for candidate in candidates {
-            #expect(ledger.receiveRemoteICE(candidate, for: "viewer-1") == nil)
-        }
+        #expect(ledger.receiveRemoteICE(candidates[0], for: "viewer-1") == .buffered)
+        #expect(ledger.receiveRemoteICE(candidates[1], for: "viewer-1") == .buffered)
+        #expect(ledger.receiveRemoteICE(candidates[2], for: "viewer-1") == .rejected)
         if let offer {
             let becameAnswerEligible = ledger.markOfferAnswerEligible(
                 for: "viewer-1",
@@ -812,7 +851,7 @@ struct LiveShareCoordinatorPolicyTests {
                     == Array(candidates.prefix(2))
             )
         }
-        #expect(ledger.receiveRemoteICE(candidates[0], for: "unknown") == nil)
+        #expect(ledger.receiveRemoteICE(candidates[0], for: "unknown") == .rejected)
 
         ledger.remove("viewer-1")
         #expect(ledger.beginOffer(for: "viewer-2") != nil)
