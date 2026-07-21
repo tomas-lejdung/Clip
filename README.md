@@ -248,8 +248,8 @@ anything.
 
 ```bash
 ./scripts/prepare-github-release.sh \
-  --tag v1.3.1 \
-  --release-notes docs/releases/1.3.1.md \
+  --tag v1.3.2 \
+  --release-notes docs/releases/1.3.2.md \
   --keychain-account ed25519
 ```
 
