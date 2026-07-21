@@ -533,6 +533,22 @@ struct LiveSharePopoverView: View {
                 .accessibilityIdentifier("clip.liveShare.frameRate")
             }
 
+            Toggle(
+                isOn: Binding(
+                    get: { model.snapshot.settings.cursorUpdatesMatchFrameRate },
+                    set: { model.setCursorUpdatesMatchFrameRate($0) }
+                )
+            ) {
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("Match Cursor to Frame Rate")
+                    Text("20 Hz by default; follows 30 or 60 FPS when enabled.")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .disabled(!model.snapshot.settings.canChangeCursorUpdateRate)
+            .accessibilityIdentifier("clip.liveShare.cursorUpdatesMatchFrameRate")
+
             LiveShareSettingRow(title: String(localized: "Codec")) {
                 VStack(alignment: .trailing, spacing: 1) {
                     Picker(

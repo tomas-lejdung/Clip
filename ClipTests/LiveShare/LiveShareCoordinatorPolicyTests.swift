@@ -284,6 +284,31 @@ struct LiveShareCoordinatorPolicyTests {
         #expect(!performance.maintainsResolution)
     }
 
+    @Test("cursor cadence stays at 20 Hz unless matching the stream frame rate")
+    func cursorUpdateCadence() {
+        #expect(LiveShareCoordinatorPolicy.cursorUpdatesPerSecond(
+            for: LiveShareSettings(frameRate: .sixty)
+        ) == 20)
+        #expect(LiveShareCoordinatorPolicy.cursorUpdatesPerSecond(
+            for: LiveShareSettings(
+                frameRate: .fifteen,
+                cursorUpdatesMatchFrameRate: true
+            )
+        ) == 20)
+        #expect(LiveShareCoordinatorPolicy.cursorUpdatesPerSecond(
+            for: LiveShareSettings(
+                frameRate: .thirty,
+                cursorUpdatesMatchFrameRate: true
+            )
+        ) == 30)
+        #expect(LiveShareCoordinatorPolicy.cursorUpdatesPerSecond(
+            for: LiveShareSettings(
+                frameRate: .sixty,
+                cursorUpdatesMatchFrameRate: true
+            )
+        ) == 60)
+    }
+
     @Test("one session budget is divided by focus without multiplying bandwidth")
     func senderPolicyAllocation() throws {
         let slots = try LiveShareTrackSlotAllocation(slots: [

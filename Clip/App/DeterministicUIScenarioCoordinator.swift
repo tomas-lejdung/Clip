@@ -940,6 +940,7 @@ enum DeterministicLiveShareDemo {
             canChangeQuality: false,
             canChangeFrameRate: false,
             canChangeCodec: false,
+            canChangeCursorUpdateRate: false,
             canChangePrioritizeFocusedWindow: false,
             canChangeMode: false,
             canChangeAutoShare: false

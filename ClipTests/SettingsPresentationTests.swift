@@ -134,6 +134,7 @@ struct SettingsPresentationTests {
             $0.quality = .insane
             $0.videoCodec = .av1
             $0.systemAudioEnabled = true
+            $0.cursorUpdatesMatchFrameRate = true
         }
         let customEndpoint = try ClipLiveShareServerEndpoint(
             userInput: "https://share.example.com:8443"
@@ -146,6 +147,7 @@ struct SettingsPresentationTests {
         #expect(reloaded.settings.quality == .insane)
         #expect(reloaded.settings.videoCodec == .av1)
         #expect(reloaded.settings.systemAudioEnabled)
+        #expect(reloaded.settings.cursorUpdatesMatchFrameRate)
         #expect(reloaded.serverEndpoint == customEndpoint)
 
         reloaded.resetServerEndpoint()

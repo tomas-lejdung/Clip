@@ -1764,6 +1764,9 @@ final class LiveShareCoordinator {
             setSystemAudioEnabled: { [weak self] enabled in
                 self?.setSystemAudioEnabled(enabled)
             },
+            setCursorUpdatesMatchFrameRate: { [weak self] enabled in
+                self?.setCursorUpdatesMatchFrameRate(enabled)
+            },
             setPrioritizeFocusedWindow: { [weak self] enabled in
                 self?.setPrioritizeFocusedWindow(enabled)
             },
@@ -4295,6 +4298,13 @@ final class LiveShareCoordinator {
         }
     }
 
+    private func setCursorUpdatesMatchFrameRate(_ enabled: Bool) {
+        guard settings.cursorUpdatesMatchFrameRate != enabled else { return }
+        settings.cursorUpdatesMatchFrameRate = enabled
+        persistSettings()
+        publish()
+    }
+
     private func requestVideoCodecChange(_ codec: LiveShareVideoCodec) {
         guard codec != settings.videoCodec, codecChangeTask == nil else { return }
         guard let host = peerHost else {
@@ -4608,6 +4618,9 @@ final class LiveShareCoordinator {
             }
             if baseline.systemAudioEnabled != value.systemAudioEnabled {
                 stored.systemAudioEnabled = value.systemAudioEnabled
+            }
+            if baseline.cursorUpdatesMatchFrameRate != value.cursorUpdatesMatchFrameRate {
+                stored.cursorUpdatesMatchFrameRate = value.cursorUpdatesMatchFrameRate
             }
             if baseline.prioritizeFocusedWindow != value.prioritizeFocusedWindow {
                 stored.prioritizeFocusedWindow = value.prioritizeFocusedWindow
@@ -5117,8 +5130,13 @@ final class LiveShareCoordinator {
         cursorTask = Task { @MainActor [weak self] in
             while let self, !Task.isCancelled {
                 broadcastCursorPosition()
+                let updatesPerSecond = LiveShareCoordinatorPolicy.cursorUpdatesPerSecond(
+                    for: settings
+                )
                 do {
-                    try await Task.sleep(for: .milliseconds(50))
+                    try await Task.sleep(
+                        for: .nanoseconds(1_000_000_000 / Int64(updatesPerSecond))
+                    )
                 } catch {
                     return
                 }
@@ -5767,6 +5785,7 @@ final class LiveShareCoordinator {
                     acceleration: settings.videoCodec == .h264 ? .hardware : .software
                 ),
                 systemAudioEnabled: settings.systemAudioEnabled,
+                cursorUpdatesMatchFrameRate: settings.cursorUpdatesMatchFrameRate,
                 prioritizeFocusedWindow: settings.prioritizeFocusedWindow,
                 mode: settings.encodingMode,
                 autoShareFocusedWindows: settings.autoShareFocusedWindows,
@@ -5775,6 +5794,7 @@ final class LiveShareCoordinator {
                 availableFrameRates: availableFrameRates,
                 canChangeCodec: canChangeSettings && codecChangeTask == nil,
                 canChangeSystemAudio: canChangeSettings,
+                canChangeCursorUpdateRate: canChangeSettings,
                 canChangePrioritizeFocusedWindow: canChangeSettings,
                 canChangeMode: canChangeSettings && codecChangeTask == nil,
                 canChangeAutoShare: canOperateSources && fullscreenSource == nil

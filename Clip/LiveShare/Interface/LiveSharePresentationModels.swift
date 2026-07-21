@@ -282,6 +282,7 @@ struct LiveShareSettingsViewSnapshot: Equatable, Sendable {
     let frameRate: LiveShareFrameRate
     let codec: LiveShareCodecViewSnapshot
     let systemAudioEnabled: Bool
+    let cursorUpdatesMatchFrameRate: Bool
     let prioritizeFocusedWindow: Bool
     let mode: LiveShareEncodingMode
     let autoShareFocusedWindows: Bool
@@ -290,6 +291,7 @@ struct LiveShareSettingsViewSnapshot: Equatable, Sendable {
     let availableFrameRates: Set<LiveShareFrameRate>
     let canChangeCodec: Bool
     let canChangeSystemAudio: Bool
+    let canChangeCursorUpdateRate: Bool
     let canChangePrioritizeFocusedWindow: Bool
     let canChangeMode: Bool
     let canChangeAutoShare: Bool
@@ -299,6 +301,7 @@ struct LiveShareSettingsViewSnapshot: Equatable, Sendable {
         frameRate: LiveShareFrameRate = .thirty,
         codec: LiveShareCodecViewSnapshot = .init(),
         systemAudioEnabled: Bool = false,
+        cursorUpdatesMatchFrameRate: Bool = false,
         prioritizeFocusedWindow: Bool = true,
         mode: LiveShareEncodingMode = .quality,
         autoShareFocusedWindows: Bool = false,
@@ -307,6 +310,7 @@ struct LiveShareSettingsViewSnapshot: Equatable, Sendable {
         availableFrameRates: Set<LiveShareFrameRate> = Set(LiveShareFrameRate.allCases),
         canChangeCodec: Bool = true,
         canChangeSystemAudio: Bool = true,
+        canChangeCursorUpdateRate: Bool = true,
         canChangePrioritizeFocusedWindow: Bool = true,
         canChangeMode: Bool = true,
         canChangeAutoShare: Bool = true
@@ -315,6 +319,7 @@ struct LiveShareSettingsViewSnapshot: Equatable, Sendable {
         self.frameRate = frameRate
         self.codec = codec
         self.systemAudioEnabled = systemAudioEnabled
+        self.cursorUpdatesMatchFrameRate = cursorUpdatesMatchFrameRate
         self.prioritizeFocusedWindow = prioritizeFocusedWindow
         self.mode = mode
         self.autoShareFocusedWindows = autoShareFocusedWindows
@@ -323,6 +328,7 @@ struct LiveShareSettingsViewSnapshot: Equatable, Sendable {
         self.availableFrameRates = availableFrameRates
         self.canChangeCodec = canChangeCodec
         self.canChangeSystemAudio = canChangeSystemAudio
+        self.canChangeCursorUpdateRate = canChangeCursorUpdateRate
         self.canChangePrioritizeFocusedWindow = canChangePrioritizeFocusedWindow
         self.canChangeMode = canChangeMode
         self.canChangeAutoShare = canChangeAutoShare

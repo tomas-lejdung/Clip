@@ -672,6 +672,12 @@ struct SettingsView: View {
                 }
                 .accessibilityIdentifier("clip.settings.liveShare.frameRate")
 
+                Toggle(
+                    "Match cursor updates to frame rate",
+                    isOn: liveShareSetting(\.cursorUpdatesMatchFrameRate)
+                )
+                .accessibilityIdentifier("clip.settings.liveShare.cursorUpdatesMatchFrameRate")
+
                 Picker(
                     "Mode",
                     selection: liveShareSetting(\.encodingMode)

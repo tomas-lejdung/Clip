@@ -151,6 +151,33 @@ struct LiveSharePresentationModelTests {
     }
 
     @Test
+    func testCursorRateToggleUsesPresentationCapabilityGate() {
+        var changes: [Bool] = []
+        let model = LiveSharePresentationModel(
+            snapshot: LiveShareViewSnapshot(
+                phase: .live(elapsedSeconds: 12),
+                settings: .init(
+                    cursorUpdatesMatchFrameRate: false,
+                    canChangeCursorUpdateRate: true
+                )
+            ),
+            actions: .init(setCursorUpdatesMatchFrameRate: { changes.append($0) })
+        )
+
+        model.setCursorUpdatesMatchFrameRate(true)
+        model.update(LiveShareViewSnapshot(
+            phase: .reconnecting(attempt: 1, maximumAttempts: 5),
+            settings: .init(
+                cursorUpdatesMatchFrameRate: true,
+                canChangeCursorUpdateRate: false
+            )
+        ))
+        model.setCursorUpdatesMatchFrameRate(false)
+
+        #expect(changes == [true])
+    }
+
+    @Test
     func testHardwareCodecDetailRemainsAvailable() {
         let verified = LiveShareCodecViewSnapshot(acceleration: .hardware)
         #expect(verified.detail == "Hardware accelerated")

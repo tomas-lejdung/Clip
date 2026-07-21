@@ -23,6 +23,7 @@ struct LiveSharePresentationActions {
     var setFrameRate: (LiveShareFrameRate) -> Void
     var setCodec: (LiveShareVideoCodec) -> Void
     var setSystemAudioEnabled: (Bool) -> Void
+    var setCursorUpdatesMatchFrameRate: (Bool) -> Void
     var setPrioritizeFocusedWindow: (Bool) -> Void
     var setMode: (LiveShareEncodingMode) -> Void
     var setAutoShareEnabled: (Bool) -> Void
@@ -46,6 +47,7 @@ struct LiveSharePresentationActions {
         setFrameRate: @escaping (LiveShareFrameRate) -> Void = { _ in },
         setCodec: @escaping (LiveShareVideoCodec) -> Void = { _ in },
         setSystemAudioEnabled: @escaping (Bool) -> Void = { _ in },
+        setCursorUpdatesMatchFrameRate: @escaping (Bool) -> Void = { _ in },
         setPrioritizeFocusedWindow: @escaping (Bool) -> Void = { _ in },
         setMode: @escaping (LiveShareEncodingMode) -> Void = { _ in },
         setAutoShareEnabled: @escaping (Bool) -> Void = { _ in },
@@ -68,6 +70,7 @@ struct LiveSharePresentationActions {
         self.setFrameRate = setFrameRate
         self.setCodec = setCodec
         self.setSystemAudioEnabled = setSystemAudioEnabled
+        self.setCursorUpdatesMatchFrameRate = setCursorUpdatesMatchFrameRate
         self.setPrioritizeFocusedWindow = setPrioritizeFocusedWindow
         self.setMode = setMode
         self.setAutoShareEnabled = setAutoShareEnabled
@@ -207,6 +210,11 @@ final class LiveSharePresentationModel: ObservableObject {
     func setSystemAudioEnabled(_ enabled: Bool) {
         guard snapshot.settings.canChangeSystemAudio else { return }
         actions.setSystemAudioEnabled(enabled)
+    }
+
+    func setCursorUpdatesMatchFrameRate(_ enabled: Bool) {
+        guard snapshot.settings.canChangeCursorUpdateRate else { return }
+        actions.setCursorUpdatesMatchFrameRate(enabled)
     }
 
     func setPrioritizeFocusedWindow(_ enabled: Bool) {

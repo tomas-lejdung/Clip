@@ -7,6 +7,15 @@ import Foundation
 enum LiveShareCoordinatorPolicy {
     static let maximumReconnectAttempts = 7
 
+    /// Cursor control messages are independent from video samples. The
+    /// opt-in mode follows the selected video cadence while retaining the
+    /// existing 20 Hz floor, so selecting 15 FPS never makes the cursor less
+    /// responsive than the default behavior.
+    static func cursorUpdatesPerSecond(for settings: LiveShareSettings) -> Int {
+        guard settings.cursorUpdatesMatchFrameRate else { return 20 }
+        return max(20, settings.frameRate.rawValue)
+    }
+
     /// Recording click highlights are a separate, file-capture preference.
     /// Live Share does not expose that setting and ScreenCaptureKit can place
     /// the system highlight in the wrong coordinate space after a live window

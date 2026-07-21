@@ -90,6 +90,9 @@
     "1 second" : {
 
     },
+    "20 Hz by default; follows 30 or 60 FPS when enabled." : {
+
+    },
     "3 seconds" : {
 
     },
@@ -616,6 +619,12 @@
 
     },
     "Managed history" : {
+
+    },
+    "Match Cursor to Frame Rate" : {
+
+    },
+    "Match cursor updates to frame rate" : {
 
     },
     "Max" : {

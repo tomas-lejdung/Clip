@@ -26,6 +26,7 @@ struct LiveShareSettingsTests {
         #expect(settings.encodingMode == .quality)
         #expect(settings.videoCodec == .vp8)
         #expect(!settings.systemAudioEnabled)
+        #expect(!settings.cursorUpdatesMatchFrameRate)
         #expect(settings.prioritizeFocusedWindow)
         #expect(!settings.autoShareFocusedWindows)
         #expect(!settings.accessCodeEnabled)
@@ -38,6 +39,7 @@ struct LiveShareSettingsTests {
         value.frameRate = .sixty
         value.videoCodec = .h264
         value.systemAudioEnabled = true
+        value.cursorUpdatesMatchFrameRate = true
         value.prioritizeFocusedWindow = false
         value.autoShareFocusedWindows = true
         let data = try JSONEncoder().encode(value)
@@ -46,6 +48,7 @@ struct LiveShareSettingsTests {
         let object = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
         #expect(object["videoCodec"] as? String == "h264")
         #expect(object["systemAudioEnabled"] as? Bool == true)
+        #expect(object["cursorUpdatesMatchFrameRate"] as? Bool == true)
         #expect(object["prioritizeFocusedWindow"] as? Bool == false)
         #expect(object["adaptiveBitrateEnabled"] == nil)
     }
@@ -69,6 +72,7 @@ struct LiveShareSettingsTests {
         #expect(settings.encodingMode == .performance)
         #expect(settings.videoCodec == .vp8)
         #expect(!settings.systemAudioEnabled)
+        #expect(!settings.cursorUpdatesMatchFrameRate)
         #expect(!settings.prioritizeFocusedWindow)
         #expect(settings.autoShareFocusedWindows)
         #expect(settings.accessCodeEnabled)
