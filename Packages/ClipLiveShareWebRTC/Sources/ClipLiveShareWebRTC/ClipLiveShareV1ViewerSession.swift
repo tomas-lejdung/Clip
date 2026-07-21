@@ -832,6 +832,12 @@ public actor ClipLiveShareV1ViewerSession {
     {
       return true
     }
+    if let descriptor = dictionary["descriptor"] as? [String: Any],
+      descriptor["version"] as? Int == ClipLiveShareNativeV2.version,
+      dictionary["signature"] is String
+    {
+      return true
+    }
     guard let message = dictionary["message"] as? [String: Any],
       message["version"] as? Int == ClipLiveShareNativeV2.version,
       message["type"] is String,
