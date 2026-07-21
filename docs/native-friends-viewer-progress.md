@@ -28,9 +28,9 @@ Existing browser protocol: [clip-live-share-protocol-v1.md](clip-live-share-prot
 | NFV-00 | Product and threat model | `DONE` | Preparation/Start, one complete invite, persistent device identities, server-blind labels and trust, explicit per-connection host approval, bounded crash recovery, browser fallback and native multi-window behavior are fixed in the product specification. |
 | NFV-01 | Native receiver | `DONE` | The Swift 6 receiver answers, exchanges ICE, handles renegotiation, binds early or late tracks to authoritative manifests, reports transport state, emits one audio track, and tears down deterministically. |
 | NFV-02 | Viewer control reducer | `DONE` | Versioned manifests and native lifecycle revisions reduce stream generations, focus, geometry, cursor, audio, sharing and close events into race-safe state without resurrecting stale v1 sources. |
-| NFV-03 | Native remote windows | `DONE` | Each of four manual sources owns an independent regular macOS window; Auto Share reuses one stable window. Hide, reopen, Show All, remove, reconnect and authoritative reconciliation have deterministic coverage, and host focus never raises or moves local windows. |
-| NFV-04 | Native resolution | `DONE` | Auto maps one decoded pixel to one backing pixel when it fits, centers small sources without upscaling, fits oversized streams, preserves Actual Size, responds to backing-scale changes, and ignores transient adaptation geometry. |
-| NFV-05 | Remote identity and cursor | `DONE` | The permanent five-point friend-colored border stays outside video, focus only brightens it, reconnect turns it gray, and normalized remote cursor coordinates follow the same centered/aspect-fit render rectangle while stale cursors clear. |
+| NFV-03 | Native remote windows | `DONE` | Each of four manual sources owns an independent macOS window; Auto Share reuses one stable window. Receiver title chrome and the redundant source chip are visually removed in favor of a friend-colored outer frame and matching custom draggable header. Header controls are translucent until hover. Hide, reopen, Show All, remove, reconnect and authoritative reconciliation have deterministic coverage, and host focus never raises or moves local windows. |
+| NFV-04 | Native resolution | `DONE` | Authoritative source logical dimensions remain stable across Retina and non-Retina receivers. Fit preserves aspect ratio without default upscaling; Native 100% preserves logical size, crops oversized content, follows the focused remote cursor without revealing blanks, reports zoom and can reset the window to actual logical size. Backing-scale changes and transient adaptation geometry do not corrupt the source size. |
+| NFV-05 | Remote identity and cursor | `DONE` | The thick friend-colored frame and matching header stay outside video, focus only brightens the identity treatment, reconnect turns it gray, and title contrast adapts to the identity color. The host captures its cursor only into the focused source; native state rejects stale or wrong-source cursor routing, and Native 100% panning follows only that accepted cursor. |
 | NFV-06 | Viewer audio and controls | `DONE` | One aggregate Opus receiver is accepted and played once per session across renegotiation; mute, volume, visible/hidden sources, P2P/TURN state, statistics, Show All and Leave are production-wired. Host focus changes only presentation state and never rearrange local windows. |
 | NFV-07 | Persistent device identity | `DONE` | A Keychain-backed P-256 signing identity produces a canonical fingerprint and signs fresh session descriptors. Private key material never reaches the rendezvous service or ordinary friend persistence, and reset creates a new device identity. |
 | NFV-08 | Friends persistence | `DONE` | Editable local names, pinned public identities, endpoint, opaque rendezvous capability, trust state, device name, block, remove and identity reset use atomic local snapshots without session passwords or private identity material. |
@@ -42,7 +42,7 @@ Existing browser protocol: [clip-live-share-protocol-v1.md](clip-live-share-prot
 | NFV-14 | Browser compatibility | `EXTERNAL_GATE` | Browser protocol-v1 and native receiver implementations remain production-wired to independent host peers, and each path has deterministic coverage. A simultaneous real WebKit plus native Clip session has not yet been accepted, so mixed-client behavior is not claimed complete. |
 | NFV-15 | Role and lifecycle integration | `DONE` | Recording, hosting and viewing are mutually exclusive. Unstarted host preparation is awaited before installing a viewer, role tokens reject late callbacks, and stop/quit paths tear down viewer windows, audio, peers, routes and host UI. |
 | NFV-16 | End-to-end friendship journey | `EXTERNAL_GATE` | Deterministic protocol composition proves pairing, ACK/receipt, a fresh room/key, identity proof, approval, removal and rejection; loopback peers prove media/control survive an in-process signaling handoff. Two independently launched signed Clip GUI processes, crash/relaunch recovery and killing the actual signaling-server process remain external gates. |
-| NFV-17 | Multi-window journey | `EXTERNAL_GATE` | Deterministic receiver and window tests cover four source bindings, add/update/hide/show/remove, exact-pixel/fallback sizing, borders, focus without key theft, cursor routing, reconnect and audio once. Real ScreenCaptureKit sources, Fullscreen replacement, Retina/multi-display movement and manual window interaction remain external gates. |
+| NFV-17 | Multi-window journey | `EXTERNAL_GATE` | Deterministic receiver and window tests cover four source bindings, add/update/hide/show/remove, source-logical Fit and cropped Native 100% sizing, custom chrome, onscreen clamping, focus without key theft, focused-source cursor capture, stale routing rejection, cursor-follow panning, reconnect and audio once. Real ScreenCaptureKit sources, Fullscreen replacement, Retina/multi-display movement and manual window interaction remain external gates. |
 | NFV-18 | Signed review build | `DONE` | The full local acceptance, hosted-app and strict Swift 6 source/link/test-source gates pass. The repo Release build is sealed with the persistent Apple Development identity for Team `FJ2BS65H3F`, hardened runtime and the sandbox entitlements; `/Applications/Clip.app` remains untouched. |
 
 ## Deterministic evidence boundary
@@ -50,10 +50,11 @@ Existing browser protocol: [clip-live-share-protocol-v1.md](clip-live-share-prot
 Repository tests compose the signed native-v2 friendship messages, persistent
 journal, fresh-room identity proof, rejection after removal, rendezvous limits,
 viewer state reducer, four-track WebRTC receiver, stereo-audio-once behavior,
-control after signaling handoff, native window reconciliation, backing-pixel
-sizing, border state, cursor mapping, deployment ICE/TURN configuration and
-application role gate. These are pointer-free and do not need Screen Recording
-permission.
+control after signaling handoff, native window reconciliation, source-logical
+sizing, Fit and cropped Native 100% geometry, custom chrome, border state,
+focused-source cursor capture, stale cursor rejection, cursor-follow panning,
+deployment ICE/TURN configuration and application role gate. These are
+pointer-free and do not need Screen Recording permission.
 
 The two receivers used by the multi-peer loopback test both exercise the native
 receiver implementation. Naming one fixture as browser-compatible does not make
@@ -75,8 +76,10 @@ explicit external acceptance items.
 - Share one through four real ScreenCaptureKit windows and Fullscreen; exercise
   add/remove/resize, Auto Share, zero-source waiting and source replacement.
 - Move and resize remote windows across Retina and non-Retina displays and
-  Spaces; verify one-to-one backing-pixel presentation, the external border,
-  cursor mapping, local key-window ownership and last-window close choice.
+  Spaces; verify source-logical sizing, Fit and Native 100% crop/pan behavior,
+  zoom reset, the external custom frame/header, translucent-to-opaque control
+  hover, focused-window-only cursor presentation, local key-window ownership
+  and last-window close choice.
 - Exercise direct remote ICE and configured TURN relay on controlled networks,
   and confirm the viewer reports the selected P2P or relay path.
 

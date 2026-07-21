@@ -83,15 +83,23 @@ struct NativeViewerWindowControllerTests {
         ) == available)
     }
 
-    @Test("Identity border remains outside the video surface")
-    func borderLayout() {
+    @Test("Identity frame and custom header stay outside the video surface")
+    func framedHeaderLayout() {
         let video = NSView()
         let content = NativeViewerContentView(videoView: video, identityColor: .systemPink)
-        content.frame = CGRect(x: 0, y: 0, width: 1_010, height: 510)
+        content.frame = CGRect(
+            x: 0,
+            y: 0,
+            width: 1_000 + NativeViewerContentView.horizontalChrome,
+            height: 500 + NativeViewerContentView.verticalChrome
+        )
         content.layoutSubtreeIfNeeded()
 
-        #expect(video.frame == CGRect(x: 5, y: 5, width: 1_000, height: 500))
-        #expect(content.layer?.borderWidth == 5)
+        #expect(content.videoViewportFrame == CGRect(x: 6, y: 6, width: 1_000, height: 500))
+        #expect(content.headerFrame == CGRect(x: 6, y: 506, width: 1_000, height: 34))
+        #expect(video.frame == CGRect(x: 0, y: 0, width: 1_000, height: 500))
+        #expect(content.headerFrame.minY == content.videoViewportFrame.maxY)
+        #expect(content.idleControlsOpacity < 0.5)
     }
 
     @Test("Viewer windows start windowed and never auto-tab")
@@ -118,8 +126,61 @@ struct NativeViewerWindowControllerTests {
         defer { controller.tearDown() }
 
         #expect(controller.window?.styleMask.contains(.fullScreen) == false)
+        #expect(controller.window?.styleMask.contains(.fullSizeContentView) == true)
+        #expect(controller.window?.titleVisibility == .hidden)
+        #expect(controller.window?.titlebarAppearsTransparent == true)
+        #expect(controller.window?.standardWindowButton(.closeButton)?.isHidden == true)
+        #expect(controller.window?.standardWindowButton(.miniaturizeButton)?.isHidden == true)
+        #expect(controller.window?.standardWindowButton(.zoomButton)?.isHidden == true)
         #expect(controller.window?.collectionBehavior.contains(.fullScreenPrimary) == true)
         #expect(controller.window?.tabbingMode == .disallowed)
         #expect(controller.content.isFlipped == false)
+    }
+
+    @Test("Native mode keeps a 100 percent surface and crops it inside a small viewport")
+    func nativeModeCropsWithoutScaling() {
+        let video = NSView()
+        let content = NativeViewerContentView(videoView: video, identityColor: .systemPink)
+        let source = NativeViewerSourceSnapshot(
+            sourceInstanceID: "source-1",
+            streamID: "video0",
+            applicationName: "Fixture",
+            windowName: "Document",
+            pixelSize: CGSize(width: 2_000, height: 1_000),
+            sourcePointSize: CGSize(width: 1_000, height: 500),
+            isFocused: true,
+            isConnected: true,
+            stateRevision: 1,
+            mode: .manual
+        )
+        content.frame = CGRect(
+            x: 0,
+            y: 0,
+            width: 600 + NativeViewerContentView.horizontalChrome,
+            height: 300 + NativeViewerContentView.verticalChrome
+        )
+        content.update(
+            ownerName: "Friend",
+            source: source,
+            identityColor: .systemPink,
+            resolvedSourceLogicalSize: CGSize(width: 1_000, height: 500)
+        )
+        content.setScaleMode(.actualPixels)
+        content.layoutSubtreeIfNeeded()
+
+        #expect(video.frame.size == CGSize(width: 1_000, height: 500))
+        #expect(video.frame.origin == CGPoint(x: -200, y: -100))
+        #expect(content.zoomPercentage == 100)
+    }
+
+    @Test("Reset sizing clamps the complete viewer window into the visible screen")
+    func resetSizingClampsOnscreen() {
+        let visible = CGRect(x: 100, y: 50, width: 1_200, height: 800)
+        let oversizedAtEdge = CGRect(x: 1_150, y: -100, width: 900, height: 700)
+
+        #expect(NativeViewerWindowController.clampedOrigin(
+            frame: oversizedAtEdge,
+            visibleFrame: visible
+        ) == CGPoint(x: 400, y: 50))
     }
 }

@@ -1,13 +1,23 @@
 import AppKit
 
 enum NativeViewerCursorFocusPolicy {
+    static func shouldPresentCursor(
+        streamID: String,
+        authoritativeSources: [NativeViewerSourceSnapshot]
+    ) -> Bool {
+        authoritativeSources.contains {
+            $0.streamID == streamID && $0.isFocused && $0.isConnected
+        }
+    }
+
     static func shouldClearCursor(
         streamID: String,
         authoritativeSources: [NativeViewerSourceSnapshot]
     ) -> Bool {
-        !authoritativeSources.contains {
-            $0.streamID == streamID && $0.isFocused
-        }
+        !shouldPresentCursor(
+            streamID: streamID,
+            authoritativeSources: authoritativeSources
+        )
     }
 }
 
@@ -147,20 +157,37 @@ final class NativeViewerWindowCoordinator {
         normalizedX: CGFloat?,
         normalizedY: CGFloat?
     ) {
+        let authoritativeSources = registry.windows.values.map(\.source)
+        guard NativeViewerCursorFocusPolicy.shouldPresentCursor(
+            streamID: streamID,
+            authoritativeSources: authoritativeSources
+        ) else {
+            // Ignore delayed cursor packets from a source that has already
+            // lost host focus. Clear that source defensively, but preserve the
+            // current focused source's latest cursor until its next sample.
+            for (id, entry) in entries
+            where registry.windows[id]?.source.streamID == streamID {
+                entry.controller.content.setCursor(
+                    normalizedX: nil,
+                    normalizedY: nil
+                )
+            }
+            return
+        }
+
         for (id, entry) in entries where registry.windows[id]?.source.streamID != streamID {
             entry.controller.content.setCursor(
                 normalizedX: nil,
                 normalizedY: nil
             )
         }
-        guard let id = registry.windows.first(where: {
-            $0.value.source.streamID == streamID
-        })?.key,
-        let entry = entries[id] else { return }
-        entry.controller.content.setCursor(
-            normalizedX: normalizedX,
-            normalizedY: normalizedY
-        )
+        for (id, entry) in entries
+        where registry.windows[id]?.source.streamID == streamID {
+            entry.controller.content.setCursor(
+                normalizedX: normalizedX,
+                normalizedY: normalizedY
+            )
+        }
     }
 
     func markDisconnected() {
@@ -282,6 +309,12 @@ final class NativeViewerWindowCoordinator {
         let offset = CGFloat((index % 6) * 28)
         origin.x += offset
         origin.y -= offset
+        if let visibleFrame = (window.screen ?? reference.screen ?? NSScreen.main)?.visibleFrame {
+            origin = NativeViewerWindowController.clampedOrigin(
+                frame: CGRect(origin: origin, size: window.frame.size),
+                visibleFrame: visibleFrame
+            )
+        }
         window.setFrameOrigin(origin)
     }
 }

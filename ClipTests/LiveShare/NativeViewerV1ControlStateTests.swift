@@ -102,4 +102,83 @@ struct NativeViewerV1ControlStateTests {
             normalizedY: 0.75
         )))
     }
+
+    @Test("Cursor follows authoritative focus and rejects delayed packets")
+    func cursorFollowsFocusAndRejectsDelayedPackets() throws {
+        let sessionID = try ClipLiveShareSessionID(rawValue: "viewer-session")
+        let firstID = try ClipLiveShareStreamID(rawValue: "video0")
+        let secondID = try ClipLiveShareStreamID(rawValue: "video1")
+        var state = NativeViewerV1ControlState(sessionID: sessionID)
+        _ = try state.apply(.manifest(.init(
+            sessionID: sessionID,
+            streams: [
+                try .init(
+                    id: firstID,
+                    mediaTrackID: .init(rawValue: "track0"),
+                    active: true,
+                    focused: true,
+                    appName: "Arc",
+                    windowName: "Docs",
+                    width: 800,
+                    height: 600,
+                    order: 0
+                ),
+                try .init(
+                    id: secondID,
+                    mediaTrackID: .init(rawValue: "track1"),
+                    active: true,
+                    focused: false,
+                    appName: "Messages",
+                    windowName: "Chat",
+                    width: 900,
+                    height: 700,
+                    order: 1
+                ),
+            ]
+        )))
+
+        #expect(try state.apply(.cursor(.init(
+            sessionID: sessionID,
+            streamID: firstID,
+            x: 10,
+            y: 20,
+            inView: true
+        ))) == .cursorChanged(.init(
+            streamID: "video0",
+            normalizedX: 0.1,
+            normalizedY: 0.2
+        )))
+        #expect(state.cursors[firstID] != nil)
+
+        #expect(try state.apply(.focus(.init(
+            sessionID: sessionID,
+            streamID: secondID
+        ))) == .sourcesChanged)
+        #expect(state.cursors.isEmpty)
+
+        // This sample was queued before the focus change. It must not restore
+        // the cursor on the old source or affect the new focused source.
+        #expect(try state.apply(.cursor(.init(
+            sessionID: sessionID,
+            streamID: firstID,
+            x: 30,
+            y: 40,
+            inView: true
+        ))) == .ignored)
+        #expect(state.cursors.isEmpty)
+
+        #expect(try state.apply(.cursor(.init(
+            sessionID: sessionID,
+            streamID: secondID,
+            x: 50,
+            y: 60,
+            inView: true
+        ))) == .cursorChanged(.init(
+            streamID: "video1",
+            normalizedX: 0.5,
+            normalizedY: 0.6
+        )))
+        #expect(state.cursors[firstID] == nil)
+        #expect(state.cursors[secondID] != nil)
+    }
 }

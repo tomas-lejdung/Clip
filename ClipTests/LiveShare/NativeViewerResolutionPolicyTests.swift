@@ -71,8 +71,8 @@ struct NativeViewerResolutionPolicyTests {
         #expect(result.isFitted)
     }
 
-    @Test("Actual preserves the source Mac's logical size across viewer display scales")
-    func actualPixelsDoesNotFit() throws {
+    @Test("Actual preserves native content but caps its viewport across viewer display scales")
+    func actualPixelsCapsViewportWithoutScalingContent() throws {
         for destinationScale in [CGFloat(1), CGFloat(2)] {
             let retinaHost = try #require(NativeViewerResolutionPolicy.resolve(.init(
                 decodedPixelSize: CGSize(width: 2_000, height: 1_000),
@@ -89,8 +89,8 @@ struct NativeViewerResolutionPolicyTests {
                 mode: .actualPixels
             )))
 
-            #expect(retinaHost.contentSize == CGSize(width: 1_000, height: 500))
-            #expect(externalHost.contentSize == CGSize(width: 2_000, height: 1_000))
+            #expect(retinaHost.contentSize == CGSize(width: 800, height: 400))
+            #expect(externalHost.contentSize == CGSize(width: 800, height: 400))
             #expect(!retinaHost.isFitted)
             #expect(!externalHost.isFitted)
         }
@@ -204,5 +204,134 @@ struct NativeViewerResolutionPolicyTests {
             authoritativePixelSize: nil,
             stateRevision: 1
         ) == CGSize(width: 1_280, height: 720))
+    }
+}
+
+@Suite("Native viewer pan policy")
+struct NativeViewerPanPolicyTests {
+    @Test("Cursor is centered in oversized native content")
+    func centersCursorInOversizedContent() throws {
+        let geometry = try #require(NativeViewerPanPolicy.geometry(
+            sourceLogicalSize: CGSize(width: 2_000, height: 1_000),
+            viewportSize: CGSize(width: 800, height: 400),
+            normalizedCursor: CGPoint(x: 0.5, y: 0.5)
+        ))
+
+        #expect(geometry.contentFrame == CGRect(x: -600, y: -300, width: 2_000, height: 1_000))
+        #expect(geometry.overflowSize == CGSize(width: 1_200, height: 600))
+        #expect(geometry.canPanHorizontally)
+        #expect(geometry.canPanVertically)
+        #expect(geometry.isCropped)
+    }
+
+    @Test("Cursor following clamps at every source edge")
+    func clampsCursorAtEdges() throws {
+        let sourceSize = CGSize(width: 2_000, height: 1_000)
+        let viewportSize = CGSize(width: 800, height: 400)
+        let topLeft = try #require(NativeViewerPanPolicy.geometry(
+            sourceLogicalSize: sourceSize,
+            viewportSize: viewportSize,
+            normalizedCursor: CGPoint(x: 0, y: 0)
+        ))
+        let bottomRight = try #require(NativeViewerPanPolicy.geometry(
+            sourceLogicalSize: sourceSize,
+            viewportSize: viewportSize,
+            normalizedCursor: CGPoint(x: 1, y: 1)
+        ))
+
+        #expect(topLeft.contentFrame.origin == CGPoint(x: 0, y: -600))
+        #expect(topLeft.contentFrame.maxX >= viewportSize.width)
+        #expect(topLeft.contentFrame.maxY >= viewportSize.height)
+        #expect(bottomRight.contentFrame.origin == CGPoint(x: -1_200, y: 0))
+        #expect(bottomRight.contentFrame.minX <= 0)
+        #expect(bottomRight.contentFrame.minY <= 0)
+    }
+
+    @Test("An axis that fits stays centered while the other follows the cursor")
+    func fittedAxisDoesNotPan() throws {
+        let sourceSize = CGSize(width: 1_200, height: 300)
+        let viewportSize = CGSize(width: 800, height: 500)
+        let geometry = try #require(NativeViewerPanPolicy.geometry(
+            sourceLogicalSize: sourceSize,
+            viewportSize: viewportSize,
+            normalizedCursor: CGPoint(x: 1, y: 1)
+        ))
+
+        #expect(geometry.contentFrame.origin == CGPoint(x: -400, y: 100))
+        #expect(geometry.canPanHorizontally)
+        #expect(!geometry.canPanVertically)
+    }
+
+    @Test("Content that fits does not move with the cursor")
+    func fittedContentDoesNotPan() throws {
+        let sourceSize = CGSize(width: 640, height: 360)
+        let viewportSize = CGSize(width: 800, height: 600)
+        let first = try #require(NativeViewerPanPolicy.geometry(
+            sourceLogicalSize: sourceSize,
+            viewportSize: viewportSize,
+            normalizedCursor: CGPoint(x: 0, y: 0)
+        ))
+        let second = try #require(NativeViewerPanPolicy.geometry(
+            sourceLogicalSize: sourceSize,
+            viewportSize: viewportSize,
+            normalizedCursor: CGPoint(x: 1, y: 1)
+        ))
+
+        #expect(first.contentFrame.origin == CGPoint(x: 80, y: 120))
+        #expect(second.contentFrame.origin == first.contentFrame.origin)
+        #expect(!first.isCropped)
+    }
+
+    @Test("Manual pan is clamped without revealing empty space")
+    func clampsManualPan() {
+        let origin = NativeViewerPanPolicy.clampedContentOrigin(
+            CGPoint(x: 100, y: -1_000),
+            sourceLogicalSize: CGSize(width: 1_200, height: 900),
+            viewportSize: CGSize(width: 800, height: 600)
+        )
+
+        #expect(origin == CGPoint(x: 0, y: -300))
+    }
+
+    @Test("Out-of-range cursor values clamp and absent cursor recenters")
+    func normalizesCursorInput() throws {
+        let clamped = try #require(NativeViewerPanPolicy.geometry(
+            sourceLogicalSize: CGSize(width: 1_200, height: 900),
+            viewportSize: CGSize(width: 800, height: 600),
+            normalizedCursor: CGPoint(x: -2, y: 4)
+        ))
+        let absent = try #require(NativeViewerPanPolicy.geometry(
+            sourceLogicalSize: CGSize(width: 1_200, height: 900),
+            viewportSize: CGSize(width: 800, height: 600),
+            normalizedCursor: nil
+        ))
+
+        #expect(clamped.contentFrame.origin == CGPoint(x: 0, y: 0))
+        #expect(absent.contentFrame.origin == CGPoint(x: -200, y: -150))
+    }
+
+    @Test("Zoom is relative to source logical size")
+    func reportsDisplayIndependentZoom() {
+        #expect(NativeViewerPanPolicy.zoomPercentage(
+            sourceLogicalSize: CGSize(width: 1_000, height: 600),
+            renderedContentSize: CGSize(width: 1_000, height: 600)
+        ) == 100)
+        #expect(NativeViewerPanPolicy.zoomPercentage(
+            sourceLogicalSize: CGSize(width: 1_000, height: 600),
+            renderedContentSize: CGSize(width: 720, height: 432)
+        ) == 72)
+    }
+
+    @Test("Invalid geometry is rejected")
+    func rejectsInvalidGeometry() {
+        #expect(NativeViewerPanPolicy.geometry(
+            sourceLogicalSize: .zero,
+            viewportSize: CGSize(width: 800, height: 600),
+            normalizedCursor: nil
+        ) == nil)
+        #expect(NativeViewerPanPolicy.zoomPercentage(
+            sourceLogicalSize: CGSize(width: 1_000, height: 600),
+            renderedContentSize: .zero
+        ) == nil)
     }
 }

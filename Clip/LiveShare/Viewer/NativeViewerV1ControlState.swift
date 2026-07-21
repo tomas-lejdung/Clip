@@ -81,14 +81,14 @@ struct NativeViewerV1ControlState: Equatable, Sendable {
         switch message {
         case let .manifest(manifest):
             streams = Dictionary(uniqueKeysWithValues: manifest.streams.map { ($0.id, $0) })
-            cursors = cursors.filter { streams[$0.key]?.active == true }
+            pruneCursorsToFocusedStream()
             bumpRevision()
             return .sourcesChanged
 
         case let .streamState(value):
             guard let current = streams[value.streamID] else { return .ignored }
             streams[value.streamID] = try replacing(current, active: value.active)
-            if !value.active { cursors[value.streamID] = nil }
+            pruneCursorsToFocusedStream()
             bumpRevision()
             return .sourcesChanged
 
@@ -99,6 +99,7 @@ struct NativeViewerV1ControlState: Equatable, Sendable {
             for (id, current) in streams {
                 streams[id] = try replacing(current, focused: id == value.streamID)
             }
+            pruneCursorsToFocusedStream()
             bumpRevision()
             return .sourcesChanged
 
@@ -113,7 +114,16 @@ struct NativeViewerV1ControlState: Equatable, Sendable {
             return .sourcesChanged
 
         case let .cursor(value):
-            guard streams[value.streamID]?.active == true else { return .ignored }
+            guard let stream = streams[value.streamID],
+                  stream.active,
+                  stream.focused else {
+                // Cursor packets can arrive after a focus message because the
+                // DataChannel is fed by independently sampled host state. An
+                // old packet must never make an unfocused source's cursor
+                // visible again.
+                cursors[value.streamID] = nil
+                return .ignored
+            }
             let snapshot = NativeViewerCursorSnapshot(
                 streamID: value.streamID.rawValue,
                 normalizedX: value.inView ? CGFloat(value.x / 100) : nil,
@@ -142,6 +152,12 @@ struct NativeViewerV1ControlState: Equatable, Sendable {
 
     private mutating func bumpRevision() {
         stateRevision = stateRevision == UInt64.max ? UInt64.max : stateRevision + 1
+    }
+
+    private mutating func pruneCursorsToFocusedStream() {
+        cursors = cursors.filter {
+            streams[$0.key]?.active == true && streams[$0.key]?.focused == true
+        }
     }
 
     private func replacing(

@@ -24,6 +24,88 @@ struct LiveShareCoordinatorPolicyTests {
         #expect(configuration.sourceRect == CGRect(x: 10, y: 20, width: 800, height: 600))
     }
 
+    @Test("capture cursor follows focus and disables the old source first")
+    func captureCursorFollowsFocus() throws {
+        let firstSource = LiveShareSource.window(.init(
+            id: .init(rawValue: 10),
+            windowName: "First",
+            appName: "Tests"
+        ))
+        let secondSource = LiveShareSource.window(.init(
+            id: .init(rawValue: 11),
+            windowName: "Second",
+            appName: "Tests"
+        ))
+        var slots = try LiveShareTrackSlotAllocation(slots: [
+            LiveShareTrackSlot(index: 0, source: firstSource, isFocused: true),
+            LiveShareTrackSlot(index: 1, source: secondSource),
+            LiveShareTrackSlot(index: 2),
+            LiveShareTrackSlot(index: 3),
+        ])
+        slots.focus(secondSource.id)
+        let firstGeneration = UUID()
+        let secondGeneration = UUID()
+        let firstDescriptor = try makeLiveShareCaptureDescriptor(
+            source: firstSource,
+            slot: 0,
+            showsCursor: true,
+            focused: true
+        )
+        let secondDescriptor = try makeLiveShareCaptureDescriptor(
+            source: secondSource,
+            slot: 1,
+            showsCursor: false,
+            focused: false
+        )
+
+        let mutations = LiveShareCaptureCursorPolicy.mutations(
+            slots: slots,
+            descriptors: [
+                firstSource.id: firstDescriptor,
+                secondSource.id: secondDescriptor,
+            ],
+            generations: [
+                firstSource.id: firstGeneration,
+                secondSource.id: secondGeneration,
+            ]
+        )
+
+        #expect(mutations.map(\.sourceID) == [firstSource.id, secondSource.id])
+        #expect(mutations.map(\.generation) == [firstGeneration, secondGeneration])
+        #expect(mutations.map(\.descriptor.video.showsCursor) == [false, true])
+        #expect(mutations.map(\.descriptor.stream.focused) == [false, true])
+        #expect(mutations[0].descriptor.video.sourceRect == firstDescriptor.video.sourceRect)
+        #expect(mutations[1].descriptor.video.width == secondDescriptor.video.width)
+    }
+
+    @Test("capture cursor planner ignores sources already aligned with focus")
+    func alignedCaptureCursorRequiresNoUpdate() throws {
+        let source = LiveShareSource.window(.init(
+            id: .init(rawValue: 12),
+            windowName: "Aligned",
+            appName: "Tests"
+        ))
+        let slots = try LiveShareTrackSlotAllocation(slots: [
+            LiveShareTrackSlot(index: 0, source: source, isFocused: true),
+            LiveShareTrackSlot(index: 1),
+            LiveShareTrackSlot(index: 2),
+            LiveShareTrackSlot(index: 3),
+        ])
+        let generation = UUID()
+        let descriptor = try makeLiveShareCaptureDescriptor(
+            source: source,
+            slot: 0,
+            showsCursor: true,
+            focused: true
+        )
+
+        #expect(LiveShareCaptureCursorPolicy.mutations(
+            slots: slots,
+            descriptors: [source.id: descriptor],
+            generations: [source.id: generation]
+        ).isEmpty)
+    }
+
     @Test("source identifiers are stable and reversible")
     func sourceIdentifiers() {
         let values: [LiveShareSourceID] = [
@@ -2307,5 +2389,43 @@ private func makeCaptureWindow(
         processID: pid_t(id),
         pixelWidth: 1_600,
         pixelHeight: 1_200
+    )
+}
+
+private func makeLiveShareCaptureDescriptor(
+    source: LiveShareSource,
+    slot: Int,
+    showsCursor: Bool,
+    focused: Bool
+) throws -> LiveShareCaptureDescriptor {
+    LiveShareCaptureDescriptor(
+        source: source,
+        target: .window(id: {
+            guard case let .window(window) = source else { return 0 }
+            return window.id.rawValue
+        }()),
+        sourcePixelWidth: 1_600,
+        sourcePixelHeight: 1_200,
+        video: CaptureVideoConfiguration(
+            width: 1_280,
+            height: 720,
+            framesPerSecond: 30,
+            showsCursor: showsCursor,
+            showsClickHighlights: false,
+            sourceRect: CGRect(x: 10, y: 20, width: 640, height: 360)
+        ),
+        stream: try ClipLiveShareStreamDescriptor(
+            id: ClipLiveShareStreamID(rawValue: "stream-\(slot)"),
+            mediaTrackID: ClipLiveShareMediaTrackID(rawValue: "track-\(slot)"),
+            active: true,
+            focused: focused,
+            appName: "Tests",
+            windowName: "Fixture \(slot)",
+            width: 1_280,
+            height: 720,
+            order: slot,
+            sourcePointWidth: 800,
+            sourcePointHeight: 600
+        )
     )
 }

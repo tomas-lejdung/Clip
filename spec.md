@@ -180,18 +180,33 @@ macOS desktop window for each of up to four active manual remote sources. Auto
 Share instead reuses one stable remote window as its authoritative source
 changes. Each remote window:
 
-- Renders one decoded video pixel to one physical receiver pixel whenever it
-  fits, accounting for the destination display's backing scale.
-- Uniformly scales down only when exact size cannot fit and offers Auto,
-  Actual Size, and Fit controls. It never upscales by default.
+- Uses the host source's authoritative logical dimensions for window and video
+  layout, independent of the receiver display's backing scale. A window shared
+  from a Retina display is therefore not doubled on another Mac, and a window
+  shared from a non-Retina display is not halved on a Retina display.
+- Offers **Fit to Window** and **Native 100%** presentation. Fit preserves the
+  source aspect ratio without upscaling by default. Native keeps the source at
+  its logical 100% size; if the receiver window is smaller, it crops rather
+  than scales and smoothly pans the visible region toward the focused remote
+  cursor without exposing blank space. The header shows the current zoom and
+  can reset the window to the source's actual logical size.
 - Can be moved, resized, minimized, zoomed, placed in another Space or display,
   and made locally fullscreen without affecting the host window.
-- Has a permanent five-point colored remote border outside the video content
-  plus a matching label such as **Alex · Xcode**. The stable friend color is
-  derived from the saved identity. Remote focus brightens the border without
-  moving, raising, or stealing focus from local windows.
-- Draws the remote cursor inside the video but never moves the local pointer or
-  sends keyboard/mouse input. Remote control is outside this milestone.
+- Is visually borderless: the receiver's ordinary title bar, traffic-light
+  controls, and redundant source-information chip are hidden because the host
+  title bar is already part of the shared image. A thick friend-colored frame
+  surrounds the entire video, and a matching rounded header sits outside it
+  with the source name and viewer controls. The header is the window's drag
+  surface. Its controls stay translucent while idle and become opaque on hover
+  so they do not unnecessarily obscure nearby content. The stable friend color
+  is derived from the saved identity, with contrasting title text. Remote focus
+  brightens the frame without moving, raising, or stealing focus from local
+  windows.
+- Shows the remote cursor only in the focused shared source. The host capture
+  pipeline disables cursor capture for every other source, and the viewer
+  rejects stale or wrong-source cursor messages. It never moves the local
+  pointer or sends keyboard/mouse input. Remote control is outside this
+  milestone.
 
 The viewer owns window placement. Clip may preserve the host's relative layout
 for initial placement, but host movement must not overwrite a viewer's manual
@@ -270,7 +285,11 @@ Clip observes the frontmost application and focused shareable window. It sends
 focus changes and normalized cursor position for the focused shared source over
 the ordered, reliable `clip-control-v1` WebRTC DataChannel. These messages let
 the browser viewer follow the host's focus or cursor; they do not remotely
-control either computer.
+control either computer. Cursor capture is enabled only on that focused source;
+focus changes update capture visibility in place without renegotiating its
+track. Native viewer state accepts cursor positions only for the current,
+connected focused stream and discards stale routing after focus or lifecycle
+changes.
 
 An optional Auto Share setting may follow eligible focused windows. It obeys
 the same four-source limit and uses deterministic least-recently-focused

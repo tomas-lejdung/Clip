@@ -13,6 +13,75 @@ private struct LiveShareCaptureGeometrySnapshot {
     let descriptor: LiveShareCaptureDescriptor
 }
 
+struct LiveShareCaptureCursorMutation: Equatable {
+    let sourceID: LiveShareSourceID
+    let slot: Int
+    let generation: UUID
+    let descriptor: LiveShareCaptureDescriptor
+}
+
+/// Plans atomic ScreenCaptureKit cursor changes for the current track focus.
+/// Turning the old cursor off before enabling the new one prevents two capture
+/// streams from briefly embedding the same system cursor during a focus move.
+enum LiveShareCaptureCursorPolicy {
+    static func mutations(
+        slots: LiveShareTrackSlotAllocation,
+        descriptors: [LiveShareSourceID: LiveShareCaptureDescriptor],
+        generations: [LiveShareSourceID: UUID]
+    ) -> [LiveShareCaptureCursorMutation] {
+        slots.activeSlots.compactMap { slot in
+            guard let source = slot.source,
+                  let current = descriptors[source.id],
+                  let generation = generations[source.id] else { return nil }
+            let requested = descriptor(
+                current,
+                focused: slot.isFocused
+            )
+            guard requested != current else { return nil }
+            return LiveShareCaptureCursorMutation(
+                sourceID: source.id,
+                slot: slot.index,
+                generation: generation,
+                descriptor: requested
+            )
+        }.sorted { lhs, rhs in
+            if lhs.descriptor.video.showsCursor
+                != rhs.descriptor.video.showsCursor {
+                return !lhs.descriptor.video.showsCursor
+            }
+            return lhs.slot < rhs.slot
+        }
+    }
+
+    static func descriptor(
+        _ descriptor: LiveShareCaptureDescriptor,
+        focused: Bool
+    ) -> LiveShareCaptureDescriptor {
+        var video = descriptor.video
+        video.showsCursor = focused
+        return LiveShareCaptureDescriptor(
+            source: descriptor.source,
+            target: descriptor.target,
+            sourcePixelWidth: descriptor.sourcePixelWidth,
+            sourcePixelHeight: descriptor.sourcePixelHeight,
+            video: video,
+            stream: try! ClipLiveShareStreamDescriptor(
+                id: descriptor.stream.id,
+                mediaTrackID: descriptor.stream.mediaTrackID,
+                active: descriptor.stream.active,
+                focused: focused,
+                appName: descriptor.stream.appName,
+                windowName: descriptor.stream.windowName,
+                width: descriptor.stream.width,
+                height: descriptor.stream.height,
+                order: descriptor.stream.order,
+                sourcePointWidth: descriptor.stream.sourcePointWidth,
+                sourcePointHeight: descriptor.stream.sourcePointHeight
+            )
+        )
+    }
+}
+
 private struct LiveSharePendingViewerRoute {
     let routeID: ClipLiveShareRouteID
     let sessionID: ClipLiveShareSessionID
@@ -1570,6 +1639,7 @@ final class LiveShareCoordinator {
     private var sourceTransitionTask: Task<Void, Never>?
     private var sourceTransitionTaskID: UUID?
     private var sourceTransitionGeneration = 0
+    private var captureCursorFocusRevision: UInt64 = 0
     private var latestAutomaticWindowID: LiveShareWindowID?
     private var fullscreenRequestGate = LiveShareFullscreenRequestGate()
     private var retryTask: Task<Void, Never>?
@@ -3960,7 +4030,7 @@ final class LiveShareCoordinator {
                 width: geometry.width,
                 height: geometry.height,
                 framesPerSecond: settings.frameRate.rawValue,
-                showsCursor: true
+                showsCursor: slot.isFocused
             ),
             stream: stream
         )
@@ -5303,6 +5373,55 @@ final class LiveShareCoordinator {
     private func broadcastFocusChange() {
         applyRuntimeSenderPolicies()
         broadcastAuthoritativeControlMutation()
+        captureCursorFocusRevision &+= 1
+        let revision = captureCursorFocusRevision
+        enqueueSourceTransition { coordinator in
+            await coordinator.reconcileCaptureCursorVisibility(
+                expectedFocusRevision: revision
+            )
+        }
+    }
+
+    /// Applies focus-only ScreenCaptureKit updates without restarting a source
+    /// or renegotiating its WebRTC track. The operation runs in the same serial
+    /// transition chain as source additions, removals, and geometry changes.
+    private func reconcileCaptureCursorVisibility(
+        expectedFocusRevision: UInt64
+    ) async {
+        guard expectedFocusRevision == captureCursorFocusRevision,
+              let pipeline = capturePipeline else { return }
+        let mutations = LiveShareCaptureCursorPolicy.mutations(
+            slots: slotAllocation,
+            descriptors: captureDescriptors,
+            generations: captureGenerations
+        )
+        for mutation in mutations {
+            do {
+                try await pipeline.update(
+                    mutation.descriptor,
+                    inSlot: mutation.slot,
+                    expectedGeneration: mutation.generation
+                )
+                guard captureGenerations[mutation.sourceID] == mutation.generation,
+                      slotAllocation.slot(for: mutation.sourceID)?.index == mutation.slot,
+                      !isEnding else { return }
+                captureDescriptors[mutation.sourceID] = mutation.descriptor
+                guard expectedFocusRevision == captureCursorFocusRevision else {
+                    return
+                }
+            } catch {
+                if LiveShareCaptureGeometryFailurePolicy.requiresSessionFailure(
+                    after: error
+                ) {
+                    fail(code: .captureFailed, error: error)
+                } else {
+                    Self.logger.error(
+                        "Could not update Live Share cursor focus: \(error.localizedDescription, privacy: .public)"
+                    )
+                }
+                return
+            }
+        }
     }
 
     private func streamDescriptor(

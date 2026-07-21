@@ -158,6 +158,23 @@ struct NativeViewerWindowStateTests {
             streamID: "video1",
             authoritativeSources: [firstIdle, secondIdle]
         ))
+
+        let disconnectedFocus = NativeViewerSourceSnapshot(
+            sourceInstanceID: secondFocused.sourceInstanceID,
+            streamID: secondFocused.streamID,
+            applicationName: secondFocused.applicationName,
+            windowName: secondFocused.windowName,
+            pixelSize: secondFocused.pixelSize,
+            sourcePointSize: secondFocused.sourcePointSize,
+            isFocused: true,
+            isConnected: false,
+            stateRevision: secondFocused.stateRevision,
+            mode: secondFocused.mode
+        )
+        #expect(NativeViewerCursorFocusPolicy.shouldClearCursor(
+            streamID: "video1",
+            authoritativeSources: [firstIdle, disconnectedFocus]
+        ))
     }
 
     @Test("Stale duplicate auto-source state cannot replace a newer revision")

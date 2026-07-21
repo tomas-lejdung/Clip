@@ -84,11 +84,27 @@ enum NativeViewerResolutionPolicy {
             true
         }
         let pointScale = shouldFit ? fitScale : 1
+        // Native mode keeps the video surface at 100%, but the window itself
+        // must remain usable on the viewer's current display. A capped
+        // viewport crops the native surface; cursor-follow panning reveals the
+        // hidden portion without ever scaling the shared pixels down.
+        let resolvedContentSize: CGSize
+        if request.mode == .actualPixels {
+            resolvedContentSize = CGSize(
+                width: min(preferredPointSize.width, request.maximumContentSize.width),
+                height: min(preferredPointSize.height, request.maximumContentSize.height)
+            )
+        } else {
+            resolvedContentSize = CGSize(
+                width: preferredPointSize.width * pointScale,
+                height: preferredPointSize.height * pointScale
+            )
+        }
 
         return NativeViewerResolution(
             contentSize: CGSize(
-                width: max(1, floor(preferredPointSize.width * pointScale)),
-                height: max(1, floor(preferredPointSize.height * pointScale))
+                width: max(1, floor(resolvedContentSize.width)),
+                height: max(1, floor(resolvedContentSize.height))
             ),
             destinationPixelsPerSourcePixel:
                 preferredPointSize.width * pointScale
@@ -96,6 +112,115 @@ enum NativeViewerResolutionPolicy {
                 / request.decodedPixelSize.width,
             isFitted: pointScale < 1
         )
+    }
+
+    private static func isValid(_ size: CGSize) -> Bool {
+        size.width.isFinite && size.height.isFinite
+            && size.width > 0 && size.height > 0
+    }
+}
+
+/// Point-space geometry for displaying a shared window at its native logical
+/// size inside a smaller viewer viewport. The cursor coordinates follow the
+/// capture protocol: x grows from the left and y grows from the top.
+struct NativeViewerPanGeometry: Equatable, Sendable {
+    let contentFrame: CGRect
+    let overflowSize: CGSize
+
+    var canPanHorizontally: Bool { overflowSize.width > 0 }
+    var canPanVertically: Bool { overflowSize.height > 0 }
+    var isCropped: Bool { canPanHorizontally || canPanVertically }
+}
+
+enum NativeViewerPanPolicy {
+    /// Places native-sized content so the cursor is centered whenever possible.
+    /// At an edge, the origin is clamped so panning never reveals empty space.
+    /// An axis whose content already fits remains centered and does not pan.
+    static func geometry(
+        sourceLogicalSize: CGSize,
+        viewportSize: CGSize,
+        normalizedCursor: CGPoint?
+    ) -> NativeViewerPanGeometry? {
+        guard isValid(sourceLogicalSize), isValid(viewportSize) else { return nil }
+
+        let cursor = normalizedCursor.flatMap(validatedCursor) ?? CGPoint(x: 0.5, y: 0.5)
+        let sourceCursorFromBottom = CGPoint(
+            x: cursor.x * sourceLogicalSize.width,
+            y: (1 - cursor.y) * sourceLogicalSize.height
+        )
+        let preferredOrigin = CGPoint(
+            x: viewportSize.width / 2 - sourceCursorFromBottom.x,
+            y: viewportSize.height / 2 - sourceCursorFromBottom.y
+        )
+        let origin = clampedContentOrigin(
+            preferredOrigin,
+            sourceLogicalSize: sourceLogicalSize,
+            viewportSize: viewportSize
+        )
+
+        let overflow = CGSize(
+            width: max(0, sourceLogicalSize.width - viewportSize.width),
+            height: max(0, sourceLogicalSize.height - viewportSize.height)
+        )
+        return NativeViewerPanGeometry(
+            contentFrame: CGRect(origin: origin, size: sourceLogicalSize),
+            overflowSize: overflow
+        )
+    }
+
+    /// Clamps a manual or animated pan to the same no-empty-space bounds used
+    /// by cursor following. Axes that fit are always recentered.
+    static func clampedContentOrigin(
+        _ proposedOrigin: CGPoint,
+        sourceLogicalSize: CGSize,
+        viewportSize: CGSize
+    ) -> CGPoint {
+        CGPoint(
+            x: clampedAxisOrigin(
+                proposedOrigin.x,
+                contentLength: sourceLogicalSize.width,
+                viewportLength: viewportSize.width
+            ),
+            y: clampedAxisOrigin(
+                proposedOrigin.y,
+                contentLength: sourceLogicalSize.height,
+                viewportLength: viewportSize.height
+            )
+        )
+    }
+
+    /// Returns a presentation percentage relative to the source Mac's logical
+    /// size. Native mode is therefore 100% on both Retina and non-Retina Macs.
+    static func zoomPercentage(
+        sourceLogicalSize: CGSize,
+        renderedContentSize: CGSize
+    ) -> Int? {
+        guard isValid(sourceLogicalSize), isValid(renderedContentSize) else { return nil }
+        let scale = min(
+            renderedContentSize.width / sourceLogicalSize.width,
+            renderedContentSize.height / sourceLogicalSize.height
+        )
+        guard scale.isFinite else { return nil }
+        return Int((scale * 100).rounded())
+    }
+
+    private static func validatedCursor(_ cursor: CGPoint) -> CGPoint? {
+        guard cursor.x.isFinite, cursor.y.isFinite else { return nil }
+        return CGPoint(
+            x: min(1, max(0, cursor.x)),
+            y: min(1, max(0, cursor.y))
+        )
+    }
+
+    private static func clampedAxisOrigin(
+        _ proposedOrigin: CGFloat,
+        contentLength: CGFloat,
+        viewportLength: CGFloat
+    ) -> CGFloat {
+        guard contentLength > viewportLength else {
+            return (viewportLength - contentLength) / 2
+        }
+        return min(0, max(viewportLength - contentLength, proposedOrigin))
     }
 
     private static func isValid(_ size: CGSize) -> Bool {
