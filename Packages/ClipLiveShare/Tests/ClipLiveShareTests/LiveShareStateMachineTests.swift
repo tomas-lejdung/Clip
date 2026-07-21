@@ -45,20 +45,18 @@ struct LiveShareStateMachineTests {
     #expect(machine.snapshot.isSessionConnected)
   }
 
-  @Test("Sharing requires a selected source and explicit capture confirmation")
+  @Test("Sharing starts explicitly and can begin before a source is selected")
   func startSharing() throws {
     var machine = try readyMachine()
-    #expect(throws: LiveShareTransitionError.noSelectedSources) {
-      try machine.beginSharing()
-    }
-
-    machine.addSource(.window(makeWindow(1)))
     try machine.beginSharing()
     #expect(machine.snapshot.phase == .starting)
     #expect(machine.snapshot.isSharingMedia)
 
     try machine.markSharingStarted()
     #expect(machine.snapshot.phase == .sharing)
+    #expect(machine.snapshot.sources.isEmpty)
+
+    machine.addSource(.window(makeWindow(1)))
     #expect(machine.snapshot.sources.windows.map(\.id.rawValue) == [1])
   }
 
@@ -80,7 +78,7 @@ struct LiveShareStateMachineTests {
     #expect(machine.snapshot.sources.windows == [makeWindow(5)])
   }
 
-  @Test("Removing the final source returns to ready without ending the room")
+  @Test("Removing the final source keeps the explicitly started room live")
   func removingFinalSource() throws {
     var machine = try readyMachine()
     let source = makeWindow(1)
@@ -91,7 +89,7 @@ struct LiveShareStateMachineTests {
 
     machine.removeSource(.window(source.id))
 
-    #expect(machine.snapshot.phase == .ready)
+    #expect(machine.snapshot.phase == .sharing)
     #expect(machine.snapshot.sources.isEmpty)
     #expect(machine.snapshot.viewerCount == 2)
     #expect(machine.snapshot.room != nil)
@@ -110,7 +108,7 @@ struct LiveShareStateMachineTests {
     #expect(machine.snapshot.phase == .stopping)
     try machine.completeStopping()
 
-    #expect(machine.snapshot.phase == .ready)
+    #expect(machine.snapshot.phase == .sharing)
     #expect(machine.snapshot.room == room)
     #expect(machine.snapshot.sources.isEmpty)
     #expect(machine.snapshot.viewerCount == 2)
@@ -157,7 +155,7 @@ struct LiveShareStateMachineTests {
     #expect(machine.snapshot.phase == .ready)
   }
 
-  @Test("Removing all media during reconnect recovers to ready")
+  @Test("Removing all media during reconnect restores the active share")
   func stopMediaDuringReconnect() throws {
     var machine = try readyMachine()
     let source = makeWindow(9)
@@ -170,10 +168,10 @@ struct LiveShareStateMachineTests {
     #expect(machine.snapshot.phase == .reconnecting)
     #expect(machine.snapshot.sources.isEmpty)
     try machine.markReconnected()
-    #expect(machine.snapshot.phase == .ready)
+    #expect(machine.snapshot.phase == .sharing)
   }
 
-  @Test("Connection loss during Stop All reconnects to a ready empty room")
+  @Test("Connection loss during Stop All reconnects to an active empty room")
   func reconnectWhileStopping() throws {
     var machine = try readyMachine()
     machine.addSource(.window(makeWindow(10)))
@@ -187,7 +185,7 @@ struct LiveShareStateMachineTests {
     machine.clearSources()
     try machine.markReconnected()
 
-    #expect(machine.snapshot.phase == .ready)
+    #expect(machine.snapshot.phase == .sharing)
     #expect(machine.snapshot.sources.isEmpty)
     #expect(machine.snapshot.viewerCount == 2)
   }

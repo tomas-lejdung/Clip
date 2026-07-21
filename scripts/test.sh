@@ -22,6 +22,10 @@ case "$TEST_CONFIGURATION" in
 esac
 
 XCODE_DEVELOPMENT_TEAM=""
+XCODE_CODE_SIGN_IDENTITY="$(clip_xcode_signing_identity)" || {
+  echo "Could not resolve Xcode's signing identity for '$CLIP_CODE_SIGN_IDENTITY'" >&2
+  exit 1
+}
 if ! clip_signing_is_ad_hoc; then
   XCODE_DEVELOPMENT_TEAM="$(clip_resolved_development_team)" || {
     echo "Could not resolve a unique development team for signing identity '$CLIP_CODE_SIGN_IDENTITY'" >&2
@@ -131,7 +135,7 @@ XCODEBUILD_ARGUMENTS=(
   -derivedDataPath "$DERIVED_DATA"
   -clonedSourcePackagesDirPath "$SOURCE_PACKAGES"
   CODE_SIGNING_ALLOWED=YES
-  CODE_SIGN_IDENTITY="$CLIP_CODE_SIGN_IDENTITY"
+  CODE_SIGN_IDENTITY="$XCODE_CODE_SIGN_IDENTITY"
   # Hosted tests use `@testable import Clip`. Debug enables this by default;
   # make the explicit Release test lane equivalent without changing the normal
   # Release/package build settings.

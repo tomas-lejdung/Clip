@@ -13,6 +13,7 @@ public enum LiveSharePhase: String, Codable, CaseIterable, Hashable, Sendable {
 }
 
 public enum LiveShareFailureCode: String, Codable, Hashable, Sendable {
+  case identityUnavailable
   case reservationFailed
   case signalingFailed
   case captureFailed
@@ -181,9 +182,6 @@ public struct LiveShareStateMachine: Sendable {
     guard phase == .ready else {
       throw invalidTransition("beginSharing")
     }
-    guard !sources.isEmpty else {
-      throw LiveShareTransitionError.noSelectedSources
-    }
     phase = .starting
   }
 
@@ -202,13 +200,14 @@ public struct LiveShareStateMachine: Sendable {
     phaseAfterReconnect = nil
   }
 
-  /// Stops every media source while retaining the room and connected viewers so
-  /// sharing can resume without making browsers reconnect.
+  /// Stops every media source while retaining the active room and connected
+  /// viewers. An active Live Share may intentionally have zero sources while
+  /// the host chooses what to show next.
   public mutating func completeStopping() throws {
     guard phase == .stopping else {
       throw invalidTransition("completeStopping")
     }
-    phase = .ready
+    phase = .sharing
     sources = .empty
     reconnectAttempt = 0
   }
@@ -223,7 +222,7 @@ public struct LiveShareStateMachine: Sendable {
     case .sharing:
       phaseAfterReconnect = .sharing
     case .stopping:
-      phaseAfterReconnect = .ready
+      phaseAfterReconnect = .sharing
     default:
       phaseAfterReconnect = .ready
     }
@@ -272,11 +271,7 @@ public struct LiveShareStateMachine: Sendable {
   }
 
   private mutating func normalizePhaseAfterSourceRemoval() {
-    guard sources.isEmpty else { return }
-    if phase == .starting || phase == .sharing {
-      phase = .ready
-    } else if phase == .reconnecting {
-      phaseAfterReconnect = .ready
-    }
+    // Source lifecycle is independent from session lifecycle. In particular,
+    // removing the final source leaves an explicitly started share active.
   }
 }

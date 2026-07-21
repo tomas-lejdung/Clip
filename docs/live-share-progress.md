@@ -1,6 +1,6 @@
 # Clip Live Share progress board
 
-Branch: `codex/native-live-share-server`
+Completed server branch: `codex/native-live-share-server` (merged to `main`)
 
 Last updated: 2026-07-21
 
@@ -37,9 +37,9 @@ branch is not published and development does not replace `/Applications/Clip.app
 | LS-08 | Live Share interface | `DONE` | Popover, endpoint settings, overlays, HUD, source controls, unavailable-link behavior and permission-free presentation tests use the native room/link model. Settings probes stream through a hard response-size bound. |
 | LS-09 | Privacy and reliability | `DONE` | The server cannot decrypt signaling; secrets are session-only; replay/tamper/size/route checks, persistent capped reconnect, per-peer failure isolation, admission timeouts, bounded queues and static log/storage scans pass. Runtime network/soak evidence remains under LS-12. |
 | LS-10 | Local acceptance | `DONE` | The unified pointer-free gate passes the hardened Go service, browser crypto/protocol tests, core tests, a real offscreen WebKit encrypted video flow with decoded stereo Opus waveform analysis, and the native WebRTC suite. The full hosted app suite and strict Swift 6 source/link/test-source gate also pass. |
-| LS-11 | Packaging and self-hosting | `EXTERNAL_GATE` | Non-root multi-architecture Docker build/publish support and deployment documentation exist, and the Release app compiles and links. The installed Apple Development certificate expired in 2025, so valid distribution signing, final container publication/inspection and the DMG remain deliberate release actions. |
-| LS-12 | Controlled real-Mac acceptance | `EXTERNAL_GATE` | Requires ScreenCaptureKit permission and owner-authorized runtime testing for real window/Fullscreen video, browser audio, overlays, focus churn, sleep/wake and lifecycle soak. |
-| LS-20 | Native Clip viewer | `DEFERRED` | A future Clip-to-Clip receiver may reuse the same encrypted signaling and WebRTC protocol after measurement. Browser viewing remains the supported receiver now. |
+| LS-11 | Packaging and self-hosting | `EXTERNAL_GATE` | Non-root multi-architecture Docker build/publish support and deployment documentation exist. Stable local Apple Development signing is available; final feature-branch Release verification, container publication/inspection and DMG publication remain deliberate release actions. |
+| LS-12 | Controlled real-Mac acceptance | `EXTERNAL_GATE` | Requires privacy-authorized ScreenCaptureKit testing for real window/Fullscreen video and audio, two independently launched Clip GUI processes, native remote windows, mixed native/WebKit viewing, overlays, focus churn, sleep/wake and lifecycle soak. |
+| LS-20 | Native Clip viewer and Friends | `EXTERNAL_GATE` | Production native receiving, preparation, complete-invite join, persistent identity, Friends, fresh-room admission, four-window presentation, audio-once playback and role exclusion are implemented with deterministic coverage on `codex/native-friends-viewer`. The signed repo review build is complete; mixed native/WebKit and real-device gates are tracked separately in [native-friends-viewer-progress.md](native-friends-viewer-progress.md). |
 
 ## Completed deterministic evidence
 
@@ -89,6 +89,30 @@ branch is not published and development does not replace `/Applications/Clip.app
   route closes. Established peers are not dependent on the host signaling
   socket staying continuously connected.
 
+### Native Friends and viewer
+
+- Live Share now separates preparation from Start. Preparation reserves a fresh
+  room and complete invite without capture, friend presence, peer allocation or
+  approval prompts. A bounded pre-Start route may wait and is promoted only
+  after Start; New Room and cancellation discard it.
+- Each installation has a persistent Keychain-backed P-256 identity. Friend
+  labels, identity pins, opaque rendezvous capabilities, block/remove state and
+  signed recovery evidence remain local; the service receives no friend graph
+  or trust decision.
+- Add Friend uses signed request, acceptance, requester acknowledgement and host
+  commit receipt. The requester is shown as **Finishing setup** until receipt
+  validation; exact replay evidence is capped at 16 entries and seven days.
+- A saved-friend join verifies a fresh signed descriptor and persistent viewer
+  proof, then asks the host to Allow or Deny that connection. Trust is rechecked
+  after the asynchronous approval surface returns.
+- One native peer owns up to four authoritative manual source windows; Auto
+  Share reuses one stable window. Deterministic tests cover binding, add/remove,
+  hide/reopen, reconnect, no-upscale backing-pixel sizing, external border,
+  focus treatment, letterboxed cursor mapping and a single session audio track.
+- Recording, hosting and viewing are mutually exclusive application roles.
+  Awaited teardown and role tokens prevent an old host or viewer callback from
+  mutating the replacement role.
+
 ### Audio and controls
 
 - A persisted, default-Off toggle drives one deduplicated ScreenCaptureKit
@@ -113,13 +137,21 @@ Run:
 ./scripts/run-live-share-acceptance.sh
 ```
 
-The lane is repository-local and pointer-free. It runs Go tests, browser
+The lane is repository-local and pointer-free. It runs Go tests and browser
 protocol tests, starts the real server on an unused loopback port, validates
-health/version/capabilities and the embedded viewer, then runs the Swift Live
-Share and WebRTC package suites, including the opt-in offscreen WebKit
-end-to-end case against that loopback endpoint. It does not launch or replace
-the installed app, capture the desktop, use privacy permissions, or depend on a
+health/version, browser and native-rendezvous capabilities plus the embedded
+viewer, then runs the Swift Live Share and WebRTC package suites. Those suites
+include signed native friendship composition, fresh-room rejection after
+removal, native rendezvous routing, four-source receiver binding, stereo audio
+once, control after an in-process signaling handoff, and the opt-in offscreen
+WebKit video/audio case against loopback. It does not launch or replace the
+installed app, capture the desktop, use privacy permissions, or depend on a
 sibling checkout.
+
+The multi-peer fixture uses two native receiver instances; it is not evidence
+of a simultaneous embedded WebKit and native Clip session. Closing the fixture's
+signaling bridge is not evidence of killing the Go service process. Both remain
+named external gates.
 
 ## Remaining controlled and release gates
 
@@ -140,6 +172,16 @@ These must not be inferred from loopback tests:
   secondary displays/Spaces and never appear in shared pixels.
 - [ ] Exercise direct remote Internet ICE plus a controlled configured TURN
   relay. Loopback establishes neither.
+- [ ] Launch two separately signed Clip GUI processes and exercise complete
+  invite pairing, **Finishing setup** crash recovery, fresh-room presence,
+  Allow/Deny admission, four native windows, audio once, remove and rejection.
+- [ ] Connect one native Clip viewer and one embedded WebKit viewer to the same
+  host at the same time; verify independent admission, media and teardown.
+- [ ] Kill and restart the actual Go service after media/DataChannel readiness,
+  rather than merely disconnecting an in-process signaling test bridge.
+- [ ] Move native remote windows between Retina/non-Retina displays and Spaces;
+  verify backing-pixel sizing, colored borders, remote cursor alignment and no
+  local focus theft with manual interaction.
 - [ ] Exercise sleep/wake, display/window removal, permission revocation,
   server restart/re-advertisement, sustained overload, repeated start/stop and
   a ten-minute share while resources return to idle.

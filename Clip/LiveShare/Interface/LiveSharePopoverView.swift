@@ -7,6 +7,8 @@ struct LiveSharePopoverView: View {
 
     @ObservedObject var model: LiveSharePresentationModel
     @State private var statisticsExpanded: Bool
+    @State private var showsInviteEntry = false
+    @State private var inviteEntry = ""
 
     init(
         model: LiveSharePresentationModel,
@@ -25,13 +27,18 @@ struct LiveSharePopoverView: View {
                         capturePressureBanner(warning)
                     }
                     shareLinkSection
-                    Divider()
-                    sourcesSection
-                    Divider()
-                    streamSettingsSection
-                    Divider()
-                    viewersSection
-                    statisticsSection
+                    if model.snapshot.sessionStage == .active {
+                        Divider()
+                        sourcesSection
+                        Divider()
+                        streamSettingsSection
+                        Divider()
+                        viewersSection
+                        statisticsSection
+                    } else {
+                        Divider()
+                        preparationSection
+                    }
                 }
                 .padding(14)
             }
@@ -78,17 +85,19 @@ struct LiveSharePopoverView: View {
 
             Spacer(minLength: 8)
 
-            Label(
-                "\(model.snapshot.connectedViewerCount)",
-                systemImage: "person.2.fill"
-            )
-            .font(.subheadline.monospacedDigit())
-            .foregroundStyle(.secondary)
-            .help(String(localized: "Connected viewers"))
-            .accessibilityLabel(
-                String(localized: "\(model.snapshot.connectedViewerCount) connected viewers")
-            )
-            .accessibilityIdentifier("clip.liveShare.viewerCount")
+            if model.snapshot.sessionStage == .active {
+                Label(
+                    "\(model.snapshot.connectedViewerCount)",
+                    systemImage: "person.2.fill"
+                )
+                .font(.subheadline.monospacedDigit())
+                .foregroundStyle(.secondary)
+                .help(String(localized: "Connected viewers"))
+                .accessibilityLabel(
+                    String(localized: "\(model.snapshot.connectedViewerCount) connected viewers")
+                )
+                .accessibilityIdentifier("clip.liveShare.viewerCount")
+            }
         }
     }
 
@@ -118,7 +127,7 @@ struct LiveSharePopoverView: View {
     @ViewBuilder
     private var shareLinkSection: some View {
         VStack(alignment: .leading, spacing: 9) {
-            sectionHeader(String(localized: "Share Link"), systemImage: "link")
+            sectionHeader(String(localized: "Invite"), systemImage: "link")
 
             if let room = model.snapshot.room {
                 VStack(alignment: .leading, spacing: 6) {
@@ -128,20 +137,16 @@ struct LiveSharePopoverView: View {
                             .textSelection(.enabled)
                         Spacer(minLength: 6)
                         Button {
-                            model.copyRoomCode()
+                            model.replaceRoom()
                         } label: {
                             Label(
-                                model.copiedItem == .roomCode
-                                    ? String(localized: "Copied")
-                                    : String(localized: "Copy Code"),
-                                systemImage: model.copiedItem == .roomCode
-                                    ? "checkmark"
-                                    : "doc.on.doc"
+                                String(localized: "New Room"),
+                                systemImage: "arrow.clockwise"
                             )
                         }
                         .controlSize(.small)
-                        .disabled(!room.isAvailable)
-                        .accessibilityIdentifier("clip.liveShare.copyRoomCode")
+                        .disabled(!model.snapshot.canReplaceRoom)
+                        .accessibilityIdentifier("clip.liveShare.newRoom")
                     }
 
                     HStack(spacing: 8) {
@@ -158,7 +163,7 @@ struct LiveSharePopoverView: View {
                             Label(
                                 model.copiedItem == .link
                                     ? String(localized: "Copied")
-                                    : String(localized: "Copy Link"),
+                                    : String(localized: "Copy Invite"),
                                 systemImage: model.copiedItem == .link
                                     ? "checkmark"
                                     : "doc.on.doc"
@@ -248,6 +253,107 @@ struct LiveSharePopoverView: View {
                 }
             }
         }
+    }
+
+    private var preparationSection: some View {
+        VStack(alignment: .leading, spacing: 9) {
+            sectionHeader(String(localized: "Before You Share"), systemImage: "checklist")
+            Label(
+                String(localized: "Nothing is being captured yet."),
+                systemImage: "eye.slash"
+            )
+            .font(.subheadline)
+            Text(
+                "Set an optional guest access code, copy the complete invite, then start when you are ready. Friends who are currently sharing will also appear here."
+            )
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+
+            if showsInviteEntry {
+                VStack(alignment: .leading, spacing: 6) {
+                    TextField("Paste a complete Clip invite", text: $inviteEntry)
+                        .textFieldStyle(.roundedBorder)
+                        .accessibilityIdentifier("clip.liveShare.joinInvite.field")
+                    HStack {
+                        Button("Cancel") {
+                            inviteEntry = ""
+                            showsInviteEntry = false
+                        }
+                        Spacer()
+                        Button("Join") {
+                            model.joinInvite(inviteEntry)
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(inviteEntry.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                        .accessibilityIdentifier("clip.liveShare.joinInvite.submit")
+                    }
+                }
+                .padding(.top, 3)
+            } else {
+                Button {
+                    showsInviteEntry = true
+                } label: {
+                    Label(String(localized: "Join an Invite"), systemImage: "rectangle.portrait.and.arrow.right")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.bordered)
+                .accessibilityIdentifier("clip.liveShare.joinInvite")
+            }
+
+            Divider()
+            HStack {
+                sectionHeader(String(localized: "Friends"), systemImage: "person.2")
+                Spacer()
+                if !model.snapshot.friends.isEmpty {
+                    Text("\(model.snapshot.friends.count)")
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                }
+            }
+            if model.snapshot.friends.isEmpty {
+                Text("Friends you add after a native session will appear here.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else {
+                ForEach(model.snapshot.friends) { friend in
+                    Button {
+                        model.joinFriend(friend.id)
+                    } label: {
+                        HStack(spacing: 8) {
+                            Circle()
+                                .fill(friend.presence == .live ? .green : .secondary.opacity(0.45))
+                                .frame(width: 8, height: 8)
+                            VStack(alignment: .leading, spacing: 1) {
+                                Text(friend.displayName)
+                                    .font(.subheadline.weight(.medium))
+                                HStack(spacing: 5) {
+                                    Text(friend.deviceName)
+                                    if friend.isFinishingSetup {
+                                        Text("Finishing setup")
+                                            .foregroundStyle(.orange)
+                                    }
+                                }
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            Text(friend.presence.title)
+                                .font(.caption)
+                                .foregroundStyle(friend.presence == .live ? .green : .secondary)
+                        }
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(!friend.presence.canJoin)
+                    .accessibilityIdentifier("clip.liveShare.friend.\(friend.id)")
+                }
+            }
+        }
+        .padding(10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 9))
+        .accessibilityIdentifier("clip.liveShare.preparation")
     }
 
     private var sourcesSection: some View {
@@ -601,6 +707,26 @@ struct LiveSharePopoverView: View {
                 .buttonStyle(.bordered)
                 .disabled(!model.snapshot.canStopSession)
                 .accessibilityIdentifier("clip.liveShare.stopSession")
+            }
+        } else if model.snapshot.sessionStage == .preparing {
+            HStack(spacing: 8) {
+                Button(role: .cancel) {
+                    model.stopSession()
+                } label: {
+                    Text("Cancel")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.bordered)
+
+                Button {
+                    model.startSharing()
+                } label: {
+                    Label(String(localized: "Start Sharing"), systemImage: "play.fill")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(!model.snapshot.canStartSharing)
+                .accessibilityIdentifier("clip.liveShare.start")
             }
         } else {
             HStack(spacing: 8) {

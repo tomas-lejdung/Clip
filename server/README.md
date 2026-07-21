@@ -5,7 +5,10 @@ browser viewer, and routes bounded encrypted signaling envelopes. It never
 receives access codes, SDP, ICE candidates, stream metadata, media, or an
 authoritative viewer count in plaintext.
 
-The implementation follows [`docs/clip-live-share-protocol-v1.md`](../docs/clip-live-share-protocol-v1.md).
+The browser implementation follows
+[`docs/clip-live-share-protocol-v1.md`](../docs/clip-live-share-protocol-v1.md).
+The independent native-friend rendezvous surface follows
+[`docs/clip-native-rendezvous-v1.md`](../docs/clip-native-rendezvous-v1.md).
 
 ## Run locally
 
@@ -75,6 +78,12 @@ trust a network from which untrusted clients can connect directly.
 - `GET /api/v1/rooms/{room}/host` — authenticated host WebSocket.
 - `GET /api/v1/rooms/{room}/viewer` — temporary viewer WebSocket.
 - `GET /{room}` — embedded browser viewer.
+- `PUT /api/native/v1/rendezvous/{id}` — claim or renew a high-entropy native rendezvous ID.
+- `GET /api/native/v1/rendezvous/{id}` — read only `offline`, `preparing`, or `active` state.
+- `PUT /api/native/v1/rendezvous/{id}/session` and `DELETE /api/native/v1/rendezvous/{id}/session` — atomically start/stop an opaque signed native session.
+- `GET /api/native/v1/rendezvous/{id}/host` — owner-authenticated native host WebSocket.
+- `GET /api/native/v1/rendezvous/{id}/viewer` — active-only temporary native viewer WebSocket.
+- `GET /.well-known/clip-native-rendezvous` — native API discovery and limits.
 - `GET /healthz` and `GET /version` — process-only status without room metrics.
 
 All state is memory-only. Run one replica: a restart intentionally clears room
@@ -89,9 +98,10 @@ go test ./...
 go test -race ./...
 ```
 
-The test suite covers lease ownership, host replacement, route isolation,
-monotonic relay sequences, strict message bounds, browser assets, security
-headers, origin policy, and real localhost WebSocket routing.
+The test suite covers browser and native lease ownership, active-state admission
+gating, host replacement/reconnect, atomic stop/removal, route isolation and
+bounds, monotonic opaque relays, strict payload limits, browser coexistence,
+security headers, origin policy, and real localhost WebSocket routing.
 
 ## Docker
 

@@ -174,7 +174,7 @@ func (s *Socket) Send(message protocol.Message) error {
 	}
 
 	limitedRouteID := ""
-	if message.Type == protocol.MessageRelay {
+	if message.Type == protocol.MessageRelay || message.Type == protocol.MessageNativeRelay {
 		limitedRouteID = message.RouteID
 	}
 

@@ -80,6 +80,17 @@ clip_resolved_signing_common_name() {
   clip_resolved_signing_identity_field name
 }
 
+# Xcode 26 can reject a certificate SHA-1 passed as CODE_SIGN_IDENTITY even
+# though `codesign --sign` accepts the same unambiguous value. Keep the SHA-1
+# as Clip's source of truth and give xcodebuild the resolved certificate name.
+clip_xcode_signing_identity() {
+  if clip_signing_is_ad_hoc || ! clip_signing_identity_is_sha1; then
+    printf '%s\n' "$CLIP_CODE_SIGN_IDENTITY"
+    return
+  fi
+  clip_resolved_signing_common_name
+}
+
 clip_resolved_development_team() {
   local certificate_directory
   local certificate

@@ -82,6 +82,101 @@ func TestViewerKeyMustBeP256X963Point(t *testing.T) {
 	}
 }
 
+func TestNativeRendezvousIDRequiresCanonicalHighEntropyValue(t *testing.T) {
+	t.Parallel()
+	raw := bytes.Repeat([]byte{0x5a}, NativeRendezvousIDBytes)
+	encoded := base64.RawURLEncoding.EncodeToString(raw)
+	if err := ValidateNativeRendezvousID(encoded); err != nil {
+		t.Fatalf("ValidateNativeRendezvousID(valid) = %v", err)
+	}
+	for _, invalid := range []string{
+		encoded + "=",
+		base64.RawURLEncoding.EncodeToString(raw[:NativeRendezvousIDBytes-1]),
+		strings.Repeat("!", len(encoded)),
+	} {
+		if err := ValidateNativeRendezvousID(invalid); !errors.Is(err, ErrInvalidNativeRendezvousID) {
+			t.Fatalf("ValidateNativeRendezvousID(%q) = %v", invalid, err)
+		}
+	}
+}
+
+func TestNativeDescriptorAndRelayAreOpaqueCanonicalAndBounded(t *testing.T) {
+	t.Parallel()
+	descriptor := base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{1}, MaximumNativeDescriptorBytes))
+	if err := ValidateNativeDescriptor(descriptor); err != nil {
+		t.Fatalf("ValidateNativeDescriptor(maximum) = %v", err)
+	}
+	if err := ValidateNativeDescriptor(""); !errors.Is(err, ErrInvalidNativeDescriptor) {
+		t.Fatalf("ValidateNativeDescriptor(empty) = %v", err)
+	}
+	if err := ValidateNativeDescriptor(base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{1}, MaximumNativeDescriptorBytes+1))); !errors.Is(err, ErrInvalidNativeDescriptor) {
+		t.Fatalf("ValidateNativeDescriptor(oversized) = %v", err)
+	}
+
+	payload := base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{2}, MaximumNativeOpaquePayloadBytes))
+	routeID := base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{3}, RouteIDBytes))
+	viewerRelay := Message{
+		Type:     MessageNativeRelay,
+		Version:  NativeMessageVersion,
+		Sequence: 1,
+		Payload:  payload,
+	}
+	if err := ValidateNativeRelay(viewerRelay, false); err != nil {
+		t.Fatalf("ValidateNativeRelay(viewer maximum) = %v", err)
+	}
+	hostRelay := viewerRelay
+	hostRelay.RouteID = routeID
+	if err := ValidateNativeRelay(hostRelay, true); err != nil {
+		t.Fatalf("ValidateNativeRelay(host maximum) = %v", err)
+	}
+	encoded, err := json.Marshal(hostRelay)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(encoded) > MaximumMessageBytes {
+		t.Fatalf("maximum native relay JSON is %d bytes; outer limit is %d", len(encoded), MaximumMessageBytes)
+	}
+
+	invalid := []Message{
+		{Type: MessageNativeRelay, Version: NativeMessageVersion, Sequence: 1, Payload: payload, RouteID: routeID},
+		{Type: MessageNativeRelay, Version: NativeMessageVersion - 1, Sequence: 1, Payload: payload},
+		{Type: MessageNativeRelay, Version: NativeMessageVersion, Sequence: 0, Payload: payload},
+		{Type: MessageNativeRelay, Version: NativeMessageVersion, Sequence: 1, Payload: "AA=="},
+		{Type: MessageNativeRelay, Version: NativeMessageVersion, Sequence: 1, Payload: base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{4}, MaximumNativeOpaquePayloadBytes+1))},
+		{Type: MessageNativeRelay, Version: NativeMessageVersion, Sequence: 1, Payload: payload, Ciphertext: "AA"},
+	}
+	for index, message := range invalid {
+		if err := ValidateNativeRelay(message, false); err == nil {
+			t.Fatalf("invalid native relay %d was accepted", index)
+		}
+	}
+}
+
+func TestNativeCloseRouteRequiresRoleAppropriateRoute(t *testing.T) {
+	t.Parallel()
+	routeID := base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{9}, RouteIDBytes))
+	if err := ValidateNativeCloseRoute(Message{
+		Type:    MessageNativeCloseRoute,
+		Version: NativeMessageVersion,
+		RouteID: routeID,
+	}, true); err != nil {
+		t.Fatalf("host native close = %v", err)
+	}
+	if err := ValidateNativeCloseRoute(Message{
+		Type:    MessageNativeCloseRoute,
+		Version: NativeMessageVersion,
+	}, false); err != nil {
+		t.Fatalf("viewer native close = %v", err)
+	}
+	if err := ValidateNativeCloseRoute(Message{
+		Type:    MessageNativeCloseRoute,
+		Version: NativeMessageVersion,
+		RouteID: routeID,
+	}, false); err == nil {
+		t.Fatal("viewer supplied an explicit native route")
+	}
+}
+
 func TestValidateRelayEnforcesOpaqueEnvelopeBounds(t *testing.T) {
 	t.Parallel()
 	nonce := base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{1}, AESGCMNonceBytes))
@@ -104,6 +199,7 @@ func TestValidateRelayEnforcesOpaqueEnvelopeBounds(t *testing.T) {
 		{Type: MessageRelay, Sequence: 1, Nonce: "AA", Ciphertext: ciphertext},
 		{Type: MessageRelay, Sequence: 1, Nonce: nonce, Ciphertext: "AA"},
 		{Type: MessageRelay, Sequence: 1, Nonce: nonce, Ciphertext: base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{4}, MaximumCiphertextBytes+1))},
+		{Type: MessageRelay, Sequence: 1, Nonce: nonce, Ciphertext: ciphertext, Payload: "AA"},
 	}
 	for index, message := range invalid {
 		if err := ValidateRelay(message, false); err == nil {

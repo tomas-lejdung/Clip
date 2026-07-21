@@ -190,6 +190,39 @@ final class ClipLaunchTests: XCTestCase {
         attachScenarioScreenshot(app: app, name: "Live Share — live — bottom")
     }
 
+    /// Renders both native-viewer phases with inert state. This covers the
+    /// production popover without opening a socket, peer connection, audio
+    /// device, remote window, or macOS privacy prompt.
+    @MainActor
+    func testDeterministicNativeViewerStatesWithoutPrivacyPrompts() throws {
+        let waiting = launchDeterministicScenario("native-viewer-waiting")
+        XCTAssertTrue(
+            waiting.otherElements["clip.uiScenario.native-viewer-waiting"]
+                .waitForExistence(timeout: 10)
+        )
+        XCTAssertTrue(
+            waiting.otherElements["clip.nativeViewer.status"]
+                .waitForExistence(timeout: 5)
+        )
+        XCTAssertTrue(waiting.staticTexts["Waiting for host approval…"].exists)
+        XCTAssertTrue(waiting.buttons["clip.nativeViewer.leave"].exists)
+        waiting.terminate()
+
+        let live = launchDeterministicScenario("native-viewer-live")
+        defer { live.terminate() }
+        XCTAssertTrue(
+            live.otherElements["clip.uiScenario.native-viewer-live"]
+                .waitForExistence(timeout: 10)
+        )
+        XCTAssertTrue(
+            live.otherElements["clip.nativeViewer.sources"]
+                .waitForExistence(timeout: 5)
+        )
+        XCTAssertTrue(live.otherElements["clip.nativeViewer.audio"].exists)
+        XCTAssertTrue(live.otherElements["clip.nativeViewer.statistics"].exists)
+        XCTAssertTrue(live.staticTexts["P2P"].exists)
+    }
+
     @MainActor
     func testDeterministicLiveShareOverlayAndHUDStatesWithoutPointerControl() throws {
         let app = launchDeterministicScenario("live-share-overlays")

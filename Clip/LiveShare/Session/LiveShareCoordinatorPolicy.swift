@@ -362,6 +362,8 @@ enum LiveShareCoordinatorPolicy {
 
     static func userFacingFailure(_ failure: LiveShareFailure?) -> String {
         switch failure?.code {
+        case .identityUnavailable:
+            String(localized: "Clip couldn’t access this Mac’s secure Live Share identity. Try again.")
         case .reservationFailed:
             String(localized: "Couldn’t create a share link. Try again.")
         case .signalingFailed, .connectionLost:
@@ -547,6 +549,39 @@ enum LiveShareViewerAdmissionCapacity {
         var distinctViewerIDs = Set(allocatedViewerIDs)
         distinctViewerIDs.formUnion(pending)
         return distinctViewerIDs.count < maximumViewers
+    }
+}
+
+/// Keeps browser/native-v1 introduction routes alive while the host is ready
+/// but has not pressed Start yet. The relay route carries no authentication or
+/// media in this phase; it is only a bounded rendezvous placeholder that can be
+/// promoted once the host installs the peer runtime.
+enum LiveSharePreparedViewerRouteBuffer {
+    static func retain(
+        _ routeID: ClipLiveShareRouteID,
+        in routeIDs: inout Set<ClipLiveShareRouteID>,
+        maximumCount: Int
+    ) -> Bool {
+        if routeIDs.contains(routeID) { return true }
+        guard maximumCount > 0, routeIDs.count < maximumCount else {
+            return false
+        }
+        routeIDs.insert(routeID)
+        return true
+    }
+
+    static func cancel(
+        _ routeID: ClipLiveShareRouteID,
+        in routeIDs: inout Set<ClipLiveShareRouteID>
+    ) {
+        routeIDs.remove(routeID)
+    }
+
+    static func drain(
+        _ routeIDs: inout Set<ClipLiveShareRouteID>
+    ) -> Set<ClipLiveShareRouteID> {
+        defer { routeIDs.removeAll() }
+        return routeIDs
     }
 }
 

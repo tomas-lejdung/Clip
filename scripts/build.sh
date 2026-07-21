@@ -12,9 +12,14 @@ source "$ROOT/scripts/signing-config.sh"
 source "$ROOT/scripts/version-config.sh"
 clip_warn_if_ad_hoc_signing
 
+XCODE_CODE_SIGN_IDENTITY="$(clip_xcode_signing_identity)" || {
+  echo "Could not resolve Xcode's signing identity for '$CLIP_CODE_SIGN_IDENTITY'" >&2
+  exit 1
+}
+
 XCODE_SIGNING_ARGUMENTS=(
   CODE_SIGNING_ALLOWED=YES
-  CODE_SIGN_IDENTITY="$CLIP_CODE_SIGN_IDENTITY"
+  CODE_SIGN_IDENTITY="$XCODE_CODE_SIGN_IDENTITY"
 )
 if ! clip_signing_is_ad_hoc; then
   DEVELOPMENT_TEAM="$(clip_resolved_development_team)" || {

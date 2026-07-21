@@ -72,6 +72,60 @@ struct ClipLiveShareCryptoTests {
     #expect(host.lastInboundSequence == 1)
   }
 
+  @Test("opaque native payloads retain authenticated ordering in both directions")
+  func opaquePayloadRoundTrip() throws {
+    let fixture = try Fixture()
+    var host = fixture.hostChannel
+    var viewer = fixture.viewerChannel
+    let challenge = Data("signed-native-viewer-challenge".utf8)
+
+    let hostEnvelope = try host.sealOpaquePayload(
+      challenge,
+      nonce: Data(repeating: 0xC0, count: 12)
+    )
+    #expect(try viewer.openOpaquePayload(hostEnvelope) == challenge)
+
+    let proof = Data("signed-native-viewer-proof".utf8)
+    let viewerEnvelope = try viewer.sealOpaquePayload(
+      proof,
+      nonce: Data(repeating: 0xC1, count: 12)
+    )
+    let routedViewerEnvelope = try ClipLiveShareRelayEnvelope(
+      routeID: fixture.route,
+      sequence: viewerEnvelope.sequence,
+      nonce: viewerEnvelope.nonce,
+      ciphertext: viewerEnvelope.ciphertext
+    )
+    #expect(try host.openOpaquePayload(routedViewerEnvelope) == proof)
+    #expect(host.lastInboundSequence == 1)
+    #expect(viewer.lastInboundSequence == 1)
+  }
+
+  @Test("opaque payload authentication failure does not consume its sequence")
+  func opaquePayloadFailureDoesNotAdvanceSequence() throws {
+    let fixture = try Fixture()
+    var host = fixture.hostChannel
+    var viewer = fixture.viewerChannel
+    let envelope = try host.sealOpaquePayload(
+      Data("challenge".utf8),
+      nonce: Data(repeating: 0xC2, count: 12)
+    )
+    var damagedCiphertext = envelope.ciphertext
+    damagedCiphertext[damagedCiphertext.startIndex] ^= 1
+    let damaged = try ClipLiveShareRelayEnvelope(
+      routeID: envelope.routeID,
+      sequence: envelope.sequence,
+      nonce: envelope.nonce,
+      ciphertext: damagedCiphertext
+    )
+
+    #expect(throws: ClipLiveShareProtocolError.authenticationFailed) {
+      try viewer.openOpaquePayload(damaged)
+    }
+    #expect(viewer.lastInboundSequence == 0)
+    #expect(try viewer.openOpaquePayload(envelope) == Data("challenge".utf8))
+  }
+
   @Test("duplicate, skipped, and decreasing sequences are rejected")
   func replayProtection() throws {
     let fixture = try Fixture()

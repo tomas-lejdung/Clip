@@ -120,6 +120,8 @@ struct WebRTCLoopbackTests {
             try makeSystemAudioFixture(frameCount: ordinaryBatchFrames)
         }
         let jitterBaseline = host.systemAudioSnapshot
+        let jitterClock = ContinuousClock()
+        let jitterStart = jitterClock.now
         #expect(host.send(BorrowedCaptureAudioSample(
             sampleBuffer: jitterBatches[0]
         )))
@@ -127,11 +129,19 @@ struct WebRTCLoopbackTests {
             host.systemAudioSnapshot.acceptedFrameCount
                 - jitterBaseline.acceptedFrameCount == ordinaryBatchFrames
         )
-        try await Task.sleep(for: .milliseconds(530))
+        // Use absolute deadlines so test/encoder bookkeeping between batches
+        // cannot accumulate into artificial input jitter. The second batch is
+        // 18 ms late and the third is 18 ms early, preserving the real 512 ms
+        // average cadence this test models.
+        try await jitterClock.sleep(
+            until: jitterStart.advanced(by: .milliseconds(530))
+        )
         #expect(host.send(BorrowedCaptureAudioSample(
             sampleBuffer: jitterBatches[1]
         )))
-        try await Task.sleep(for: .milliseconds(494))
+        try await jitterClock.sleep(
+            until: jitterStart.advanced(by: .milliseconds(1_024))
+        )
         #expect(host.send(BorrowedCaptureAudioSample(
             sampleBuffer: jitterBatches[2]
         )))

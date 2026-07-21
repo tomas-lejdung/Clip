@@ -175,6 +175,77 @@ struct LiveSharePresentationModelTests {
     }
 
     @Test
+    func testPreparationActionsRequireExplicitCapabilities() {
+        var startCount = 0
+        var newRoomCount = 0
+        let model = LiveSharePresentationModel(
+            snapshot: LiveShareViewSnapshot(
+                phase: .ready,
+                sessionStage: .preparing,
+                canStartSharing: true,
+                canReplaceRoom: true
+            ),
+            actions: .init(
+                startSharing: { startCount += 1 },
+                replaceRoom: { newRoomCount += 1 }
+            )
+        )
+
+        model.startSharing()
+        model.replaceRoom()
+        #expect(startCount == 1)
+        #expect(newRoomCount == 1)
+
+        model.update(LiveShareViewSnapshot(
+            phase: .live(elapsedSeconds: 1),
+            sessionStage: .active,
+            canStartSharing: true,
+            canReplaceRoom: true
+        ))
+        model.startSharing()
+        model.replaceRoom()
+        #expect(startCount == 1)
+        #expect(newRoomCount == 1)
+    }
+
+    @Test
+    func testNativeJoinActionsOnlyRunDuringPreparationAndForLiveFriends() {
+        var invites: [String] = []
+        var friendIDs: [String] = []
+        let liveFriend = LiveShareFriendViewSnapshot(
+            id: "alex-device",
+            displayName: "Alex",
+            deviceName: "MacBook Pro",
+            presence: .live
+        )
+        let offlineFriend = LiveShareFriendViewSnapshot(
+            id: "sam-device",
+            displayName: "Sam",
+            deviceName: "Mac mini",
+            presence: .offline
+        )
+        let model = LiveSharePresentationModel(
+            snapshot: LiveShareViewSnapshot(
+                phase: .ready,
+                sessionStage: .preparing,
+                friends: [liveFriend, offlineFriend]
+            ),
+            actions: .init(
+                joinInvite: { invites.append($0) },
+                joinFriend: { friendIDs.append($0) }
+            )
+        )
+
+        model.joinInvite("  https://clip.example/invite#key  ")
+        model.joinInvite("  ")
+        model.joinFriend(liveFriend.id)
+        model.joinFriend(offlineFriend.id)
+
+        #expect(invites == ["https://clip.example/invite#key"])
+        #expect(friendIDs == [liveFriend.id])
+    }
+
+    @Test
     func testUnavailableRendezvousCannotCopyAStaleShareLink() {
         var copied: [String] = []
         let model = LiveSharePresentationModel(
@@ -335,9 +406,11 @@ struct LiveSharePresentationModelTests {
         )
         #expect(ready.phase == .ready)
         #expect(ready.room?.roomCode == "CRISP-FROG-042")
+        #expect(ready.sessionStage == .preparing)
+        #expect(ready.canStartSharing)
         #expect(!ready.hasActiveMedia)
         #expect(ready.availableWindows.count == 3)
-        #expect(ready.canAddWindow)
+        #expect(!ready.canAddWindow)
 
         let live = try #require(
             DeterministicLiveShareDemo.snapshot(for: .liveShareLive)

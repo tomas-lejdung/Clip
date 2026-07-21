@@ -711,6 +711,12 @@ struct ApplicationDirectoriesTests {
         let liveSharePreferences = try LiveSharePreferencesModel(
             applicationSupportDirectory: directories.applicationSupport
         )
+        let liveShareIdentity = NativeDeviceIdentityRepository()
+        let nativeFriends = NativeFriendModel(
+            repository: try NativeFriendRepository(
+                applicationSupportDirectory: directories.applicationSupport
+            )
+        )
         let permissions = FakePermissionService()
         let audio = FakeAudioService()
         let pasteboard = FakePasteboardService()
@@ -735,6 +741,8 @@ struct ApplicationDirectoriesTests {
             clock: SystemClock(),
             settings: settings,
             liveSharePreferences: liveSharePreferences,
+            liveShareIdentity: liveShareIdentity,
+            nativeFriends: nativeFriends,
             permissions: permissions,
             audio: audio,
             pasteboard: pasteboard,

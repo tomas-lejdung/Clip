@@ -36,7 +36,7 @@ enum UserFacingErrorPresentation {
     }
 }
 
-private protocol TechnicalErrorDescriptionProviding {
+protocol TechnicalErrorDescriptionProviding {
     var technicalDescriptionForLogging: String { get }
 }
 
@@ -119,6 +119,48 @@ enum RecordingCompletionPolicy {
     }
 }
 
+enum ApplicationLiveShareRoleGate {
+    static func hasActiveRole(
+        isHosting: Bool,
+        isViewing: Bool,
+        isTransitioning: Bool = false
+    ) -> Bool {
+        isHosting || isViewing || isTransitioning
+    }
+
+    static func acceptsCallback(activeToken: UUID?, callbackToken: UUID) -> Bool {
+        activeToken == callbackToken
+    }
+
+    static func permitsHostPreparationHandoff(
+        activeToken: UUID?,
+        callbackToken: UUID,
+        isHosting: Bool,
+        isViewing: Bool
+    ) -> Bool {
+        acceptsCallback(activeToken: activeToken, callbackToken: callbackToken)
+            && isHosting
+            && !isViewing
+    }
+
+    static func permitsHandoffCompletion(
+        activeToken: UUID?,
+        transitionToken: UUID,
+        isTransitioning: Bool,
+        isPreparingForTermination: Bool
+    ) -> Bool {
+        acceptsCallback(
+            activeToken: activeToken,
+            callbackToken: transitionToken
+        ) && isTransitioning && !isPreparingForTermination
+    }
+}
+
+private enum NativeViewerLaunchRequest {
+    case invite(String)
+    case friend(NativeFriendRecord)
+}
+
 @MainActor
 enum PeriodicStorageMaintenanceLoop {
     static let interval: Duration = .seconds(60 * 60)
@@ -155,6 +197,7 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
     private let onboardingStore: OnboardingStore
     private let regionOutlineController = CaptureRegionOutlineController()
     private let applicationUpdater: any ApplicationUpdateServicing
+    private let nativeFriendPresenceMonitor: NativeFriendPresenceMonitor
 
     private var statusItem: NSStatusItem?
     private var selectionController: CaptureSelectionController?
@@ -169,6 +212,11 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
     private var historyWindowController: NSWindowController?
     private var onboardingWindowController: NSWindowController?
     private var liveShareCoordinator: LiveShareCoordinator?
+    private var nativeViewerCoordinator: NativeLiveShareViewerCoordinator?
+    /// Invalidates late host/viewer callbacks after an atomic role handoff.
+    private var liveShareRoleToken: UUID?
+    private var liveShareRoleTransitionToken: UUID?
+    private var liveShareRoleTransitionTask: Task<Void, Never>?
     private var isStartingLiveShare = false
     private var isPreparingCapture = false
     private var startupTask: Task<Void, Never>?
@@ -184,6 +232,14 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
     private var pendingRetake: PendingRetake?
     private var isPreparingForTermination = false
 
+    private var hasActiveLiveShareRole: Bool {
+        ApplicationLiveShareRoleGate.hasActiveRole(
+            isHosting: liveShareCoordinator != nil,
+            isViewing: nativeViewerCoordinator != nil,
+            isTransitioning: liveShareRoleTransitionTask != nil
+        )
+    }
+
     init(
         dependencies: AppDependencies,
         applicationUpdater: any ApplicationUpdateServicing,
@@ -192,6 +248,9 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
         self.dependencies = dependencies
         self.applicationUpdater = applicationUpdater
         self.statusBar = statusBar
+        nativeFriendPresenceMonitor = NativeFriendPresenceMonitor(
+            friends: dependencies.nativeFriends
+        )
         lastAreaStore = LastAreaStore(defaults: dependencies.defaults)
         onboardingStore = OnboardingStore(defaults: dependencies.defaults)
         super.init()
@@ -213,6 +272,30 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
             guard !Task.isCancelled, !isPreparingForTermination else { return }
             await dependencies.liveSharePreferences.load()
             guard !Task.isCancelled, !isPreparingForTermination else { return }
+            let nativeIdentity = try? await dependencies.liveShareIdentity.loadOrCreate()
+            await dependencies.nativeFriends.load(
+                localIdentity: nativeIdentity?.publicKey
+            )
+            if nativeIdentity != nil {
+                for recovery in dependencies.nativeFriends
+                    .requesterHandshakeRecoveries
+                    where recovery.signedCommitReceipt != nil {
+                    do {
+                        try await dependencies.nativeFriends
+                            .completeRequesterHandshakeDurably(
+                                friendID: recovery.counterpartyIdentity
+                                    .fingerprint.rawValue,
+                                handshakeID: recovery.id
+                            )
+                    } catch {
+                        ClipLog.storage.error(
+                            "Could not finish a recovered friendship commit: \(error.localizedDescription, privacy: .public)"
+                        )
+                    }
+                }
+            }
+            guard !Task.isCancelled, !isPreparingForTermination else { return }
+            nativeFriendPresenceMonitor.start()
             await dependencies.audio.refreshDevices()
             guard !Task.isCancelled, !isPreparingForTermination else { return }
             installIdlePopover()
@@ -261,11 +344,21 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
     }
 
     private func stop(preservingLiveShareForTermination: Bool) {
+        nativeFriendPresenceMonitor.stop()
         if preservingLiveShareForTermination {
             liveShareCoordinator?.hideForApplicationTermination()
+            nativeViewerCoordinator?.hideForApplicationTermination()
         } else {
             liveShareCoordinator?.cancelForApplicationStop()
+            nativeViewerCoordinator?.cancelForApplicationStop()
             liveShareCoordinator = nil
+            nativeViewerCoordinator = nil
+            liveShareRoleToken = nil
+            // The detached host remains owned by this task until its awaited
+            // transport cleanup completes, but it can no longer install a
+            // viewer after the application has stopped.
+            liveShareRoleTransitionToken = nil
+            liveShareRoleTransitionTask = nil
         }
         startupTask?.cancel()
         startupTask = nil
@@ -315,13 +408,26 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
     /// in-progress Retake is canceled so its original draft stays authoritative.
     func prepareForTermination() async {
         isPreparingForTermination = true
+        nativeFriendPresenceMonitor.stop()
         maintenanceTask?.cancel()
         maintenanceTask = nil
+
+        if let liveShareRoleTransitionTask {
+            liveShareRoleTransitionToken = nil
+            await liveShareRoleTransitionTask.value
+            self.liveShareRoleTransitionTask = nil
+            liveShareRoleToken = nil
+        }
 
         if let liveShareCoordinator {
             await liveShareCoordinator.endForApplicationTermination()
             self.liveShareCoordinator = nil
         }
+        if let nativeViewerCoordinator {
+            await nativeViewerCoordinator.endForApplicationTermination()
+            self.nativeViewerCoordinator = nil
+        }
+        liveShareRoleToken = nil
 
         if pendingRetake != nil, recordingState.phase == .finishing {
             // The in-flight replacement may still finish into History, but the
@@ -371,6 +477,7 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
         await persistAndReleasePreviewForTermination()
         await dependencies.settings.flushPendingPersistence()
         await dependencies.liveSharePreferences.flushPendingPersistence()
+        await dependencies.nativeFriends.flushPendingPersistence()
     }
 
     private func waitForTerminalOperationHandoff() async {
@@ -493,6 +600,17 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
         )
     }
 
+    private func installNativeViewerPopover(model: NativeViewerPresentationModel) {
+        guard !isPreparingForTermination else { return }
+        popover.behavior = .transient
+        popover.animates = true
+        popover.delegate = self
+        popover.contentSize = NativeViewerPopoverView.contentSize
+        popover.contentViewController = NSHostingController(
+            rootView: NativeViewerPopoverView(model: model)
+        )
+    }
+
     @objc
     private func togglePopover(_ sender: NSStatusBarButton) {
         guard !isPreparingForTermination, dependencies.settings.isLoaded else { return }
@@ -507,7 +625,7 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
     func popoverWillShow(_ notification: Notification) {
         guard !isPreparingForTermination,
               recordingPresentationModel == nil,
-              liveShareCoordinator == nil else { return }
+              !hasActiveLiveShareRole else { return }
         Task { @MainActor [weak self] in
             await self?.refreshMenuBarModel()
         }
@@ -519,7 +637,7 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
             guard let self,
                   !isStartingLiveShare,
                   !isPreparingCapture,
-                  liveShareCoordinator == nil,
+                  !hasActiveLiveShareRole,
                   recordingPresentationModel == nil,
                   [.idle, .canceled, .failed, .preview].contains(recordingState.phase) else {
                 NSSound.beep()
@@ -527,8 +645,7 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
             }
             isStartingLiveShare = true
             defer { isStartingLiveShare = false }
-            guard await ensureLiveShareScreenRecordingPermission() else { return }
-            guard liveShareCoordinator == nil,
+            guard !hasActiveLiveShareRole,
                   recordingPresentationModel == nil,
                   [.idle, .canceled, .failed, .preview].contains(recordingState.phase),
                   !isPreparingCapture,
@@ -536,17 +653,32 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
                 NSSound.beep()
                 return
             }
+            let roleToken = UUID()
             let coordinator = LiveShareCoordinator(
                 preferences: dependencies.liveSharePreferences,
+                nativeFriends: dependencies.nativeFriends,
                 serverEndpoint: dependencies.liveSharePreferences.serverEndpoint,
+                requestScreenRecordingPermission: { [weak self] in
+                    await self?.ensureLiveShareScreenRecordingPermission() ?? false
+                },
+                onJoinInviteRequested: { [weak self] invite in
+                    self?.transitionFromHostPreparationToViewer(
+                        invite: invite,
+                        roleToken: roleToken
+                    )
+                },
+                onJoinFriendRequested: { [weak self] friend in
+                    self?.requestNativeFriendJoin(friend, roleToken: roleToken)
+                },
                 onSessionEnded: { [weak self] in
-                    self?.liveShareDidEnd()
+                    self?.liveShareDidEnd(roleToken: roleToken)
                 },
                 onMenuBarStatusChanged: { [weak self] status in
-                    self?.updateLiveShareStatusIcon(status)
+                    self?.updateLiveShareStatusIcon(status, roleToken: roleToken)
                 }
             )
             liveShareCoordinator = coordinator
+            liveShareRoleToken = roleToken
             installLiveSharePopover(model: coordinator.presentationModel)
             updateLiveShareStatusIcon(.ready)
             coordinator.start()
@@ -557,9 +689,171 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
         }
     }
 
-    private func liveShareDidEnd() {
-        guard !isPreparingForTermination else { return }
+    private func transitionFromHostPreparationToViewer(
+        invite: String,
+        roleToken: UUID
+    ) {
+        transitionFromHostPreparationToViewer(
+            .invite(invite),
+            roleToken: roleToken
+        )
+    }
+
+    private func transitionFromHostPreparationToViewer(
+        _ request: NativeViewerLaunchRequest,
+        roleToken: UUID
+    ) {
+        guard !isPreparingForTermination,
+              liveShareRoleTransitionTask == nil,
+              ApplicationLiveShareRoleGate.permitsHostPreparationHandoff(
+                activeToken: liveShareRoleToken,
+                callbackToken: roleToken,
+                isHosting: liveShareCoordinator != nil,
+                isViewing: nativeViewerCoordinator != nil
+              ),
+              let liveShareCoordinator else {
+            NSSound.beep()
+            return
+        }
+
+        // Reserve the application role with a fresh token before detaching the
+        // host. This invalidates every late host callback synchronously. The
+        // viewer is created only after all host transports finish teardown.
+        let transitionToken = UUID()
+        self.liveShareCoordinator = nil
+        liveShareRoleToken = transitionToken
+        liveShareRoleTransitionToken = transitionToken
+        liveShareRoleTransitionTask = Task { @MainActor [weak self] in
+            await liveShareCoordinator.cancelForRoleTransition()
+            guard let self else { return }
+            guard ApplicationLiveShareRoleGate.permitsHandoffCompletion(
+                activeToken: liveShareRoleToken,
+                transitionToken: transitionToken,
+                isTransitioning: liveShareRoleTransitionToken == transitionToken,
+                isPreparingForTermination: isPreparingForTermination
+            ) else {
+                if liveShareRoleTransitionToken == transitionToken {
+                    liveShareRoleTransitionToken = nil
+                    liveShareRoleTransitionTask = nil
+                    liveShareRoleToken = nil
+                }
+                return
+            }
+
+            liveShareRoleTransitionToken = nil
+            liveShareRoleTransitionTask = nil
+            liveShareRoleToken = nil
+            switch request {
+            case .invite(let invite):
+                startNativeViewer(invite: invite)
+            case .friend(let friend):
+                startNativeViewer(friend: friend)
+            }
+        }
+    }
+
+    private func startNativeViewer(invite: String) {
+        guard !isPreparingForTermination,
+              !hasActiveLiveShareRole,
+              recordingPresentationModel == nil,
+              !isPreparingCapture,
+              [.idle, .canceled, .failed, .preview].contains(recordingState.phase) else {
+            NSSound.beep()
+            return
+        }
+
+        let roleToken = UUID()
+        let coordinator = NativeLiveShareViewerCoordinator(
+            invite: invite,
+            identityRepository: dependencies.liveShareIdentity,
+            nativeFriends: dependencies.nativeFriends,
+            localServerEndpoint: dependencies.liveSharePreferences.serverEndpoint,
+            onSessionEnded: { [weak self] in
+                self?.nativeViewerDidEnd(roleToken: roleToken)
+            },
+            onMenuBarStatusChanged: { [weak self] status in
+                self?.updateLiveShareStatusIcon(status, roleToken: roleToken)
+            }
+        )
+        activateNativeViewer(coordinator, roleToken: roleToken)
+    }
+
+    private func startNativeViewer(friend: NativeFriendRecord) {
+        guard !isPreparingForTermination,
+              !hasActiveLiveShareRole,
+              recordingPresentationModel == nil,
+              !isPreparingCapture,
+              [.idle, .canceled, .failed, .preview].contains(recordingState.phase) else {
+            NSSound.beep()
+            return
+        }
+
+        let roleToken = UUID()
+        let coordinator = NativeLiveShareViewerCoordinator(
+            friend: friend,
+            identityRepository: dependencies.liveShareIdentity,
+            nativeFriends: dependencies.nativeFriends,
+            localServerEndpoint: dependencies.liveSharePreferences.serverEndpoint,
+            onSessionEnded: { [weak self] in
+                self?.nativeViewerDidEnd(roleToken: roleToken)
+            },
+            onMenuBarStatusChanged: { [weak self] status in
+                self?.updateLiveShareStatusIcon(status, roleToken: roleToken)
+            }
+        )
+        activateNativeViewer(coordinator, roleToken: roleToken)
+    }
+
+    private func activateNativeViewer(
+        _ coordinator: NativeLiveShareViewerCoordinator,
+        roleToken: UUID
+    ) {
+        nativeViewerCoordinator = coordinator
+        liveShareRoleToken = roleToken
+        installNativeViewerPopover(model: coordinator.presentationModel)
+        updateLiveShareStatusIcon(.ready)
+        coordinator.start()
+        if let button = statusItem?.button {
+            popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+            popover.contentViewController?.view.window?.makeKey()
+        }
+    }
+
+    private func requestNativeFriendJoin(
+        _ friend: NativeFriendRecord,
+        roleToken: UUID
+    ) {
+        transitionFromHostPreparationToViewer(
+            .friend(friend),
+            roleToken: roleToken
+        )
+    }
+
+    private func liveShareDidEnd(roleToken: UUID) {
+        guard !isPreparingForTermination,
+              ApplicationLiveShareRoleGate.acceptsCallback(
+                activeToken: liveShareRoleToken,
+                callbackToken: roleToken
+              ),
+              liveShareCoordinator != nil else { return }
         liveShareCoordinator = nil
+        liveShareRoleToken = nil
+        installIdlePopover()
+        updateStatusIcon(symbol: "record.circle", description: String(localized: "Clip"))
+        Task { @MainActor [weak self] in
+            await self?.refreshMenuBarModel()
+        }
+    }
+
+    private func nativeViewerDidEnd(roleToken: UUID) {
+        guard !isPreparingForTermination,
+              ApplicationLiveShareRoleGate.acceptsCallback(
+                activeToken: liveShareRoleToken,
+                callbackToken: roleToken
+              ),
+              nativeViewerCoordinator != nil else { return }
+        nativeViewerCoordinator = nil
+        liveShareRoleToken = nil
         installIdlePopover()
         updateStatusIcon(symbol: "record.circle", description: String(localized: "Clip"))
         Task { @MainActor [weak self] in
@@ -568,7 +862,9 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
     }
 
     private func recordPreparedDisplay(_ displayID: CGDirectDisplayID) {
-        guard liveShareCoordinator == nil, !isStartingLiveShare, !isPreparingCapture else {
+        guard !hasActiveLiveShareRole,
+              !isStartingLiveShare,
+              !isPreparingCapture else {
             NSSound.beep()
             return
         }
@@ -577,7 +873,8 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
         Task { @MainActor [weak self] in
             guard let self else { return }
             defer { isPreparingCapture = false }
-            guard liveShareCoordinator == nil, !isStartingLiveShare else {
+            guard !hasActiveLiveShareRole,
+                  !isStartingLiveShare else {
                 NSSound.beep()
                 return
             }
@@ -805,7 +1102,9 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
     }
 
     private func requestSelection(mode: CaptureMode) {
-        guard liveShareCoordinator == nil, !isStartingLiveShare, !isPreparingCapture else {
+        guard !hasActiveLiveShareRole,
+              !isStartingLiveShare,
+              !isPreparingCapture else {
             NSSound.beep()
             return
         }
@@ -827,7 +1126,8 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
     }
 
     private func handleGlobalShortcut(_ action: GlobalShortcutAction) {
-        guard liveShareCoordinator == nil, !isStartingLiveShare else {
+        guard !hasActiveLiveShareRole,
+              !isStartingLiveShare else {
             NSSound.beep()
             return
         }
@@ -1637,7 +1937,8 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
         _ recording: PreviewRecording,
         context: PreviewLifecycleContext
     ) async throws -> PreviewRetakeResult? {
-        guard liveShareCoordinator == nil, !isStartingLiveShare else {
+        guard !hasActiveLiveShareRole,
+              !isStartingLiveShare else {
             throw PreviewRetakeCoordinatorError.liveShareActive
         }
         guard !isPreparingCapture else {
@@ -1652,7 +1953,8 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
             throw PreviewRetakeCoordinatorError.missingCapturePlan
         }
         guard await ensureScreenRecordingPermission() else { return nil }
-        guard liveShareCoordinator == nil, !isStartingLiveShare else {
+        guard !hasActiveLiveShareRole,
+              !isStartingLiveShare else {
             throw PreviewRetakeCoordinatorError.liveShareActive
         }
 
@@ -2257,6 +2559,8 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
         let view = SettingsView(
             model: dependencies.settings,
             liveSharePreferences: dependencies.liveSharePreferences,
+            nativeFriends: dependencies.nativeFriends,
+            liveShareIdentity: dependencies.liveShareIdentity,
             shortcuts: dependencies.shortcuts,
             permissions: dependencies.permissions,
             audio: dependencies.audio,
@@ -2545,6 +2849,17 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
             symbol: status.symbolName,
             description: status.accessibilityDescription
         )
+    }
+
+    private func updateLiveShareStatusIcon(
+        _ status: LiveShareMenuBarStatus,
+        roleToken: UUID
+    ) {
+        guard ApplicationLiveShareRoleGate.acceptsCallback(
+            activeToken: liveShareRoleToken,
+            callbackToken: roleToken
+        ) else { return }
+        updateLiveShareStatusIcon(status)
     }
 
     private func presentError(title: String, error: any Error) {
