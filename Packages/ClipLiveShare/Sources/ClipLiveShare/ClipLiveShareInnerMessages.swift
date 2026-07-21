@@ -126,6 +126,11 @@ public struct ClipLiveShareStreamDescriptor: Codable, Equatable, Hashable, Senda
   public let width: Int
   public let height: Int
   public let order: Int
+  /// The captured source's logical dimensions in AppKit points. Older hosts
+  /// omit this pair, so native viewers must retain their legacy sizing
+  /// fallback when both values are absent.
+  public let sourcePointWidth: Int?
+  public let sourcePointHeight: Int?
 
   public init(
     id: ClipLiveShareStreamID,
@@ -136,7 +141,9 @@ public struct ClipLiveShareStreamDescriptor: Codable, Equatable, Hashable, Senda
     windowName: String,
     width: Int,
     height: Int,
-    order: Int
+    order: Int,
+    sourcePointWidth: Int? = nil,
+    sourcePointHeight: Int? = nil
   ) throws {
     try ClipLiveShareMessageValidation.validateBoundedText(
       appName,
@@ -154,6 +161,17 @@ public struct ClipLiveShareStreamDescriptor: Codable, Equatable, Hashable, Senda
     guard (0...65_535).contains(order) else {
       throw ClipLiveShareProtocolError.invalidResource("stream order is out of bounds")
     }
+    switch (sourcePointWidth, sourcePointHeight) {
+    case (nil, nil):
+      break
+    case (let width?, let height?)
+      where (1...32_768).contains(width) && (1...32_768).contains(height):
+      break
+    default:
+      throw ClipLiveShareProtocolError.invalidResource(
+        "source point dimensions must be a complete in-bounds pair"
+      )
+    }
     guard !focused || active else {
       throw ClipLiveShareProtocolError.invalidResource("an inactive stream cannot be focused")
     }
@@ -166,6 +184,8 @@ public struct ClipLiveShareStreamDescriptor: Codable, Equatable, Hashable, Senda
     self.width = width
     self.height = height
     self.order = order
+    self.sourcePointWidth = sourcePointWidth
+    self.sourcePointHeight = sourcePointHeight
   }
 
   private enum CodingKeys: String, CodingKey {
@@ -178,6 +198,8 @@ public struct ClipLiveShareStreamDescriptor: Codable, Equatable, Hashable, Senda
     case width
     case height
     case order
+    case sourcePointWidth
+    case sourcePointHeight
   }
 
   public init(from decoder: any Decoder) throws {
@@ -191,7 +213,9 @@ public struct ClipLiveShareStreamDescriptor: Codable, Equatable, Hashable, Senda
       windowName: container.decode(String.self, forKey: .windowName),
       width: container.decode(Int.self, forKey: .width),
       height: container.decode(Int.self, forKey: .height),
-      order: container.decode(Int.self, forKey: .order)
+      order: container.decode(Int.self, forKey: .order),
+      sourcePointWidth: container.decodeIfPresent(Int.self, forKey: .sourcePointWidth),
+      sourcePointHeight: container.decodeIfPresent(Int.self, forKey: .sourcePointHeight)
     )
   }
 }

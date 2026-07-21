@@ -28,6 +28,8 @@ public struct ShareableCaptureWindow: Identifiable, Equatable, Sendable {
     public let applicationName: String
     public let bundleIdentifier: String
     public let processID: pid_t
+    public let capturePointWidth: Int
+    public let capturePointHeight: Int
     public let pixelWidth: Int
     public let pixelHeight: Int
 
@@ -38,6 +40,8 @@ public struct ShareableCaptureWindow: Identifiable, Equatable, Sendable {
         applicationName: String,
         bundleIdentifier: String,
         processID: pid_t,
+        capturePointWidth: Int? = nil,
+        capturePointHeight: Int? = nil,
         pixelWidth: Int,
         pixelHeight: Int
     ) {
@@ -47,6 +51,14 @@ public struct ShareableCaptureWindow: Identifiable, Equatable, Sendable {
         self.applicationName = applicationName
         self.bundleIdentifier = bundleIdentifier
         self.processID = processID
+        self.capturePointWidth = max(
+            1,
+            capturePointWidth ?? Int(frame.width.rounded())
+        )
+        self.capturePointHeight = max(
+            1,
+            capturePointHeight ?? Int(frame.height.rounded())
+        )
         self.pixelWidth = max(1, pixelWidth)
         self.pixelHeight = max(1, pixelHeight)
     }
@@ -102,6 +114,8 @@ public struct ScreenCaptureContentDiscovery: CaptureContentDiscovering {
             }
             let filter = SCContentFilter(desktopIndependentWindow: window)
             let scale = CGFloat(max(1, filter.pointPixelScale))
+            let capturePointWidth = Int(filter.contentRect.width.rounded())
+            let capturePointHeight = Int(filter.contentRect.height.rounded())
             let pixelWidth = Int((filter.contentRect.width * scale).rounded())
             let pixelHeight = Int((filter.contentRect.height * scale).rounded())
             return ShareableCaptureWindow(
@@ -111,6 +125,8 @@ public struct ScreenCaptureContentDiscovery: CaptureContentDiscovering {
                 applicationName: application.applicationName,
                 bundleIdentifier: application.bundleIdentifier,
                 processID: application.processID,
+                capturePointWidth: capturePointWidth,
+                capturePointHeight: capturePointHeight,
                 pixelWidth: pixelWidth,
                 pixelHeight: pixelHeight
             )

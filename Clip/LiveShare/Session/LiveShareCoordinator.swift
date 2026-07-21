@@ -3862,6 +3862,8 @@ final class LiveShareCoordinator {
         let target: CaptureTarget
         let windowName: String
         let appName: String
+        let sourcePointWidth: Int
+        let sourcePointHeight: Int
 
         switch source {
         case let .window(windowSource):
@@ -3870,6 +3872,8 @@ final class LiveShareCoordinator {
             }
             width = window.pixelWidth
             height = window.pixelHeight
+            sourcePointWidth = window.capturePointWidth
+            sourcePointHeight = window.capturePointHeight
             target = .window(id: window.id)
             windowName = windowSource.windowName
             appName = windowSource.appName
@@ -3881,6 +3885,8 @@ final class LiveShareCoordinator {
             }
             width = display.pixelWidth
             height = display.pixelHeight
+            sourcePointWidth = max(1, Int(display.frame.width.rounded()))
+            sourcePointHeight = max(1, Int(display.frame.height.rounded()))
             target = .display(
                 id: display.id,
                 excludedBundleIdentifier: ApplicationDirectories.bundleIdentifier
@@ -3915,7 +3921,9 @@ final class LiveShareCoordinator {
             windowName: windowName,
             width: streamGeometry.width,
             height: streamGeometry.height,
-            order: slot.index
+            order: slot.index,
+            sourcePointWidth: sourcePointWidth,
+            sourcePointHeight: sourcePointHeight
         )
         return LiveShareCaptureDescriptor(
             source: source,
@@ -4423,7 +4431,9 @@ final class LiveShareCoordinator {
                 windowName: descriptor.stream.windowName,
                 width: streamGeometry.width,
                 height: streamGeometry.height,
-                order: descriptor.stream.order
+                order: descriptor.stream.order,
+                sourcePointWidth: descriptor.stream.sourcePointWidth,
+                sourcePointHeight: descriptor.stream.sourcePointHeight
             )
         )
     }
@@ -5283,7 +5293,9 @@ final class LiveShareCoordinator {
             windowName: descriptor.stream.windowName,
             width: descriptor.stream.width,
             height: descriptor.stream.height,
-            order: slot.index
+            order: slot.index,
+            sourcePointWidth: descriptor.stream.sourcePointWidth,
+            sourcePointHeight: descriptor.stream.sourcePointHeight
         )
     }
 

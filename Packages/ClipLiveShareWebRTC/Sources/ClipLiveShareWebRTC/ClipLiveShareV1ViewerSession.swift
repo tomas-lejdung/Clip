@@ -819,6 +819,10 @@ public actor ClipLiveShareV1ViewerSession {
     case let .systemAudioTrackRemoved(trackID):
       emit(.systemAudioTrackRemoved(trackID))
     case let .error(error):
+      // This callback is scoped to one ICE-server URL. libwebrtc keeps
+      // gathering host and other server candidates, so let the eventual peer
+      // connection state decide whether candidate exhaustion is terminal.
+      if case .iceGatheringFailed = error { break }
       await fail(.peerFailure(error.localizedDescription))
     }
   }

@@ -4,6 +4,40 @@ import Testing
 
 @Suite("Shareable capture discovery policy")
 struct CaptureDiscoveryTests {
+    @Test("capture point dimensions default to rounded frame dimensions")
+    func defaultCapturePointDimensions() {
+        let fixture = window(
+            id: 1,
+            processID: 44,
+            title: "Document",
+            frame: CGRect(x: 10, y: 10, width: 800.4, height: 600.6)
+        )
+
+        #expect(fixture.capturePointWidth == 800)
+        #expect(fixture.capturePointHeight == 601)
+    }
+
+    @Test("capture point dimensions retain the capture filter content size")
+    func explicitCapturePointDimensions() {
+        let fixture = ShareableCaptureWindow(
+            id: 1,
+            frame: CGRect(x: 10, y: 10, width: 800, height: 600),
+            title: "Document",
+            applicationName: "Fixture",
+            bundleIdentifier: "example.fixture",
+            processID: 44,
+            capturePointWidth: 824,
+            capturePointHeight: 624,
+            pixelWidth: 1_648,
+            pixelHeight: 1_248
+        )
+
+        #expect(fixture.capturePointWidth == 824)
+        #expect(fixture.capturePointHeight == 624)
+        #expect(fixture.pixelWidth == 1_648)
+        #expect(fixture.pixelHeight == 1_248)
+    }
+
     @Test("focused selection chooses the frontmost application's first ordered window")
     func focusedSelection() {
         let back = window(id: 2, processID: 44, title: "Back")

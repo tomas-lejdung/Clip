@@ -83,6 +83,44 @@ struct ClipLiveShareV1ViewerSessionTests {
     #expect(invalidPeerFactory.makeCount() == 0)
   }
 
+  @Test("an ICE-server gathering failure allows candidate fallback")
+  func iceServerGatheringFailureIsNonterminal() async throws {
+    let fixture = try V1ViewerSessionFixture()
+    let socket = V1ViewerSessionTestWebSocket()
+    let peer = V1ViewerSessionTestPeer()
+    let session = ClipLiveShareV1ViewerSession(
+      httpTransport: fixture.http,
+      webSocketFactory: V1ViewerSessionTestWebSocketFactory(socket: socket),
+      peerViewerFactory: V1ViewerSessionTestPeerFactory(peer: peer),
+      eventQueue: DispatchQueue(label: "clip.viewer-session.ice-fallback-test")
+    )
+    let recorder = V1ViewerSessionEventRecorder()
+    let stream = await session.events()
+    let recording = Task {
+      for await event in stream { await recorder.append(event) }
+    }
+    defer { recording.cancel() }
+
+    try await session.start(inviteURL: fixture.inviteURL)
+    peer.emit(.error(.iceGatheringFailed(
+      code: 701,
+      url: "stun:stun.l.google.com:19302",
+      message: "STUN binding request timed out"
+    )))
+    try await Task.sleep(for: .milliseconds(20))
+
+    #expect(await recorder.failures().isEmpty)
+    #expect(peer.closeCount() == 0)
+
+    peer.emit(.connectionStateChanged(.failed))
+    try await v1ViewerEventually {
+      await recorder.failures().contains(
+        .peerFailure("The WebRTC connection closed.")
+      )
+    }
+    #expect(peer.closeCount() == 1)
+  }
+
   @Test("viewer hello, route crypto, access code, offer, handoff, and teardown complete")
   func authenticatedHandoff() async throws {
     let fixture = try V1ViewerSessionFixture()

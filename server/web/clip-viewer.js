@@ -23,6 +23,7 @@ import {
   normalizeRoom,
   parseViewerFragment,
   PeerGenerationGuard,
+  presentationSize,
   validateCapabilities,
   utf8Length,
   websocketURL,
@@ -170,6 +171,22 @@ let cursorFollowState = {
 };
 const CURSOR_LERP_FACTOR = 0.05; // Smooth factor (0-1, higher = faster)
 
+function syncMainVideoPresentationSize() {
+  const focusedStream =
+    viewerFocusedIndex === null ? null : streams[viewerFocusedIndex];
+  const { width, height } = presentationSize(
+    focusedStream?.info,
+    focusedStream ? mainVideo : null,
+  );
+  if (currentScale === "fill" || !width || !height) {
+    mainVideo.style.removeProperty("width");
+    mainVideo.style.removeProperty("height");
+    return;
+  }
+  mainVideo.style.width = `${width}px`;
+  mainVideo.style.height = `${height}px`;
+}
+
 // Password dialog elements
 const passwordDialog = document.getElementById("password-dialog");
 const passwordForm = document.getElementById("password-form");
@@ -297,6 +314,10 @@ function doUpdateMultiStreamUI() {
 
   // Update layout selector visibility
   updateLayoutSelectorVisibility();
+
+  if (currentLayout === "focus") {
+    syncMainVideoPresentationSize();
+  }
 
   // Handle based on current layout
   if (currentLayout === "grid") {
@@ -434,6 +455,7 @@ function switchToStream(index) {
 
   // Update main video (for focus mode)
   mainVideo.srcObject = streams[index].stream;
+  syncMainVideoPresentationSize();
   mainVideo
     .play()
     .catch((e) => console.log("Main video play error:", e.message));
@@ -709,10 +731,10 @@ function handleCursorPosition(trackId, cursorX, cursorY, cursorInView) {
     if (!cell || !cell.video) return;
 
     const video = cell.video;
-    const videoWidth =
-      video.videoWidth || parseInt(video.style.width) || 0;
-    const videoHeight =
-      video.videoHeight || parseInt(video.style.height) || 0;
+    const { width: videoWidth, height: videoHeight } = presentationSize(
+      streams[streamIndex]?.info,
+      video,
+    );
     if (!videoWidth || !videoHeight) return;
 
     // Get row container and cell position
@@ -771,8 +793,10 @@ function handleCursorPosition(trackId, cursorX, cursorY, cursorInView) {
 
     // Calculate target pan position to center cursor in viewport
     const containerRect = mainVideoContainer.getBoundingClientRect();
-    const videoWidth = mainVideo.videoWidth;
-    const videoHeight = mainVideo.videoHeight;
+    const { width: videoWidth, height: videoHeight } = presentationSize(
+      streams[viewerFocusedIndex]?.info,
+      mainVideo,
+    );
 
     if (!videoWidth || !videoHeight) return;
 
@@ -2159,6 +2183,7 @@ function setLayout(layout) {
     // Ensure main video has the focused stream
     if (viewerFocusedIndex !== null && streams[viewerFocusedIndex]) {
       mainVideo.srcObject = streams[viewerFocusedIndex].stream;
+      syncMainVideoPresentationSize();
       mainVideo.play().catch((e) => console.log("Play error:", e));
     }
 
@@ -2236,11 +2261,14 @@ function calculateProportionalSizes() {
   const activeStreams = streamOrder.map((idx) => {
     const s = streams[idx];
     const info = s?.info;
+    const size = presentationSize(info);
+    const width = size.width || 1920;
+    const height = size.height || 1080;
     return {
       index: idx,
-      width: info?.width || 1920,
-      height: info?.height || 1080,
-      area: (info?.width || 1920) * (info?.height || 1080),
+      width,
+      height,
+      area: width * height,
     };
   });
 
@@ -2555,11 +2583,13 @@ function updateRowLayout() {
         .catch((e) => console.log("Row video play error:", e));
     }
 
-    // TRUE NATIVE SIZE - no scaling whatsoever for 100% sharpness
+    // Render decoded pixels at the source's logical point size. Retina streams
+    // retain their full encoded resolution without becoming twice as large.
     const info = data.info;
-    if (info?.width && info?.height) {
-      cell.video.style.width = info.width + "px";
-      cell.video.style.height = info.height + "px";
+    const size = presentationSize(info, cell.video);
+    if (size.width && size.height) {
+      cell.video.style.width = size.width + "px";
+      cell.video.style.height = size.height + "px";
     } else {
       // Use video's native dimensions if no info
       cell.video.style.width = "auto";
@@ -2622,7 +2652,8 @@ function updateRowMinimap() {
 
     // Only draw if video has dimensions
     if (video.videoWidth && video.videoHeight) {
-      const aspectRatio = video.videoWidth / video.videoHeight;
+      const size = presentationSize(streams[idx]?.info, video);
+      const aspectRatio = size.width / size.height;
       const height = 36;
       const width = height * aspectRatio;
 
@@ -2760,7 +2791,12 @@ startRowMinimapUpdates();
 
 function updatePanZoomState() {
   const video = mainVideo;
-  if (!video.videoWidth || !video.videoHeight) {
+  syncMainVideoPresentationSize();
+  const { width: videoWidth, height: videoHeight } = presentationSize(
+    streams[viewerFocusedIndex]?.info,
+    video,
+  );
+  if (!video.videoWidth || !video.videoHeight || !videoWidth || !videoHeight) {
     canPan = false;
     panZoomContainer.classList.remove("can-pan");
     minimap.classList.remove("visible");
@@ -2768,9 +2804,6 @@ function updatePanZoomState() {
   }
 
   const containerRect = mainVideoContainer.getBoundingClientRect();
-  // Use intrinsic video dimensions (what native mode renders at)
-  const videoWidth = video.videoWidth;
-  const videoHeight = video.videoHeight;
 
   // Check if content exceeds viewport in native mode
   canPan =
@@ -2811,13 +2844,11 @@ function updatePanZoomState() {
 }
 
 function applyPanZoomTransform() {
-  if (
-    currentScale === "native" &&
-    mainVideo.videoWidth &&
-    mainVideo.videoHeight
-  ) {
-    const videoWidth = mainVideo.videoWidth;
-    const videoHeight = mainVideo.videoHeight;
+  const { width: videoWidth, height: videoHeight } = presentationSize(
+    streams[viewerFocusedIndex]?.info,
+    mainVideo,
+  );
+  if (currentScale === "native" && videoWidth && videoHeight) {
 
     // Use cached dimensions during panning to avoid expensive getBoundingClientRect
     let containerWidth, containerHeight;
@@ -2855,8 +2886,11 @@ function updateMinimap() {
   if (!canPan || !mainVideo.videoWidth) return;
 
   const video = mainVideo;
-  const videoWidth = video.videoWidth;
-  const videoHeight = video.videoHeight;
+  const { width: videoWidth, height: videoHeight } = presentationSize(
+    streams[viewerFocusedIndex]?.info,
+    video,
+  );
+  if (!videoWidth || !videoHeight) return;
 
   // Use cached container dimensions during panning
   let containerWidth, containerHeight;
@@ -2887,7 +2921,7 @@ function updateMinimap() {
   const ctx = minimapCanvas.getContext("2d");
   ctx.drawImage(video, 0, 0, minimapWidth, minimapHeight);
 
-  // Calculate viewport rectangle using intrinsic dimensions
+  // Calculate the viewport rectangle in source point coordinates.
   const scaleX = minimapWidth / videoWidth;
   const scaleY = minimapHeight / videoHeight;
 
@@ -2926,10 +2960,14 @@ function handlePanStart(e) {
 
   // Cache dimensions at pan start (avoid getBoundingClientRect in move handler)
   const containerRect = mainVideoContainer.getBoundingClientRect();
+  const { width: videoWidth, height: videoHeight } = presentationSize(
+    streams[viewerFocusedIndex]?.info,
+    mainVideo,
+  );
   panZoomState.containerWidth = containerRect.width;
   panZoomState.containerHeight = containerRect.height;
-  panZoomState.maxX = Math.max(0, mainVideo.videoWidth - containerRect.width);
-  panZoomState.maxY = Math.max(0, mainVideo.videoHeight - containerRect.height);
+  panZoomState.maxX = Math.max(0, videoWidth - containerRect.width);
+  panZoomState.maxY = Math.max(0, videoHeight - containerRect.height);
 
   panZoomState.isPanning = true;
   panZoomContainer.classList.add("panning");
@@ -3099,6 +3137,7 @@ document.addEventListener("keydown", (e) => {
 function setScaleMode(mode) {
   currentScale = mode;
   mainVideo.className = `main-video scale-${mode}`;
+  syncMainVideoPresentationSize();
 
   // Toggle native-mode class for absolute positioning
   panZoomContent.classList.toggle("native-mode", mode === "native");

@@ -1688,6 +1688,7 @@ final class NativeLiveShareViewerCoordinator {
                         width: descriptor.stream.width,
                         height: descriptor.stream.height
                     ),
+                    sourcePointSize: descriptor.stream.sourcePointSize,
                     isFocused: state.focusedSourceInstanceID
                         == descriptor.sourceInstanceID,
                     isConnected: true,

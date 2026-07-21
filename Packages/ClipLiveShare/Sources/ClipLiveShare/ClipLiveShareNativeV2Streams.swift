@@ -41,6 +41,16 @@ public struct ClipLiveShareNativeStreamDescriptor: Codable, Equatable, Hashable,
     encoder.append(UInt64(stream.width))
     encoder.append(UInt64(stream.height))
     encoder.append(UInt64(stream.order))
+    // Preserve the legacy canonical bytes when logical source dimensions are
+    // absent. New descriptors bind the complete optional pair after the old
+    // representation so the extension is unambiguous and authenticated.
+    if let sourcePointWidth = stream.sourcePointWidth,
+      let sourcePointHeight = stream.sourcePointHeight
+    {
+      encoder.append(true)
+      encoder.append(UInt64(sourcePointWidth))
+      encoder.append(UInt64(sourcePointHeight))
+    }
     return encoder.data
   }
 

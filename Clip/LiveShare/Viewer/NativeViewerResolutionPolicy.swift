@@ -9,9 +9,25 @@ enum NativeViewerScaleMode: String, CaseIterable, Equatable, Sendable {
 
 struct NativeViewerResolutionRequest: Equatable, Sendable {
     let decodedPixelSize: CGSize
+    /// Logical point size reported by the source Mac. Older hosts omit it.
+    let sourcePointSize: CGSize?
     let destinationBackingScale: CGFloat
     let maximumContentSize: CGSize
     let mode: NativeViewerScaleMode
+
+    init(
+        decodedPixelSize: CGSize,
+        sourcePointSize: CGSize? = nil,
+        destinationBackingScale: CGFloat,
+        maximumContentSize: CGSize,
+        mode: NativeViewerScaleMode
+    ) {
+        self.decodedPixelSize = decodedPixelSize
+        self.sourcePointSize = sourcePointSize
+        self.destinationBackingScale = destinationBackingScale
+        self.maximumContentSize = maximumContentSize
+        self.mode = mode
+    }
 }
 
 struct NativeViewerResolution: Equatable, Sendable {
@@ -38,14 +54,25 @@ enum NativeViewerResolutionPolicy {
             return nil
         }
 
+        if let sourcePointSize = request.sourcePointSize,
+           !isValid(sourcePointSize) {
+            return nil
+        }
+
         let actualPointSize = CGSize(
             width: request.decodedPixelSize.width / request.destinationBackingScale,
             height: request.decodedPixelSize.height / request.destinationBackingScale
         )
+        let preferredPointSize = switch request.mode {
+        case .automatic, .fit:
+            request.sourcePointSize ?? actualPointSize
+        case .actualPixels:
+            actualPointSize
+        }
         let fitScale = min(
             1,
-            request.maximumContentSize.width / actualPointSize.width,
-            request.maximumContentSize.height / actualPointSize.height
+            request.maximumContentSize.width / preferredPointSize.width,
+            request.maximumContentSize.height / preferredPointSize.height
         )
         let shouldFit = switch request.mode {
         case .automatic:
@@ -59,12 +86,20 @@ enum NativeViewerResolutionPolicy {
 
         return NativeViewerResolution(
             contentSize: CGSize(
-                width: max(1, floor(actualPointSize.width * pointScale)),
-                height: max(1, floor(actualPointSize.height * pointScale))
+                width: max(1, floor(preferredPointSize.width * pointScale)),
+                height: max(1, floor(preferredPointSize.height * pointScale))
             ),
-            destinationPixelsPerSourcePixel: pointScale,
+            destinationPixelsPerSourcePixel:
+                preferredPointSize.width * pointScale
+                * request.destinationBackingScale
+                / request.decodedPixelSize.width,
             isFitted: pointScale < 1
         )
+    }
+
+    private static func isValid(_ size: CGSize) -> Bool {
+        size.width.isFinite && size.height.isFinite
+            && size.width > 0 && size.height > 0
     }
 }
 

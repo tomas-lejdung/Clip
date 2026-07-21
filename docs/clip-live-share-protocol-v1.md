@@ -213,6 +213,11 @@ without changing the server routing contract.
 - `clip-control-v1` carries versioned authoritative manifests, stream activation,
   focus, geometry, cursor, sharing state, system-audio state, codec renegotiation,
   and session closure.
+- Manifest `width` and `height` remain the encoded pixel dimensions. Current
+  hosts also send the optional pair `sourcePointWidth` and `sourcePointHeight`
+  so Retina captures retain their full pixel detail while viewers present them
+  at the source Mac's logical size. Receivers fall back to encoded dimensions
+  when both point fields are absent and reject an incomplete pair.
 - A receiver echoes `session-closing` without a reason as an acknowledgement;
   the sender waits at most 500 ms before closing DTLS-SRTP.
 - Clip counts viewers from connected WebRTC peer state. The server does not.

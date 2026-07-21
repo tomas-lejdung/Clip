@@ -60,6 +60,7 @@ struct NativeViewerV1ControlState: Equatable, Sendable {
                     applicationName: stream.appName,
                     windowName: stream.windowName,
                     pixelSize: CGSize(width: stream.width, height: stream.height),
+                    sourcePointSize: stream.sourcePointSize,
                     isFocused: stream.focused,
                     isConnected: true,
                     stateRevision: stateRevision,
@@ -160,7 +161,9 @@ struct NativeViewerV1ControlState: Equatable, Sendable {
             windowName: value.windowName,
             width: width ?? value.width,
             height: height ?? value.height,
-            order: value.order
+            order: value.order,
+            sourcePointWidth: value.sourcePointWidth,
+            sourcePointHeight: value.sourcePointHeight
         )
     }
 }

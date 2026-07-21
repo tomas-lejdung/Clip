@@ -171,6 +171,7 @@ final class NativeViewerWindowCoordinator {
                 applicationName: snapshot.source.applicationName,
                 windowName: snapshot.source.windowName,
                 pixelSize: snapshot.source.pixelSize,
+                sourcePointSize: snapshot.source.sourcePointSize,
                 isFocused: snapshot.source.isFocused,
                 isConnected: false,
                 stateRevision: snapshot.source.stateRevision,

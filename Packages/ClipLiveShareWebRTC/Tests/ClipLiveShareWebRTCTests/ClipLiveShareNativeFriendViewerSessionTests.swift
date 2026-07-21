@@ -83,6 +83,35 @@ struct ClipLiveShareNativeFriendViewerSessionTests {
     await harness.session.close()
   }
 
+  @Test("an ICE-server gathering failure allows candidate fallback")
+  func iceServerGatheringFailureIsNonterminal() async throws {
+    let fixture = try NativeFriendViewerFixture()
+    let harness = fixture.makeHarness()
+    let recording = await harness.recordEvents()
+    defer { recording.cancel() }
+
+    try await harness.session.start()
+    _ = try await harness.openRoute(fixture: fixture)
+
+    harness.peer.emit(.error(.iceGatheringFailed(
+      code: 701,
+      url: "stun:stun.l.google.com:19302",
+      message: "STUN binding request timed out"
+    )))
+    try await Task.sleep(for: .milliseconds(20))
+
+    #expect(await harness.recorder.failures().isEmpty)
+    #expect(harness.peer.closeCount() == 0)
+
+    harness.peer.emit(.connectionStateChanged(.failed))
+    try await nativeFriendViewerEventually {
+      await harness.recorder.failures().contains(
+        .peerFailure("The WebRTC connection closed.")
+      )
+    }
+    #expect(harness.peer.closeCount() == 1)
+  }
+
   @Test("signed endpoint and rendezvous mismatches are rejected")
   func descriptorSavedRouteMismatch() async throws {
     let fixture = try NativeFriendViewerFixture()

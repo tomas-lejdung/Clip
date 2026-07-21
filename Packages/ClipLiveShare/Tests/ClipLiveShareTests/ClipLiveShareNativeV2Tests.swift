@@ -1345,6 +1345,51 @@ struct ClipLiveShareNativeV2Tests {
     }
   }
 
+  @Test("source point dimensions extend and bind the legacy canonical descriptor")
+  func nativeSourcePointDimensionsCanonicalForm() throws {
+    let fixture = try NativeV2Fixture()
+    let legacy = try fixture.makeNativeStream(sourceByte: 0x30, appName: "Arc")
+    let streamWithPoints = try ClipLiveShareStreamDescriptor(
+      id: legacy.stream.id,
+      mediaTrackID: legacy.stream.mediaTrackID,
+      active: legacy.stream.active,
+      focused: legacy.stream.focused,
+      appName: legacy.stream.appName,
+      windowName: legacy.stream.windowName,
+      width: legacy.stream.width,
+      height: legacy.stream.height,
+      order: legacy.stream.order,
+      sourcePointWidth: 640,
+      sourcePointHeight: 360
+    )
+    let withPoints = ClipLiveShareNativeStreamDescriptor(
+      sourceInstanceID: legacy.sourceInstanceID,
+      presentationMode: legacy.presentationMode,
+      stream: streamWithPoints
+    )
+    let otherPointSize = ClipLiveShareNativeStreamDescriptor(
+      sourceInstanceID: legacy.sourceInstanceID,
+      presentationMode: legacy.presentationMode,
+      stream: try ClipLiveShareStreamDescriptor(
+        id: legacy.stream.id,
+        mediaTrackID: legacy.stream.mediaTrackID,
+        active: legacy.stream.active,
+        focused: legacy.stream.focused,
+        appName: legacy.stream.appName,
+        windowName: legacy.stream.windowName,
+        width: legacy.stream.width,
+        height: legacy.stream.height,
+        order: legacy.stream.order,
+        sourcePointWidth: 800,
+        sourcePointHeight: 450
+      )
+    )
+
+    #expect(withPoints.canonicalRepresentation.starts(with: legacy.canonicalRepresentation))
+    #expect(withPoints.canonicalRepresentation != legacy.canonicalRepresentation)
+    #expect(withPoints.canonicalRepresentation != otherPointSize.canonicalRepresentation)
+  }
+
   @Test("all native stream lifecycle variants have canonical v2 wire forms")
   func nativeStreamWireForms() throws {
     let fixture = try NativeV2Fixture()

@@ -485,6 +485,14 @@ export function canonicalManifest(value) {
   for (const entry of source) {
     const id = entry?.id;
     const mediaTrackId = entry?.mediaTrackId;
+    const hasSourcePointWidth = entry?.sourcePointWidth !== undefined;
+    const hasSourcePointHeight = entry?.sourcePointHeight !== undefined;
+    const sourcePointWidth = hasSourcePointWidth
+      ? entry.sourcePointWidth
+      : entry?.width;
+    const sourcePointHeight = hasSourcePointHeight
+      ? entry.sourcePointHeight
+      : entry?.height;
     if (
       !isOpaqueIdentifier(id) ||
       !isOpaqueIdentifier(mediaTrackId) ||
@@ -503,6 +511,13 @@ export function canonicalManifest(value) {
       entry.height < 1 ||
       entry.width > 32_768 ||
       entry.height > 32_768 ||
+      hasSourcePointWidth !== hasSourcePointHeight ||
+      !Number.isSafeInteger(sourcePointWidth) ||
+      !Number.isSafeInteger(sourcePointHeight) ||
+      sourcePointWidth < 1 ||
+      sourcePointHeight < 1 ||
+      sourcePointWidth > 32_768 ||
+      sourcePointHeight > 32_768 ||
       !Number.isSafeInteger(entry.order) ||
       entry.order < 0 ||
       entry.order > 65_535
@@ -512,7 +527,7 @@ export function canonicalManifest(value) {
     seen.add(id);
     seenTracks.add(mediaTrackId);
     seenOrders.add(entry.order);
-    streams.push({
+    const normalized = {
       id,
       mediaTrackId,
       active: entry.active,
@@ -522,7 +537,12 @@ export function canonicalManifest(value) {
       width: entry.width,
       height: entry.height,
       order: entry.order,
-    });
+    };
+    if (hasSourcePointWidth) {
+      normalized.sourcePointWidth = sourcePointWidth;
+      normalized.sourcePointHeight = sourcePointHeight;
+    }
+    streams.push(normalized);
   }
   if (streams.filter((entry) => entry.focused).length > 1) {
     throw new ClipProtocolError("invalid-manifest", "Clip focused more than one stream.");
@@ -532,4 +552,18 @@ export function canonicalManifest(value) {
   }
   streams.sort((left, right) => left.order - right.order || left.id.localeCompare(right.id));
   return streams;
+}
+
+// Keeps encoded pixel dimensions separate from the CSS size of the source
+// window. `videoWidth` remains the decode truth; logical points are the
+// presentation truth when a current host provides them.
+export function presentationSize(info, video = null) {
+  const encodedWidth = info?.width ?? video?.videoWidth ?? 0;
+  const encodedHeight = info?.height ?? video?.videoHeight ?? 0;
+  const width = info?.sourcePointWidth ?? encodedWidth;
+  const height = info?.sourcePointHeight ?? encodedHeight;
+  return {
+    width: Number.isFinite(width) && width > 0 ? width : 0,
+    height: Number.isFinite(height) && height > 0 ? height : 0,
+  };
 }

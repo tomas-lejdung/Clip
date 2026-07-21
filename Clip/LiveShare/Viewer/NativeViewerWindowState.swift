@@ -1,3 +1,4 @@
+import ClipLiveShare
 import CoreGraphics
 import CryptoKit
 import Foundation
@@ -13,10 +14,45 @@ struct NativeViewerSourceSnapshot: Equatable, Sendable {
     let applicationName: String
     let windowName: String
     let pixelSize: CGSize
+    /// The source window or display size in macOS points. Encoded pixels stay
+    /// separate so Retina captures remain sharp without appearing twice as
+    /// large on a 1x viewer display.
+    let sourcePointSize: CGSize?
     let isFocused: Bool
     let isConnected: Bool
     let stateRevision: UInt64
     let mode: NativeViewerSourceMode
+
+    init(
+        sourceInstanceID: String,
+        streamID: String,
+        applicationName: String,
+        windowName: String,
+        pixelSize: CGSize,
+        sourcePointSize: CGSize? = nil,
+        isFocused: Bool,
+        isConnected: Bool,
+        stateRevision: UInt64,
+        mode: NativeViewerSourceMode
+    ) {
+        self.sourceInstanceID = sourceInstanceID
+        self.streamID = streamID
+        self.applicationName = applicationName
+        self.windowName = windowName
+        self.pixelSize = pixelSize
+        self.sourcePointSize = sourcePointSize
+        self.isFocused = isFocused
+        self.isConnected = isConnected
+        self.stateRevision = stateRevision
+        self.mode = mode
+    }
+}
+
+extension ClipLiveShareStreamDescriptor {
+    var sourcePointSize: CGSize? {
+        guard let sourcePointWidth, let sourcePointHeight else { return nil }
+        return CGSize(width: sourcePointWidth, height: sourcePointHeight)
+    }
 }
 
 struct NativeViewerWindowID: Hashable, Sendable, CustomStringConvertible {

@@ -288,6 +288,83 @@ struct ClipLiveShareV1ProtocolTests {
     }
   }
 
+  @Test("stream source point dimensions round-trip and remain legacy compatible")
+  func streamSourcePointDimensions() throws {
+    let descriptor = try ClipLiveShareStreamDescriptor(
+      id: ClipLiveShareStreamID(rawValue: "stream"),
+      mediaTrackID: ClipLiveShareMediaTrackID(rawValue: "track"),
+      active: true,
+      focused: true,
+      appName: "App",
+      windowName: "Window",
+      width: 2_000,
+      height: 1_200,
+      order: 0,
+      sourcePointWidth: 1_000,
+      sourcePointHeight: 600
+    )
+    let encoded = try JSONEncoder().encode(descriptor)
+    #expect(
+      try JSONDecoder().decode(ClipLiveShareStreamDescriptor.self, from: encoded)
+        == descriptor
+    )
+    let object = try #require(
+      JSONSerialization.jsonObject(with: encoded) as? [String: Any]
+    )
+    #expect(object["sourcePointWidth"] as? Int == 1_000)
+    #expect(object["sourcePointHeight"] as? Int == 600)
+
+    let legacy = Data(
+      #"{"id":"stream","mediaTrackId":"track","active":true,"focused":true,"appName":"App","windowName":"Window","width":2000,"height":1200,"order":0}"#.utf8
+    )
+    let legacyDescriptor = try JSONDecoder().decode(
+      ClipLiveShareStreamDescriptor.self,
+      from: legacy
+    )
+    #expect(legacyDescriptor.sourcePointWidth == nil)
+    #expect(legacyDescriptor.sourcePointHeight == nil)
+    let legacyReencoded = try #require(
+      JSONSerialization.jsonObject(with: JSONEncoder().encode(legacyDescriptor))
+        as? [String: Any]
+    )
+    #expect(legacyReencoded["sourcePointWidth"] == nil)
+    #expect(legacyReencoded["sourcePointHeight"] == nil)
+  }
+
+  @Test("stream source point dimensions require a complete in-bounds pair")
+  func invalidStreamSourcePointDimensions() throws {
+    let id = try ClipLiveShareStreamID(rawValue: "stream")
+    let trackID = try ClipLiveShareMediaTrackID(rawValue: "track")
+
+    let invalidDimensions: [(Int?, Int?)] = [
+      (1_000, nil), (nil, 600), (0, 600), (1_000, 32_769),
+    ]
+    for dimensions in invalidDimensions {
+      #expect(throws: ClipLiveShareProtocolError.self) {
+        try ClipLiveShareStreamDescriptor(
+          id: id,
+          mediaTrackID: trackID,
+          active: true,
+          focused: true,
+          appName: "App",
+          windowName: "Window",
+          width: 2_000,
+          height: 1_200,
+          order: 0,
+          sourcePointWidth: dimensions.0,
+          sourcePointHeight: dimensions.1
+        )
+      }
+    }
+
+    let incompleteWire = Data(
+      #"{"id":"stream","mediaTrackId":"track","active":true,"focused":true,"appName":"App","windowName":"Window","width":2000,"height":1200,"order":0,"sourcePointWidth":1000}"#.utf8
+    )
+    #expect(throws: ClipLiveShareProtocolError.self) {
+      try JSONDecoder().decode(ClipLiveShareStreamDescriptor.self, from: incompleteWire)
+    }
+  }
+
   @Test("maximum inner payload retains room for the worst-case outer relay envelope")
   func relayEnvelopeHeadroom() throws {
     let route = try ClipLiveShareRouteID(bytes: Data(repeating: 0xFF, count: 16))

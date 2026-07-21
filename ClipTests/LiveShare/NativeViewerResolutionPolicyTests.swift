@@ -18,6 +18,43 @@ struct NativeViewerResolutionPolicyTests {
         #expect(!result.isFitted)
     }
 
+    @Test("Auto preserves source point size across Retina combinations")
+    func automaticUsesSourcePointsAcrossDisplayScales() throws {
+        for destinationScale in [CGFloat(1), CGFloat(2)] {
+            let retina = try #require(NativeViewerResolutionPolicy.resolve(.init(
+                decodedPixelSize: CGSize(width: 2_000, height: 1_200),
+                sourcePointSize: CGSize(width: 1_000, height: 600),
+                destinationBackingScale: destinationScale,
+                maximumContentSize: CGSize(width: 1_500, height: 900),
+                mode: .automatic
+            )))
+            let external = try #require(NativeViewerResolutionPolicy.resolve(.init(
+                decodedPixelSize: CGSize(width: 1_000, height: 600),
+                sourcePointSize: CGSize(width: 1_000, height: 600),
+                destinationBackingScale: destinationScale,
+                maximumContentSize: CGSize(width: 1_500, height: 900),
+                mode: .automatic
+            )))
+
+            #expect(retina.contentSize == CGSize(width: 1_000, height: 600))
+            #expect(external.contentSize == CGSize(width: 1_000, height: 600))
+        }
+    }
+
+    @Test("Auto preserves source points when the encoder downsizes")
+    func automaticSeparatesPresentationFromEncodedGeometry() throws {
+        let result = try #require(NativeViewerResolutionPolicy.resolve(.init(
+            decodedPixelSize: CGSize(width: 2_560, height: 1_440),
+            sourcePointSize: CGSize(width: 3_000, height: 1_687.5),
+            destinationBackingScale: 2,
+            maximumContentSize: CGSize(width: 1_600, height: 900),
+            mode: .automatic
+        )))
+
+        #expect(result.contentSize == CGSize(width: 1_600, height: 900))
+        #expect(result.isFitted)
+    }
+
     @Test("Auto fits an oversized stream without upscaling")
     func automaticFitsOversizedStream() throws {
         let result = try #require(NativeViewerResolutionPolicy.resolve(.init(
@@ -38,6 +75,7 @@ struct NativeViewerResolutionPolicyTests {
     func actualPixelsDoesNotFit() throws {
         let result = try #require(NativeViewerResolutionPolicy.resolve(.init(
             decodedPixelSize: CGSize(width: 3_840, height: 2_160),
+            sourcePointSize: CGSize(width: 960, height: 540),
             destinationBackingScale: 2,
             maximumContentSize: CGSize(width: 1_200, height: 700),
             mode: .actualPixels
@@ -45,6 +83,18 @@ struct NativeViewerResolutionPolicyTests {
 
         #expect(result.contentSize == CGSize(width: 1_920, height: 1_080))
         #expect(!result.isFitted)
+    }
+
+    @Test("Legacy hosts retain decoded-pixel sizing")
+    func legacyHostFallback() throws {
+        let result = try #require(NativeViewerResolutionPolicy.resolve(.init(
+            decodedPixelSize: CGSize(width: 1_600, height: 1_200),
+            destinationBackingScale: 1,
+            maximumContentSize: CGSize(width: 2_000, height: 1_500),
+            mode: .automatic
+        )))
+
+        #expect(result.contentSize == CGSize(width: 1_600, height: 1_200))
     }
 
     @Test("Fit never enlarges a small source")

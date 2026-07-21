@@ -92,6 +92,22 @@ struct NativeViewerWindowControllerTests {
         ) == CGPoint(x: 205, y: 87.5))
     }
 
+    @Test("Logical presentation may use the full window while pixels stay native")
+    func logicalPresentationFillsAvailableFrame() {
+        let available = CGRect(x: 5, y: 5, width: 800, height: 600)
+        let sourcePixels = CGSize(width: 1_600, height: 1_200)
+
+        #expect(NativeViewerContentView.aspectFitContentRect(
+            sourcePixelSize: sourcePixels,
+            videoFrame: available
+        ) == available)
+        #expect(NativeViewerContentView.pixelCappedContentRect(
+            sourcePixelSize: sourcePixels,
+            availableFrame: available,
+            destinationBackingScale: 1
+        ) == CGRect(x: 5, y: 5, width: 800, height: 600))
+    }
+
     @Test("Identity border remains outside the video surface")
     func borderLayout() {
         let video = NSView()
@@ -101,5 +117,34 @@ struct NativeViewerWindowControllerTests {
 
         #expect(video.frame == CGRect(x: 5, y: 5, width: 1_000, height: 500))
         #expect(content.layer?.borderWidth == 5)
+    }
+
+    @Test("Viewer windows start windowed and never auto-tab")
+    func safeInitialWindowState() {
+        let source = NativeViewerSourceSnapshot(
+            sourceInstanceID: "source-1",
+            streamID: "video0",
+            applicationName: "Fixture",
+            windowName: "Document",
+            pixelSize: CGSize(width: 1_920, height: 1_080),
+            sourcePointSize: CGSize(width: 960, height: 540),
+            isFocused: true,
+            isConnected: true,
+            stateRevision: 1,
+            mode: .manual
+        )
+        let controller = NativeViewerWindowController(
+            id: .manual(sourceInstanceID: source.sourceInstanceID),
+            ownerName: "Friend",
+            source: source,
+            identityColor: .systemPink,
+            videoView: NSView()
+        )
+        defer { controller.tearDown() }
+
+        #expect(controller.window?.styleMask.contains(.fullScreen) == false)
+        #expect(controller.window?.collectionBehavior.contains(.fullScreenPrimary) == true)
+        #expect(controller.window?.tabbingMode == .disallowed)
+        #expect(controller.content.isFlipped == false)
     }
 }

@@ -17,7 +17,9 @@ struct NativeViewerV1ControlStateTests {
             windowName: "Deck",
             width: 1920,
             height: 1080,
-            order: 0
+            order: 0,
+            sourcePointWidth: 960,
+            sourcePointHeight: 540
         )
         var state = NativeViewerV1ControlState(sessionID: sessionID)
 
@@ -26,6 +28,7 @@ struct NativeViewerV1ControlStateTests {
             streams: [descriptor]
         ))) == .sourcesChanged)
         #expect(state.sourceSnapshots.first?.sourceInstanceID == "v1:video0")
+        #expect(state.sourceSnapshots.first?.sourcePointSize == .init(width: 960, height: 540))
 
         #expect(try state.apply(.geometry(.init(
             sessionID: sessionID,
@@ -34,6 +37,7 @@ struct NativeViewerV1ControlStateTests {
             height: 1440
         ))) == .sourcesChanged)
         #expect(state.sourceSnapshots.first?.pixelSize.width == 2560)
+        #expect(state.sourceSnapshots.first?.sourcePointSize == .init(width: 960, height: 540))
 
         #expect(try state.apply(.focus(.init(
             sessionID: sessionID,

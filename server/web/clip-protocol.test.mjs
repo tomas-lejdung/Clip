@@ -17,6 +17,7 @@ import {
   normalizeRoom,
   parseViewerFragment,
   PeerGenerationGuard,
+  presentationSize,
   signalingAAD,
   validateCapabilities,
 } from "./clip-protocol.js";
@@ -468,4 +469,76 @@ test("manifest identity is opaque, authoritative and strict", () => {
     ClipProtocolError,
     "an inactive stream cannot be focused",
   );
+});
+
+test("manifest source point geometry is paired, bounded and backward compatible", () => {
+  const baseStream = {
+    id: "retina-window",
+    mediaTrackId: "retina-track",
+    active: true,
+    focused: true,
+    appName: "Editor",
+    windowName: "Code",
+    width: 1_600,
+    height: 1_200,
+    order: 0,
+  };
+
+  const [retina] = canonicalManifest({
+    streams: [{
+      ...baseStream,
+      sourcePointWidth: 800,
+      sourcePointHeight: 600,
+    }],
+  });
+  assert.deepEqual(
+    {
+      width: retina.width,
+      height: retina.height,
+      sourcePointWidth: retina.sourcePointWidth,
+      sourcePointHeight: retina.sourcePointHeight,
+    },
+    {
+      width: 1_600,
+      height: 1_200,
+      sourcePointWidth: 800,
+      sourcePointHeight: 600,
+    },
+  );
+
+  const [legacy] = canonicalManifest({ streams: [baseStream] });
+  assert.equal(legacy.sourcePointWidth, undefined);
+  assert.equal(legacy.sourcePointHeight, undefined);
+  assert.deepEqual(presentationSize(retina), { width: 800, height: 600 });
+  assert.deepEqual(presentationSize(legacy), { width: 1_600, height: 1_200 });
+  const [resizedLegacy] = canonicalManifest({
+    streams: [{
+      ...legacy,
+      width: 1_280,
+      height: 720,
+      active: false,
+      focused: false,
+    }],
+  });
+  assert.equal(resizedLegacy.sourcePointWidth, undefined);
+  assert.deepEqual(presentationSize(resizedLegacy), { width: 1_280, height: 720 });
+  assert.deepEqual(
+    presentationSize(null, { videoWidth: 1_280, videoHeight: 720 }),
+    { width: 1_280, height: 720 },
+  );
+
+  for (const invalidGeometry of [
+    { sourcePointWidth: 800 },
+    { sourcePointHeight: 600 },
+    { sourcePointWidth: 0, sourcePointHeight: 600 },
+    { sourcePointWidth: 800, sourcePointHeight: 32_769 },
+    { sourcePointWidth: 800.5, sourcePointHeight: 600 },
+  ]) {
+    assert.throws(
+      () => canonicalManifest({
+        streams: [{ ...baseStream, ...invalidGeometry }],
+      }),
+      ClipProtocolError,
+    );
+  }
 });

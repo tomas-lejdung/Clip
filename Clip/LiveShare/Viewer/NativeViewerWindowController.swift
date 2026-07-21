@@ -20,6 +20,7 @@ final class NativeViewerContentView: NSView {
     private var isConnected = true
     private var cursorPosition: CGPoint?
     private var sourcePixelSize: CGSize?
+    private var scaleMode = NativeViewerScaleMode.automatic
 
     init(videoView: NSView, identityColor: NSColor) {
         self.videoView = videoView
@@ -64,19 +65,24 @@ final class NativeViewerContentView: NSView {
         fatalError("init(coder:) has not been implemented")
     }
 
-    override var isFlipped: Bool { false }
-
     override func layout() {
         super.layout()
         let border = Self.identityBorderWidth
         let availableVideoFrame = bounds.insetBy(dx: border, dy: border)
-        videoView.frame = Self.pixelCappedContentRect(
-            sourcePixelSize: sourcePixelSize,
-            availableFrame: availableVideoFrame,
-            destinationBackingScale: window?.backingScaleFactor
-                ?? NSScreen.main?.backingScaleFactor
-                ?? 1
-        )
+        videoView.frame = if scaleMode == .actualPixels {
+            Self.pixelCappedContentRect(
+                sourcePixelSize: sourcePixelSize,
+                availableFrame: availableVideoFrame,
+                destinationBackingScale: window?.backingScaleFactor
+                    ?? NSScreen.main?.backingScaleFactor
+                    ?? 1
+            )
+        } else {
+            Self.aspectFitContentRect(
+                sourcePixelSize: sourcePixelSize,
+                videoFrame: availableVideoFrame
+            )
+        }
 
         let labelSize = identityLabel.intrinsicContentSize
         let badgeWidth = min(max(72, labelSize.width + 18), max(72, bounds.width - 28))
@@ -115,6 +121,12 @@ final class NativeViewerContentView: NSView {
             cursorPosition = nil
         }
         layoutCursor()
+    }
+
+    func setScaleMode(_ mode: NativeViewerScaleMode) {
+        guard scaleMode != mode else { return }
+        scaleMode = mode
+        needsLayout = true
     }
 
     static func cursorPoint(
@@ -256,9 +268,18 @@ final class NativeViewerWindowController: NSWindowController, NSWindowDelegate {
         viewerWindowID = id
         self.source = source
         content = NativeViewerContentView(videoView: videoView, identityColor: identityColor)
+        let initialSourceSize = source.sourcePointSize ?? CGSize(
+            width: source.pixelSize.width / 2,
+            height: source.pixelSize.height / 2
+        )
+        let initialScale = min(
+            1,
+            960 / initialSourceSize.width,
+            540 / initialSourceSize.height
+        )
         let initialVideoSize = CGSize(
-            width: max(320, min(960, source.pixelSize.width / 2)),
-            height: max(180, min(540, source.pixelSize.height / 2))
+            width: max(320, initialSourceSize.width * initialScale),
+            height: max(180, initialSourceSize.height * initialScale)
         )
         let border = NativeViewerContentView.identityBorderWidth * 2
         let window = NSWindow(
@@ -269,7 +290,7 @@ final class NativeViewerWindowController: NSWindowController, NSWindowDelegate {
                     height: initialVideoSize.height + border
                 )
             ),
-            styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullScreen],
+            styleMask: [.titled, .closable, .miniaturizable, .resizable],
             backing: .buffered,
             defer: false
         )
@@ -277,6 +298,7 @@ final class NativeViewerWindowController: NSWindowController, NSWindowDelegate {
 
         window.contentView = content
         window.delegate = self
+        window.tabbingMode = .disallowed
         window.title = Self.title(ownerName: ownerName, source: source)
         window.titleVisibility = .visible
         window.isReleasedWhenClosed = false
@@ -299,10 +321,16 @@ final class NativeViewerWindowController: NSWindowController, NSWindowDelegate {
         identityColor: NSColor
     ) {
         guard source.stateRevision >= self.source.stateRevision else { return }
+        let previousSourcePointSize = self.source.sourcePointSize
         self.source = source
         window?.title = Self.title(ownerName: ownerName, source: source)
         content.update(ownerName: ownerName, source: source, identityColor: identityColor)
         applyPixelSize(source.pixelSize, authoritative: source.pixelSize, revision: source.stateRevision)
+        if previousSourcePointSize != source.sourcePointSize,
+           (!userAdjustedSize || scaleMode != .automatic),
+           let committed = dimensionStabilizer.committedPixelSize {
+            resizeVideoContent(for: committed)
+        }
     }
 
     func decodedPixelSizeDidChange(_ size: CGSize) {
@@ -311,6 +339,7 @@ final class NativeViewerWindowController: NSWindowController, NSWindowDelegate {
 
     func setScaleMode(_ mode: NativeViewerScaleMode) {
         scaleMode = mode
+        content.setScaleMode(mode)
         userAdjustedSize = false
         if let committed = dimensionStabilizer.committedPixelSize {
             resizeVideoContent(for: committed)
@@ -387,6 +416,7 @@ final class NativeViewerWindowController: NSWindowController, NSWindowDelegate {
         )
         guard let resolution = NativeViewerResolutionPolicy.resolve(.init(
             decodedPixelSize: pixelSize,
+            sourcePointSize: source.sourcePointSize,
             destinationBackingScale: backingScale,
             maximumContentSize: maximum,
             mode: scaleMode
