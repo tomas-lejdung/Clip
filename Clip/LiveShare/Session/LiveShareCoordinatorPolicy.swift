@@ -550,6 +550,39 @@ enum LiveShareViewerAdmissionCapacity {
     }
 }
 
+/// Keeps browser/native-v1 introduction routes alive while the host is ready
+/// but has not pressed Start yet. The relay route carries no authentication or
+/// media in this phase; it is only a bounded rendezvous placeholder that can be
+/// promoted once the host installs the peer runtime.
+enum LiveSharePreparedViewerRouteBuffer {
+    static func retain(
+        _ routeID: ClipLiveShareRouteID,
+        in routeIDs: inout Set<ClipLiveShareRouteID>,
+        maximumCount: Int
+    ) -> Bool {
+        if routeIDs.contains(routeID) { return true }
+        guard maximumCount > 0, routeIDs.count < maximumCount else {
+            return false
+        }
+        routeIDs.insert(routeID)
+        return true
+    }
+
+    static func cancel(
+        _ routeID: ClipLiveShareRouteID,
+        in routeIDs: inout Set<ClipLiveShareRouteID>
+    ) {
+        routeIDs.remove(routeID)
+    }
+
+    static func drain(
+        _ routeIDs: inout Set<ClipLiveShareRouteID>
+    ) -> Set<ClipLiveShareRouteID> {
+        defer { routeIDs.removeAll() }
+        return routeIDs
+    }
+}
+
 struct LiveShareViewerAdmissionProgress: Equatable {
     private(set) var didReceiveSignalingHandoff = false
     private(set) var didOpenControlDataChannel = false

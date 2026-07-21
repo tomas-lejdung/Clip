@@ -55,6 +55,49 @@ enum LiveShareViewPhase: Equatable, Sendable {
     }
 }
 
+enum LiveShareSessionStage: Equatable, Sendable {
+    case preparing
+    case active
+}
+
+enum LiveShareFriendPresence: Equatable, Sendable {
+    case offline
+    case preparing
+    case live
+
+    var title: String {
+        switch self {
+        case .offline: String(localized: "Offline")
+        case .preparing: String(localized: "Getting ready")
+        case .live: String(localized: "Live")
+        }
+    }
+
+    var canJoin: Bool { self == .live }
+}
+
+struct LiveShareFriendViewSnapshot: Equatable, Identifiable, Sendable {
+    let id: String
+    let displayName: String
+    let deviceName: String
+    let presence: LiveShareFriendPresence
+    let isFinishingSetup: Bool
+
+    init(
+        id: String,
+        displayName: String,
+        deviceName: String,
+        presence: LiveShareFriendPresence,
+        isFinishingSetup: Bool = false
+    ) {
+        self.id = id
+        self.displayName = displayName
+        self.deviceName = deviceName
+        self.presence = presence
+        self.isFinishingSetup = isFinishingSetup
+    }
+}
+
 struct LiveShareRoomViewSnapshot: Equatable, Sendable {
     let viewerURL: URL
     let roomCode: String
@@ -426,6 +469,10 @@ struct LiveShareCapturePressureWarningSnapshot: Equatable, Sendable {
 
 struct LiveShareViewSnapshot: Equatable, Sendable {
     let phase: LiveShareViewPhase
+    let sessionStage: LiveShareSessionStage
+    let canStartSharing: Bool
+    let canReplaceRoom: Bool
+    let friends: [LiveShareFriendViewSnapshot]
     let room: LiveShareRoomViewSnapshot?
     let accessCodeEnabled: Bool
     let accessCode: String?
@@ -446,6 +493,10 @@ struct LiveShareViewSnapshot: Equatable, Sendable {
 
     init(
         phase: LiveShareViewPhase,
+        sessionStage: LiveShareSessionStage? = nil,
+        canStartSharing: Bool = false,
+        canReplaceRoom: Bool = false,
+        friends: [LiveShareFriendViewSnapshot] = [],
         room: LiveShareRoomViewSnapshot? = nil,
         accessCodeEnabled: Bool = false,
         accessCode: String? = nil,
@@ -469,6 +520,10 @@ struct LiveShareViewSnapshot: Equatable, Sendable {
         capturePressureWarning: LiveShareCapturePressureWarningSnapshot? = nil
     ) {
         self.phase = phase
+        self.sessionStage = sessionStage ?? (phase.showsLiveIndicator ? .active : .preparing)
+        self.canStartSharing = canStartSharing
+        self.canReplaceRoom = canReplaceRoom
+        self.friends = friends
         self.room = room
         self.accessCodeEnabled = accessCodeEnabled
         self.accessCode = accessCode

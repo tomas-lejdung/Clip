@@ -1,5 +1,6 @@
 import AppKit
 import ClipCore
+import ClipLiveShare
 import SwiftUI
 
 enum DeterministicUIScenarioCoordinatorError: LocalizedError, Equatable {
@@ -30,6 +31,8 @@ final class DeterministicUIScenarioCoordinator {
     private let directories: ApplicationDirectories
     private let settings: AppSettingsModel
     private let liveSharePreferences: LiveSharePreferencesModel
+    private let nativeFriends: NativeFriendModel
+    private let liveShareIdentity: NativeDeviceIdentityRepository
     private let statusBar: NSStatusBar
     private let popover = NSPopover()
 
@@ -74,6 +77,21 @@ final class DeterministicUIScenarioCoordinator {
         )
         liveSharePreferences = try LiveSharePreferencesModel(
             applicationSupportDirectory: directories.applicationSupport
+        )
+        let friendBook = try Self.settingsFriendBook()
+        nativeFriends = NativeFriendModel(
+            repository: try NativeFriendRepository(
+                applicationSupportDirectory: directories.applicationSupport
+            ),
+            initialBook: friendBook
+        )
+        if let liveFriend = friendBook.records.first(where: {
+            $0.trustState == .trusted
+        }) {
+            nativeFriends.setPresence(.live, id: liveFriend.id)
+        }
+        liveShareIdentity = NativeDeviceIdentityRepository(
+            storage: try DeterministicNativeDeviceIdentityStorage()
         )
         self.launchConfiguration = launchConfiguration
         self.statusBar = statusBar
@@ -221,6 +239,44 @@ final class DeterministicUIScenarioCoordinator {
         return max(0, documentView.bounds.height - scrollView.contentView.bounds.height)
     }
 
+    private static func settingsFriendBook() throws -> NativeFriendBook {
+        let liveIdentity = try NativeDeviceIdentitySigner(
+            rawRepresentation: deterministicPrivateKey(seed: 2)
+        ).publicKey
+        let blockedIdentity = try NativeDeviceIdentitySigner(
+            rawRepresentation: deterministicPrivateKey(seed: 3)
+        ).publicKey
+        return NativeFriendBook(records: [
+            NativeFriendRecord(
+                identity: liveIdentity,
+                displayName: "Mira",
+                deviceName: "Mira’s MacBook Pro",
+                endpoint: .official,
+                rendezvousID: try ClipLiveShareRendezvousID(
+                    bytes: Data(
+                        repeating: 0x22,
+                        count: ClipLiveShareNativeV2.rendezvousIDByteCount
+                    )
+                ),
+                createdAt: Date(timeIntervalSince1970: 1_700_000_000)
+            ),
+            NativeFriendRecord(
+                identity: blockedIdentity,
+                displayName: "Old Studio Mac",
+                deviceName: "Mac mini",
+                endpoint: .official,
+                rendezvousID: try ClipLiveShareRendezvousID(
+                    bytes: Data(
+                        repeating: 0x33,
+                        count: ClipLiveShareNativeV2.rendezvousIDByteCount
+                    )
+                ),
+                trustState: .blocked,
+                createdAt: Date(timeIntervalSince1970: 1_700_000_100)
+            ),
+        ])
+    }
+
     private func content(for scenario: DeterministicUIScenario) -> AnyView {
         switch scenario {
         case .onboarding:
@@ -321,6 +377,17 @@ final class DeterministicUIScenarioCoordinator {
                 identifier: scenario.accessibilityIdentifier
             )
 
+        case .nativeViewerWaiting, .nativeViewerLive:
+            return wrapped(
+                NativeViewerPopoverView(
+                    model: NativeViewerPresentationModel(
+                        snapshot: DeterministicNativeViewerDemo.snapshot(for: scenario),
+                        actions: .init()
+                    )
+                ),
+                identifier: scenario.accessibilityIdentifier
+            )
+
         case .settings,
              .settingsRecording,
              .settingsLiveShare,
@@ -347,6 +414,8 @@ final class DeterministicUIScenarioCoordinator {
                 SettingsView(
                     model: settings,
                     liveSharePreferences: liveSharePreferences,
+                    nativeFriends: nativeFriends,
+                    liveShareIdentity: liveShareIdentity,
                     shortcuts: shortcuts,
                     permissions: permissions,
                     audio: audio,
@@ -396,6 +465,8 @@ final class DeterministicUIScenarioCoordinator {
             LiveSharePopoverView.contentSize
         case .liveShareOverlays:
             NSSize(width: 700, height: 430)
+        case .nativeViewerWaiting, .nativeViewerLive:
+            NativeViewerPopoverView.contentSize
         case .settings,
              .settingsRecording,
              .settingsLiveShare,
@@ -518,8 +589,81 @@ private extension DeterministicUIScenario {
              .liveShareReconnecting,
              .liveShareFailed,
              .liveShareOverlays,
+             .nativeViewerWaiting,
+             .nativeViewerLive,
              .failure:
             nil
+        }
+    }
+}
+
+/// Permission-free native viewer states used to render the real production
+/// popover without opening signaling, media, audio, or desktop windows.
+enum DeterministicNativeViewerDemo {
+    static func snapshot(
+        for scenario: DeterministicUIScenario
+    ) -> NativeViewerViewSnapshot {
+        switch scenario {
+        case .nativeViewerWaiting:
+            NativeViewerViewSnapshot(
+                phase: .waitingForHostApproval,
+                ownerName: "Mira",
+                ownerDeviceName: "Mira’s MacBook Pro",
+                route: .unknown,
+                friendship: .friends
+            )
+        case .nativeViewerLive:
+            NativeViewerViewSnapshot(
+                phase: .live,
+                ownerName: "Mira",
+                ownerDeviceName: "Mira’s MacBook Pro",
+                route: .peerToPeer,
+                sources: [
+                    NativeViewerSourceViewSnapshot(
+                        id: "source-xcode",
+                        applicationName: "Xcode",
+                        windowName: "LiveShareCoordinator.swift",
+                        pixelWidth: 1_920,
+                        pixelHeight: 1_200,
+                        isVisible: true,
+                        isFocused: true,
+                        isConnected: true
+                    ),
+                    NativeViewerSourceViewSnapshot(
+                        id: "source-safari",
+                        applicationName: "Safari",
+                        windowName: "Clip Viewer",
+                        pixelWidth: 1_440,
+                        pixelHeight: 900,
+                        isVisible: false,
+                        isFocused: false,
+                        isConnected: true
+                    ),
+                    NativeViewerSourceViewSnapshot(
+                        id: "source-terminal",
+                        applicationName: "Terminal",
+                        windowName: "swift test",
+                        pixelWidth: 1_280,
+                        pixelHeight: 800,
+                        isVisible: true,
+                        isFocused: false,
+                        isConnected: false
+                    ),
+                ],
+                systemAudioAvailable: true,
+                systemAudioEnabled: true,
+                volume: 0.72,
+                scaleMode: .automatic,
+                friendship: .friends,
+                statistics: NativeViewerStatisticsSnapshot(
+                    bitsPerSecond: 8_400_000,
+                    framesPerSecond: 30,
+                    packetsLost: 2,
+                    codec: "AV1"
+                )
+            )
+        default:
+            NativeViewerViewSnapshot()
         }
     }
 }
@@ -656,14 +800,17 @@ enum DeterministicLiveShareDemo {
     private static func readySnapshot() -> LiveShareViewSnapshot {
         LiveShareViewSnapshot(
             phase: .ready,
+            sessionStage: .preparing,
+            canStartSharing: true,
+            canReplaceRoom: true,
             room: room,
             accessCodeEnabled: false,
             sources: [],
             fullscreen: .init(isOn: false, displayName: "Studio Display"),
-            canShareFocusedWindow: true,
+            canShareFocusedWindow: false,
             focusedWindowDescription: "Safari · Clip pull request",
             availableWindows: availableWindows,
-            canAddWindow: true,
+            canAddWindow: false,
             settings: .init(
                 quality: .veryHigh,
                 frameRate: .thirty,
@@ -678,6 +825,7 @@ enum DeterministicLiveShareDemo {
     private static func liveSnapshot() -> LiveShareViewSnapshot {
         LiveShareViewSnapshot(
             phase: .live(elapsedSeconds: 94),
+            sessionStage: .active,
             room: room,
             accessCodeEnabled: true,
             accessCode: "orbit-mint-72",
@@ -704,6 +852,7 @@ enum DeterministicLiveShareDemo {
     private static func reconnectingSnapshot() -> LiveShareViewSnapshot {
         LiveShareViewSnapshot(
             phase: .reconnecting(attempt: 2, maximumAttempts: 5),
+            sessionStage: .active,
             room: room,
             accessCodeEnabled: true,
             accessCode: "orbit-mint-72",
@@ -747,6 +896,7 @@ enum DeterministicLiveShareDemo {
     private static func failedSnapshot() -> LiveShareViewSnapshot {
         LiveShareViewSnapshot(
             phase: .failed(message: "The signaling service is unavailable."),
+            sessionStage: .active,
             room: room,
             accessCodeEnabled: true,
             accessCode: "orbit-mint-72",
@@ -895,6 +1045,64 @@ private struct DeterministicFailureScenarioView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .accessibilityIdentifier("clip.failure")
     }
+}
+
+private final class DeterministicNativeDeviceIdentityStorage:
+    NativeDeviceIdentitySecureStorage, @unchecked Sendable
+{
+    private struct StoredIdentityFixture: Encodable {
+        let version: Int
+        let signingPrivateKey: Data
+        let rendezvousID: ClipLiveShareRendezvousID
+        let ownerToken: ClipLiveShareOwnerToken
+    }
+
+    private let lock = NSLock()
+    private var data: Data?
+
+    init() throws {
+        data = try JSONEncoder().encode(StoredIdentityFixture(
+            version: 1,
+            signingPrivateKey: deterministicPrivateKey(seed: 1),
+            rendezvousID: ClipLiveShareRendezvousID(
+                bytes: Data(
+                    repeating: 0x11,
+                    count: ClipLiveShareNativeV2.rendezvousIDByteCount
+                )
+            ),
+            ownerToken: ClipLiveShareOwnerToken(
+                bytes: Data(
+                    repeating: 0x44,
+                    count: ClipLiveShareV1.ownerTokenByteCount
+                )
+            )
+        ))
+    }
+
+    func load() throws -> Data? {
+        lock.lock()
+        defer { lock.unlock() }
+        return data
+    }
+
+    func insert(_ data: Data) throws {
+        lock.lock()
+        defer { lock.unlock() }
+        self.data = data
+    }
+
+    func delete() throws {
+        lock.lock()
+        defer { lock.unlock() }
+        data = nil
+    }
+}
+
+private func deterministicPrivateKey(seed: UInt8) -> Data {
+    precondition(seed > 0)
+    var data = Data(repeating: 0, count: 32)
+    data[data.index(before: data.endIndex)] = seed
+    return data
 }
 
 @MainActor

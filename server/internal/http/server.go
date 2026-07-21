@@ -30,6 +30,7 @@ type Service struct {
 	config            config.Config
 	registry          *registry.Registry
 	hub               *signaling.Hub
+	nativeRendezvous  *signaling.NativeRendezvousHub
 	handler           http.Handler
 	upgrader          websocket.Upgrader
 	connections       chan struct{}
@@ -80,9 +81,16 @@ func NewWithDependencies(configuration config.Config, roomRegistry *registry.Reg
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	service := &Service{
-		config:            configuration,
-		registry:          roomRegistry,
-		hub:               hub,
+		config:   configuration,
+		registry: roomRegistry,
+		hub:      hub,
+		nativeRendezvous: signaling.NewNativeRendezvousHub(signaling.NativeRendezvousConfiguration{
+			LeaseDuration:        configuration.LeaseDuration,
+			ReconnectGrace:       configuration.ReconnectGrace,
+			MaximumRendezvous:    configuration.MaximumRooms,
+			MaximumPendingRoutes: protocol.MaximumPendingViewersPerRoom,
+			RouteIdleTimeout:     configuration.RouteIdleTimeout,
+		}),
 		connections:       make(chan struct{}, configuration.MaximumConnections),
 		viewerConnections: make(chan struct{}, configuration.MaximumConnections-configuration.ReservedHostConnections),
 		viewerRooms:       make(map[string]int),
@@ -138,6 +146,7 @@ func (s *Service) shutdown() {
 	for _, name := range s.registry.Names() {
 		s.hub.CloseRoom(name, "server shutting down")
 	}
+	s.nativeRendezvous.Shutdown("server shutting down")
 	for _, socket := range activeSockets {
 		socket.Close(signaling.CloseGoingAway, "server shutting down")
 	}
@@ -166,12 +175,20 @@ func (s *Service) activeSocketsLocked() []*signaling.Socket {
 func (s *Service) routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /.well-known/clip-live-share", s.capabilities)
+	mux.HandleFunc("GET /.well-known/clip-native-rendezvous", s.nativeCapabilities)
 	mux.HandleFunc("GET /healthz", s.health)
 	mux.HandleFunc("GET /version", s.version)
 	mux.HandleFunc("PUT /api/v1/rooms/{room}", s.advertiseRoom)
 	mux.HandleFunc("DELETE /api/v1/rooms/{room}", s.removeRoom)
 	mux.HandleFunc("GET /api/v1/rooms/{room}/host", s.hostWebSocket)
 	mux.HandleFunc("GET /api/v1/rooms/{room}/viewer", s.viewerWebSocket)
+	mux.HandleFunc("PUT /api/native/v1/rendezvous/{rendezvous}", s.advertiseNativeRendezvous)
+	mux.HandleFunc("GET /api/native/v1/rendezvous/{rendezvous}", s.nativeRendezvousStatus)
+	mux.HandleFunc("DELETE /api/native/v1/rendezvous/{rendezvous}", s.removeNativeRendezvous)
+	mux.HandleFunc("PUT /api/native/v1/rendezvous/{rendezvous}/session", s.activateNativeSession)
+	mux.HandleFunc("DELETE /api/native/v1/rendezvous/{rendezvous}/session", s.deactivateNativeSession)
+	mux.HandleFunc("GET /api/native/v1/rendezvous/{rendezvous}/host", s.nativeHostWebSocket)
+	mux.HandleFunc("GET /api/native/v1/rendezvous/{rendezvous}/viewer", s.nativeViewerWebSocket)
 	mux.HandleFunc("GET /assets/{asset}", s.viewerAsset)
 	mux.HandleFunc("GET /{room}", s.viewerPage)
 	return s.securityHeaders(mux)
@@ -554,6 +571,7 @@ func (s *Service) cleanupLoop(ctx context.Context) {
 				s.hub.CloseRoomGeneration(room.Name, room.Generation, "room lease expired")
 			}
 			s.hub.CleanupIdleRoutes()
+			s.nativeRendezvous.Cleanup()
 			s.admission.cleanup()
 		}
 	}

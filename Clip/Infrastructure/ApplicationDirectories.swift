@@ -25,6 +25,8 @@ enum DeterministicUIScenario: String, CaseIterable, Equatable, Sendable {
     case liveShareReconnecting = "live-share-reconnecting"
     case liveShareFailed = "live-share-failed"
     case liveShareOverlays = "live-share-overlays"
+    case nativeViewerWaiting = "native-viewer-waiting"
+    case nativeViewerLive = "native-viewer-live"
     case settings
     case settingsRecording = "settings-recording"
     case settingsLiveShare = "settings-live-share"

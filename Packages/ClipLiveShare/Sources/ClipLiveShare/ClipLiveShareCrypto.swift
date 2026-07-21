@@ -265,6 +265,18 @@ public struct ClipLiveShareEncryptedChannel: Sendable {
     try seal(message, nonce: Data(AES.GCM.Nonce()))
   }
 
+  /// Encrypts an opaque application payload with the same route, direction,
+  /// ordering, and replay guarantees as the v1 signaling messages.
+  ///
+  /// Native rendezvous uses this for its signed challenge/proof exchange. The
+  /// signaling service can relay the envelope but cannot identify or decode
+  /// the payload carried inside it.
+  public mutating func sealOpaquePayload(_ payload: Data) throws
+    -> ClipLiveShareRelayEnvelope
+  {
+    try sealOpaquePayload(payload, nonce: Data(AES.GCM.Nonce()))
+  }
+
   func derivedKeyBytes(for direction: ClipLiveShareEncryptionDirection) -> Data {
     let key = direction == outboundDirection ? outboundKey : inboundKey
     return key.withUnsafeBytes { Data($0) }
@@ -274,21 +286,34 @@ public struct ClipLiveShareEncryptedChannel: Sendable {
     _ message: ClipLiveShareInnerMessage,
     nonce: Data
   ) throws -> ClipLiveShareRelayEnvelope {
+    let plaintext = try ClipLiveShareMessageCodec.encodeInner(message)
+    return try sealOpaquePayload(plaintext, nonce: nonce)
+  }
+
+  mutating func sealOpaquePayload(
+    _ payload: Data,
+    nonce: Data
+  ) throws -> ClipLiveShareRelayEnvelope {
     guard lastOutboundSequence < UInt64.max else {
       throw ClipLiveShareProtocolError.invalidResource("encrypted sequence exhausted")
     }
     guard nonce.count == ClipLiveShareV1.nonceByteCount else {
       throw ClipLiveShareProtocolError.invalidNonceLength(nonce.count)
     }
+    guard payload.count <= ClipLiveShareV1.maximumInnerMessageBytes else {
+      throw ClipLiveShareProtocolError.messageTooLarge(
+        maximum: ClipLiveShareV1.maximumInnerMessageBytes,
+        actual: payload.count
+      )
+    }
 
-    let plaintext = try ClipLiveShareMessageCodec.encodeInner(message)
     let sequence = lastOutboundSequence + 1
     let authenticatedData = additionalAuthenticatedData(
       direction: outboundDirection,
       sequence: sequence
     )
     let sealed = try AES.GCM.seal(
-      plaintext,
+      payload,
       using: outboundKey,
       nonce: try AES.GCM.Nonce(data: nonce),
       authenticating: authenticatedData
@@ -308,6 +333,23 @@ public struct ClipLiveShareEncryptedChannel: Sendable {
   public mutating func open(_ envelope: ClipLiveShareRelayEnvelope) throws
     -> ClipLiveShareInnerMessage
   {
+    let plaintext = try decryptOpaquePayload(envelope)
+    let message = try ClipLiveShareMessageCodec.decodeInner(plaintext)
+    lastInboundSequence = envelope.sequence
+    return message
+  }
+
+  /// Decrypts an opaque application payload and advances the inbound replay
+  /// counter only after successful authentication.
+  public mutating func openOpaquePayload(_ envelope: ClipLiveShareRelayEnvelope) throws
+    -> Data
+  {
+    let plaintext = try decryptOpaquePayload(envelope)
+    lastInboundSequence = envelope.sequence
+    return plaintext
+  }
+
+  private func decryptOpaquePayload(_ envelope: ClipLiveShareRelayEnvelope) throws -> Data {
     guard envelope.routeID == routeID else {
       throw ClipLiveShareProtocolError.routeMismatch(expected: routeID, actual: envelope.routeID)
     }
@@ -352,9 +394,7 @@ public struct ClipLiveShareEncryptedChannel: Sendable {
       )
     }
 
-    let message = try ClipLiveShareMessageCodec.decodeInner(plaintext)
-    lastInboundSequence = envelope.sequence
-    return message
+    return plaintext
   }
 
   private static func deriveKey(

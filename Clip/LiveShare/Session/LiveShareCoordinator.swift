@@ -2,6 +2,7 @@ import AppKit
 import ClipCapture
 import ClipLiveShare
 import ClipLiveShareWebRTC
+import Combine
 import Foundation
 import OSLog
 
@@ -43,6 +44,1430 @@ enum LiveShareCaptureGeometryFailurePolicy {
 }
 
 @MainActor
+final class LiveShareNativePeerHandoffController {
+    typealias TimeoutHandler = @MainActor @Sendable (
+        ClipLiveShareRouteID
+    ) async -> Void
+
+    private let timeout: Duration
+    private let sleeper: any ClipLiveShareReconnectSleeper
+    private let timeoutHandler: TimeoutHandler
+    private var timeoutTasks: [ClipLiveShareRouteID: Task<Void, Never>] = [:]
+
+    init(
+        timeout: Duration = LiveShareNativeRendezvousLifecycle
+            .routeAdmissionTimeout,
+        sleeper: any ClipLiveShareReconnectSleeper =
+            ContinuousClipLiveShareReconnectSleeper(),
+        timeoutHandler: @escaping TimeoutHandler
+    ) {
+        self.timeout = timeout
+        self.sleeper = sleeper
+        self.timeoutHandler = timeoutHandler
+    }
+
+    /// Once a viewer is admitted, loss of the temporary rendezvous route is
+    /// not a WebRTC failure. Keep the peer until its control DataChannel opens,
+    /// WebRTC reports a terminal state, or the normal admission timeout fires.
+    func admit(_ routeID: ClipLiveShareRouteID) {
+        peerTerminated(routeID)
+        timeoutTasks[routeID] = Task { @MainActor [weak self] in
+            guard let self else { return }
+            do {
+                try await sleeper.sleep(for: timeout)
+            } catch {
+                return
+            }
+            guard !Task.isCancelled,
+                  timeoutTasks.removeValue(forKey: routeID) != nil else {
+                return
+            }
+            await timeoutHandler(routeID)
+        }
+    }
+
+    func signalingRouteClosed(_ routeID: ClipLiveShareRouteID) {
+        // Deliberately no timer change. The rendezvous server cannot determine
+        // whether the P2P channel opened, and its route-close callback can race
+        // arbitrarily far ahead of WebRTC's host callback.
+        _ = timeoutTasks[routeID]
+    }
+
+    func controlChannelOpened(_ routeID: ClipLiveShareRouteID) {
+        peerTerminated(routeID)
+    }
+
+    func peerTerminated(_ routeID: ClipLiveShareRouteID) {
+        timeoutTasks.removeValue(forKey: routeID)?.cancel()
+    }
+
+    func removeAll() {
+        for task in timeoutTasks.values { task.cancel() }
+        timeoutTasks.removeAll()
+    }
+
+    func isAwaitingControlChannel(_ routeID: ClipLiveShareRouteID) -> Bool {
+        timeoutTasks[routeID] != nil
+    }
+}
+
+@MainActor
+final class LiveShareNativeFriendCommitController {
+    typealias CommitHandler = @MainActor (
+        NativeFriendRecord,
+        NativeFriendHandshakeJournalEntry?
+    ) async throws -> Void
+
+    private struct PendingAcceptance {
+        let request: ClipLiveShareNativeFriendRequest
+        let acceptance: ClipLiveShareNativeFriendAcceptance
+        let sessionDescriptor: ClipLiveShareNativeSessionDescriptor
+        let signedSessionDescriptor: ClipLiveShareSignedNativeSessionDescriptor?
+        let signedRequest: ClipLiveShareSignedNativeFriendMessage?
+        let signedAcceptance: ClipLiveShareSignedNativeFriendMessage?
+        let encodedResponse: Data
+        var acceptedAcknowledgementDigest: ClipLiveShareNativeDigest?
+        var acceptedSignedAcknowledgement: ClipLiveShareSignedNativeFriendMessage?
+        var didCommit = false
+        var isCommitting = false
+        var isHistoricalRecovery = false
+        var encodedCommitReceipt: Data?
+    }
+
+    private let commit: CommitHandler
+    private var pendingByViewerID: [String: PendingAcceptance] = [:]
+    private var friendReplayGuard = try! ClipLiveShareNativeFriendReplayGuard()
+
+    init(commit: @escaping @MainActor (NativeFriendRecord) async throws -> Void) {
+        self.commit = { record, _ in try await commit(record) }
+    }
+
+    init(commitWithEvidence commit: @escaping CommitHandler) {
+        self.commit = commit
+    }
+
+    func hasPendingAcceptance(for viewerID: String) -> Bool {
+        pendingByViewerID[viewerID] != nil
+    }
+
+    func responseForVerifiedDuplicateRequest(
+        _ request: ClipLiveShareNativeFriendRequest,
+        viewerID: String
+    ) -> Data? {
+        guard let match = pendingByViewerID.first(where: {
+            $0.value.request == request && !$0.value.didCommit
+        }) else { return nil }
+        let pending = match.value
+        if match.key != viewerID {
+            pendingByViewerID[match.key] = nil
+            pendingByViewerID[viewerID] = pending
+        }
+        return pending.encodedResponse
+    }
+
+    func pendingResponse(for viewerID: String) -> Data? {
+        pendingByViewerID[viewerID]?.encodedResponse
+    }
+
+    func stage(
+        request: ClipLiveShareNativeFriendRequest,
+        acceptance: ClipLiveShareNativeFriendAcceptance,
+        sessionDescriptor: ClipLiveShareNativeSessionDescriptor,
+        encodedResponse: Data,
+        viewerID: String
+    ) throws {
+        guard pendingByViewerID[viewerID] == nil else {
+            throw ClipLiveShareNativeV2Error.contextMismatch
+        }
+        pendingByViewerID[viewerID] = PendingAcceptance(
+            request: request,
+            acceptance: acceptance,
+            sessionDescriptor: sessionDescriptor,
+            signedSessionDescriptor: nil,
+            signedRequest: nil,
+            signedAcceptance: nil,
+            encodedResponse: encodedResponse,
+            acceptedAcknowledgementDigest: nil,
+            acceptedSignedAcknowledgement: nil,
+            encodedCommitReceipt: nil
+        )
+    }
+
+    func stage(
+        signedRequest: ClipLiveShareSignedNativeFriendMessage,
+        signedAcceptance: ClipLiveShareSignedNativeFriendMessage,
+        signedSessionDescriptor: ClipLiveShareSignedNativeSessionDescriptor,
+        encodedResponse: Data,
+        viewerID: String
+    ) throws {
+        guard case let .request(request) = signedRequest.message,
+              case let .accepted(acceptance) = signedAcceptance.message else {
+            throw ClipLiveShareNativeV2Error.contextMismatch
+        }
+        guard pendingByViewerID[viewerID] == nil else {
+            throw ClipLiveShareNativeV2Error.contextMismatch
+        }
+        pendingByViewerID[viewerID] = PendingAcceptance(
+            request: request,
+            acceptance: acceptance,
+            sessionDescriptor: signedSessionDescriptor.descriptor,
+            signedSessionDescriptor: signedSessionDescriptor,
+            signedRequest: signedRequest,
+            signedAcceptance: signedAcceptance,
+            encodedResponse: encodedResponse,
+            acceptedAcknowledgementDigest: nil,
+            acceptedSignedAcknowledgement: nil,
+            encodedCommitReceipt: nil
+        )
+    }
+
+    /// Restores a host-side post-ACK commit after process restart. The exact
+    /// persisted ACK is admitted into the replay guard so only its exact
+    /// retransmission can trigger receipt recovery on the new peer route.
+    func restoreCommittedHandshake(
+        _ entry: NativeFriendHandshakeJournalEntry,
+        viewerID: String
+    ) throws {
+        guard entry.role == .accepter else {
+            throw ClipLiveShareNativeV2Error.contextMismatch
+        }
+        let encodedAcceptance = try ClipLiveShareNativeV2MessageCodec.encode(
+            entry.signedAcceptance
+        )
+        let encodedReceipt = try entry.signedCommitReceipt.map {
+            try ClipLiveShareNativeV2MessageCodec.encode($0)
+        }
+        _ = try friendReplayGuard.acceptAcknowledgementIdempotently(
+            entry.signedAcknowledgement,
+            expectedIdentity: entry.request.requesterIdentity
+        )
+        pendingByViewerID[viewerID] = PendingAcceptance(
+            request: entry.request,
+            acceptance: entry.acceptance,
+            sessionDescriptor: entry.signedSessionDescriptor.descriptor,
+            signedSessionDescriptor: entry.signedSessionDescriptor,
+            signedRequest: entry.signedRequest,
+            signedAcceptance: entry.signedAcceptance,
+            encodedResponse: encodedAcceptance,
+            acceptedAcknowledgementDigest: entry.signedAcknowledgement.digest,
+            acceptedSignedAcknowledgement: entry.signedAcknowledgement,
+            didCommit: true,
+            isCommitting: false,
+            isHistoricalRecovery: true,
+            encodedCommitReceipt: encodedReceipt
+        )
+    }
+
+    struct CommitResult {
+        let admission: ClipLiveShareNativeFriendAcknowledgementAdmission
+        let request: ClipLiveShareNativeFriendRequest
+        let acceptance: ClipLiveShareNativeFriendAcceptance
+        let acknowledgement: ClipLiveShareNativeFriendAcceptanceAcknowledgement
+        let acknowledgementDigest: ClipLiveShareNativeDigest
+        let handshakeJournalEntry: NativeFriendHandshakeJournalEntry?
+    }
+
+    @discardableResult
+    func receiveAcknowledgement(
+        _ signed: ClipLiveShareSignedNativeFriendMessage,
+        viewerID: String,
+        at now: ClipLiveShareNativeTimestamp
+    ) async throws -> CommitResult {
+        guard var pending = pendingByViewerID[viewerID],
+              case let .acceptanceAcknowledged(acknowledgement) =
+                signed.message else {
+            throw ClipLiveShareNativeV2Error.contextMismatch
+        }
+        // Validate all session/request/acceptance/time context before admitting
+        // the signature digest into the replay guard.
+        try acknowledgement.validate(
+            for: pending.acceptance,
+            request: pending.request,
+            expectedSessionDescriptor: pending.sessionDescriptor,
+            at: pending.isHistoricalRecovery
+                ? acknowledgement.acknowledgedAt
+                : now
+        )
+        if let acceptedSignedAcknowledgement = pending.acceptedSignedAcknowledgement,
+           acceptedSignedAcknowledgement != signed {
+            throw ClipLiveShareNativeV2Error.replayed
+        }
+        if let acceptedDigest = pending.acceptedAcknowledgementDigest,
+           acceptedDigest != signed.digest {
+            throw ClipLiveShareNativeV2Error.replayed
+        }
+        let admission = try friendReplayGuard
+            .acceptAcknowledgementIdempotently(
+                signed,
+                expectedIdentity: pending.request.requesterIdentity
+            )
+        if pending.acceptedAcknowledgementDigest == nil {
+            guard admission == .firstSeen else {
+                throw ClipLiveShareNativeV2Error.replayed
+            }
+            pending.acceptedAcknowledgementDigest = signed.digest
+            pending.acceptedSignedAcknowledgement = signed
+            pendingByViewerID[viewerID] = pending
+        }
+        if pending.didCommit {
+            guard admission == .duplicate else {
+                throw ClipLiveShareNativeV2Error.replayed
+            }
+        } else {
+            guard !pending.isCommitting else {
+                throw LiveShareNativeRendezvousLifecycleError.operationSuperseded
+            }
+            pending.isCommitting = true
+            pendingByViewerID[viewerID] = pending
+            // A failed disk write leaves the pending acceptance uncommitted.
+            // The exact duplicate ACK is then a safe retry trigger even though
+            // its signed digest is already present in the replay guard.
+            do {
+                let journalEntry: NativeFriendHandshakeJournalEntry?
+                if let signedSessionDescriptor = pending.signedSessionDescriptor,
+                   let signedRequest = pending.signedRequest,
+                   let signedAcceptance = pending.signedAcceptance {
+                    journalEntry = try NativeFriendHandshakeJournalEntry(
+                        role: .accepter,
+                        signedSessionDescriptor: signedSessionDescriptor,
+                        signedRequest: signedRequest,
+                        signedAcceptance: signedAcceptance,
+                        signedAcknowledgement: signed
+                    )
+                } else {
+                    journalEntry = nil
+                }
+                try await commit(NativeFriendRecord(
+                    identity: pending.request.requesterIdentity,
+                    displayName: pending.request.requesterDeviceName,
+                    deviceName: pending.request.requesterDeviceName,
+                    endpoint: pending.request.requesterEndpoint,
+                    rendezvousID: pending.request.requesterRendezvousID
+                ), journalEntry)
+            } catch {
+                if var current = pendingByViewerID[viewerID],
+                   current.acceptedAcknowledgementDigest == signed.digest {
+                    current.isCommitting = false
+                    pendingByViewerID[viewerID] = current
+                }
+                throw error
+            }
+            guard let current = pendingByViewerID[viewerID],
+                  current.acceptedAcknowledgementDigest == signed.digest else {
+                throw LiveShareNativeRendezvousLifecycleError.operationSuperseded
+            }
+            pending = current
+            pending.didCommit = true
+            pending.isCommitting = false
+            pendingByViewerID[viewerID] = pending
+        }
+        return CommitResult(
+            admission: admission,
+            request: pending.request,
+            acceptance: pending.acceptance,
+            acknowledgement: acknowledgement,
+            acknowledgementDigest: signed.digest,
+            handshakeJournalEntry: try makeJournalEntry(
+                pending: pending,
+                signedAcknowledgement: signed
+            )
+        )
+    }
+
+    func storeCommitReceipt(
+        _ data: Data,
+        acknowledgementDigest: ClipLiveShareNativeDigest,
+        viewerID: String
+    ) throws {
+        guard var pending = pendingByViewerID[viewerID],
+              pending.didCommit,
+              pending.acceptedAcknowledgementDigest == acknowledgementDigest
+        else { throw ClipLiveShareNativeV2Error.contextMismatch }
+        pending.encodedCommitReceipt = data
+        pendingByViewerID[viewerID] = pending
+    }
+
+    func commitReceipt(for viewerID: String) -> Data? {
+        pendingByViewerID[viewerID]?.encodedCommitReceipt
+    }
+
+    func restoredCommitResult(for viewerID: String) throws -> CommitResult {
+        guard let pending = pendingByViewerID[viewerID],
+              pending.didCommit,
+              let signedAcknowledgement = pending.acceptedSignedAcknowledgement,
+              case let .acceptanceAcknowledged(acknowledgement) =
+                signedAcknowledgement.message else {
+            throw ClipLiveShareNativeV2Error.contextMismatch
+        }
+        return CommitResult(
+            admission: .duplicate,
+            request: pending.request,
+            acceptance: pending.acceptance,
+            acknowledgement: acknowledgement,
+            acknowledgementDigest: signedAcknowledgement.digest,
+            handshakeJournalEntry: try makeJournalEntry(
+                pending: pending,
+                signedAcknowledgement: signedAcknowledgement
+            )
+        )
+    }
+
+    func removeViewer(_ viewerID: String) {
+        // An uncommitted acceptance is retained until this share ends so a
+        // requester that restarted after staging its ACK can reconnect and
+        // replay the exact request on a new peer route.
+        if pendingByViewerID[viewerID]?.didCommit == true {
+            pendingByViewerID[viewerID] = nil
+        }
+    }
+
+    func removeAll() {
+        pendingByViewerID.removeAll()
+        friendReplayGuard = try! ClipLiveShareNativeFriendReplayGuard()
+    }
+
+    private func makeJournalEntry(
+        pending: PendingAcceptance,
+        signedAcknowledgement: ClipLiveShareSignedNativeFriendMessage
+    ) throws -> NativeFriendHandshakeJournalEntry? {
+        guard let signedSessionDescriptor = pending.signedSessionDescriptor,
+              let signedRequest = pending.signedRequest,
+              let signedAcceptance = pending.signedAcceptance else {
+            return nil
+        }
+        return try NativeFriendHandshakeJournalEntry(
+            role: .accepter,
+            signedSessionDescriptor: signedSessionDescriptor,
+            signedRequest: signedRequest,
+            signedAcceptance: signedAcceptance,
+            signedAcknowledgement: signedAcknowledgement
+        )
+    }
+}
+
+enum LiveShareNativeViewerApprovalPolicy {
+    static func permitsAfterModal(
+        userAllowed: Bool,
+        expectedIdentity: ClipLiveShareIdentityPublicKey,
+        currentRecords: [NativeFriendRecord]
+    ) -> Bool {
+        userAllowed && currentRecords.contains {
+            $0.identity == expectedIdentity && $0.trustState == .trusted
+        }
+    }
+}
+
+protocol LiveShareNativeRendezvousHostTransporting: Sendable {
+    func eventStream() async -> AsyncStream<ClipNativeRendezvousEvent>
+    func attach(_ owner: ClipNativeRendezvousOwner) async throws
+    func publish(descriptor: Data) async throws
+    func stopSharing() async throws
+    func send(_ payload: Data, to routeID: String) async throws
+    func closeRoute(_ routeID: String, reason: String?) async
+    func tearDown(removeRendezvous: Bool) async
+}
+
+private struct LiveShareNativeRendezvousHostTransportAdapter:
+    LiveShareNativeRendezvousHostTransporting
+{
+    let transport: ClipNativeRendezvousHostTransport
+
+    init(transport: ClipNativeRendezvousHostTransport = .init()) {
+        self.transport = transport
+    }
+
+    func eventStream() async -> AsyncStream<ClipNativeRendezvousEvent> {
+        await transport.events()
+    }
+
+    func attach(_ owner: ClipNativeRendezvousOwner) async throws {
+        _ = try await transport.attachHost(owner)
+    }
+
+    func publish(descriptor: Data) async throws {
+        try await transport.publishSession(descriptor: descriptor)
+    }
+
+    func stopSharing() async throws {
+        try await transport.stopSharing()
+    }
+
+    func send(_ payload: Data, to routeID: String) async throws {
+        try await transport.send(payload, to: routeID)
+    }
+
+    func closeRoute(_ routeID: String, reason: String?) async {
+        await transport.closeRoute(routeID, reason: reason)
+    }
+
+    func tearDown(removeRendezvous: Bool) async {
+        await transport.teardown(removeRendezvous: removeRendezvous)
+    }
+}
+
+enum LiveShareNativeRendezvousLifecycleError: Error, Equatable, LocalizedError {
+    case invalidTransition
+    case endpointMismatch
+    case operationSuperseded
+    case stateRevisionExhausted
+
+    var errorDescription: String? {
+        switch self {
+        case .invalidTransition:
+            "The native rendezvous lifecycle cannot perform that operation now."
+        case .endpointMismatch:
+            "The native rendezvous and browser room use different servers."
+        case .operationSuperseded:
+            "A newer native rendezvous lifecycle operation replaced this one."
+        case .stateRevisionExhausted:
+            "The native rendezvous session exhausted its state revisions."
+        }
+    }
+}
+
+enum LiveShareNativeRendezvousLifecyclePhase: Equatable, Sendable {
+    case idle
+    case attaching
+    case preparing
+    case activating
+    case active
+    case deactivating
+}
+
+enum LiveShareNativeRendezvousUnavailabilityReason: Equatable, Sendable {
+    case descriptorRefreshFailed
+    case eventBufferOverflow
+    case eventStreamEnded
+}
+
+struct LiveShareNativeRendezvousLifecycleSnapshot: Equatable, Sendable {
+    let phase: LiveShareNativeRendezvousLifecyclePhase
+    let rendezvousID: ClipLiveShareRendezvousID?
+    let sessionID: ClipLiveShareSessionID?
+    let stateRevision: ClipLiveShareStateRevision?
+    let signedDescriptor: ClipLiveShareSignedNativeSessionDescriptor?
+}
+
+enum LiveShareNativeRendezvousLifecycleEvent: Equatable, Sendable {
+    case descriptorPublished(ClipLiveShareSignedNativeSessionDescriptor)
+    case approvalRequested(
+        routeID: ClipLiveShareRouteID,
+        viewerIdentity: ClipLiveShareIdentityPublicKey
+    )
+    case viewerAdmitted(
+        routeID: ClipLiveShareRouteID,
+        sessionID: ClipLiveShareSessionID,
+        viewerIdentity: ClipLiveShareIdentityPublicKey
+    )
+    case signalingMessage(
+        routeID: ClipLiveShareRouteID,
+        message: ClipLiveShareInnerMessage
+    )
+    case routeClosed(routeID: ClipLiveShareRouteID, reason: String?)
+    case unavailable(LiveShareNativeRendezvousUnavailabilityReason)
+}
+
+/// Owns the additive native rendezvous lifecycle alongside the existing
+/// browser-v1 signaling client. The native server sees only the persistent
+/// opaque rendezvous ID and a short-lived, server-readable signed descriptor.
+/// The service treats descriptor bytes as unparsed; only proof and subsequent
+/// signaling/control payloads are end-to-end encrypted.
+actor LiveShareNativeRendezvousLifecycle {
+    typealias IdentityProvider = @Sendable () async throws -> NativeDeviceIdentity
+
+    private struct ActiveSession: Sendable {
+        let room: ClipLiveShareRoomConfiguration
+        let sessionID: ClipLiveShareSessionID
+        var revision: ClipLiveShareStateRevision
+        var signedDescriptor: ClipLiveShareSignedNativeSessionDescriptor
+    }
+
+    private enum RoutePhase: Equatable, Sendable {
+        case waitingForHello
+        case waitingForProof
+        case waitingForApproval
+        case admitted
+    }
+
+    private struct Route: Sendable {
+        let routeID: ClipLiveShareRouteID
+        var phase: RoutePhase
+        var channel: ClipLiveShareEncryptedChannel?
+        var challenge: ClipLiveShareNativeViewerChallenge?
+        var viewerIdentity: ClipLiveShareIdentityPublicKey?
+    }
+
+    static let descriptorRefreshInterval: Duration = .seconds(4 * 60)
+    static let descriptorRefreshRetryDelays: [Duration] = [
+        .seconds(2),
+        .seconds(4),
+        .seconds(8),
+    ]
+    static let descriptorExpirySafetyMargin: TimeInterval = 10
+    static let routeAdmissionTimeout: Duration = .seconds(60)
+
+    private let serverEndpoint: ClipLiveShareServerEndpoint
+    private let identityProvider: IdentityProvider
+    private let transport: any LiveShareNativeRendezvousHostTransporting
+    private let now: @Sendable () -> Date
+    private let refreshSleeper: any ClipLiveShareReconnectSleeper
+    private let refreshInterval: Duration?
+    private let refreshRetryDelays: [Duration]
+    private let descriptorExpirySafetyMargin: TimeInterval
+
+    private var phase: LiveShareNativeRendezvousLifecyclePhase = .idle
+    private var generation: UInt64 = 0
+    private var identity: NativeDeviceIdentity?
+    private var activeSession: ActiveSession?
+    private var eventTask: Task<Void, Never>?
+    private var eventObservationID: UUID?
+    private var refreshTask: Task<Void, Never>?
+    private var isRefreshing = false
+    private var routes: [ClipLiveShareRouteID: Route] = [:]
+    private var routeTimeoutTasks: [ClipLiveShareRouteID: Task<Void, Never>] = [:]
+    private var trustedViewerIdentities: Set<ClipLiveShareIdentityPublicKey> = []
+    private var viewerProofReplayGuard = try! ClipLiveShareNativeReplayGuard()
+    private var isOutputBufferOverflowing = false
+    private var continuations: [
+        UUID: AsyncStream<LiveShareNativeRendezvousLifecycleEvent>.Continuation
+    ] = [:]
+
+    init(
+        serverEndpoint: ClipLiveShareServerEndpoint,
+        identityProvider: @escaping IdentityProvider,
+        transport: any LiveShareNativeRendezvousHostTransporting,
+        now: @escaping @Sendable () -> Date = { Date() },
+        refreshSleeper: any ClipLiveShareReconnectSleeper =
+            ContinuousClipLiveShareReconnectSleeper(),
+        refreshInterval: Duration? = LiveShareNativeRendezvousLifecycle
+            .descriptorRefreshInterval,
+        refreshRetryDelays: [Duration] = LiveShareNativeRendezvousLifecycle
+            .descriptorRefreshRetryDelays,
+        descriptorExpirySafetyMargin: TimeInterval =
+            LiveShareNativeRendezvousLifecycle.descriptorExpirySafetyMargin
+    ) {
+        self.serverEndpoint = serverEndpoint
+        self.identityProvider = identityProvider
+        self.transport = transport
+        self.now = now
+        self.refreshSleeper = refreshSleeper
+        self.refreshInterval = refreshInterval
+        self.refreshRetryDelays = refreshRetryDelays
+        self.descriptorExpirySafetyMargin = max(
+            0,
+            descriptorExpirySafetyMargin
+        )
+    }
+
+    nonisolated static func live(
+        serverEndpoint: ClipLiveShareServerEndpoint
+    ) -> LiveShareNativeRendezvousLifecycle {
+        let identityRepository = NativeDeviceIdentityRepository()
+        return LiveShareNativeRendezvousLifecycle(
+            serverEndpoint: serverEndpoint,
+            identityProvider: {
+                try await identityRepository.loadOrCreate()
+            },
+            transport: LiveShareNativeRendezvousHostTransportAdapter()
+        )
+    }
+
+    func snapshot() -> LiveShareNativeRendezvousLifecycleSnapshot {
+        LiveShareNativeRendezvousLifecycleSnapshot(
+            phase: phase,
+            rendezvousID: identity?.rendezvousID,
+            sessionID: activeSession?.sessionID,
+            stateRevision: activeSession?.revision,
+            signedDescriptor: activeSession?.signedDescriptor
+        )
+    }
+
+    func events() -> AsyncStream<LiveShareNativeRendezvousLifecycleEvent> {
+        let id = UUID()
+        let pair = AsyncStream.makeStream(
+            of: LiveShareNativeRendezvousLifecycleEvent.self,
+            bufferingPolicy: .bufferingNewest(256)
+        )
+        continuations[id] = pair.continuation
+        pair.continuation.onTermination = { [weak self] _ in
+            Task { await self?.removeContinuation(id) }
+        }
+        return pair.stream
+    }
+
+    /// Claims the persistent device rendezvous and attaches its host socket.
+    /// No descriptor is published here, so the service reports PREPARING and
+    /// rejects viewer upgrades until the user explicitly starts sharing.
+    func prepare() async throws {
+        if phase == .preparing { return }
+        guard phase == .idle else {
+            throw LiveShareNativeRendezvousLifecycleError.invalidTransition
+        }
+        generation &+= 1
+        isOutputBufferOverflowing = false
+        let expectedGeneration = generation
+        phase = .attaching
+        await beginObservingTransportEvents()
+
+        do {
+            let identity = try await identityProvider()
+            let owner = try makeOwner(identity: identity)
+            try await transport.attach(owner)
+            guard generation == expectedGeneration,
+                  phase == .attaching,
+                  !Task.isCancelled else {
+                throw LiveShareNativeRendezvousLifecycleError.operationSuperseded
+            }
+            self.identity = identity
+            activeSession = nil
+            phase = .preparing
+        } catch {
+            if generation == expectedGeneration, phase == .attaching {
+                phase = .idle
+                self.identity = nil
+                activeSession = nil
+                eventTask?.cancel()
+                eventTask = nil
+                eventObservationID = nil
+                await transport.tearDown(removeRendezvous: false)
+            }
+            throw error
+        }
+    }
+
+    /// Publishes a new signed descriptor only after explicit Start. Every
+    /// activation receives a fresh session ID and ephemeral browser room key.
+    func activate(
+        room: ClipLiveShareRoomConfiguration,
+        trustedViewerIdentities: Set<ClipLiveShareIdentityPublicKey> = []
+    ) async throws {
+        guard phase == .preparing, let identity else {
+            throw LiveShareNativeRendezvousLifecycleError.invalidTransition
+        }
+        guard room.endpoint.rootURL == serverEndpoint.rootURL else {
+            throw LiveShareNativeRendezvousLifecycleError.endpointMismatch
+        }
+        generation &+= 1
+        let expectedGeneration = generation
+        phase = .activating
+        let sessionID = ClipLiveShareSessionID.random()
+        let revision = try ClipLiveShareStateRevision(rawValue: 1)
+        let signedDescriptor = try makeSignedDescriptor(
+            room: room,
+            identity: identity,
+            sessionID: sessionID,
+            revision: revision
+        )
+        let payload = try encode(signedDescriptor)
+
+        do {
+            try await transport.publish(descriptor: payload)
+            guard generation == expectedGeneration,
+                  phase == .activating,
+                  !Task.isCancelled else {
+                throw LiveShareNativeRendezvousLifecycleError.operationSuperseded
+            }
+            activeSession = ActiveSession(
+                room: room,
+                sessionID: sessionID,
+                revision: revision,
+                signedDescriptor: signedDescriptor
+            )
+            self.trustedViewerIdentities = trustedViewerIdentities
+            phase = .active
+            scheduleDescriptorRefresh(sessionID: sessionID)
+            emit(.descriptorPublished(signedDescriptor))
+        } catch {
+            if generation == expectedGeneration, phase == .activating {
+                phase = .preparing
+                activeSession = nil
+            }
+            throw error
+        }
+    }
+
+    /// Rotates the short-lived descriptor while preserving the native session.
+    /// This keeps a long-running share joinable without changing its identity
+    /// or established peer-to-peer connections.
+    func refreshActiveDescriptor() async throws {
+        guard phase == .active,
+              !isRefreshing,
+              let current = activeSession else {
+            throw LiveShareNativeRendezvousLifecycleError.invalidTransition
+        }
+        guard current.revision.rawValue < UInt64.max else {
+            throw LiveShareNativeRendezvousLifecycleError.stateRevisionExhausted
+        }
+        isRefreshing = true
+        defer { isRefreshing = false }
+        let expectedGeneration = generation
+        let nextRevision = try ClipLiveShareStateRevision(
+            rawValue: current.revision.rawValue + 1
+        )
+        guard let identity else {
+            throw LiveShareNativeRendezvousLifecycleError.invalidTransition
+        }
+        let signedDescriptor = try makeSignedDescriptor(
+            room: current.room,
+            identity: identity,
+            sessionID: current.sessionID,
+            revision: nextRevision
+        )
+        try await transport.publish(descriptor: encode(signedDescriptor))
+        guard generation == expectedGeneration,
+              phase == .active,
+              activeSession?.sessionID == current.sessionID else {
+            throw LiveShareNativeRendezvousLifecycleError.operationSuperseded
+        }
+        activeSession?.revision = nextRevision
+        activeSession?.signedDescriptor = signedDescriptor
+        emit(.descriptorPublished(signedDescriptor))
+    }
+
+    /// Clears any published descriptor before replacing the browser room. The
+    /// persistent owner attachment remains PREPARING and can activate the new
+    /// room without making the old room joinable.
+    func prepareForRoomReplacement() async throws {
+        if phase == .idle {
+            try await prepare()
+            return
+        }
+        if phase == .preparing { return }
+        guard phase == .active || phase == .activating else {
+            throw LiveShareNativeRendezvousLifecycleError.invalidTransition
+        }
+        generation &+= 1
+        let expectedGeneration = generation
+        refreshTask?.cancel()
+        refreshTask = nil
+        isRefreshing = false
+        clearRoutes()
+        trustedViewerIdentities.removeAll()
+        phase = .deactivating
+        do {
+            try await transport.stopSharing()
+            guard generation == expectedGeneration,
+                  phase == .deactivating else {
+                throw LiveShareNativeRendezvousLifecycleError.operationSuperseded
+            }
+            activeSession = nil
+            phase = .preparing
+        } catch {
+            if generation == expectedGeneration, phase == .deactivating {
+                activeSession = nil
+                phase = .preparing
+            }
+            throw error
+        }
+    }
+
+    /// Stops only native rendezvous/introduction state. Established WebRTC
+    /// peers remain independent and are closed by the coordinator only after
+    /// its normal DataChannel session-closing handoff.
+    func tearDown(removeRendezvous: Bool = false) async {
+        generation &+= 1
+        phase = .idle
+        identity = nil
+        activeSession = nil
+        isRefreshing = false
+        clearRoutes()
+        trustedViewerIdentities.removeAll()
+        refreshTask?.cancel()
+        refreshTask = nil
+        eventTask?.cancel()
+        eventTask = nil
+        eventObservationID = nil
+        await transport.tearDown(removeRendezvous: removeRendezvous)
+    }
+
+    func resolveApproval(
+        routeID: ClipLiveShareRouteID,
+        allowed: Bool
+    ) async {
+        guard var route = routes[routeID],
+              route.phase == .waitingForApproval,
+              let activeSession,
+              let viewerIdentity = route.viewerIdentity else {
+            await rejectRoute(routeID, reason: "approval-state-invalid")
+            return
+        }
+        do {
+            try await sendEncrypted(
+                .authResult(try ClipLiveShareAuthResult(
+                    sessionID: activeSession.sessionID,
+                    allowed: allowed,
+                    reason: allowed ? nil : "host-declined"
+                )),
+                over: &route
+            )
+            guard allowed else {
+                routes[routeID] = route
+                await rejectRoute(routeID, reason: "host-declined")
+                return
+            }
+            route.phase = .admitted
+            routes[routeID] = route
+            emit(.viewerAdmitted(
+                routeID: routeID,
+                sessionID: activeSession.sessionID,
+                viewerIdentity: viewerIdentity
+            ))
+        } catch {
+            await rejectRoute(routeID, reason: "approval-send-failed")
+        }
+    }
+
+    func sendSignalingMessage(
+        _ message: ClipLiveShareInnerMessage,
+        to routeID: ClipLiveShareRouteID
+    ) async throws {
+        guard var route = routes[routeID], route.phase == .admitted else {
+            throw ClipNativeRendezvousError.routeNotFound
+        }
+        try await sendEncrypted(message, over: &route)
+        routes[routeID] = route
+    }
+
+    func closeRoute(
+        _ routeID: ClipLiveShareRouteID,
+        reason: String? = nil
+    ) async {
+        routes[routeID] = nil
+        routeTimeoutTasks.removeValue(forKey: routeID)?.cancel()
+        await transport.closeRoute(routeID.rawValue, reason: reason)
+    }
+
+    func completeSignalingHandoff(_ routeID: ClipLiveShareRouteID) async {
+        await closeRoute(routeID, reason: "viewer completed signaling")
+    }
+
+    func makeFriendResponse(
+        to request: ClipLiveShareNativeFriendRequest,
+        allowed: Bool,
+        accepterDisplayName: String,
+        accepterDeviceName: String
+    ) throws -> Data {
+        guard let identity, let activeSession else {
+            throw LiveShareNativeRendezvousLifecycleError.invalidTransition
+        }
+        let timestamp = try ClipLiveShareNativeTimestamp(date: now())
+        let message: ClipLiveShareNativeFriendMessage
+        if allowed {
+            message = .accepted(try ClipLiveShareNativeFriendAcceptance(
+                requestID: request.requestID,
+                sessionID: request.sessionID,
+                requestDigest: request.digest,
+                accepterIdentity: identity.publicKey,
+                requesterFingerprint: request.requesterIdentity.fingerprint,
+                accepterDisplayName: accepterDisplayName,
+                accepterDeviceName: accepterDeviceName,
+                accepterEndpoint: serverEndpoint,
+                rendezvousID: identity.rendezvousID,
+                acceptedAt: timestamp,
+                stateRevision: activeSession.revision
+            ))
+        } else {
+            message = .declined(try ClipLiveShareNativeFriendDecline(
+                requestID: request.requestID,
+                sessionID: request.sessionID,
+                requestDigest: request.digest,
+                declinerIdentity: identity.publicKey,
+                requesterFingerprint: request.requesterIdentity.fingerprint,
+                declinedAt: timestamp,
+                reason: "host-declined"
+            ))
+        }
+        return try ClipLiveShareNativeV2MessageCodec.encode(
+            ClipLiveShareSignedNativeFriendMessage(
+                signing: message,
+                with: identity.signer
+            )
+        )
+    }
+
+    func makeFriendCommitReceipt(
+        for result: LiveShareNativeFriendCommitController.CommitResult
+    ) throws -> Data {
+        guard let identity,
+              identity.publicKey == result.acceptance.accepterIdentity else {
+            throw LiveShareNativeRendezvousLifecycleError.invalidTransition
+        }
+        let receipt = try ClipLiveShareNativeFriendCommitReceipt(
+            committing: result.acknowledgement,
+            acknowledgementDigest: result.acknowledgementDigest,
+            acceptance: result.acceptance,
+            request: result.request,
+            // The signature is produced only after the durable write returns.
+            // Reusing the ACK timestamp makes an exact retry canonical even if
+            // the first receipt was lost after persistence completed.
+            committedAt: result.acknowledgement.acknowledgedAt
+        )
+        return try ClipLiveShareNativeV2MessageCodec.encode(
+            ClipLiveShareSignedNativeFriendMessage(
+                signing: .commitReceipt(receipt),
+                with: identity.signer
+            )
+        )
+    }
+
+    func trustViewerIdentity(
+        _ viewerIdentity: ClipLiveShareIdentityPublicKey
+    ) throws {
+        guard phase == .active, activeSession != nil else {
+            throw LiveShareNativeRendezvousLifecycleError.invalidTransition
+        }
+        trustedViewerIdentities.insert(viewerIdentity)
+    }
+
+    private func makeOwner(
+        identity: NativeDeviceIdentity
+    ) throws -> ClipNativeRendezvousOwner {
+        guard let ownerToken = ClipLiveShareBase64URL.decode(
+            identity.ownerToken.rawValue
+        ) else {
+            throw ClipNativeRendezvousError.invalidOwnerToken
+        }
+        return try ClipNativeRendezvousOwner(
+            target: ClipNativeRendezvousTarget(
+                endpoint: serverEndpoint.rootURL,
+                rendezvousID: identity.rendezvousID.bytes
+            ),
+            ownerToken: ownerToken
+        )
+    }
+
+    private func makeSignedDescriptor(
+        room: ClipLiveShareRoomConfiguration,
+        identity: NativeDeviceIdentity,
+        sessionID: ClipLiveShareSessionID,
+        revision: ClipLiveShareStateRevision
+    ) throws -> ClipLiveShareSignedNativeSessionDescriptor {
+        let issuedAt = try ClipLiveShareNativeTimestamp(date: now())
+        let expiresAt = try issuedAt.adding(
+            milliseconds: ClipLiveShareNativeV2
+                .maximumSessionDescriptorLifetimeMilliseconds
+        )
+        let descriptor = try ClipLiveShareNativeSessionDescriptor(
+            endpoint: room.endpoint,
+            room: room.room,
+            rendezvousID: identity.rendezvousID,
+            hostIdentity: identity.publicKey,
+            roomPublicKey: room.identity.publicKey,
+            sessionID: sessionID,
+            issuedAt: issuedAt,
+            expiresAt: expiresAt,
+            stateRevision: revision
+        )
+        return try ClipLiveShareSignedNativeSessionDescriptor(
+            signing: descriptor,
+            with: identity.signer
+        )
+    }
+
+    private func encode(
+        _ descriptor: ClipLiveShareSignedNativeSessionDescriptor
+    ) throws -> Data {
+        try ClipLiveShareNativeV2MessageCodec.encode(
+            descriptor,
+            maximumBytes: ClipNativeRendezvousLimits.maximumDescriptorBytes
+        )
+    }
+
+    private func beginObservingTransportEvents() async {
+        guard eventTask == nil else { return }
+        let events = await transport.eventStream()
+        let observationID = UUID()
+        eventObservationID = observationID
+        eventTask = Task { [weak self] in
+            for await event in events {
+                guard !Task.isCancelled, let self else { return }
+                await self.handleTransportEvent(event)
+            }
+            guard !Task.isCancelled, let self else { return }
+            await self.transportEventStreamEnded(observationID)
+        }
+    }
+
+    private func handleTransportEvent(
+        _ event: ClipNativeRendezvousEvent
+    ) async {
+        switch event {
+        case let .routeOpened(rawRouteID, _):
+            await beginRoute(rawRouteID)
+
+        case let .relay(rawRouteID, payload, _):
+            await receive(payload, on: rawRouteID)
+
+        case let .routeClosed(rawRouteID, reason):
+            guard let routeID = try? ClipLiveShareRouteID(rawValue: rawRouteID)
+            else { return }
+            routes[routeID] = nil
+            routeTimeoutTasks.removeValue(forKey: routeID)?.cancel()
+            emit(.routeClosed(routeID: routeID, reason: reason))
+
+        case .stopped:
+            clearRoutes()
+
+        case .eventBufferOverflow:
+            await failClosed(
+                reason: .eventBufferOverflow,
+                expectedSessionID: activeSession?.sessionID
+            )
+
+        default:
+            break
+        }
+    }
+
+    private func transportEventStreamEnded(_ observationID: UUID) async {
+        guard eventObservationID == observationID,
+              phase != .idle else { return }
+        eventTask = nil
+        eventObservationID = nil
+        await failClosed(
+            reason: .eventStreamEnded,
+            expectedSessionID: activeSession?.sessionID
+        )
+    }
+
+    private func beginRoute(_ rawRouteID: String) async {
+        guard phase == .active,
+              activeSession != nil,
+              let routeID = try? ClipLiveShareRouteID(rawValue: rawRouteID),
+              routes[routeID] == nil else {
+            await transport.closeRoute(rawRouteID, reason: "native-share-not-active")
+            return
+        }
+        routes[routeID] = Route(
+            routeID: routeID,
+            phase: .waitingForHello,
+            channel: nil,
+            challenge: nil,
+            viewerIdentity: nil
+        )
+        routeTimeoutTasks[routeID] = Task { [weak self] in
+            do {
+                try await Task.sleep(for: Self.routeAdmissionTimeout)
+            } catch {
+                return
+            }
+            await self?.rejectRoute(routeID, reason: "admission-timeout")
+        }
+    }
+
+    private func receive(_ payload: Data, on rawRouteID: String) async {
+        guard let routeID = try? ClipLiveShareRouteID(rawValue: rawRouteID),
+              var route = routes[routeID],
+              let activeSession else {
+            await transport.closeRoute(rawRouteID, reason: "route-not-found")
+            return
+        }
+        do {
+            let outer = try ClipLiveShareMessageCodec.decodeOuter(
+                payload,
+                maximumBytes: ClipNativeRendezvousLimits.maximumOpaquePayloadBytes
+            )
+            switch route.phase {
+            case .waitingForHello:
+                guard case let .viewerHello(hello) = outer else {
+                    throw ClipLiveShareProtocolError.invalidResource(
+                        "native route expected viewer hello"
+                    )
+                }
+                var channel = try ClipLiveShareEncryptedChannel(
+                    host: activeSession.room.identity,
+                    viewerPublicKey: hello.viewerKey,
+                    room: activeSession.room.room,
+                    routeID: routeID
+                )
+                let timestamp = try ClipLiveShareNativeTimestamp(date: now())
+                let challenge = try ClipLiveShareNativeViewerChallenge.random(
+                    sessionDescriptorDigest: activeSession.signedDescriptor
+                        .descriptor.digest,
+                    sessionID: activeSession.sessionID,
+                    routeID: routeID,
+                    viewerEphemeralPublicKey: hello.viewerKey,
+                    issuedAt: timestamp,
+                    expiresAt: try timestamp.adding(
+                        milliseconds: ClipLiveShareNativeV2
+                            .maximumChallengeLifetimeMilliseconds
+                    ),
+                    stateRevision: activeSession.revision
+                )
+                let challengeData = try ClipLiveShareNativeV2MessageCodec.encode(
+                    challenge
+                )
+                let envelope = try channel.sealOpaquePayload(challengeData)
+                route.channel = channel
+                route.challenge = challenge
+                route.phase = .waitingForProof
+                routes[routeID] = route
+                try await sendOuter(.relay(envelope), to: routeID)
+
+            case .waitingForProof:
+                guard case let .relay(envelope) = outer,
+                      envelope.routeID == routeID,
+                      var channel = route.channel,
+                      let challenge = route.challenge else {
+                    throw ClipLiveShareProtocolError.invalidResource(
+                        "native route expected encrypted viewer proof"
+                    )
+                }
+                let proofData = try channel.openOpaquePayload(envelope)
+                let proof = try ClipLiveShareNativeV2MessageCodec.decode(
+                    ClipLiveShareSignedNativeViewerProof.self,
+                    from: proofData
+                )
+                guard trustedViewerIdentities.contains(proof.viewerIdentity) else {
+                    await rejectRoute(routeID, reason: "viewer-not-trusted")
+                    return
+                }
+                let timestamp = try ClipLiveShareNativeTimestamp(date: now())
+                try viewerProofReplayGuard.accept(
+                    proof,
+                    expectedChallenge: challenge,
+                    expectedIdentity: proof.viewerIdentity,
+                    at: timestamp
+                )
+                route.channel = channel
+                route.viewerIdentity = proof.viewerIdentity
+                route.phase = .waitingForApproval
+                routes[routeID] = route
+                emit(.approvalRequested(
+                    routeID: routeID,
+                    viewerIdentity: proof.viewerIdentity
+                ))
+
+            case .waitingForApproval:
+                throw ClipLiveShareProtocolError.invalidResource(
+                    "native route is waiting for host approval"
+                )
+
+            case .admitted:
+                guard case let .relay(envelope) = outer,
+                      envelope.routeID == routeID,
+                      var channel = route.channel else {
+                    throw ClipLiveShareProtocolError.invalidResource(
+                        "native route expected encrypted signaling"
+                    )
+                }
+                let message = try channel.open(envelope)
+                guard message.sessionID == activeSession.sessionID else {
+                    throw ClipLiveShareNativeV2Error.contextMismatch
+                }
+                route.channel = channel
+                routes[routeID] = route
+                emit(.signalingMessage(routeID: routeID, message: message))
+            }
+        } catch {
+            await rejectRoute(routeID, reason: "native-protocol-rejected")
+        }
+    }
+
+    private func sendEncrypted(
+        _ message: ClipLiveShareInnerMessage,
+        over route: inout Route
+    ) async throws {
+        guard var channel = route.channel else {
+            throw ClipNativeRendezvousError.routeNotFound
+        }
+        let envelope = try channel.seal(message)
+        try await sendOuter(.relay(envelope), to: route.routeID)
+        route.channel = channel
+    }
+
+    private func sendOuter(
+        _ message: ClipLiveShareOuterMessage,
+        to routeID: ClipLiveShareRouteID
+    ) async throws {
+        try await transport.send(
+            ClipLiveShareMessageCodec.encodeOuter(
+                message,
+                maximumBytes: ClipNativeRendezvousLimits.maximumOpaquePayloadBytes
+            ),
+            to: routeID.rawValue
+        )
+    }
+
+    private func rejectRoute(
+        _ routeID: ClipLiveShareRouteID,
+        reason: String
+    ) async {
+        routes[routeID] = nil
+        routeTimeoutTasks.removeValue(forKey: routeID)?.cancel()
+        await transport.closeRoute(routeID.rawValue, reason: reason)
+    }
+
+    private func clearRoutes() {
+        routes.removeAll()
+        for task in routeTimeoutTasks.values { task.cancel() }
+        routeTimeoutTasks.removeAll()
+    }
+
+    private func emit(_ event: LiveShareNativeRendezvousLifecycleEvent) {
+        var dropped = false
+        for continuation in continuations.values {
+            if case .dropped = continuation.yield(event) {
+                dropped = true
+            }
+        }
+        guard dropped, !isOutputBufferOverflowing else { return }
+        isOutputBufferOverflowing = true
+        let sessionID = activeSession?.sessionID
+        Task {
+            await failClosed(
+                reason: .eventBufferOverflow,
+                expectedSessionID: sessionID
+            )
+        }
+    }
+
+    private func removeContinuation(_ id: UUID) {
+        continuations[id] = nil
+    }
+
+    private func scheduleDescriptorRefresh(
+        sessionID: ClipLiveShareSessionID
+    ) {
+        refreshTask?.cancel()
+        guard refreshInterval != nil else {
+            refreshTask = nil
+            return
+        }
+        refreshTask = Task { [weak self] in
+            await self?.runDescriptorRefreshLoop(sessionID: sessionID)
+        }
+    }
+
+    private func runDescriptorRefreshLoop(
+        sessionID: ClipLiveShareSessionID
+    ) async {
+        guard let refreshInterval else { return }
+        while !Task.isCancelled {
+            do {
+                try await refreshSleeper.sleep(for: refreshInterval)
+            } catch {
+                return
+            }
+            guard !Task.isCancelled,
+                  phase == .active,
+                  activeSession?.sessionID == sessionID else { return }
+            guard await refreshDescriptorWithRetry(sessionID: sessionID) else {
+                return
+            }
+        }
+    }
+
+    private func refreshDescriptorWithRetry(
+        sessionID: ClipLiveShareSessionID
+    ) async -> Bool {
+        var nextDelayIndex = 0
+        while !Task.isCancelled {
+            guard phase == .active,
+                  activeSession?.sessionID == sessionID else { return false }
+            guard descriptorCanRemainPublished(
+                sessionID: sessionID,
+                after: nil
+            ) else {
+                await failClosed(
+                    reason: .descriptorRefreshFailed,
+                    expectedSessionID: sessionID
+                )
+                return false
+            }
+            do {
+                try await refreshActiveDescriptor()
+                return true
+            } catch is CancellationError {
+                return false
+            } catch let error as LiveShareNativeRendezvousLifecycleError
+                where error == .operationSuperseded
+            {
+                return false
+            } catch {
+                guard nextDelayIndex < refreshRetryDelays.count else {
+                    await failClosed(
+                        reason: .descriptorRefreshFailed,
+                        expectedSessionID: sessionID
+                    )
+                    return false
+                }
+                let delay = refreshRetryDelays[nextDelayIndex]
+                nextDelayIndex += 1
+                guard descriptorCanRemainPublished(
+                    sessionID: sessionID,
+                    after: delay
+                ) else {
+                    await failClosed(
+                        reason: .descriptorRefreshFailed,
+                        expectedSessionID: sessionID
+                    )
+                    return false
+                }
+                do {
+                    try await refreshSleeper.sleep(for: delay)
+                } catch {
+                    return false
+                }
+            }
+        }
+        return false
+    }
+
+    private func descriptorCanRemainPublished(
+        sessionID: ClipLiveShareSessionID,
+        after delay: Duration?
+    ) -> Bool {
+        guard let activeSession,
+              activeSession.sessionID == sessionID else { return false }
+        let deadline = activeSession.signedDescriptor.descriptor.expiresAt.date
+            .addingTimeInterval(-descriptorExpirySafetyMargin)
+        let candidate = now().addingTimeInterval(
+            delay.map(Self.timeInterval) ?? 0
+        )
+        return candidate < deadline
+    }
+
+    private static func timeInterval(_ duration: Duration) -> TimeInterval {
+        let components = duration.components
+        return TimeInterval(components.seconds)
+            + TimeInterval(components.attoseconds) / 1_000_000_000_000_000_000
+    }
+
+    private func failClosed(
+        reason: LiveShareNativeRendezvousUnavailabilityReason,
+        expectedSessionID: ClipLiveShareSessionID?
+    ) async {
+        guard phase != .idle else { return }
+        if let expectedSessionID,
+           activeSession?.sessionID != expectedSessionID { return }
+
+        generation &+= 1
+        phase = .deactivating
+        activeSession = nil
+        identity = nil
+        isRefreshing = false
+        clearRoutes()
+        trustedViewerIdentities.removeAll()
+
+        let refresh = refreshTask
+        refreshTask = nil
+        refresh?.cancel()
+        let observation = eventTask
+        eventTask = nil
+        eventObservationID = nil
+        observation?.cancel()
+
+        // Teardown clears the transport's desired descriptor before any later
+        // reconnect, so it can never republish an expired descriptor. Existing
+        // WebRTC peers are owned by the coordinator and remain untouched.
+        await transport.tearDown(removeRendezvous: false)
+        phase = .idle
+        emit(.unavailable(reason))
+    }
+}
+
+@MainActor
 final class LiveShareCoordinator {
     nonisolated private static let logger = Logger(
         subsystem: ApplicationDirectories.bundleIdentifier,
@@ -50,11 +1475,19 @@ final class LiveShareCoordinator {
     )
 
     private let preferences: LiveSharePreferencesModel
+    private let nativeFriends: NativeFriendModel
     private let serverEndpoint: ClipLiveShareServerEndpoint
     private let signaling: ClipLiveShareSignalingClient
+    private let nativeRendezvous: LiveShareNativeRendezvousLifecycle
     private let discovery: any CaptureContentDiscovering
+    private let requestScreenRecordingPermission: () async -> Bool
+    private let requestNativeViewerApproval: (NativeFriendRecord) -> Bool
+    private let requestNativeFriendApproval: (String) -> Bool
     private let onSessionEnded: () -> Void
     private let onMenuBarStatusChanged: (LiveShareMenuBarStatus) -> Void
+    private let onJoinInviteRequested: (String) -> Void
+    private let onJoinFriendRequested: (NativeFriendRecord) -> Void
+    private var friendObservation: AnyCancellable?
 
     private var state = LiveShareStateMachine()
     private var settings = LiveShareSettings.default
@@ -65,6 +1498,7 @@ final class LiveShareCoordinator {
     private var accessCodeError: String?
     private var roomConfiguration: ClipLiveShareRoomConfiguration?
     private var signalingIsAvailable = false
+    private var preparedViewerRouteIDs: Set<ClipLiveShareRouteID> = []
     private var pendingViewerRoutes: [
         ClipLiveShareRouteID: LiveSharePendingViewerRoute
     ] = [:]
@@ -75,10 +1509,29 @@ final class LiveShareCoordinator {
     private var negotiationIDs: [String: ClipLiveShareNegotiationID] = [:]
     private var establishedControlViewerIDs: Set<String> = []
     private var pendingSessionClosingViewerIDs: Set<String> = []
+    private var pendingNativeApprovalRouteIDs: Set<ClipLiveShareRouteID> = []
+    private var nativeViewerRoutes: [
+        ClipLiveShareRouteID: LiveShareViewerAdmissionProgress
+    ] = [:]
+    private var nativeAdmittedViewerIdentities: [
+        String: ClipLiveShareIdentityPublicKey
+    ] = [:]
+    private var nativeControlViewerIdentities: [
+        String: ClipLiveShareIdentityPublicKey
+    ] = [:]
+    private var nativeControlViewerCapabilities: [
+        String: Set<ClipLiveShareNativeControlCapability>
+    ] = [:]
+    private var nativeControlStateRevisions: [String: UInt64] = [:]
+    private var nativeFriendResponseRetryTasks: [String: Task<Void, Never>] = [:]
+    private var nativeControlReplayGuard = try! ClipLiveShareNativeReplayGuard()
+    private var nativeFriendReplayGuard = try! ClipLiveShareNativeFriendReplayGuard()
     private var peerHost: WebRTCPeerHost?
     private var capturePipeline: LiveShareCapturePipeline?
     private var signalingEventTask: Task<Void, Never>?
+    private var nativeRendezvousEventTask: Task<Void, Never>?
     private var startupTask: Task<Void, Never>?
+    private var activationTask: Task<Void, Never>?
     private var statisticsTask: Task<Void, Never>?
     private var cursorTask: Task<Void, Never>?
     private var sourceRefreshTask: Task<Void, Never>?
@@ -95,6 +1548,8 @@ final class LiveShareCoordinator {
     private var fullscreenRequestGate = LiveShareFullscreenRequestGate()
     private var retryTask: Task<Void, Never>?
     private var isRetrying = false
+    private var isActivatingSharing = false
+    private var sharingHasStarted = false
     private var isEnding = false
     private var didNotifyEnd = false
     private var startedAt: Date?
@@ -120,6 +1575,26 @@ final class LiveShareCoordinator {
     /// Mirrors completed ScreenCaptureKit audio reconciliation, not merely the
     /// user's preference or the lifetime of the pre-negotiated Opus track.
     private var systemAudioIsActive = false
+
+    private lazy var nativePeerHandoff = LiveShareNativePeerHandoffController(
+        timeoutHandler: { [weak self] routeID in
+            await self?.nativeViewerAdmissionTimedOut(routeID)
+        }
+    )
+    private lazy var nativeFriendCommit = LiveShareNativeFriendCommitController(
+        commitWithEvidence: { [weak self] record, evidence in
+            guard let self else {
+                throw CancellationError()
+            }
+            guard let evidence else {
+                throw ClipLiveShareNativeV2Error.contextMismatch
+            }
+            try await nativeFriends.commitAccepterHandshakeDurably(
+                record: record,
+                entry: evidence
+            )
+        }
+    )
 
     private lazy var focusedWindowMonitor = LiveShareFocusedWindowMonitor(
         discovery: discovery,
@@ -161,6 +1636,18 @@ final class LiveShareCoordinator {
             replaceAccessCode: { [weak self] in
                 self?.replaceAccessCode()
             },
+            startSharing: { [weak self] in
+                self?.requestStartSharing()
+            },
+            replaceRoom: { [weak self] in
+                self?.requestReplaceRoom()
+            },
+            joinInvite: { [weak self] invite in
+                self?.requestJoinInvite(invite)
+            },
+            joinFriend: { [weak self] id in
+                self?.requestJoinFriend(id)
+            },
             shareFocusedWindow: { [weak self] in
                 self?.shareFocusedWindow(requestedIdentifier: nil)
             },
@@ -196,14 +1683,33 @@ final class LiveShareCoordinator {
 
     init(
         preferences: LiveSharePreferencesModel,
+        nativeFriends: NativeFriendModel,
         serverEndpoint: ClipLiveShareServerEndpoint = .official,
         discovery: any CaptureContentDiscovering = ScreenCaptureContentDiscovery(),
+        requestScreenRecordingPermission: @escaping () async -> Bool = { true },
+        nativeRendezvous: LiveShareNativeRendezvousLifecycle? = nil,
+        requestNativeViewerApproval: ((NativeFriendRecord) -> Bool)? = nil,
+        requestNativeFriendApproval: ((String) -> Bool)? = nil,
+        onJoinInviteRequested: @escaping (String) -> Void = { _ in },
+        onJoinFriendRequested: @escaping (NativeFriendRecord) -> Void = { _ in },
         onSessionEnded: @escaping () -> Void,
         onMenuBarStatusChanged: @escaping (LiveShareMenuBarStatus) -> Void = { _ in }
     ) {
         self.preferences = preferences
+        self.nativeFriends = nativeFriends
         self.serverEndpoint = serverEndpoint
         self.discovery = discovery
+        self.requestScreenRecordingPermission = requestScreenRecordingPermission
+        self.requestNativeViewerApproval = requestNativeViewerApproval
+            ?? Self.defaultNativeViewerApproval
+        self.requestNativeFriendApproval = requestNativeFriendApproval
+            ?? Self.defaultNativeFriendApproval
+        self.nativeRendezvous = nativeRendezvous
+            ?? LiveShareNativeRendezvousLifecycle.live(
+                serverEndpoint: serverEndpoint
+            )
+        self.onJoinInviteRequested = onJoinInviteRequested
+        self.onJoinFriendRequested = onJoinFriendRequested
         self.onSessionEnded = onSessionEnded
         self.onMenuBarStatusChanged = onMenuBarStatusChanged
         signaling = ClipLiveShareSignalingClient(
@@ -211,6 +1717,66 @@ final class LiveShareCoordinator {
                 Self.logger.debug("\(entry.description, privacy: .public)")
             }
         )
+        friendObservation = nativeFriends.$presentationRevision
+            .dropFirst()
+            .sink { [weak self] _ in
+                self?.publish()
+            }
+    }
+
+    private static func defaultNativeViewerApproval(
+        _ friend: NativeFriendRecord
+    ) -> Bool {
+        let alert = NSAlert()
+        alert.messageText = String(
+            localized: "Allow \(friend.displayName) to view this Live Share?"
+        )
+        alert.informativeText = String(
+            localized: "\(friend.deviceName) proved its saved Clip identity."
+        )
+        alert.addButton(withTitle: String(localized: "Allow"))
+        alert.addButton(withTitle: String(localized: "Decline"))
+        return alert.runModal() == .alertFirstButtonReturn
+    }
+
+    private static func defaultNativeFriendApproval(_ deviceName: String) -> Bool {
+        let alert = NSAlert()
+        alert.messageText = String(localized: "Add \(deviceName) as a friend?")
+        alert.informativeText = String(
+            localized: "Future native Live Shares will still ask before this friend can view."
+        )
+        alert.addButton(withTitle: String(localized: "Add Friend"))
+        alert.addButton(withTitle: String(localized: "Decline"))
+        return alert.runModal() == .alertFirstButtonReturn
+    }
+
+    private static var localFriendDeviceName: String {
+        nativeFriendName(
+            Host.current().localizedName,
+            fallback: String(localized: "Mac")
+        )
+    }
+
+    private static var localFriendDisplayName: String {
+        nativeFriendName(
+            NSFullUserName(),
+            fallback: localFriendDeviceName
+        )
+    }
+
+    private static func nativeFriendName(
+        _ candidate: String?,
+        fallback: String
+    ) -> String {
+        let value = candidate?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let source = value.flatMap { $0.isEmpty ? nil : $0 } ?? fallback
+        var result = ""
+        for character in source {
+            let next = result + String(character)
+            guard next.utf8.count <= 128 else { break }
+            result = next
+        }
+        return result.isEmpty ? fallback : result
     }
 
     var isActive: Bool {
@@ -226,7 +1792,131 @@ final class LiveShareCoordinator {
         }
     }
 
+    private func requestStartSharing() {
+        guard activationTask == nil,
+              !sharingHasStarted,
+              !isEnding,
+              signalingIsAvailable,
+              state.snapshot.phase == .ready else { return }
+        activationTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            isActivatingSharing = true
+            publish()
+            guard await requestScreenRecordingPermission(),
+                  !Task.isCancelled,
+                  !isEnding,
+                  state.snapshot.phase == .ready else {
+                isActivatingSharing = false
+                activationTask = nil
+                publish()
+                return
+            }
+
+            do {
+                try installNativeRuntime()
+                guard let roomConfiguration else {
+                    throw LiveShareTransitionError.invalidTransition(
+                        from: state.snapshot.phase,
+                        operation: "missingRoomConfiguration"
+                    )
+                }
+                let trustedViewerIdentities = Set(
+                    nativeFriends.book.records.compactMap { record in
+                        record.trustState == .trusted ? record.identity : nil
+                    }
+                )
+                try await nativeRendezvous.activate(
+                    room: roomConfiguration,
+                    trustedViewerIdentities: trustedViewerIdentities
+                )
+                try state.beginSharing()
+                try state.markSharingStarted()
+                sharingHasStarted = true
+                startedAt = Date()
+                focusedWindowMonitor.start()
+                startSourceRefreshLoop()
+                startStatisticsLoop()
+                isActivatingSharing = false
+                activationTask = nil
+                broadcastAuthoritativeControlMutation()
+                publish()
+                await admitPreparedViewerRoutes()
+                if settings.autoShareFocusedWindows,
+                   state.snapshot.sources.fullscreen == nil,
+                   focusedWindow != nil {
+                    shareFocusedWindow(requestedIdentifier: nil, isAutomatic: true)
+                }
+            } catch {
+                try? await nativeRendezvous.prepareForRoomReplacement()
+                isActivatingSharing = false
+                activationTask = nil
+                peerHost?.close()
+                peerHost = nil
+                capturePipeline = nil
+                let code: LiveShareFailureCode =
+                    error is LiveShareNativeRendezvousLifecycleError
+                    || error is ClipNativeRendezvousError
+                    ? .signalingFailed
+                    : .encoderFailed
+                fail(code: code, error: error)
+            }
+        }
+    }
+
+    private func requestReplaceRoom() {
+        guard startupTask == nil,
+              activationTask == nil,
+              !sharingHasStarted,
+              !isEnding,
+              [.ready, .connecting].contains(state.snapshot.phase) else { return }
+        startupTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            do {
+                try await nativeRendezvous.prepareForRoomReplacement()
+            } catch {
+                fail(code: .signalingFailed, error: error)
+                startupTask = nil
+                return
+            }
+            signalingEventTask?.cancel()
+            signalingEventTask = nil
+            cancelAdmissionTimeouts()
+            pendingViewerRoutes.removeAll()
+            await signaling.stop()
+            roomConfiguration = nil
+            signalingIsAvailable = false
+            state.disconnect()
+            publish()
+            guard !Task.isCancelled, !isEnding else {
+                startupTask = nil
+                return
+            }
+            await beginSession()
+            startupTask = nil
+        }
+    }
+
+    private func requestJoinInvite(_ invite: String) {
+        guard !sharingHasStarted, !isEnding else { return }
+        onJoinInviteRequested(invite)
+    }
+
+    private func requestJoinFriend(_ id: String) {
+        guard !sharingHasStarted,
+              !isEnding,
+              let record = nativeFriends.recordAvailableForJoin(id: id) else { return }
+        onJoinFriendRequested(record)
+    }
+
     func endForApplicationTermination() async {
+        await endSession(notifyApplication: false)
+    }
+
+    /// Fully tears down the host role before ApplicationCoordinator constructs
+    /// a native viewer role. Unlike the synchronous app-stop reset, returning
+    /// from this method guarantees rendezvous, signaling, capture, and peer
+    /// transports have completed their asynchronous shutdown.
+    func cancelForRoleTransition() async {
         await endSession(notifyApplication: false)
     }
 
@@ -240,8 +1930,14 @@ final class LiveShareCoordinator {
         fullscreenRequestGate.invalidate()
         startupTask?.cancel()
         startupTask = nil
+        activationTask?.cancel()
+        activationTask = nil
+        isActivatingSharing = false
+        sharingHasStarted = false
         signalingEventTask?.cancel()
         signalingEventTask = nil
+        nativeRendezvousEventTask?.cancel()
+        nativeRendezvousEventTask = nil
         statisticsTask?.cancel()
         statisticsTask = nil
         cursorTask?.cancel()
@@ -276,9 +1972,11 @@ final class LiveShareCoordinator {
         negotiationIDs.removeAll()
         establishedControlViewerIDs.removeAll()
         pendingSessionClosingViewerIDs.removeAll()
+        clearNativeViewerState()
         Task {
             await systemAudioTask?.value
             await pipeline?.stopAll()
+            await nativeRendezvous.tearDown()
             await signaling.stop()
         }
         state.disconnect()
@@ -308,6 +2006,15 @@ final class LiveShareCoordinator {
         }
         publish()
 
+        nativeRendezvousEventTask?.cancel()
+        let nativeEvents = await nativeRendezvous.events()
+        nativeRendezvousEventTask = Task { @MainActor [weak self] in
+            for await event in nativeEvents {
+                guard !Task.isCancelled, let self else { return }
+                await handleNativeRendezvousEvent(event)
+            }
+        }
+
         let events = await signaling.events()
         signalingEventTask = Task { @MainActor [weak self] in
             for await event in events {
@@ -317,8 +2024,10 @@ final class LiveShareCoordinator {
         }
 
         do {
+            try await nativeRendezvous.prepare()
             let room = try await signaling.createRoom(at: serverEndpoint)
             guard !Task.isCancelled, !isEnding else {
+                await nativeRendezvous.tearDown()
                 await signaling.stop()
                 return
             }
@@ -327,14 +2036,13 @@ final class LiveShareCoordinator {
                 name: room.room,
                 viewerURL: try room.viewerURL
             ))
-            try installNativeRuntime()
             publish()
-            focusedWindowMonitor.start()
-            startSourceRefreshLoop()
-            startStatisticsLoop()
             try await signaling.connect(room: room)
         } catch {
-            guard !Task.isCancelled, !isEnding else { return }
+            guard !Task.isCancelled, !isEnding else {
+                await nativeRendezvous.tearDown()
+                return
+            }
             let code: LiveShareFailureCode = state.snapshot.phase == .reservingRoom
                 ? .reservationFailed
                 : (error is WebRTCPeerHostError ? .encoderFailed : .signalingFailed)
@@ -405,7 +2113,8 @@ final class LiveShareCoordinator {
                     try state.markSignalingConnected()
                 }
                 publish()
-                if settings.autoShareFocusedWindows,
+                if sharingHasStarted,
+                   settings.autoShareFocusedWindows,
                    state.snapshot.sources.fullscreen == nil,
                    focusedWindow != nil {
                     shareFocusedWindow(requestedIdentifier: nil, isAutomatic: true)
@@ -415,12 +2124,20 @@ final class LiveShareCoordinator {
             }
 
         case let .routeOpened(routeID):
-            await beginViewerAdmission(routeID: routeID)
+            if sharingHasStarted {
+                await beginViewerAdmission(routeID: routeID)
+            } else if !retainPreparedViewerRoute(routeID) {
+                await signaling.closeRoute(routeID)
+            }
 
         case let .message(routeID, message):
             await handleSignalingMessage(message, routeID: routeID)
 
         case let .routeClosed(routeID, reason):
+            LiveSharePreparedViewerRouteBuffer.cancel(
+                routeID,
+                in: &preparedViewerRouteIDs
+            )
             if reason == "viewer completed signaling" {
                 // The browser can observe its DataChannel opening a few
                 // milliseconds before the host callback reaches MainActor.
@@ -436,6 +2153,10 @@ final class LiveShareCoordinator {
             }
 
         case let .routeRejected(routeID, _):
+            LiveSharePreparedViewerRouteBuffer.cancel(
+                routeID,
+                in: &preparedViewerRouteIDs
+            )
             await removePendingRoute(routeID, removesPeer: true)
 
         case let .serverError(code):
@@ -503,18 +2224,195 @@ final class LiveShareCoordinator {
         }
     }
 
+    private func handleNativeRendezvousEvent(
+        _ event: LiveShareNativeRendezvousLifecycleEvent
+    ) async {
+        guard !isEnding else { return }
+        switch event {
+        case let .descriptorPublished(descriptor):
+            sendNativeDescriptor(descriptor)
+
+        case let .approvalRequested(routeID, viewerIdentity):
+            guard sharingHasStarted,
+                  peerHost != nil,
+                  let friend = nativeFriends.book.records.first(where: {
+                      $0.identity == viewerIdentity && $0.trustState == .trusted
+                  }) else {
+                await nativeRendezvous.closeRoute(
+                    routeID,
+                    reason: "viewer-not-trusted"
+                )
+                return
+            }
+            let pendingRouteIDs = pendingViewerRoutes.keys.map(\.rawValue)
+                + pendingNativeApprovalRouteIDs.map(\.rawValue)
+                + nativeViewerRoutes.keys.map(\.rawValue)
+            guard LiveShareViewerAdmissionCapacity.canBegin(
+                routeID: routeID.rawValue,
+                allocatedViewerIDs: peerHost?.viewerIDs ?? [],
+                pendingRouteIDs: pendingRouteIDs,
+                maximumViewers: WebRTCPeerResourceLimits.clipDefault
+                    .maximumViewerCount
+            ) else {
+                await nativeRendezvous.closeRoute(
+                    routeID,
+                    reason: "viewer-capacity-reached"
+                )
+                return
+            }
+            pendingNativeApprovalRouteIDs.insert(routeID)
+            let userAllowed = requestNativeViewerApproval(friend)
+            guard pendingNativeApprovalRouteIDs.contains(routeID),
+                  !isEnding else {
+                await nativeRendezvous.closeRoute(
+                    routeID,
+                    reason: "approval-cancelled"
+                )
+                return
+            }
+            // NSAlert.runModal spins a nested event loop. Settings can block or
+            // remove this friend while the prompt is visible, so trust must be
+            // re-read immediately before admitting the route.
+            let allowed = LiveShareNativeViewerApprovalPolicy.permitsAfterModal(
+                userAllowed: userAllowed,
+                expectedIdentity: viewerIdentity,
+                currentRecords: nativeFriends.book.records
+            )
+            await nativeRendezvous.resolveApproval(
+                routeID: routeID,
+                allowed: allowed
+            )
+            if !allowed { pendingNativeApprovalRouteIDs.remove(routeID) }
+
+        case let .viewerAdmitted(routeID, sessionID, viewerIdentity):
+            guard pendingNativeApprovalRouteIDs.contains(routeID),
+                  sharingHasStarted,
+                  peerHost != nil else {
+                await nativeRendezvous.closeRoute(
+                    routeID,
+                    reason: "admission-cancelled"
+                )
+                return
+            }
+            // resolveApproval crosses the rendezvous actor. Settings can block
+            // or remove the friend before this callback returns to MainActor,
+            // so authorization must be current at the actual peer allocation.
+            guard nativeFriends.book.records.contains(where: {
+                $0.identity == viewerIdentity && $0.trustState == .trusted
+            }) else {
+                pendingNativeApprovalRouteIDs.remove(routeID)
+                await nativeRendezvous.closeRoute(
+                    routeID,
+                    reason: "viewer-not-trusted"
+                )
+                return
+            }
+            pendingNativeApprovalRouteIDs.remove(routeID)
+            let viewerID = routeID.rawValue
+            guard viewerSessionIDs[viewerID] == nil else {
+                await nativeRendezvous.closeRoute(
+                    routeID,
+                    reason: "duplicate-viewer"
+                )
+                return
+            }
+            nativeViewerRoutes[routeID] = LiveShareViewerAdmissionProgress()
+            nativePeerHandoff.admit(routeID)
+            nativeAdmittedViewerIdentities[viewerID] = viewerIdentity
+            viewerSessionIDs[viewerID] = sessionID
+            await sendOffer(to: viewerID, reoffer: false)
+
+        case let .signalingMessage(routeID, message):
+            guard nativeViewerRoutes[routeID] != nil,
+                  viewerSessionIDs[routeID.rawValue] == message.sessionID else {
+                await rejectNativeViewerProtocol(routeID.rawValue)
+                return
+            }
+            switch message {
+            case .answer(let answer):
+                await applyRemoteAnswer(answer, viewerID: routeID.rawValue)
+            case .ice(let candidate):
+                await applyRemoteICE(candidate, viewerID: routeID.rawValue)
+            case .sessionClosing:
+                await removePendingNativeRoute(routeID, removesPeer: true)
+            default:
+                await rejectNativeViewerProtocol(routeID.rawValue)
+            }
+
+        case let .routeClosed(routeID, _):
+            pendingNativeApprovalRouteIDs.remove(routeID)
+            guard var progress = nativeViewerRoutes[routeID] else { return }
+            nativePeerHandoff.signalingRouteClosed(routeID)
+            progress.receiveSignalingHandoff()
+            if progress.remainsPending {
+                nativeViewerRoutes[routeID] = progress
+            } else {
+                nativeViewerRoutes[routeID] = nil
+            }
+
+        case let .unavailable(reason):
+            // Native rendezvous has failed closed. Its admitted peers remain
+            // governed by their DataChannel/terminal/timeout events; browser
+            // v1 and already-established P2P viewers are unaffected.
+            Self.logger.error(
+                "Native rendezvous became unavailable: \(String(describing: reason), privacy: .public)"
+            )
+            publish()
+        }
+    }
+
+    private func retainPreparedViewerRoute(
+        _ routeID: ClipLiveShareRouteID
+    ) -> Bool {
+        guard !isEnding,
+              signalingIsAvailable,
+              state.snapshot.phase == .ready else { return false }
+        return LiveSharePreparedViewerRouteBuffer.retain(
+            routeID,
+            in: &preparedViewerRouteIDs,
+            maximumCount: WebRTCPeerResourceLimits.clipDefault
+                .maximumViewerCount
+        )
+    }
+
+    private func admitPreparedViewerRoutes() async {
+        let routeIDs = LiveSharePreparedViewerRouteBuffer.drain(
+            &preparedViewerRouteIDs
+        )
+        for routeID in routeIDs {
+            guard sharingHasStarted, peerHost != nil, !isEnding else {
+                await signaling.closeRoute(routeID)
+                continue
+            }
+            await beginViewerAdmission(routeID: routeID)
+        }
+    }
+
     private func beginViewerAdmission(routeID: ClipLiveShareRouteID) async {
+        LiveSharePreparedViewerRouteBuffer.cancel(
+            routeID,
+            in: &preparedViewerRouteIDs
+        )
+        guard sharingHasStarted, peerHost != nil else {
+            await signaling.closeRoute(routeID)
+            return
+        }
         let maximumViewers = WebRTCPeerResourceLimits.clipDefault.maximumViewerCount
         guard LiveShareViewerAdmissionCapacity.canBegin(
             routeID: routeID.rawValue,
             allocatedViewerIDs: peerHost?.viewerIDs ?? [],
-            pendingRouteIDs: pendingViewerRoutes.keys.map(\.rawValue),
+            pendingRouteIDs: pendingViewerRoutes.keys.map(\.rawValue)
+                + pendingNativeApprovalRouteIDs.map(\.rawValue)
+                + nativeViewerRoutes.keys.map(\.rawValue),
             maximumViewers: maximumViewers
         ) else {
             await signaling.closeRoute(routeID)
             return
         }
-        let sessionID = ClipLiveShareSessionID.random()
+        guard let sessionID = await nativeRendezvous.snapshot().sessionID else {
+            await signaling.closeRoute(routeID)
+            return
+        }
         let code = accessCode
         let challenge = ClipLiveShareAuthChallenge.random(
             sessionID: sessionID,
@@ -540,6 +2438,10 @@ final class LiveShareCoordinator {
     ) async {
         guard let route = pendingViewerRoutes[routeID],
               message.sessionID == route.sessionID else {
+            LiveSharePreparedViewerRouteBuffer.cancel(
+                routeID,
+                in: &preparedViewerRouteIDs
+            )
             await signaling.closeRoute(routeID)
             await removePendingRoute(routeID, removesPeer: true)
             return
@@ -744,11 +2646,26 @@ final class LiveShareCoordinator {
             viewerSessionIDs[viewerID] = nil
             establishedControlViewerIDs.remove(viewerID)
             pendingSessionClosingViewerIDs.remove(viewerID)
-            if let routeID = try? ClipLiveShareRouteID(rawValue: viewerID),
-               pendingViewerRoutes[routeID] != nil {
-                admissionTimeoutTasks.removeValue(forKey: routeID)?.cancel()
-                pendingViewerRoutes[routeID] = nil
-                await signaling.closeRoute(routeID)
+            nativeAdmittedViewerIdentities[viewerID] = nil
+            nativeControlViewerIdentities[viewerID] = nil
+            nativeControlViewerCapabilities[viewerID] = nil
+            nativeControlStateRevisions[viewerID] = nil
+            nativeFriendResponseRetryTasks.removeValue(forKey: viewerID)?
+                .cancel()
+            nativeFriendCommit.removeViewer(viewerID)
+            if let routeID = try? ClipLiveShareRouteID(rawValue: viewerID) {
+                nativePeerHandoff.peerTerminated(routeID)
+                if pendingViewerRoutes[routeID] != nil {
+                    admissionTimeoutTasks.removeValue(forKey: routeID)?.cancel()
+                    pendingViewerRoutes[routeID] = nil
+                    await signaling.closeRoute(routeID)
+                }
+                if nativeViewerRoutes.removeValue(forKey: routeID) != nil {
+                    await nativeRendezvous.closeRoute(
+                        routeID,
+                        reason: "peer-removed"
+                    )
+                }
             }
             updateViewerCount()
             publish()
@@ -771,6 +2688,9 @@ final class LiveShareCoordinator {
             } else if connectionState == .failed || connectionState == .closed {
                 viewerConnectedAt[viewerID] = nil
                 peerNegotiation.remove(viewerID)
+                if let routeID = try? ClipLiveShareRouteID(rawValue: viewerID) {
+                    nativePeerHandoff.peerTerminated(routeID)
+                }
                 peerHost?.removePeer(viewerID)
             }
             updateViewerCount()
@@ -785,6 +2705,17 @@ final class LiveShareCoordinator {
                         admissionTimeoutTasks.removeValue(forKey: routeID)?.cancel()
                         pendingViewerRoutes[routeID] = nil
                     }
+                }
+                if let routeID = try? ClipLiveShareRouteID(rawValue: viewerID),
+                   var progress = nativeViewerRoutes[routeID] {
+                    nativePeerHandoff.controlChannelOpened(routeID)
+                    progress.openControlDataChannel()
+                    if progress.remainsPending {
+                        nativeViewerRoutes[routeID] = progress
+                    } else {
+                        nativeViewerRoutes[routeID] = nil
+                    }
+                    await nativeRendezvous.completeSignalingHandoff(routeID)
                 }
                 establishedControlViewerIDs.insert(viewerID)
                 sendInitialControlState(to: viewerID)
@@ -853,10 +2784,18 @@ final class LiveShareCoordinator {
             return
         }
         guard let routeID = try? ClipLiveShareRouteID(rawValue: viewerID),
-              pendingViewerRoutes[routeID] != nil else {
+              pendingViewerRoutes[routeID] != nil
+                || nativeViewerRoutes[routeID] != nil else {
             throw ClipLiveShareNetworkError.routeNotFound
         }
-        try await signaling.send(message, to: routeID)
+        if nativeViewerRoutes[routeID] != nil {
+            try await nativeRendezvous.sendSignalingMessage(
+                message,
+                to: routeID
+            )
+        } else {
+            try await signaling.send(message, to: routeID)
+        }
     }
 
     private func handleViewerControlMessage(
@@ -866,23 +2805,359 @@ final class LiveShareCoordinator {
     ) async {
         guard !isBinary,
               data.count <= ClipLiveShareV1.maximumInnerMessageBytes,
-              let sessionID = viewerSessionIDs[viewerID],
-              let message = try? ClipLiveShareMessageCodec.decodeInner(data),
-              message.sessionID == sessionID else {
+              let sessionID = viewerSessionIDs[viewerID] else {
             peerHost?.removePeer(viewerID)
             return
         }
-        switch message {
-        case .codecAnswer(let answer):
-            await applyRemoteAnswer(answer, viewerID: viewerID)
-        case .codecICE(let candidate):
-            await applyRemoteICE(candidate, viewerID: viewerID)
-        case .sessionClosing:
-            if pendingSessionClosingViewerIDs.remove(viewerID) == nil {
+        if let message = try? ClipLiveShareMessageCodec.decodeInner(data) {
+            guard message.sessionID == sessionID else {
+                peerHost?.removePeer(viewerID)
+                return
+            }
+            switch message {
+            case .codecAnswer(let answer):
+                await applyRemoteAnswer(answer, viewerID: viewerID)
+            case .codecICE(let candidate):
+                await applyRemoteICE(candidate, viewerID: viewerID)
+            case .sessionClosing:
+                if pendingSessionClosingViewerIDs.remove(viewerID) == nil {
+                    peerHost?.removePeer(viewerID)
+                }
+            default:
                 peerHost?.removePeer(viewerID)
             }
-        default:
+            return
+        }
+        if let hello = try? ClipLiveShareNativeV2MessageCodec.decode(
+            ClipLiveShareSignedNativeControlHello.self,
+            from: data
+        ) {
+            await handleNativeControlHello(hello, viewerID: viewerID)
+            return
+        }
+        if let friendMessage = try? ClipLiveShareNativeV2MessageCodec.decode(
+            ClipLiveShareSignedNativeFriendMessage.self,
+            from: data
+        ) {
+            await handleNativeFriendMessage(friendMessage, viewerID: viewerID)
+            return
+        }
+        peerHost?.removePeer(viewerID)
+    }
+
+    private func handleNativeControlHello(
+        _ signed: ClipLiveShareSignedNativeControlHello,
+        viewerID: String
+    ) async {
+        guard let sessionID = viewerSessionIDs[viewerID],
+              nativeControlViewerIdentities[viewerID] == nil else {
             peerHost?.removePeer(viewerID)
+            return
+        }
+        do {
+            let timestamp = try ClipLiveShareNativeTimestamp(date: Date())
+            if let expectedIdentity = nativeAdmittedViewerIdentities[viewerID] {
+                try nativeControlReplayGuard.accept(
+                    signed,
+                    expectedSessionID: sessionID,
+                    expectedIdentity: expectedIdentity,
+                    at: timestamp
+                )
+            } else {
+                try nativeControlReplayGuard.accept(
+                    signed,
+                    expectedSessionID: sessionID,
+                    at: timestamp
+                )
+                if nativeFriends.book.records.contains(where: {
+                    $0.identity == signed.hello.viewerIdentity
+                        && $0.trustState == .blocked
+                }) {
+                    throw ClipLiveShareNativeV2Error.identityMismatch
+                }
+            }
+            nativeControlViewerIdentities[viewerID] = signed.hello.viewerIdentity
+            nativeControlViewerCapabilities[viewerID] = signed.hello.capabilities
+            nativeControlStateRevisions[viewerID] = 0
+            if let friend = nativeFriends.book.records.first(where: {
+                $0.identity == signed.hello.viewerIdentity
+                    && $0.trustState == .trusted
+            }) {
+                nativeFriends.markConnected(id: friend.id)
+            }
+            let lifecycleSnapshot = await nativeRendezvous.snapshot()
+            guard let descriptor = lifecycleSnapshot.signedDescriptor,
+                  descriptor.descriptor.sessionID == sessionID else {
+                throw ClipLiveShareNativeV2Error.contextMismatch
+            }
+            let descriptorData = try ClipLiveShareNativeV2MessageCodec.encode(
+                descriptor
+            )
+            guard peerHost?.sendControl(descriptorData, to: viewerID) == true else {
+                throw ClipLiveShareNetworkError.sendFailed
+            }
+            authoritativeControlDelivery.markDirty(viewerID)
+            scheduleAuthoritativeControlReplay()
+            try await restoreNativeFriendCommitIfAvailable(
+                viewerIdentity: signed.hello.viewerIdentity,
+                viewerID: viewerID,
+                at: timestamp
+            )
+        } catch {
+            Self.logger.error(
+                "Rejected native viewer identity: \(error.localizedDescription, privacy: .public)"
+            )
+            peerHost?.removePeer(viewerID)
+        }
+    }
+
+    private func restoreNativeFriendCommitIfAvailable(
+        viewerIdentity: ClipLiveShareIdentityPublicKey,
+        viewerID: String,
+        at timestamp: ClipLiveShareNativeTimestamp
+    ) async throws {
+        guard let recovery = nativeFriends.accepterHandshakeRecoveries
+            .last(where: { $0.request.requesterIdentity == viewerIdentity }) else {
+            return
+        }
+        try recovery.validate(
+            localIdentity: recovery.acceptance.accepterIdentity,
+            at: timestamp
+        )
+        try nativeFriendCommit.restoreCommittedHandshake(
+            recovery,
+            viewerID: viewerID
+        )
+        if let receipt = nativeFriendCommit.commitReceipt(for: viewerID) {
+            sendNativeFriendCommitReceipt(receipt, to: viewerID)
+            return
+        }
+
+        let result = try nativeFriendCommit.restoredCommitResult(for: viewerID)
+        let receipt = try await nativeRendezvous.makeFriendCommitReceipt(for: result)
+        guard let journalEntry = result.handshakeJournalEntry else {
+            throw ClipLiveShareNativeV2Error.contextMismatch
+        }
+        let signedReceipt = try ClipLiveShareNativeV2MessageCodec.decode(
+            ClipLiveShareSignedNativeFriendMessage.self,
+            from: receipt
+        )
+        try await nativeFriends.storeCommitReceiptDurably(
+            signedReceipt,
+            handshakeID: journalEntry.id
+        )
+        try nativeFriendCommit.storeCommitReceipt(
+            receipt,
+            acknowledgementDigest: result.acknowledgementDigest,
+            viewerID: viewerID
+        )
+        sendNativeFriendCommitReceipt(receipt, to: viewerID)
+    }
+
+    private func handleNativeFriendMessage(
+        _ signed: ClipLiveShareSignedNativeFriendMessage,
+        viewerID: String
+    ) async {
+        guard let viewerIdentity = nativeControlViewerIdentities[viewerID] else {
+            peerHost?.removePeer(viewerID)
+            return
+        }
+        do {
+            switch signed.message {
+            case let .request(request):
+                guard request.requesterIdentity == viewerIdentity else {
+                    throw ClipLiveShareNativeV2Error.identityMismatch
+                }
+                try signed.verifySignature(expectedIdentity: viewerIdentity)
+                // The viewer may safely repeat the exact signed request if the
+                // reliable channel was saturated before accepting our reply.
+                if let response = nativeFriendCommit
+                    .responseForVerifiedDuplicateRequest(
+                        request,
+                        viewerID: viewerID
+                    ) {
+                    sendNativeFriendAcceptance(response, to: viewerID)
+                    return
+                }
+                guard !nativeFriendCommit.hasPendingAcceptance(for: viewerID)
+                else { throw ClipLiveShareNativeV2Error.contextMismatch }
+                try nativeFriendReplayGuard.acceptSignatureOnce(
+                    signed,
+                    expectedIdentity: viewerIdentity
+                )
+                let lifecycleSnapshot = await nativeRendezvous.snapshot()
+                guard let descriptor = lifecycleSnapshot.signedDescriptor else {
+                    throw LiveShareNativeRendezvousLifecycleError.invalidTransition
+                }
+                let timestamp = try ClipLiveShareNativeTimestamp(date: Date())
+                try request.validate(
+                    expectedSessionDescriptor: descriptor.descriptor,
+                    expectedHostIdentity: descriptor.descriptor.hostIdentity,
+                    at: timestamp
+                )
+                let allowed = requestNativeFriendApproval(
+                    request.requesterDeviceName
+                )
+                let response = try await nativeRendezvous.makeFriendResponse(
+                    to: request,
+                    allowed: allowed,
+                    accepterDisplayName: Self.localFriendDisplayName,
+                    accepterDeviceName: Self.localFriendDeviceName
+                )
+                if allowed {
+                    let signedResponse = try ClipLiveShareNativeV2MessageCodec
+                        .decode(
+                            ClipLiveShareSignedNativeFriendMessage.self,
+                            from: response
+                        )
+                    guard case .accepted = signedResponse.message else {
+                        throw ClipLiveShareNativeV2Error.contextMismatch
+                    }
+                    // Stage before delivery, but do not mutate the friend book.
+                    // Persistence happens only after the requester's signed ACK.
+                    try nativeFriendCommit.stage(
+                        signedRequest: signed,
+                        signedAcceptance: signedResponse,
+                        signedSessionDescriptor: descriptor,
+                        encodedResponse: response,
+                        viewerID: viewerID
+                    )
+                    sendNativeFriendAcceptance(response, to: viewerID)
+                } else if peerHost?.sendControl(response, to: viewerID) != true {
+                    throw ClipLiveShareNetworkError.sendFailed
+                }
+
+            case .acceptanceAcknowledged:
+                let timestamp = try ClipLiveShareNativeTimestamp(date: Date())
+                if !nativeFriendCommit.hasPendingAcceptance(for: viewerID),
+                   let recovery = nativeFriends.accepterHandshakeRecoveries
+                    .first(where: {
+                        $0.signedAcknowledgement.digest == signed.digest
+                            && $0.request.requesterIdentity == viewerIdentity
+                    }) {
+                    try recovery.validate(
+                        localIdentity: recovery.acceptance.accepterIdentity,
+                        at: timestamp
+                    )
+                    try nativeFriendCommit.restoreCommittedHandshake(
+                        recovery,
+                        viewerID: viewerID
+                    )
+                }
+                let result = try await nativeFriendCommit.receiveAcknowledgement(
+                    signed,
+                    viewerID: viewerID,
+                    at: timestamp
+                )
+                try await nativeRendezvous.trustViewerIdentity(
+                    result.request.requesterIdentity
+                )
+                nativeFriendResponseRetryTasks.removeValue(forKey: viewerID)?
+                    .cancel()
+                let receipt: Data
+                if let existing = nativeFriendCommit.commitReceipt(
+                    for: viewerID
+                ) {
+                    receipt = existing
+                } else {
+                    receipt = try await nativeRendezvous.makeFriendCommitReceipt(
+                        for: result
+                    )
+                    guard let journalEntry = result.handshakeJournalEntry else {
+                        throw ClipLiveShareNativeV2Error.contextMismatch
+                    }
+                    let signedReceipt = try ClipLiveShareNativeV2MessageCodec.decode(
+                        ClipLiveShareSignedNativeFriendMessage.self,
+                        from: receipt
+                    )
+                    try await nativeFriends.storeCommitReceiptDurably(
+                        signedReceipt,
+                        handshakeID: journalEntry.id
+                    )
+                    try nativeFriendCommit.storeCommitReceipt(
+                        receipt,
+                        acknowledgementDigest: result.acknowledgementDigest,
+                        viewerID: viewerID
+                    )
+                }
+                sendNativeFriendCommitReceipt(receipt, to: viewerID)
+
+            case .accepted, .commitReceipt, .declined, .revoked:
+                throw ClipLiveShareNativeV2Error.contextMismatch
+            }
+        } catch {
+            Self.logger.error(
+                "Rejected native friend request: \(error.localizedDescription, privacy: .public)"
+            )
+        }
+    }
+
+    private func sendNativeFriendAcceptance(
+        _ response: Data,
+        to viewerID: String
+    ) {
+        nativeFriendResponseRetryTasks.removeValue(forKey: viewerID)?.cancel()
+        guard peerHost?.sendControl(response, to: viewerID) != true else { return }
+        nativeFriendResponseRetryTasks[viewerID] = Task {
+            @MainActor [weak self] in
+            guard let self else { return }
+            for delay in [250, 500, 1_000] {
+                do {
+                    try await Task.sleep(for: .milliseconds(delay))
+                } catch {
+                    return
+                }
+                guard nativeFriendCommit.hasPendingAcceptance(for: viewerID),
+                      let response = nativeFriendCommit.pendingResponse(
+                          for: viewerID
+                      ) else { return }
+                if peerHost?.sendControl(response, to: viewerID) == true {
+                    nativeFriendResponseRetryTasks[viewerID] = nil
+                    return
+                }
+            }
+            nativeFriendResponseRetryTasks[viewerID] = nil
+        }
+    }
+
+    private func sendNativeFriendCommitReceipt(
+        _ response: Data,
+        to viewerID: String
+    ) {
+        nativeFriendResponseRetryTasks.removeValue(forKey: viewerID)?.cancel()
+        guard peerHost?.sendControl(response, to: viewerID) != true else { return }
+        nativeFriendResponseRetryTasks[viewerID] = Task {
+            @MainActor [weak self] in
+            guard let self else { return }
+            for delay in [250, 500, 1_000, 2_000] {
+                do {
+                    try await Task.sleep(for: .milliseconds(delay))
+                } catch {
+                    return
+                }
+                guard let receipt = nativeFriendCommit.commitReceipt(
+                    for: viewerID
+                ) else { return }
+                if peerHost?.sendControl(receipt, to: viewerID) == true {
+                    nativeFriendResponseRetryTasks[viewerID] = nil
+                    return
+                }
+            }
+            nativeFriendResponseRetryTasks[viewerID] = nil
+        }
+    }
+
+    private func sendNativeDescriptor(
+        _ descriptor: ClipLiveShareSignedNativeSessionDescriptor
+    ) {
+        guard let peerHost,
+              let data = try? ClipLiveShareNativeV2MessageCodec.encode(
+                  descriptor
+              ) else { return }
+        for viewerID in nativeControlViewerIdentities.keys {
+            guard viewerSessionIDs[viewerID] == descriptor.descriptor.sessionID
+            else { continue }
+            _ = peerHost.sendControl(data, to: viewerID)
         }
     }
 
@@ -904,6 +3179,10 @@ final class LiveShareCoordinator {
         _ routeID: ClipLiveShareRouteID,
         removesPeer: Bool
     ) async {
+        LiveSharePreparedViewerRouteBuffer.cancel(
+            routeID,
+            in: &preparedViewerRouteIDs
+        )
         admissionTimeoutTasks.removeValue(forKey: routeID)?.cancel()
         pendingViewerRoutes[routeID] = nil
         let viewerID = routeID.rawValue
@@ -917,11 +3196,57 @@ final class LiveShareCoordinator {
     }
 
     private func rejectViewerProtocol(_ viewerID: String) async {
+        if let routeID = try? ClipLiveShareRouteID(rawValue: viewerID),
+           nativeViewerRoutes[routeID] != nil {
+            await rejectNativeViewerProtocol(viewerID)
+            return
+        }
         peerHost?.removePeer(viewerID)
         guard let routeID = try? ClipLiveShareRouteID(rawValue: viewerID),
               pendingViewerRoutes[routeID] != nil else { return }
         await signaling.closeRoute(routeID)
         await removePendingRoute(routeID, removesPeer: false)
+    }
+
+    private func rejectNativeViewerProtocol(_ viewerID: String) async {
+        peerHost?.removePeer(viewerID)
+        guard let routeID = try? ClipLiveShareRouteID(rawValue: viewerID) else {
+            return
+        }
+        await nativeRendezvous.closeRoute(
+            routeID,
+            reason: "native-protocol-rejected"
+        )
+        await removePendingNativeRoute(routeID, removesPeer: false)
+    }
+
+    private func removePendingNativeRoute(
+        _ routeID: ClipLiveShareRouteID,
+        removesPeer: Bool
+    ) async {
+        nativePeerHandoff.peerTerminated(routeID)
+        pendingNativeApprovalRouteIDs.remove(routeID)
+        nativeViewerRoutes[routeID] = nil
+        let viewerID = routeID.rawValue
+        guard !establishedControlViewerIDs.contains(viewerID) else { return }
+        peerNegotiation.remove(viewerID)
+        negotiationIDs[viewerID] = nil
+        viewerSessionIDs[viewerID] = nil
+        nativeAdmittedViewerIdentities[viewerID] = nil
+        nativeControlViewerIdentities[viewerID] = nil
+        nativeControlViewerCapabilities[viewerID] = nil
+        nativeControlStateRevisions[viewerID] = nil
+        if removesPeer { peerHost?.removePeer(viewerID) }
+    }
+
+    private func nativeViewerAdmissionTimedOut(
+        _ routeID: ClipLiveShareRouteID
+    ) async {
+        guard nativeViewerRoutes[routeID] != nil,
+              !establishedControlViewerIDs.contains(routeID.rawValue) else {
+            return
+        }
+        await removePendingNativeRoute(routeID, removesPeer: true)
     }
 
     private func scheduleAdmissionTimeout(for routeID: ClipLiveShareRouteID) {
@@ -943,6 +3268,20 @@ final class LiveShareCoordinator {
     private func cancelAdmissionTimeouts() {
         for task in admissionTimeoutTasks.values { task.cancel() }
         admissionTimeoutTasks.removeAll()
+        preparedViewerRouteIDs.removeAll()
+    }
+
+    private func clearNativeViewerState() {
+        nativePeerHandoff.removeAll()
+        for task in nativeFriendResponseRetryTasks.values { task.cancel() }
+        nativeFriendResponseRetryTasks.removeAll()
+        nativeFriendCommit.removeAll()
+        pendingNativeApprovalRouteIDs.removeAll()
+        nativeViewerRoutes.removeAll()
+        nativeAdmittedViewerIdentities.removeAll()
+        nativeControlViewerIdentities.removeAll()
+        nativeControlViewerCapabilities.removeAll()
+        nativeControlStateRevisions.removeAll()
     }
 
     private func handleCapturePipelineEvent(_ event: LiveShareCapturePipelineEvent) async {
@@ -1609,7 +3948,6 @@ final class LiveShareCoordinator {
         sourceOperationIDs.remove(sourceID)
 
         if state.snapshot.sources.isEmpty {
-            startedAt = nil
             latestStatistics = .init()
         } else {
             slotAllocation.focus(slotAllocation.activeSlots.first?.source?.id)
@@ -1657,7 +3995,6 @@ final class LiveShareCoordinator {
         captureGenerations.removeAll()
         sourceStatuses.removeAll()
         sourceOperationIDs.removeAll()
-        startedAt = nil
         latestStatistics = .init()
         broadcastAuthoritativeControlMutation()
         updateCursorLoop()
@@ -1677,7 +4014,9 @@ final class LiveShareCoordinator {
         captureDescriptors[source.id] = nil
         broadcastAuthoritativeControlMutation()
         if state.snapshot.sources.isEmpty {
-            fail(code: .captureFailed, technicalDescription: message)
+            latestStatistics = .init()
+            Self.logger.error("The final Live Share capture stopped: \(message, privacy: .public)")
+            publish()
         } else {
             if !slotAllocation.activeSlots.contains(where: \.isFocused) {
                 slotAllocation.focus(slotAllocation.activeSlots.first?.source?.id)
@@ -2254,8 +4593,14 @@ final class LiveShareCoordinator {
         invalidateSourceTransitions()
         startupTask?.cancel()
         startupTask = nil
+        activationTask?.cancel()
+        activationTask = nil
+        isActivatingSharing = false
+        sharingHasStarted = false
         signalingEventTask?.cancel()
         signalingEventTask = nil
+        nativeRendezvousEventTask?.cancel()
+        nativeRendezvousEventTask = nil
         statisticsTask?.cancel()
         statisticsTask = nil
         cursorTask?.cancel()
@@ -2277,6 +4622,7 @@ final class LiveShareCoordinator {
         capturePipeline = nil
         peerHost?.close()
         peerHost = nil
+        await nativeRendezvous.tearDown()
         await signaling.stop()
         state.disconnect()
         roomConfiguration = nil
@@ -2287,6 +4633,7 @@ final class LiveShareCoordinator {
         negotiationIDs.removeAll()
         establishedControlViewerIDs.removeAll()
         pendingSessionClosingViewerIDs.removeAll()
+        clearNativeViewerState()
         slotAllocation.clear()
         captureDescriptors.removeAll()
         captureGenerations.removeAll()
@@ -2314,6 +4661,9 @@ final class LiveShareCoordinator {
         invalidateSourceTransitions()
         startupTask?.cancel()
         startupTask = nil
+        activationTask?.cancel()
+        activationTask = nil
+        isActivatingSharing = false
         publish()
         focusedWindowMonitor.stop()
         statisticsTask?.cancel()
@@ -2333,6 +4683,8 @@ final class LiveShareCoordinator {
         isRetrying = false
         signalingEventTask?.cancel()
         signalingEventTask = nil
+        nativeRendezvousEventTask?.cancel()
+        nativeRendezvousEventTask = nil
         let failureCleanup = failureCleanupTask
         failureCleanupTask = nil
         failureCleanup?.cancel()
@@ -2341,6 +4693,7 @@ final class LiveShareCoordinator {
         await systemAudioTask?.value
 
         await sendSessionClosing(reason: "host-ended-session")
+        await nativeRendezvous.tearDown()
         captureGenerations.removeAll()
         await capturePipeline?.stopAll()
         capturePipeline = nil
@@ -2365,7 +4718,9 @@ final class LiveShareCoordinator {
         negotiationIDs.removeAll()
         establishedControlViewerIDs.removeAll()
         pendingSessionClosingViewerIDs.removeAll()
+        clearNativeViewerState()
         startedAt = nil
+        sharingHasStarted = false
         latestStatistics = .init()
         capturePressure.removeAll()
         isEnding = false
@@ -2807,7 +5162,92 @@ final class LiveShareCoordinator {
                 delivered = false
             }
         }
+        if nativeControlViewerCapabilities[viewerID]?.contains(
+            .streamLifecycle
+        ) == true {
+            do {
+                for message in try makeNativeLifecycleMessages(
+                    viewerID: viewerID,
+                    sessionID: sessionID,
+                    streams: streams
+                ) {
+                    let data = try ClipLiveShareNativeV2MessageCodec.encode(
+                        message
+                    )
+                    if !peerHost.sendControl(data, to: viewerID) {
+                        delivered = false
+                    }
+                }
+            } catch {
+                delivered = false
+            }
+        }
         return delivered
+    }
+
+    private func makeNativeLifecycleMessages(
+        viewerID: String,
+        sessionID: ClipLiveShareSessionID,
+        streams: [ClipLiveShareStreamDescriptor]
+    ) throws -> [ClipLiveShareNativeStreamLifecycleMessage] {
+        let descriptors = slotAllocation.activeSlots.compactMap { slot
+            -> ClipLiveShareNativeStreamDescriptor? in
+            guard let source = slot.source,
+                  let generation = captureGenerations[source.id],
+                  let stream = streams.first(where: {
+                      $0.id == slot.streamIdentity
+                  }),
+                  let sourceInstanceID = nativeSourceInstanceID(
+                      for: generation
+                  ) else { return nil }
+            let mode: ClipLiveShareNativeSourcePresentationMode
+            if case let .window(windowID) = source.id,
+               settings.autoShareFocusedWindows,
+               latestAutomaticWindowID == windowID {
+                mode = .followsFocusedWindow
+            } else {
+                mode = .manual
+            }
+            return ClipLiveShareNativeStreamDescriptor(
+                sourceInstanceID: sourceInstanceID,
+                presentationMode: mode,
+                stream: stream
+            )
+        }
+        let events: [ClipLiveShareNativeStreamLifecycleEvent] = [
+            .snapshot(descriptors),
+            .sharing(!streams.isEmpty),
+            .systemAudio(systemAudioIsActive),
+        ]
+        var revision = nativeControlStateRevisions[viewerID] ?? 0
+        var messages: [ClipLiveShareNativeStreamLifecycleMessage] = []
+        messages.reserveCapacity(events.count)
+        for event in events {
+            guard revision < UInt64.max else {
+                throw LiveShareNativeRendezvousLifecycleError
+                    .stateRevisionExhausted
+            }
+            revision += 1
+            messages.append(try ClipLiveShareNativeStreamLifecycleMessage(
+                sessionID: sessionID,
+                stateRevision: ClipLiveShareStateRevision(
+                    rawValue: revision
+                ),
+                event: event,
+                maximumStreams: LiveShareTrackSlotAllocation.slotCount
+            ))
+        }
+        nativeControlStateRevisions[viewerID] = revision
+        return messages
+    }
+
+    private func nativeSourceInstanceID(
+        for generation: UUID
+    ) -> ClipLiveShareSourceInstanceID? {
+        var bytes = generation.uuid
+        return try? withUnsafeBytes(of: &bytes) { buffer in
+            try ClipLiveShareSourceInstanceID(bytes: Data(buffer))
+        }
     }
 
     private func cancelAuthoritativeControlReplay() {
@@ -2900,6 +5340,10 @@ final class LiveShareCoordinator {
         fullscreenRequestGate.invalidate()
         invalidateSourceTransitions()
         focusedWindowMonitor.stop()
+        activationTask?.cancel()
+        activationTask = nil
+        isActivatingSharing = false
+        sharingHasStarted = false
         sourceRefreshTask?.cancel()
         sourceRefreshTask = nil
         captureRestartTask?.cancel()
@@ -2914,9 +5358,12 @@ final class LiveShareCoordinator {
         cursorTask = nil
         signalingEventTask?.cancel()
         signalingEventTask = nil
+        nativeRendezvousEventTask?.cancel()
+        nativeRendezvousEventTask = nil
         cancelAuthoritativeControlReplay()
         await systemAudioTask?.value
         await sendSessionClosing(reason: "host-failed")
+        await nativeRendezvous.tearDown()
         captureGenerations.removeAll()
         await capturePipeline?.stopAll()
         capturePipeline = nil
@@ -2940,6 +5387,7 @@ final class LiveShareCoordinator {
         negotiationIDs.removeAll()
         establishedControlViewerIDs.removeAll()
         pendingSessionClosingViewerIDs.removeAll()
+        clearNativeViewerState()
         latestStatistics = .init()
         capturePressure.removeAll()
         startedAt = nil
@@ -2977,6 +5425,8 @@ final class LiveShareCoordinator {
         let phase: LiveShareViewPhase
         if isEnding {
             phase = .stopping
+        } else if isActivatingSharing {
+            phase = .starting
         } else if isRetrying {
             phase = .connecting
         } else {
@@ -3044,7 +5494,7 @@ final class LiveShareCoordinator {
             displayName: fullscreenSource?.displayName
                 ?? preferredOverlayScreen()?.localizedName
                 ?? String(localized: "Main Display"),
-            isEnabled: [.ready, .sharing].contains(domain.phase) && !isEnding,
+            isEnabled: sharingHasStarted && domain.phase == .sharing && !isEnding,
             detail: !domain.sources.windows.isEmpty
                 ? String(localized: "Starting fullscreen stops the current window shares.")
                 : nil
@@ -3067,7 +5517,7 @@ final class LiveShareCoordinator {
                 }
             )
         }
-        let canOperateSources = !isEnding && [.ready, .sharing].contains(domain.phase)
+        let canOperateSources = !isEnding && sharingHasStarted && domain.phase == .sharing
         let canChangeSettings = !isEnding
             && [.ready, .starting, .sharing].contains(domain.phase)
         let activeWindowIDs = Set(domain.sources.windows.map(\.id))
@@ -3110,6 +5560,17 @@ final class LiveShareCoordinator {
             : LiveShareCapturePressureWarningSnapshot(sourceNames: overloadedSourceNames)
         return LiveShareViewSnapshot(
             phase: phase,
+            sessionStage: sharingHasStarted ? .active : .preparing,
+            canStartSharing: !isEnding
+                && !isActivatingSharing
+                && signalingIsAvailable
+                && domain.phase == .ready
+                && room != nil,
+            canReplaceRoom: !isEnding
+                && !isActivatingSharing
+                && !sharingHasStarted
+                && [.ready, .connecting].contains(domain.phase),
+            friends: nativeFriends.presentationSnapshots,
             room: room,
             accessCodeEnabled: settings.accessCodeEnabled,
             accessCode: accessCode,
@@ -3166,6 +5627,11 @@ final class LiveShareCoordinator {
     }
 
     private func renderOverlays(_ snapshot: LiveShareViewSnapshot) {
+        guard snapshot.sessionStage == .active else {
+            focusedWindowOverlay.hide()
+            statusHUD.hide()
+            return
+        }
         let showsSessionOverlays: Bool
         switch snapshot.phase {
         case .ready, .starting, .live, .reconnecting:

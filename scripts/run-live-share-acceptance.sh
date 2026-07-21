@@ -104,6 +104,8 @@ curl --fail --silent "http://127.0.0.1:$PORT/version" \
   >"$WORK_DIR/version.json"
 curl --fail --silent "http://127.0.0.1:$PORT/.well-known/clip-live-share" \
   >"$WORK_DIR/capabilities.json"
+curl --fail --silent "http://127.0.0.1:$PORT/.well-known/clip-native-rendezvous" \
+  >"$WORK_DIR/native-capabilities.json"
 curl --fail --silent "http://127.0.0.1:$PORT/CLIP-ACCEPTANCE" \
   >"$WORK_DIR/viewer.html"
 
@@ -112,6 +114,15 @@ rg --fixed-strings --quiet '"protocol":"clip-live-share"' \
   || { echo "Capabilities did not identify clip-live-share." >&2; exit 65; }
 rg --fixed-strings --quiet '"versions":[1]' "$WORK_DIR/capabilities.json" \
   || { echo "Capabilities did not advertise protocol v1." >&2; exit 65; }
+rg --fixed-strings --quiet '"protocol":"clip-native-rendezvous"' \
+  "$WORK_DIR/native-capabilities.json" \
+  || { echo "Native capabilities did not identify Clip rendezvous." >&2; exit 65; }
+rg --fixed-strings --quiet '"apiVersion":1' \
+  "$WORK_DIR/native-capabilities.json" \
+  || { echo "Native rendezvous did not advertise API v1." >&2; exit 65; }
+rg --fixed-strings --quiet '"messageVersion":2' \
+  "$WORK_DIR/native-capabilities.json" \
+  || { echo "Native rendezvous did not advertise message v2." >&2; exit 65; }
 rg --fixed-strings --quiet 'Clip Live Share' "$WORK_DIR/viewer.html" \
   || { echo "The embedded browser viewer was not served." >&2; exit 65; }
 
@@ -122,5 +133,5 @@ CLIP_LIVE_SHARE_ACCEPTANCE_ENDPOINT="http://127.0.0.1:$PORT" \
   swift test --package-path "$WEBRTC_PACKAGE"
 
 echo "Clip Live Share local acceptance passed."
-echo "Covered: in-memory room ownership, authenticated host routing, encrypted signaling, browser crypto/viewer assets, native peer/control tests, and decoded stereo Opus waveform quality through the embedded WebKit viewer."
-echo "Not claimed: real ScreenCaptureKit content, audible hardware output, remote Internet/TURN traversal, overlay exclusion, or signed-DMG packaging."
+echo "Covered: in-memory room ownership, native rendezvous discovery/routing, fresh signed-room friendship admission/removal, encrypted signaling, simultaneous four-stream native protocol peers, control after signaling handoff, browser crypto/viewer assets, and decoded stereo Opus waveform quality through the embedded WebKit viewer."
+echo "Not claimed: two separate Clip processes, simultaneous WebKit and native rendering on one host, termination of the Go process during live media, real ScreenCaptureKit content, audible hardware output, remote Internet/TURN traversal, overlay exclusion, or signed-DMG packaging."

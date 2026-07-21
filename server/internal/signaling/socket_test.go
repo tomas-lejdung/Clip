@@ -69,6 +69,22 @@ func TestPerRouteQueueLimitReservesCapacityForOtherRoutes(t *testing.T) {
 	}
 }
 
+func TestNativeRelayUsesPerRouteQueueLimit(t *testing.T) {
+	t.Parallel()
+	socket := newUnstartedTestSocket(4, 1, protocol.MaximumMessageBytes)
+	firstRoute := protocol.Message{Type: protocol.MessageNativeRelay, RouteID: "first-native-route"}
+	secondRoute := protocol.Message{Type: protocol.MessageNativeRelay, RouteID: "second-native-route"}
+	if err := socket.Send(firstRoute); err != nil {
+		t.Fatal(err)
+	}
+	if err := socket.Send(firstRoute); !errors.Is(err, ErrRouteQueueFull) {
+		t.Fatalf("second first-route native Send() = %v", err)
+	}
+	if err := socket.Send(secondRoute); err != nil {
+		t.Fatalf("second native route could not use reserved capacity: %v", err)
+	}
+}
+
 func TestPerRouteQueuedByteLimitIsEnforced(t *testing.T) {
 	t.Parallel()
 	message := protocol.Message{Type: protocol.MessageRelay, RouteID: "byte-route"}

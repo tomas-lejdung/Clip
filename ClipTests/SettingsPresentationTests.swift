@@ -37,6 +37,86 @@ struct SettingsPresentationTests {
     }
 
     @MainActor
+    @Test("Native Friends rows expose name, device, fingerprint, and trust status")
+    func nativeFriendRows() throws {
+        let fileSystem = SettingsMemoryAtomicFileSystem()
+        let repository = try NativeFriendRepository(
+            applicationSupportDirectory: URL(
+                fileURLWithPath: "/Clip-Settings-Friends",
+                isDirectory: true
+            ),
+            fileSystem: fileSystem
+        )
+        let book = try settingsNativeFriendBook()
+        let model = NativeFriendModel(repository: repository, initialBook: book)
+        let liveRecord = try #require(book.records.first(where: {
+            $0.trustState == .trusted
+        }))
+        model.setPresence(.live, id: liveRecord.id)
+
+        let rows = SettingsView.nativeFriendRows(for: model)
+        let live = try #require(rows.first(where: { $0.id == liveRecord.id }))
+        let blocked = try #require(rows.first(where: { $0.status == .blocked }))
+
+        #expect(live.displayName == liveRecord.displayName)
+        #expect(live.deviceName == liveRecord.deviceName)
+        #expect(live.status == .live)
+        #expect(live.fingerprint.replacingOccurrences(of: " ", with: "")
+            == liveRecord.identity.fingerprint.rawValue)
+        #expect(blocked.isBlocked)
+        #expect(
+            SettingsAccessibilityIdentifier.nativeFriend(
+                live.id,
+                element: "name"
+            ) == "clip.settings.liveShare.friend.\(live.id).name"
+        )
+        #expect(
+            SettingsAccessibilityIdentifier.nativeIdentityFingerprint
+                == "clip.settings.liveShare.identity.fingerprint"
+        )
+        #expect(
+            SettingsAccessibilityIdentifier.nativeIdentityResetConfirm
+                == "clip.settings.liveShare.identity.reset.confirm"
+        )
+    }
+
+    @MainActor
+    @Test("Reset Identity rotates the secure identity and removes persisted Friends")
+    func resetNativeIdentity() async throws {
+        let friendFileSystem = SettingsMemoryAtomicFileSystem()
+        let friendRepository = try NativeFriendRepository(
+            applicationSupportDirectory: URL(
+                fileURLWithPath: "/Clip-Settings-Identity-Reset",
+                isDirectory: true
+            ),
+            fileSystem: friendFileSystem
+        )
+        let friendModel = NativeFriendModel(
+            repository: friendRepository,
+            initialBook: try settingsNativeFriendBook()
+        )
+        let identityStorage = SettingsMemoryIdentityStorage()
+        let identityRepository = NativeDeviceIdentityRepository(
+            storage: identityStorage
+        )
+        let original = try await identityRepository.loadOrCreate().fingerprint
+
+        let replacement = try await SettingsView.resetNativeIdentity(
+            repository: identityRepository,
+            friends: friendModel
+        )
+
+        #expect(replacement != original)
+        #expect(friendModel.book.records.isEmpty)
+        #expect(try await friendRepository.load().records.isEmpty)
+        #expect(identityStorage.deleteCount == 1)
+        #expect(
+            try await identityRepository.loadOrCreate().fingerprint
+                == replacement
+        )
+    }
+
+    @MainActor
     @Test("Live Share preferences persist independently and reset independently")
     func liveSharePreferencePersistenceAndReset() async throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(
@@ -205,4 +285,82 @@ private actor SettingsMemoryAtomicFileSystem: AtomicFileSystem {
         }
         files[url] = data
     }
+}
+
+private final class SettingsMemoryIdentityStorage:
+    NativeDeviceIdentitySecureStorage, @unchecked Sendable
+{
+    private let lock = NSLock()
+    private var data: Data?
+    private var storedDeleteCount = 0
+
+    var deleteCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return storedDeleteCount
+    }
+
+    func load() throws -> Data? {
+        lock.lock()
+        defer { lock.unlock() }
+        return data
+    }
+
+    func insert(_ data: Data) throws {
+        lock.lock()
+        defer { lock.unlock() }
+        self.data = data
+    }
+
+    func delete() throws {
+        lock.lock()
+        defer { lock.unlock() }
+        data = nil
+        storedDeleteCount += 1
+    }
+}
+
+private func settingsNativeFriendBook() throws -> NativeFriendBook {
+    let liveIdentity = try NativeDeviceIdentitySigner(
+        rawRepresentation: settingsPrivateKey(seed: 2)
+    ).publicKey
+    let blockedIdentity = try NativeDeviceIdentitySigner(
+        rawRepresentation: settingsPrivateKey(seed: 3)
+    ).publicKey
+    return NativeFriendBook(records: [
+        NativeFriendRecord(
+            identity: liveIdentity,
+            displayName: "Mira",
+            deviceName: "Mira’s MacBook Pro",
+            endpoint: .official,
+            rendezvousID: try ClipLiveShareRendezvousID(
+                bytes: Data(
+                    repeating: 0x22,
+                    count: ClipLiveShareNativeV2.rendezvousIDByteCount
+                )
+            ),
+            createdAt: Date(timeIntervalSince1970: 1_700_000_000)
+        ),
+        NativeFriendRecord(
+            identity: blockedIdentity,
+            displayName: "Old Studio Mac",
+            deviceName: "Mac mini",
+            endpoint: .official,
+            rendezvousID: try ClipLiveShareRendezvousID(
+                bytes: Data(
+                    repeating: 0x33,
+                    count: ClipLiveShareNativeV2.rendezvousIDByteCount
+                )
+            ),
+            trustState: .blocked,
+            createdAt: Date(timeIntervalSince1970: 1_700_000_100)
+        ),
+    ])
+}
+
+private func settingsPrivateKey(seed: UInt8) -> Data {
+    precondition(seed > 0)
+    var data = Data(repeating: 0, count: 32)
+    data[data.index(before: data.endIndex)] = seed
+    return data
 }

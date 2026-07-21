@@ -11,6 +11,10 @@ struct LiveSharePresentationActions {
     var copyText: (String) -> Void
     var setAccessCodeEnabled: (Bool) -> Void
     var replaceAccessCode: () -> Void
+    var startSharing: () -> Void
+    var replaceRoom: () -> Void
+    var joinInvite: (String) -> Void
+    var joinFriend: (String) -> Void
     var shareFocusedWindow: () -> Void
     var shareWindow: (String) -> Void
     var stopSource: (String) -> Void
@@ -30,6 +34,10 @@ struct LiveSharePresentationActions {
         copyText: @escaping (String) -> Void = { _ in },
         setAccessCodeEnabled: @escaping (Bool) -> Void = { _ in },
         replaceAccessCode: @escaping () -> Void = {},
+        startSharing: @escaping () -> Void = {},
+        replaceRoom: @escaping () -> Void = {},
+        joinInvite: @escaping (String) -> Void = { _ in },
+        joinFriend: @escaping (String) -> Void = { _ in },
         shareFocusedWindow: @escaping () -> Void = {},
         shareWindow: @escaping (String) -> Void = { _ in },
         stopSource: @escaping (String) -> Void = { _ in },
@@ -48,6 +56,10 @@ struct LiveSharePresentationActions {
         self.copyText = copyText
         self.setAccessCodeEnabled = setAccessCodeEnabled
         self.replaceAccessCode = replaceAccessCode
+        self.startSharing = startSharing
+        self.replaceRoom = replaceRoom
+        self.joinInvite = joinInvite
+        self.joinFriend = joinFriend
         self.shareFocusedWindow = shareFocusedWindow
         self.shareWindow = shareWindow
         self.stopSource = stopSource
@@ -123,6 +135,33 @@ final class LiveSharePresentationModel: ObservableObject {
     func replaceAccessCode() {
         guard snapshot.canChangeAccessCode, snapshot.accessCodeEnabled else { return }
         actions.replaceAccessCode()
+    }
+
+    func startSharing() {
+        guard snapshot.sessionStage == .preparing,
+              snapshot.canStartSharing else { return }
+        actions.startSharing()
+    }
+
+    func replaceRoom() {
+        guard snapshot.sessionStage == .preparing,
+              snapshot.canReplaceRoom else { return }
+        actions.replaceRoom()
+    }
+
+    func joinInvite(_ rawValue: String) {
+        guard snapshot.sessionStage == .preparing else { return }
+        let value = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !value.isEmpty else { return }
+        actions.joinInvite(value)
+    }
+
+    func joinFriend(_ id: String) {
+        guard snapshot.sessionStage == .preparing,
+              snapshot.friends.contains(where: { $0.id == id && $0.presence.canJoin }) else {
+            return
+        }
+        actions.joinFriend(id)
     }
 
     func shareFocusedWindow() {

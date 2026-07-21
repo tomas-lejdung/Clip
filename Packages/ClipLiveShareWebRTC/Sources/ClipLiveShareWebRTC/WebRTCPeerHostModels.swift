@@ -71,6 +71,7 @@ public struct WebRTCPeerResourceLimits: Equatable, Sendable {
     public var maximumICECandidatePayloadBytes: Int
     public var maximumViewerIDBytes: Int
     public var maximumSDPPayloadBytes: Int
+    public var maximumVideoTracks: Int
     public var maximumControlMessagePayloadBytes: Int
     public var maximumControlBufferedAmountBytes: Int
 
@@ -81,6 +82,7 @@ public struct WebRTCPeerResourceLimits: Equatable, Sendable {
         maximumICECandidatePayloadBytes: Int = 4_096,
         maximumViewerIDBytes: Int = 128,
         maximumSDPPayloadBytes: Int = 262_144,
+        maximumVideoTracks: Int = WebRTCRuntimeIdentity.maximumVideoSlots,
         maximumControlMessagePayloadBytes: Int = 196_400,
         maximumControlBufferedAmountBytes: Int = 262_144
     ) {
@@ -90,6 +92,7 @@ public struct WebRTCPeerResourceLimits: Equatable, Sendable {
         self.maximumICECandidatePayloadBytes = maximumICECandidatePayloadBytes
         self.maximumViewerIDBytes = maximumViewerIDBytes
         self.maximumSDPPayloadBytes = maximumSDPPayloadBytes
+        self.maximumVideoTracks = maximumVideoTracks
         self.maximumControlMessagePayloadBytes = maximumControlMessagePayloadBytes
         self.maximumControlBufferedAmountBytes = maximumControlBufferedAmountBytes
     }
@@ -117,6 +120,10 @@ public struct WebRTCPeerResourceLimits: Equatable, Sendable {
             maximumSDPPayloadBytes: min(
                 1_048_576,
                 max(4_096, maximumSDPPayloadBytes)
+            ),
+            maximumVideoTracks: min(
+                WebRTCRuntimeIdentity.maximumVideoSlots,
+                max(1, maximumVideoTracks)
             ),
             maximumControlMessagePayloadBytes: normalizedControlMessagePayloadBytes,
             maximumControlBufferedAmountBytes: max(

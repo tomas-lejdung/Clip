@@ -54,11 +54,11 @@ By default:
 Clicking the menu-bar icon opens the main Clip popover.
 
 Clip also provides a distinct **Live Share** workflow for sending one or more
-macOS windows, or one entire display, to viewers through a browser. Live Share
-uses Clip's in-repository Go room service and embedded browser viewer. The
-service routes bounded end-to-end-encrypted signaling and never receives
-plaintext access codes, SDP, ICE, stream metadata, media, or authoritative
-viewer state.
+macOS windows, or one entire display, to native Clip viewers and browser
+viewers. Live Share uses Clip's in-repository Go room service, native viewer,
+and embedded browser fallback. The service routes bounded end-to-end-encrypted
+signaling and never receives plaintext access codes, friend names, trust
+decisions, SDP, ICE, stream metadata, media, or authoritative viewer state.
 
 ---
 
@@ -93,25 +93,39 @@ controls rather than mixing recording and sharing actions in one menu.
 
 # Live Share
 
-## Starting a room
+## Preparing and starting a room
 
-Choosing **Start Live Share** advertises an ephemeral room through the
-configured Clip Live Share service and connects Clip as its authenticated
-host. The popover shows:
+Choosing **Live Share** first enters a preparation phase. Clip creates and
+reserves a fresh ephemeral room, owner capability, and P-256 session key pair,
+but does not capture or send pixels, publish native friend presence, or surface
+viewer approval requests. The preparation popover shows:
 
-- The room code and browser share URL, each with a Copy action.
-- An optional generated access code that can be enabled, copied, replaced,
-  or disabled.
-- The connection state and current viewer count.
-- The active source list. Stream and media-track identifiers are opaque random
-  values rather than fixed public slot names.
-- Add Window, Share Fullscreen, Stop Sharing, and End Room actions.
-- Live quality, frame cadence, and adaptive-network status.
-- A persisted **System Audio** toggle, defaulting to Off.
+- One self-contained **Copy Invite** action. The invite contains the configured
+  endpoint, room name, protocol version, and ephemeral P-256 public key and can
+  be opened by Clip or the browser fallback. A room-name-only copy action is not
+  shown because the room name cannot authenticate a host.
+- A **New Room** action that atomically releases the old reservation and
+  regenerates the room name, owner capability, and P-256 key pair.
+- An optional generated guest access code that can be enabled, copied,
+  replaced, or disabled.
+- Friends who are actively sharing. Selecting one discards the unstarted host
+  preparation and enters native viewer mode.
+- A deliberate **Start Sharing** action.
 
-Reserving a room is separate from sending pixels. A room can remain available
-with zero active sources so a host may stop and resume sharing without changing
-the viewer URL.
+Before **Start Sharing**, a copied browser or native-v1 invite may wait for the
+host for a bounded interval but must never produce an approval prompt, allocate
+a peer, or start capture. The wait is discarded when its route closes, the room
+is replaced, or preparation is cancelled. Pressing **Start Sharing** marks the
+room active, publishes friend presence, promotes still-valid waiting routes,
+permits new admissions, and reveals Sources, Stream Settings, Viewers,
+Statistics, and Stop Sharing. Starting with zero sources is valid; connected
+viewers receive an explicit waiting state until a source is selected. The room
+name is locked while active. The guest access code may still be replaced for
+future admissions and never ejects established viewers.
+
+Stopping the session removes native presence, invalidates its invite, stops
+capture and peers, and returns to an inactive state. A later share always uses
+a new room name, owner capability, and ephemeral key pair.
 
 Settings stores one validated Live Share server base address and derives the
 service endpoints from it. Changing that address affects the next room only;
@@ -123,6 +137,83 @@ The access code is a cryptographically random, session-only value. Clip checks
 it locally through a random HMAC challenge inside the encrypted route; the
 service never receives the code or plaintext proof. Changing it applies to new
 viewer admissions and does not eject an already connected viewer.
+
+## Native viewer and Friends
+
+Clip can join the self-contained invite directly without loading server-owned
+viewer JavaScript. The first native connection uses the invite's ephemeral
+P-256 key to authenticate the host and establish encrypted signaling. Once
+connected, the native viewer may choose **Add as Friend**. The host Clip
+receives an explicit request naming the requesting device and may accept or
+decline.
+
+Every Clip installation owns a persistent P-256 device signing identity stored
+in the data-protection Keychain as device-only material. Accepting a friend
+stores the friend's public identity, an opaque high-entropy rendezvous
+capability, the configured endpoint, and a locally editable display name.
+Private identities, friend labels, and trust decisions never reach the service.
+A second Mac is a separate device identity until explicitly accepted.
+
+Friendship uses a signed request, signed host acceptance, signed requester
+acknowledgement, and signed host commit receipt. The requester first persists a
+hidden pending contact and its exact recovery evidence, then shows **Finishing
+setup** rather than exposing it as an established friend. The host persists its
+trusted contact and exact evidence before issuing the receipt. Only a valid
+receipt promotes the requester contact to trusted. Exact acknowledgement and
+receipt retransmission is idempotent, so a one-sided app crash can finish after
+the same two device identities reconnect instead of inventing a new trust
+decision. Recovery evidence is local, limited to 16 entries, retained for at
+most seven days, and cleared by completion, decline, removal, blocking,
+identity reset, expiry, or deterministic capacity eviction. This is bounded
+eventual recovery, not an atomic write across two Macs.
+
+When a friend presses **Start Sharing**, their saved contacts can see that
+friend as Live. Selecting the friend opens a fresh signed and encrypted route.
+The host receives **Allow <friend device> to join?** and must explicitly allow
+or deny each connection. Offline friends cannot send or queue requests, and
+the service stores no pending offline invitations. Friend admission does not
+require the guest access code; persistent mutual identity plus the per-session
+host decision is the admission boundary.
+
+The native viewer uses one WebRTC peer connection and creates one independent
+macOS desktop window for each of up to four active manual remote sources. Auto
+Share instead reuses one stable remote window as its authoritative source
+changes. Each remote window:
+
+- Renders one decoded video pixel to one physical receiver pixel whenever it
+  fits, accounting for the destination display's backing scale.
+- Uniformly scales down only when exact size cannot fit and offers Auto,
+  Actual Size, and Fit controls. It never upscales by default.
+- Can be moved, resized, minimized, zoomed, placed in another Space or display,
+  and made locally fullscreen without affecting the host window.
+- Has a permanent five-point colored remote border outside the video content
+  plus a matching label such as **Alex · Xcode**. The stable friend color is
+  derived from the saved identity. Remote focus brightens the border without
+  moving, raising, or stealing focus from local windows.
+- Draws the remote cursor inside the video but never moves the local pointer or
+  sends keyboard/mouse input. Remote control is outside this milestone.
+
+The viewer owns window placement. Clip may preserve the host's relative layout
+for initial placement, but host movement must not overwrite a viewer's manual
+arrangement. Adding a source creates a window; removing a source closes it;
+temporary zero-source state retains the session and shows a waiting status.
+Closing one remote window hides it locally and it remains reopenable from the
+popover. Closing the last visible window asks whether to stay connected or
+leave so audio cannot continue invisibly.
+
+System audio is one session-wide remote track and is played exactly once,
+regardless of the number of source windows. Mute and volume live in the viewer
+popover. While viewing, the popover lists visible and hidden sources, P2P/TURN
+state, statistics, Show All Windows, and Leave Live Share. Host focus changes
+only update the remote focus treatment and cursor routing; they never move,
+raise, or focus a viewer's local windows.
+
+Clip supports one active role per process: recording, Live Share host, or Live
+Share viewer. Entering one role first completes teardown of any current role;
+switching from unstarted host preparation to viewing cannot leave a room,
+capture, peer, audio track, or host UI alive in the background. Late callbacks
+from the old role are ignored. Native viewing does not require Screen Recording
+permission.
 
 ## Sources
 
@@ -235,6 +326,16 @@ After the reliable DataChannel opens, the temporary viewer signaling route
 closes. Later control and renegotiation are peer-to-peer; only an ICE-selected
 TURN relay may carry encrypted WebRTC traffic. Clip counts connected peers and
 the server has no authoritative viewer count.
+
+Saved-friend discovery uses the additive native rendezvous API. While sharing
+is active, that API stores one bounded signed session descriptor and otherwise
+relays only bounded temporary route payloads. The Go service deliberately does
+not parse the descriptor, but the descriptor is authenticated public/random
+routing metadata rather than ciphertext; a service operator can inspect it.
+It contains no password, friend label, trust decision, viewer identity, or
+admission capability. The per-friend proof and all SDP, ICE, and later control
+messages remain encrypted end to end. A copied descriptor or a server-created
+replacement cannot approve a viewer or impersonate either saved identity.
 
 No recording is written to History during Live Share. Raw frames, PCM audio,
 and network encodings are transient. Ending the room stops capture, peer
@@ -942,6 +1043,9 @@ exceed the window; controls and labels remain single-line where practical.
 - An editable, validated server base address.
 - A non-destructive Test Connection action that does not reserve a room.
 - Reset Server Address, restoring the built-in Clip Live Share service address.
+- This device's persistent Live Share identity fingerprint, plus a destructive
+  Reset Identity action that creates a new identity and removes local Friends.
+- Local Friends management with editable names, Block/Unblock, and Remove.
 - Default video codec, quality/bandwidth rung, frame rate, and Performance or
   Quality encoding mode.
 - Default System Audio, access-code requirement, Prioritize Focused Window, and
@@ -1342,16 +1446,24 @@ A separate Homebrew tap can be added later if needed.
 - Live Share's pointer-free lane builds the in-repository Go service and
   embedded viewer, exercises real loopback HTTP/WebSocket routing, validates
   cross-language encrypted-signaling vectors, and runs Clip's native core and
-  peer-host suites. It verifies one session and random-identity tracks while
-  preferences switch H.264 → VP8 → VP9 → AV1 → H.264, checks allowed
+  peer-host/receiver suites. Deterministic native coverage verifies preparation
+  and Start policy, signed identities and fresh descriptors, admission,
+  Add-Friend request/acceptance/acknowledgement/receipt recovery, local
+  persistence, role exclusion, reconnect state, four authoritative remote
+  sources, window-state reconciliation, exact-pixel sizing, cursor mapping, and
+  one session audio track. It verifies one session and random-identity tracks
+  while preferences switch H.264 → VP8 → VP9 → AV1 → H.264, checks allowed
   per-viewer fallbacks and actual outbound codecs, and verifies authoritative
   stream, focus, cursor, admission and audio-control state. It does not touch
   the installed app or control the pointer.
 - Real ScreenCaptureKit, microphone, system-audio, clipboard, drag, Save As, history, and DMG smoke tests run on the development Mac.
 - Real Live Share acceptance separately covers the production ScreenCaptureKit
-  coordinator path, one through four windows, Fullscreen, resize, overlay
+  coordinator path, two independently launched Clip GUI processes, one through
+  four windows, Fullscreen, resize, Retina/multi-display placement, overlay
   exclusion and hit testing, remote/TURN traversal, repeated start/stop, and a
-  ten-minute soak. Loopback browser evidence cannot substitute for those gates.
+  ten-minute soak. It also verifies mixed native/WebKit admission and deliberate
+  signaling-service process loss. Model-level handoff or two native receivers
+  in one test process cannot substitute for those gates.
 - Application-update verification checks the embedded feed URL/public key,
   sandbox services and entitlements, nested code signatures, exact app/build
   versions, immutable enclosure URL, archive length, and Sparkle EdDSA
@@ -1416,16 +1528,19 @@ A separate Homebrew tap can be added later if needed.
 - Local launchable DMG distribution.
 - Signed application updates from immutable GitHub Release DMGs, with periodic
   automatic checks and an on-demand **Check for Updates…** action.
-- A distinct Live Share mode using the in-repository Clip Live Share Protocol
-  v1 Go service and embedded browser viewer, with end-to-end-encrypted
-  signaling and no compatibility fallback.
+- A distinct Live Share mode using the in-repository Go service, native Clip
+  viewer, and embedded browser fallback, with bounded end-to-end-encrypted
+  signaling, complete self-contained invites, persistent device identities,
+  local Friends, fresh-room discovery, and explicit per-connection host
+  approval.
 - Up to four exact-window Live Share sources or one mutually exclusive
   fullscreen display, sent as transient preferred-codec WebRTC video with no
   History recording.
 - Optional persisted Live Share system audio, defaulting to Off: unique owning
   applications for window sharing or system audio for Fullscreen, excluding
-  Clip, sent as one stable Opus track. No microphone audio is sent. The browser
-  viewer provides mute, volume, and autoplay-unlock controls.
+  Clip, sent as one stable Opus track. No microphone audio is sent. Native and
+  browser viewers provide session-wide mute and volume controls; the browser
+  also provides autoplay unlock.
 - A Live Share-specific menu-bar popover, optional session access code,
   connected-viewer state, stream settings/statistics, focused-window Share/Stop
   control, fixed source/viewer HUD, auto-share, reconnect, and Stop All without
@@ -1433,10 +1548,12 @@ A separate Homebrew tap can be added later if needed.
 
 The recording release-critical path is: install and launch from DMG → select →
 record → preview → trim → drag or copy. The independent Live Share path is:
-start room → share window/display → open browser viewer → verify advancing
-video/context → change/stop sources → end room. A recording release may remain
-valid without the networking feature, but a release advertising Live Share
-must pass the Live Share controlled and packaging gates above.
+prepare fresh room → copy complete invite or discover a Live Friend → Start
+Sharing → approve admission → share window/display → verify advancing
+native or browser video/context and audio → change/stop sources → end room.
+A recording release may remain valid without the networking feature, but a
+release advertising Live Share must pass the Live Share controlled and
+packaging gates above.
 
 ---
 

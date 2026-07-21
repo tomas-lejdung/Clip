@@ -135,6 +135,8 @@ struct AppDependencies {
     let clock: any ClockServicing
     let settings: AppSettingsModel
     let liveSharePreferences: LiveSharePreferencesModel
+    let liveShareIdentity: NativeDeviceIdentityRepository
+    let nativeFriends: NativeFriendModel
     let permissions: any PermissionServicing
     let audio: any AudioServicing
     let pasteboard: any PasteboardServicing
@@ -182,6 +184,12 @@ struct AppDependencies {
         let liveSharePreferences = try LiveSharePreferencesModel(
             applicationSupportDirectory: directories.applicationSupport
         )
+        let liveShareIdentity = NativeDeviceIdentityRepository()
+        let nativeFriends = NativeFriendModel(
+            repository: try NativeFriendRepository(
+                applicationSupportDirectory: directories.applicationSupport
+            )
+        )
         let permissions = LivePermissionService(defaults: defaults)
         let audio = LiveAudioService()
         let pasteboard = LivePasteboardService()
@@ -208,6 +216,8 @@ struct AppDependencies {
             clock: SystemClock(),
             settings: settings,
             liveSharePreferences: liveSharePreferences,
+            liveShareIdentity: liveShareIdentity,
+            nativeFriends: nativeFriends,
             permissions: permissions,
             audio: audio,
             pasteboard: pasteboard,
