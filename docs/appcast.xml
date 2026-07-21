@@ -3,23 +3,27 @@
     <channel>
         <title>Clip</title>
         <item>
-            <title>1.3.5</title>
-            <pubDate>Tue, 21 Jul 2026 22:43:36 +0200</pubDate>
-            <sparkle:version>10</sparkle:version>
-            <sparkle:shortVersionString>1.3.5</sparkle:shortVersionString>
+            <title>1.3.6</title>
+            <pubDate>Wed, 22 Jul 2026 00:02:19 +0200</pubDate>
+            <sparkle:version>11</sparkle:version>
+            <sparkle:shortVersionString>1.3.6</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
             <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
-            <description sparkle:format="markdown"><![CDATA[# Clip 1.3.5
+            <description sparkle:format="markdown"><![CDATA[# Clip 1.3.6
 
-Clip 1.3.5 tightens and simplifies the custom native Live Share window header.
+Clip 1.3.6 adds smoother, configurable cursor updates to Live Share.
 
 ## Live Share
 
-- Reduce the shared-window header height so it uses less vertical space.
-- Remove the shared translucent background behind the viewer controls.
-- Render Zoom and Close as separate black controls with independent hover
-  feedback, so hovering one no longer highlights both.
-- Keep the zoom icon and current percentage together as one button.
+- Add a **Match Cursor to Frame Rate** toggle to the active Live Share popover
+  and the default Live Share settings.
+- Keep the existing 20 Hz cursor cadence when the option is disabled.
+- Follow 30 or 60 FPS stream cadence when enabled, while retaining a 20 Hz
+  minimum for 15 FPS streams.
+- Apply changes immediately during an active share and remember the setting for
+  future sessions.
+- Keep cursor messages ephemeral so stale positions are discarded under
+  transport congestion instead of being queued.
 
 This is an app-only update. The Live Share server and web viewer are unchanged.
 
@@ -28,7 +32,7 @@ This is an app-only update. The Live Share server and web viewer are unchanged.
 Clip requires macOS 15 or later on Apple silicon. This build uses the same
 stable Apple Development identity as previous updater releases.
 ]]></description>
-            <enclosure url="https://github.com/tomas-lejdung/Clip/releases/download/v1.3.5/Clip-1.3.5.dmg" length="20399740" type="application/octet-stream" sparkle:edSignature="odlBYMBCZhBCuivBomGXD6VqknKxJlgix3OL3FumIX138oYiZfcNsEY4mswHoZP/jV5Okvrjm9NFJhsiG1loBg=="/>
+            <enclosure url="https://github.com/tomas-lejdung/Clip/releases/download/v1.3.6/Clip-1.3.6.dmg" length="20401643" type="application/octet-stream" sparkle:edSignature="uDwwyL9KtTSoWCu1Ael+jp9HYwrzCS3fTezWiyUMgotYi4qmLCRdtEK4kxXgc8Iteud3DMNBMaT7xYaQtVtLBg=="/>
         </item>
     </channel>
 </rss>
