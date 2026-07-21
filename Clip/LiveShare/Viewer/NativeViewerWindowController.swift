@@ -20,7 +20,6 @@ final class NativeViewerContentView: NSView {
     private var isConnected = true
     private var cursorPosition: CGPoint?
     private var sourcePixelSize: CGSize?
-    private var scaleMode = NativeViewerScaleMode.automatic
 
     init(videoView: NSView, identityColor: NSColor) {
         self.videoView = videoView
@@ -69,20 +68,14 @@ final class NativeViewerContentView: NSView {
         super.layout()
         let border = Self.identityBorderWidth
         let availableVideoFrame = bounds.insetBy(dx: border, dy: border)
-        videoView.frame = if scaleMode == .actualPixels {
-            Self.pixelCappedContentRect(
-                sourcePixelSize: sourcePixelSize,
-                availableFrame: availableVideoFrame,
-                destinationBackingScale: window?.backingScaleFactor
-                    ?? NSScreen.main?.backingScaleFactor
-                    ?? 1
-            )
-        } else {
-            Self.aspectFitContentRect(
-                sourcePixelSize: sourcePixelSize,
-                videoFrame: availableVideoFrame
-            )
-        }
+        // The resolution policy sizes the window in source points. Always fit
+        // the decoded image into that point-space surface; applying the local
+        // display's backing scale a second time would make a 1x source half
+        // sized on a Retina viewer.
+        videoView.frame = Self.aspectFitContentRect(
+            sourcePixelSize: sourcePixelSize,
+            videoFrame: availableVideoFrame
+        )
 
         let labelSize = identityLabel.intrinsicContentSize
         let badgeWidth = min(max(72, labelSize.width + 18), max(72, bounds.width - 28))
@@ -121,12 +114,6 @@ final class NativeViewerContentView: NSView {
             cursorPosition = nil
         }
         layoutCursor()
-    }
-
-    func setScaleMode(_ mode: NativeViewerScaleMode) {
-        guard scaleMode != mode else { return }
-        scaleMode = mode
-        needsLayout = true
     }
 
     static func cursorPoint(
@@ -169,39 +156,6 @@ final class NativeViewerContentView: NSView {
         return CGRect(
             x: videoFrame.midX - renderedSize.width / 2,
             y: videoFrame.midY - renderedSize.height / 2,
-            width: renderedSize.width,
-            height: renderedSize.height
-        )
-    }
-
-    static func pixelCappedContentRect(
-        sourcePixelSize: CGSize?,
-        availableFrame: CGRect,
-        destinationBackingScale: CGFloat
-    ) -> CGRect {
-        guard let sourcePixelSize,
-              sourcePixelSize.width.isFinite,
-              sourcePixelSize.height.isFinite,
-              sourcePixelSize.width > 0,
-              sourcePixelSize.height > 0,
-              destinationBackingScale.isFinite,
-              destinationBackingScale > 0,
-              availableFrame.width > 0,
-              availableFrame.height > 0 else {
-            return availableFrame
-        }
-        let scale = min(
-            availableFrame.width / sourcePixelSize.width,
-            availableFrame.height / sourcePixelSize.height,
-            1 / destinationBackingScale
-        )
-        let renderedSize = CGSize(
-            width: sourcePixelSize.width * scale,
-            height: sourcePixelSize.height * scale
-        )
-        return CGRect(
-            x: availableFrame.midX - renderedSize.width / 2,
-            y: availableFrame.midY - renderedSize.height / 2,
             width: renderedSize.width,
             height: renderedSize.height
         )
@@ -339,7 +293,6 @@ final class NativeViewerWindowController: NSWindowController, NSWindowDelegate {
 
     func setScaleMode(_ mode: NativeViewerScaleMode) {
         scaleMode = mode
-        content.setScaleMode(mode)
         userAdjustedSize = false
         if let committed = dimensionStabilizer.committedPixelSize {
             resizeVideoContent(for: committed)

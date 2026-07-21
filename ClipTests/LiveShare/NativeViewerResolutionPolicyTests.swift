@@ -71,17 +71,41 @@ struct NativeViewerResolutionPolicyTests {
         #expect(result.isFitted)
     }
 
-    @Test("Actual Pixels remains exact even when larger than the display")
+    @Test("Actual preserves the source Mac's logical size across viewer display scales")
     func actualPixelsDoesNotFit() throws {
+        for destinationScale in [CGFloat(1), CGFloat(2)] {
+            let retinaHost = try #require(NativeViewerResolutionPolicy.resolve(.init(
+                decodedPixelSize: CGSize(width: 2_000, height: 1_000),
+                sourcePointSize: CGSize(width: 1_000, height: 500),
+                destinationBackingScale: destinationScale,
+                maximumContentSize: CGSize(width: 800, height: 400),
+                mode: .actualPixels
+            )))
+            let externalHost = try #require(NativeViewerResolutionPolicy.resolve(.init(
+                decodedPixelSize: CGSize(width: 2_000, height: 1_000),
+                sourcePointSize: CGSize(width: 2_000, height: 1_000),
+                destinationBackingScale: destinationScale,
+                maximumContentSize: CGSize(width: 800, height: 400),
+                mode: .actualPixels
+            )))
+
+            #expect(retinaHost.contentSize == CGSize(width: 1_000, height: 500))
+            #expect(externalHost.contentSize == CGSize(width: 2_000, height: 1_000))
+            #expect(!retinaHost.isFitted)
+            #expect(!externalHost.isFitted)
+        }
+    }
+
+    @Test("Actual keeps the legacy decoded-pixel fallback for old hosts")
+    func actualLegacyHostFallbackUsesViewerBackingScale() throws {
         let result = try #require(NativeViewerResolutionPolicy.resolve(.init(
-            decodedPixelSize: CGSize(width: 3_840, height: 2_160),
-            sourcePointSize: CGSize(width: 960, height: 540),
+            decodedPixelSize: CGSize(width: 1_600, height: 1_200),
             destinationBackingScale: 2,
-            maximumContentSize: CGSize(width: 1_200, height: 700),
+            maximumContentSize: CGSize(width: 2_000, height: 1_500),
             mode: .actualPixels
         )))
 
-        #expect(result.contentSize == CGSize(width: 1_920, height: 1_080))
+        #expect(result.contentSize == CGSize(width: 800, height: 600))
         #expect(!result.isFitted)
     }
 

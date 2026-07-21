@@ -59,16 +59,17 @@ enum NativeViewerResolutionPolicy {
             return nil
         }
 
-        let actualPointSize = CGSize(
+        // AppKit window geometry is expressed in points. A source Mac's
+        // logical point size is therefore the only display-independent
+        // definition of "Actual": a 1,000-point window stays 1,000 points on
+        // both 1x and Retina viewer displays. Dividing decoded pixels by the
+        // *viewer's* backing scale incorrectly doubles Retina-hosted windows
+        // on 1x viewers and halves 1x-hosted windows on Retina viewers.
+        let legacyPointSize = CGSize(
             width: request.decodedPixelSize.width / request.destinationBackingScale,
             height: request.decodedPixelSize.height / request.destinationBackingScale
         )
-        let preferredPointSize = switch request.mode {
-        case .automatic, .fit:
-            request.sourcePointSize ?? actualPointSize
-        case .actualPixels:
-            actualPointSize
-        }
+        let preferredPointSize = request.sourcePointSize ?? legacyPointSize
         let fitScale = min(
             1,
             request.maximumContentSize.width / preferredPointSize.width,

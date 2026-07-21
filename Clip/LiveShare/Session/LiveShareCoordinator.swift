@@ -884,32 +884,40 @@ actor LiveShareNativeRendezvousLifecycle {
         routeID: ClipLiveShareRouteID,
         allowed: Bool
     ) async {
-        guard var route = routes[routeID],
+        guard let route = routes[routeID],
               route.phase == .waitingForApproval,
               let activeSession,
               let viewerIdentity = route.viewerIdentity else {
             await rejectRoute(routeID, reason: "approval-state-invalid")
             return
         }
+        let sessionID = activeSession.sessionID
         do {
-            try await sendEncrypted(
+            let payload = try reserveEncrypted(
                 .authResult(try ClipLiveShareAuthResult(
-                    sessionID: activeSession.sessionID,
+                    sessionID: sessionID,
                     allowed: allowed,
                     reason: allowed ? nil : "host-declined"
                 )),
-                over: &route
+                on: routeID,
+                requiring: .waitingForApproval
             )
+            try await transport.send(payload, to: routeID.rawValue)
             guard allowed else {
-                routes[routeID] = route
                 await rejectRoute(routeID, reason: "host-declined")
                 return
             }
-            route.phase = .admitted
-            routes[routeID] = route
+            // transport.send suspends. The route may have closed while the
+            // frame was in flight, so never resurrect the pre-await copy.
+            guard var currentRoute = routes[routeID],
+                  currentRoute.phase == .waitingForApproval,
+                  currentRoute.viewerIdentity == viewerIdentity,
+                  self.activeSession?.sessionID == sessionID else { return }
+            currentRoute.phase = .admitted
+            routes[routeID] = currentRoute
             emit(.viewerAdmitted(
                 routeID: routeID,
-                sessionID: activeSession.sessionID,
+                sessionID: sessionID,
                 viewerIdentity: viewerIdentity
             ))
         } catch {
@@ -921,11 +929,15 @@ actor LiveShareNativeRendezvousLifecycle {
         _ message: ClipLiveShareInnerMessage,
         to routeID: ClipLiveShareRouteID
     ) async throws {
-        guard var route = routes[routeID], route.phase == .admitted else {
+        let payload = try reserveEncrypted(
+            message,
+            on: routeID,
+            requiring: .admitted
+        )
+        try await transport.send(payload, to: routeID.rawValue)
+        guard routes[routeID]?.phase == .admitted else {
             throw ClipNativeRendezvousError.routeNotFound
         }
-        try await sendEncrypted(message, over: &route)
-        routes[routeID] = route
     }
 
     func closeRoute(
@@ -1264,16 +1276,30 @@ actor LiveShareNativeRendezvousLifecycle {
         }
     }
 
-    private func sendEncrypted(
+    /// Advances the per-route encryption sequence before crossing an actor
+    /// boundary. Offer creation and ICE callbacks can send concurrently; if
+    /// the updated channel were committed after transport.send returned, both
+    /// callbacks could seal the same sequence and the viewer would reject the
+    /// second frame. A failed send intentionally burns its reserved sequence.
+    private func reserveEncrypted(
         _ message: ClipLiveShareInnerMessage,
-        over route: inout Route
-    ) async throws {
+        on routeID: ClipLiveShareRouteID,
+        requiring requiredPhase: RoutePhase
+    ) throws -> Data {
+        guard var route = routes[routeID], route.phase == requiredPhase else {
+            throw ClipNativeRendezvousError.routeNotFound
+        }
         guard var channel = route.channel else {
             throw ClipNativeRendezvousError.routeNotFound
         }
         let envelope = try channel.seal(message)
-        try await sendOuter(.relay(envelope), to: route.routeID)
+        let payload = try ClipLiveShareMessageCodec.encodeOuter(
+            .relay(envelope),
+            maximumBytes: ClipNativeRendezvousLimits.maximumOpaquePayloadBytes
+        )
         route.channel = channel
+        routes[routeID] = route
+        return payload
     }
 
     private func sendOuter(

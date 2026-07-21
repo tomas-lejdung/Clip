@@ -1511,6 +1511,138 @@ struct LiveShareNativeRendezvousLifecycleTests {
         await lifecycle.tearDown()
     }
 
+    @Test("concurrent offer and ICE reserve distinct encrypted sequences")
+    func concurrentSignalingReservesSequenceBeforeSend() async throws {
+        let hostIdentity = makeNativeDeviceIdentity()
+        let viewerSigner = NativeDeviceIdentitySigner()
+        let viewerEphemeral = ClipLiveShareViewerIdentity()
+        let transport = NativeRendezvousHostTransportSpy()
+        let lifecycle = makeLifecycle(identity: hostIdentity, transport: transport)
+        let recorder = NativeRendezvousLifecycleEventRecorder()
+        let events = await lifecycle.events()
+        let eventTask = Task {
+            for await event in events { await recorder.append(event) }
+        }
+        defer { eventTask.cancel() }
+        let room = try makeNativeRoom(name: "NATIVE-CONCURRENT-SIGNALING")
+        let routeID = ClipLiveShareRouteID.random()
+        try await lifecycle.prepare()
+        try await lifecycle.activate(room: room)
+        try await lifecycle.trustViewerIdentity(viewerSigner.publicKey)
+        let sessionID = try #require(await lifecycle.snapshot().sessionID)
+
+        await transport.emit(.routeOpened(routeID: routeID.rawValue, descriptor: nil))
+        await transport.emit(.relay(
+            routeID: routeID.rawValue,
+            payload: try ClipLiveShareMessageCodec.encodeOuter(
+                .viewerHello(try ClipLiveShareViewerHello(
+                    viewerKey: viewerEphemeral.publicKey
+                ))
+            ),
+            sequence: 1
+        ))
+        #expect(await eventuallyNativeRendezvous {
+            await transport.snapshot().sentPayloads.count == 1
+        })
+
+        guard case let .relay(challengeEnvelope) = try ClipLiveShareMessageCodec
+            .decodeOuter(try #require(await transport.snapshot().sentPayloads.first?.payload))
+        else {
+            Issue.record("Expected the native admission challenge")
+            return
+        }
+        var viewerChannel = try ClipLiveShareEncryptedChannel(
+            viewer: viewerEphemeral,
+            roomPublicKey: room.identity.publicKey,
+            room: room.room,
+            routeID: routeID
+        )
+        let challenge = try ClipLiveShareNativeV2MessageCodec.decode(
+            ClipLiveShareNativeViewerChallenge.self,
+            from: viewerChannel.openOpaquePayload(challengeEnvelope)
+        )
+        let proofEnvelope = try viewerChannel.sealOpaquePayload(
+            ClipLiveShareNativeV2MessageCodec.encode(
+                ClipLiveShareSignedNativeViewerProof(
+                    signing: challenge,
+                    with: viewerSigner
+                )
+            )
+        )
+        let routedProof = try ClipLiveShareRelayEnvelope(
+            routeID: routeID,
+            sequence: proofEnvelope.sequence,
+            nonce: proofEnvelope.nonce,
+            ciphertext: proofEnvelope.ciphertext
+        )
+        await transport.emit(.relay(
+            routeID: routeID.rawValue,
+            payload: try ClipLiveShareMessageCodec.encodeOuter(.relay(routedProof)),
+            sequence: 2
+        ))
+        #expect(await eventuallyNativeRendezvous {
+            await recorder.events.contains {
+                if case .approvalRequested(routeID, _) = $0 { return true }
+                return false
+            }
+        })
+        await lifecycle.resolveApproval(routeID: routeID, allowed: true)
+        #expect(await eventuallyNativeRendezvous {
+            await transport.snapshot().sentPayloads.count == 2
+        })
+        guard case let .relay(resultEnvelope) = try ClipLiveShareMessageCodec
+            .decodeOuter(try #require(await transport.snapshot().sentPayloads.last?.payload))
+        else {
+            Issue.record("Expected the native admission result")
+            return
+        }
+        _ = try viewerChannel.open(resultEnvelope)
+
+        let negotiationID = try ClipLiveShareNegotiationID(
+            rawValue: "native-concurrent-signaling"
+        )
+        let offer = ClipLiveShareInnerMessage.offer(
+            try ClipLiveShareSessionDescription(
+                sessionID: sessionID,
+                negotiationID: negotiationID,
+                sdp: "v=0\r\n"
+            )
+        )
+        let ice = ClipLiveShareInnerMessage.ice(
+            try ClipLiveShareICECandidate(
+                sessionID: sessionID,
+                negotiationID: negotiationID,
+                candidate: "candidate:1 1 UDP 1 127.0.0.1 9999 typ host",
+                sdpMid: "0",
+                sdpMLineIndex: 0
+            )
+        )
+        await transport.blockNextSend()
+        let first = Task { try await lifecycle.sendSignalingMessage(offer, to: routeID) }
+        #expect(await eventuallyNativeRendezvous { await transport.isSendBlocked() })
+        let second = Task { try await lifecycle.sendSignalingMessage(ice, to: routeID) }
+        #expect(await eventuallyNativeRendezvous {
+            await transport.snapshot().sentPayloads.count == 4
+        })
+        await transport.releaseBlockedSend()
+        try await first.value
+        try await second.value
+
+        let payloads = Array((await transport.snapshot()).sentPayloads.suffix(2))
+        #expect(payloads.count == 2)
+        var received: [ClipLiveShareInnerMessage] = []
+        for payload in payloads {
+            guard case let .relay(envelope) = try ClipLiveShareMessageCodec
+                .decodeOuter(payload.payload) else {
+                Issue.record("Expected encrypted native signaling")
+                return
+            }
+            received.append(try viewerChannel.open(envelope))
+        }
+        #expect(received == [offer, ice])
+        await lifecycle.tearDown()
+    }
+
     private func makeLifecycle(
         identity: NativeDeviceIdentity,
         transport: NativeRendezvousHostTransportSpy,
@@ -1965,6 +2097,9 @@ private actor NativeRendezvousHostTransportSpy:
     private var sentPayloads: [NativeRendezvousSentPayload] = []
     private var closedRoutes: [NativeRendezvousClosedRoute] = []
     private var teardownFlags: [Bool] = []
+    private var blockedSendOrdinal: Int?
+    private var blockedSendContinuation: CheckedContinuation<Void, Never>?
+    private var sendIsBlocked = false
     private let maximumSuccessfulPublishes: Int?
 
     init(maximumSuccessfulPublishes: Int? = nil) {
@@ -1994,11 +2129,30 @@ private actor NativeRendezvousHostTransportSpy:
 
     func stopSharing() { stopSharingCount += 1 }
 
-    func send(_ payload: Data, to routeID: String) {
+    func send(_ payload: Data, to routeID: String) async {
         sentPayloads.append(NativeRendezvousSentPayload(
             payload: payload,
             routeID: routeID
         ))
+        guard blockedSendOrdinal == sentPayloads.count else { return }
+        sendIsBlocked = true
+        await withCheckedContinuation { continuation in
+            blockedSendContinuation = continuation
+        }
+        sendIsBlocked = false
+    }
+
+    func blockNextSend() {
+        blockedSendOrdinal = sentPayloads.count + 1
+    }
+
+    func isSendBlocked() -> Bool { sendIsBlocked }
+
+    func releaseBlockedSend() {
+        blockedSendOrdinal = nil
+        let continuation = blockedSendContinuation
+        blockedSendContinuation = nil
+        continuation?.resume()
     }
 
     func closeRoute(_ routeID: String, reason: String?) {

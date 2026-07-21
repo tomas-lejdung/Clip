@@ -72,27 +72,7 @@ struct NativeViewerWindowControllerTests {
         ) == CGPoint(x: 255, y: 380))
     }
 
-    @Test("A small Retina source is centered without being upscaled")
-    func smallSourceRetinaPixelCap() {
-        let available = CGRect(x: 5, y: 5, width: 320, height: 210)
-        let source = CGSize(width: 160, height: 90)
-        let rendered = NativeViewerContentView.pixelCappedContentRect(
-            sourcePixelSize: source,
-            availableFrame: available,
-            destinationBackingScale: 2
-        )
-
-        #expect(rendered == CGRect(x: 125, y: 87.5, width: 80, height: 45))
-        #expect(rendered.width * 2 / source.width == 1)
-        #expect(NativeViewerContentView.cursorPoint(
-            normalizedX: 1,
-            normalizedY: 1,
-            videoFrame: rendered,
-            sourcePixelSize: source
-        ) == CGPoint(x: 205, y: 87.5))
-    }
-
-    @Test("Logical presentation may use the full window while pixels stay native")
+    @Test("Logical presentation uses the full point-sized window")
     func logicalPresentationFillsAvailableFrame() {
         let available = CGRect(x: 5, y: 5, width: 800, height: 600)
         let sourcePixels = CGSize(width: 1_600, height: 1_200)
@@ -101,11 +81,6 @@ struct NativeViewerWindowControllerTests {
             sourcePixelSize: sourcePixels,
             videoFrame: available
         ) == available)
-        #expect(NativeViewerContentView.pixelCappedContentRect(
-            sourcePixelSize: sourcePixels,
-            availableFrame: available,
-            destinationBackingScale: 1
-        ) == CGRect(x: 5, y: 5, width: 800, height: 600))
     }
 
     @Test("Identity border remains outside the video surface")
