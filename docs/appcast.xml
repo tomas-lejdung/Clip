@@ -3,30 +3,32 @@
     <channel>
         <title>Clip</title>
         <item>
-            <title>1.3.3</title>
-            <pubDate>Tue, 21 Jul 2026 21:23:52 +0200</pubDate>
-            <sparkle:version>8</sparkle:version>
-            <sparkle:shortVersionString>1.3.3</sparkle:shortVersionString>
+            <title>1.3.4</title>
+            <pubDate>Tue, 21 Jul 2026 22:24:18 +0200</pubDate>
+            <sparkle:version>9</sparkle:version>
+            <sparkle:shortVersionString>1.3.4</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
             <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
-            <description sparkle:format="markdown"><![CDATA[# Clip 1.3.3
+            <description sparkle:format="markdown"><![CDATA[# Clip 1.3.4
 
-Clip 1.3.3 fixes native Friend joining and makes the **Actual** viewer size
-consistent across Retina and non-Retina Macs.
+Clip 1.3.4 gives native Live Share windows a cleaner CoScreen-inspired frame
+and adds a true Native 100% viewing mode.
 
 ## Live Share
 
-- Reserve each encrypted Friend-join message sequence before sending it, so
-  concurrent WebRTC offer and ICE messages cannot reuse a sequence number and
-  be rejected as an invalid native rendezvous message.
-- Keep a route closed if it disconnects while approval is being sent instead
-  of restoring stale connection state afterward.
-- Define **Actual** using the source Mac's logical window size rather than the
-  viewer display's backing scale. Retina-hosted windows therefore no longer
-  appear doubled on non-Retina viewers, and external-display windows no longer
-  appear halved on Retina viewers.
-- Preserve the existing decoded-pixel fallback when viewing a stream from an
-  older host that does not provide logical source dimensions.
+- Replace the receiver's visible macOS title bar and redundant source chip with
+  a thick friend-colored outer frame and matching draggable header.
+- Keep viewer controls translucent while idle and make them fully visible on
+  hover.
+- Add Fit to Window and Native 100% modes, a zoom indicator, and a command to
+  reset the window to its actual logical size.
+- Preserve the shared window at 100% in Native mode. Oversized content is
+  cropped and smoothly follows the focused remote cursor without exposing
+  blank space.
+- Capture and display the cursor only for the focused shared source, including
+  protection against delayed cursor messages after focus changes.
+- Preserve source-logical sizing across Retina and non-Retina displays and keep
+  resized viewer windows safely inside the visible screen.
 
 This is an app-only update. The Live Share server and web viewer are unchanged.
 
@@ -35,7 +37,7 @@ This is an app-only update. The Live Share server and web viewer are unchanged.
 Clip requires macOS 15 or later on Apple silicon. This build uses the same
 stable Apple Development identity as previous updater releases.
 ]]></description>
-            <enclosure url="https://github.com/tomas-lejdung/Clip/releases/download/v1.3.3/Clip-1.3.3.dmg" length="20379179" type="application/octet-stream" sparkle:edSignature="eiIvZHtG1hz2zjrIgC4SfTgsmIk5iSJN2A7vSUo1WiM+uAMtuzN/Zf2mDJZxRVJ4LVtq3Wil8naPHl8J1jqZCg=="/>
+            <enclosure url="https://github.com/tomas-lejdung/Clip/releases/download/v1.3.4/Clip-1.3.4.dmg" length="20399456" type="application/octet-stream" sparkle:edSignature="wEMKb0g5DfwC7u9i8TATW/osRLJdFZnJ/YIAOgTwpDvBitTVZTItj5q/b//OEdHV4WiTyRZXRj4z3jBa+P//Ag=="/>
         </item>
     </channel>
 </rss>
