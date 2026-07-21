@@ -1229,7 +1229,7 @@ Any future telemetry must be optional and transparent.
 - Xcode 26.6, build 17F113.
 - macOS 15.0 or later deployment target.
 - Apple Silicon (`arm64`).
-- Version 1.2.0 (build 4).
+- Version 1.3.0 (build 5).
 
 ## User interface
 
@@ -1630,7 +1630,7 @@ clip
 ## Version
 
 ```text
-1.2.0 (build 4)
+1.3.0 (build 5)
 ```
 
 ## Bundle identifier

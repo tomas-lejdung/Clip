@@ -61,6 +61,35 @@ struct NativeDeviceIdentityRepositoryTests {
 
         #expect(result.publicKey == winner.publicKey)
     }
+
+    @Test("The live macOS Keychain round-trips private identity data")
+    func liveKeychainRoundTrip() throws {
+        let storage = LiveNativeDeviceIdentityKeychain(
+            service: "com.tomaslejdung.clip.tests.\(UUID().uuidString)",
+            account: "native-device-identity-keychain-round-trip"
+        )
+        defer { try? storage.delete() }
+
+        try storage.delete()
+        #expect(try storage.load() == nil)
+
+        let expected = Data("private identity fixture".utf8)
+        try storage.insert(expected)
+        #expect(try storage.load() == expected)
+
+        try storage.delete()
+        #expect(try storage.load() == nil)
+    }
+
+    @Test("Keychain errors retain their actionable OS status")
+    func keychainErrorDescription() {
+        let message = NativeDeviceIdentityStorageError
+            .keychain(errSecMissingEntitlement)
+            .technicalDescriptionForLogging
+
+        #expect(message.contains(String(errSecMissingEntitlement)))
+        #expect(message.localizedCaseInsensitiveContains("Keychain"))
+    }
 }
 
 private final class MemoryNativeIdentitySecureStorage:

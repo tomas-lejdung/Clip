@@ -36,7 +36,7 @@ enum UserFacingErrorPresentation {
     }
 }
 
-private protocol TechnicalErrorDescriptionProviding {
+protocol TechnicalErrorDescriptionProviding {
     var technicalDescriptionForLogging: String { get }
 }
 

@@ -2043,9 +2043,16 @@ final class LiveShareCoordinator {
                 await nativeRendezvous.tearDown()
                 return
             }
-            let code: LiveShareFailureCode = state.snapshot.phase == .reservingRoom
-                ? .reservationFailed
-                : (error is WebRTCPeerHostError ? .encoderFailed : .signalingFailed)
+            let code: LiveShareFailureCode
+            if error is NativeDeviceIdentityStorageError {
+                code = .identityUnavailable
+            } else if state.snapshot.phase == .reservingRoom {
+                code = .reservationFailed
+            } else if error is WebRTCPeerHostError {
+                code = .encoderFailed
+            } else {
+                code = .signalingFailed
+            }
             fail(code: code, error: error)
         }
     }
@@ -5318,7 +5325,11 @@ final class LiveShareCoordinator {
     }
 
     private func fail(code: LiveShareFailureCode, error: any Error) {
-        fail(code: code, technicalDescription: error.localizedDescription)
+        let technicalDescription =
+            (error as? any TechnicalErrorDescriptionProviding)?
+                .technicalDescriptionForLogging
+            ?? error.localizedDescription
+        fail(code: code, technicalDescription: technicalDescription)
     }
 
     private func fail(code: LiveShareFailureCode, technicalDescription: String) {

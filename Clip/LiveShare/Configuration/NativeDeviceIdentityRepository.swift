@@ -3,9 +3,40 @@ import CryptoKit
 import Foundation
 import Security
 
-enum NativeDeviceIdentityStorageError: Error, Equatable, Sendable {
+enum NativeDeviceIdentityStorageError:
+    Error,
+    Equatable,
+    Sendable,
+    LocalizedError,
+    TechnicalErrorDescriptionProviding
+{
     case keychain(OSStatus)
     case corruptIdentity
+
+    var errorDescription: String? {
+        switch self {
+        case .keychain:
+            return String(
+                localized: "Clip couldn’t access this Mac’s secure Live Share identity. Try again."
+            )
+        case .corruptIdentity:
+            return String(
+                localized: "This Mac’s secure Live Share identity is damaged and could not be loaded."
+            )
+        }
+    }
+
+    var technicalDescriptionForLogging: String {
+        switch self {
+        case let .keychain(status):
+            let statusDescription = SecCopyErrorMessageString(status, nil)
+                .map { $0 as String }
+                ?? "Unknown Keychain error"
+            return "Native device identity Keychain error [\(status): \(statusDescription)]"
+        case .corruptIdentity:
+            return "Native device identity Keychain payload is corrupt"
+        }
+    }
 }
 
 protocol NativeDeviceIdentitySecureStorage: Sendable {
@@ -42,7 +73,6 @@ struct LiveNativeDeviceIdentityKeychain: NativeDeviceIdentitySecureStorage {
     func insert(_ data: Data) throws {
         var query = baseQuery
         query[kSecValueData as String] = data
-        query[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
         let status = SecItemAdd(query as CFDictionary, nil)
         guard status == errSecSuccess else {
             throw NativeDeviceIdentityStorageError.keychain(status)
@@ -57,12 +87,17 @@ struct LiveNativeDeviceIdentityKeychain: NativeDeviceIdentitySecureStorage {
     }
 
     private var baseQuery: [String: Any] {
+        // The data-protection Keychain requires a provisioning-authorized
+        // application identifier or Keychain access group. Clip is also
+        // distributed as a directly signed macOS app without a provisioning
+        // profile, so keep this private identity in the standard login
+        // Keychain. Its item ACL remains bound to Clip's code signature and it
+        // works for both stable certificate and ad-hoc development builds.
         [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
             kSecAttrAccount as String: account,
             kSecAttrSynchronizable as String: false,
-            kSecUseDataProtectionKeychain as String: true,
         ]
     }
 }

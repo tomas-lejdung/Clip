@@ -13,6 +13,7 @@ public enum LiveSharePhase: String, Codable, CaseIterable, Hashable, Sendable {
 }
 
 public enum LiveShareFailureCode: String, Codable, Hashable, Sendable {
+  case identityUnavailable
   case reservationFailed
   case signalingFailed
   case captureFailed

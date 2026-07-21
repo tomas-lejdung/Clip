@@ -362,6 +362,8 @@ enum LiveShareCoordinatorPolicy {
 
     static func userFacingFailure(_ failure: LiveShareFailure?) -> String {
         switch failure?.code {
+        case .identityUnavailable:
+            String(localized: "Clip couldn’t access this Mac’s secure Live Share identity. Try again.")
         case .reservationFailed:
             String(localized: "Couldn’t create a share link. Try again.")
         case .signalingFailed, .connectionLost:

@@ -688,6 +688,15 @@ struct LiveShareCoordinatorPolicyTests {
         #expect(!message.contains("secret"))
         #expect(!message.contains("internal.example"))
         #expect(message.contains("connection"))
+
+        let identityMessage = LiveShareCoordinatorPolicy.userFacingFailure(
+            LiveShareFailure(
+                code: .identityUnavailable,
+                technicalDescription: "Keychain status -34018"
+            )
+        )
+        #expect(identityMessage.contains("identity"))
+        #expect(!identityMessage.contains("34018"))
     }
 
     @Test("viewer admission counts pending and allocated copies of one route once")
