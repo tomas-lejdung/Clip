@@ -68,7 +68,8 @@ struct WebRTCLoopbackTests {
 
         let offer = try await host.createOffer(for: "loopback-viewer")
         #expect(offer.sdp.localizedCaseInsensitiveContains(" opus/48000/2"))
-        #expect(offer.sdp.contains("gopeep-system-audio audio0"))
+        let audio = host.systemAudioSnapshot
+        #expect(offer.sdp.contains("\(audio.streamID) \(audio.trackID)"))
         let receiver = try LoopbackReceiver(bridge: bridge)
         defer { receiver.close() }
         bridge.receiver = receiver.connection
@@ -103,9 +104,48 @@ struct WebRTCLoopbackTests {
         try await Task.sleep(for: .milliseconds(250))
         #expect(await receiver.inboundSystemAudioBytesReceived() > 0)
 
+        // Start a fresh input timeline and model an ordinary late callback
+        // followed by an early one while preserving ScreenCaptureKit's 512 ms
+        // average cadence. The 60 ms prebuffer must absorb both without
+        // inserting zero-filled encoder input.
         host.setSystemAudioEnabled(false)
         #expect(!host.systemAudioSnapshot.isEnabled)
         #expect(host.systemAudioSnapshot.queuedFrameCount == 0)
+        host.setSystemAudioEnabled(true)
+        #expect(await waitUntil(timeout: .seconds(2)) {
+            host.systemAudioSnapshot.isDeviceRecording
+        })
+        let ordinaryBatchFrames = 24_576
+        let jitterBatches = try (0 ..< 3).map { _ in
+            try makeSystemAudioFixture(frameCount: ordinaryBatchFrames)
+        }
+        let jitterBaseline = host.systemAudioSnapshot
+        #expect(host.send(BorrowedCaptureAudioSample(
+            sampleBuffer: jitterBatches[0]
+        )))
+        #expect(
+            host.systemAudioSnapshot.acceptedFrameCount
+                - jitterBaseline.acceptedFrameCount == ordinaryBatchFrames
+        )
+        try await Task.sleep(for: .milliseconds(530))
+        #expect(host.send(BorrowedCaptureAudioSample(
+            sampleBuffer: jitterBatches[1]
+        )))
+        try await Task.sleep(for: .milliseconds(494))
+        #expect(host.send(BorrowedCaptureAudioSample(
+            sampleBuffer: jitterBatches[2]
+        )))
+        try await Task.sleep(for: .milliseconds(100))
+
+        #expect(
+            host.systemAudioSnapshot.acceptedFrameCount
+                - jitterBaseline.acceptedFrameCount == ordinaryBatchFrames * 3
+        )
+        #expect(
+            host.systemAudioSnapshot.underflowFrameCount
+                == jitterBaseline.underflowFrameCount
+        )
+        host.setSystemAudioEnabled(false)
     }
 
     @Test("idle peer renegotiates H264 to VP8 without replacing transports")
@@ -361,11 +401,10 @@ struct WebRTCLoopbackTests {
             bridge.isConnectedAndControlOpen
         })
 
-        try host.activateSlot(0, metadata: GoPeepV1StreamInfo(
-            trackID: "video0",
+        try host.activateSlot(0, metadata: ClipLiveShareWebRTCTestFixtures.streamDescriptor(
+            for: host.slotSnapshots[0],
             windowName: "VP8 fixture",
             appName: "Clip tests",
-            isFocused: true,
             width: 320,
             height: 180
         ))
@@ -447,8 +486,8 @@ struct WebRTCLoopbackTests {
         let initialSlot = try #require(host.slotSnapshots.first)
         let stableTrackID = initialSlot.trackID
         let stableStreamID = initialSlot.streamID
-        #expect(stableTrackID == "video0")
-        #expect(stableStreamID == "gopeep-stream-0")
+        #expect(ClipLiveShareBase64URL.decode(stableTrackID)?.count == 16)
+        #expect(ClipLiveShareBase64URL.decode(stableStreamID)?.count == 16)
 
         let capableOffer = try await host.createOffer(for: capableViewerID)
         #expect(capableOffer.sdp.localizedCaseInsensitiveContains(
@@ -511,11 +550,10 @@ struct WebRTCLoopbackTests {
                 && fallbackBridge.lastControlMessage == control
         })
 
-        try host.activateSlot(0, metadata: GoPeepV1StreamInfo(
-            trackID: stableTrackID,
+        try host.activateSlot(0, metadata: ClipLiveShareWebRTCTestFixtures.streamDescriptor(
+            for: initialSlot,
             windowName: "\(codec.rtcName) mixed-viewer fixture",
             appName: "Clip tests",
-            isFocused: true,
             width: 320,
             height: 180
         ))
@@ -585,7 +623,7 @@ struct WebRTCLoopbackTests {
         #expect(host.viewerIDs == viewerIDs)
         #expect(finalSlot.trackID == stableTrackID)
         #expect(finalSlot.streamID == stableStreamID)
-        #expect(finalSlot.metadata?.trackID == stableTrackID)
+        #expect(finalSlot.metadata?.mediaTrackID.rawValue == stableTrackID)
         #expect(
             capableBridge.controlChannelLabel
                 == WebRTCRuntimeIdentity.controlDataChannelLabel
@@ -647,11 +685,10 @@ struct WebRTCLoopbackTests {
             bridge.isConnectedAndControlOpen
         })
 
-        try host.activateSlot(0, metadata: GoPeepV1StreamInfo(
-            trackID: "video0",
+        try host.activateSlot(0, metadata: ClipLiveShareWebRTCTestFixtures.streamDescriptor(
+            for: host.slotSnapshots[0],
             windowName: "\(preferredCodec.rtcName) fixture",
             appName: "Clip tests",
-            isFocused: true,
             width: 320,
             height: 180
         ))
@@ -745,11 +782,10 @@ struct WebRTCLoopbackTests {
             bridge.lastControlMessage == control
         })
 
-        try host.activateSlot(0, metadata: GoPeepV1StreamInfo(
-            trackID: "video0",
+        try host.activateSlot(0, metadata: ClipLiveShareWebRTCTestFixtures.streamDescriptor(
+            for: host.slotSnapshots[0],
             windowName: "Deterministic fixture",
             appName: "Clip tests",
-            isFocused: true,
             width: 320,
             height: 180
         ))
@@ -814,11 +850,10 @@ struct WebRTCLoopbackTests {
             bridge.isConnectedAndControlOpen
         })
 
-        try host.activateSlot(0, metadata: GoPeepV1StreamInfo(
-            trackID: "video0",
+        try host.activateSlot(0, metadata: ClipLiveShareWebRTCTestFixtures.streamDescriptor(
+            for: host.slotSnapshots[0],
             windowName: "Codec switch fixture",
             appName: "Clip tests",
-            isFocused: true,
             width: 320,
             height: 180
         ))
@@ -937,11 +972,10 @@ struct WebRTCLoopbackTests {
         bridge.host = host
         defer { host.close() }
 
-        try host.activateSlot(0, metadata: GoPeepV1StreamInfo(
-            trackID: "video0",
+        try host.activateSlot(0, metadata: ClipLiveShareWebRTCTestFixtures.streamDescriptor(
+            for: host.slotSnapshots[0],
             windowName: "Idle fixture",
             appName: "Clip tests",
-            isFocused: true,
             width: 320,
             height: 180
         ))
@@ -1020,11 +1054,10 @@ struct WebRTCLoopbackTests {
             bridge.isConnectedAndControlOpen
         })
 
-        try host.activateSlot(0, metadata: GoPeepV1StreamInfo(
-            trackID: "video0",
+        try host.activateSlot(0, metadata: ClipLiveShareWebRTCTestFixtures.streamDescriptor(
+            for: host.slotSnapshots[0],
             windowName: "Retina fixture \(width)x\(height)",
             appName: "Clip tests",
-            isFocused: true,
             width: width,
             height: height
         ))
@@ -1401,8 +1434,7 @@ private final class LoopbackReceiver: NSObject, RTCPeerConnectionDelegate,
         didAdd rtpReceiver: RTCRtpReceiver,
         streams mediaStreams: [RTCMediaStream]
     ) {
-        if let audioTrack = rtpReceiver.track as? RTCAudioTrack,
-           audioTrack.trackId == WebRTCRuntimeIdentity.systemAudioTrackID {
+        if let audioTrack = rtpReceiver.track as? RTCAudioTrack {
             // Receiving the track proves negotiation without allowing a test
             // tone to reach the machine's speakers.
             audioTrack.isEnabled = false
@@ -1410,8 +1442,7 @@ private final class LoopbackReceiver: NSObject, RTCPeerConnectionDelegate,
             bridge.receiverAddedSystemAudioTrack()
             return
         }
-        guard let track = rtpReceiver.track as? RTCVideoTrack,
-              track.trackId == "video0" else { return }
+        guard let track = rtpReceiver.track as? RTCVideoTrack else { return }
         videoTracks.append(track)
         track.add(self)
     }

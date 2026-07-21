@@ -12,6 +12,14 @@ private struct LiveShareCaptureGeometrySnapshot {
     let descriptor: LiveShareCaptureDescriptor
 }
 
+private struct LiveSharePendingViewerRoute {
+    let routeID: ClipLiveShareRouteID
+    let sessionID: ClipLiveShareSessionID
+    let challenge: ClipLiveShareAuthChallenge
+    let accessCode: String?
+    var progress = LiveShareViewerAdmissionProgress()
+}
+
 enum LiveShareCaptureGeometryTransitionError: LocalizedError {
     case rollbackFailed(change: String, rollback: String)
 
@@ -42,8 +50,8 @@ final class LiveShareCoordinator {
     )
 
     private let preferences: LiveSharePreferencesModel
-    private let server: GoPeepV1ServerConfiguration
-    private let signaling: GoPeepV1SignalingClient
+    private let serverEndpoint: ClipLiveShareServerEndpoint
+    private let signaling: ClipLiveShareSignalingClient
     private let discovery: any CaptureContentDiscovering
     private let onSessionEnded: () -> Void
     private let onMenuBarStatusChanged: (LiveShareMenuBarStatus) -> Void
@@ -55,6 +63,18 @@ final class LiveShareCoordinator {
     private var accessCode: String?
     private var accessCodeIsUpdating = false
     private var accessCodeError: String?
+    private var roomConfiguration: ClipLiveShareRoomConfiguration?
+    private var signalingIsAvailable = false
+    private var pendingViewerRoutes: [
+        ClipLiveShareRouteID: LiveSharePendingViewerRoute
+    ] = [:]
+    private var admissionTimeoutTasks: [
+        ClipLiveShareRouteID: Task<Void, Never>
+    ] = [:]
+    private var viewerSessionIDs: [String: ClipLiveShareSessionID] = [:]
+    private var negotiationIDs: [String: ClipLiveShareNegotiationID] = [:]
+    private var establishedControlViewerIDs: Set<String> = []
+    private var pendingSessionClosingViewerIDs: Set<String> = []
     private var peerHost: WebRTCPeerHost?
     private var capturePipeline: LiveShareCapturePipeline?
     private var signalingEventTask: Task<Void, Never>?
@@ -77,7 +97,6 @@ final class LiveShareCoordinator {
     private var isRetrying = false
     private var isEnding = false
     private var didNotifyEnd = false
-    private var nextViewerNumber = 1
     private var startedAt: Date?
     private var viewerConnectedAt: [String: Date] = [:]
     private var focusedWindow: FocusedLiveShareWindow?
@@ -98,6 +117,9 @@ final class LiveShareCoordinator {
     private var publishedMenuBarStatus: LiveShareMenuBarStatus?
     private let systemAudioRequestIdentifier = UUID()
     private var desiredSystemAudioRequest: CaptureAudioSessionRequest?
+    /// Mirrors completed ScreenCaptureKit audio reconciliation, not merely the
+    /// user's preference or the lifetime of the pre-negotiated Opus track.
+    private var systemAudioIsActive = false
 
     private lazy var focusedWindowMonitor = LiveShareFocusedWindowMonitor(
         discovery: discovery,
@@ -174,18 +196,17 @@ final class LiveShareCoordinator {
 
     init(
         preferences: LiveSharePreferencesModel,
-        server: GoPeepV1ServerConfiguration = .goPeepRemote,
+        serverEndpoint: ClipLiveShareServerEndpoint = .official,
         discovery: any CaptureContentDiscovering = ScreenCaptureContentDiscovery(),
         onSessionEnded: @escaping () -> Void,
         onMenuBarStatusChanged: @escaping (LiveShareMenuBarStatus) -> Void = { _ in }
     ) {
         self.preferences = preferences
-        self.server = server
+        self.serverEndpoint = serverEndpoint
         self.discovery = discovery
         self.onSessionEnded = onSessionEnded
         self.onMenuBarStatusChanged = onMenuBarStatusChanged
-        signaling = GoPeepV1SignalingClient(
-            server: server,
+        signaling = ClipLiveShareSignalingClient(
             logger: { entry in
                 Self.logger.debug("\(entry.description, privacy: .public)")
             }
@@ -247,6 +268,14 @@ final class LiveShareCoordinator {
         let pipeline = capturePipeline
         capturePipeline = nil
         capturePressure.removeAll()
+        roomConfiguration = nil
+        signalingIsAvailable = false
+        cancelAdmissionTimeouts()
+        pendingViewerRoutes.removeAll()
+        viewerSessionIDs.removeAll()
+        negotiationIDs.removeAll()
+        establishedControlViewerIDs.removeAll()
+        pendingSessionClosingViewerIDs.removeAll()
         Task {
             await systemAudioTask?.value
             await pipeline?.stopAll()
@@ -263,10 +292,12 @@ final class LiveShareCoordinator {
         }
         isEnding = false
         didNotifyEnd = false
+        signalingIsAvailable = false
         publish()
 
         settings = preferences.settings
         persistedSettingsBaseline = settings
+        slotAllocation = LiveShareTrackSlotAllocation()
         do {
             accessCode = settings.accessCodeEnabled
                 ? try LiveShareAccessCode.generate()
@@ -286,20 +317,21 @@ final class LiveShareCoordinator {
         }
 
         do {
-            let reservation = try await signaling.reserveRoom()
-            guard !Task.isCancelled, !isEnding else { return }
-            try state.receiveReservation(reservation, password: accessCode)
+            let room = try await signaling.createRoom(at: serverEndpoint)
+            guard !Task.isCancelled, !isEnding else {
+                await signaling.stop()
+                return
+            }
+            roomConfiguration = room
+            try state.receiveRoom(ClipLiveSharePublicRoom(
+                name: room.room,
+                viewerURL: try room.viewerURL
+            ))
             try installNativeRuntime()
             publish()
             focusedWindowMonitor.start()
             startSourceRefreshLoop()
             startStatisticsLoop()
-            guard let room = state.snapshot.room else {
-                throw LiveShareTransitionError.invalidTransition(
-                    from: state.snapshot.phase,
-                    operation: "missingRoomAfterReservation"
-                )
-            }
             try await signaling.connect(room: room)
         } catch {
             guard !Task.isCancelled, !isEnding else { return }
@@ -315,15 +347,21 @@ final class LiveShareCoordinator {
         _ = cancelSystemAudioReconciliation()
         desiredSystemAudioRequest = nil
         peerHost?.close()
+        guard let roomConfiguration else {
+            throw LiveShareTransitionError.invalidTransition(
+                from: state.snapshot.phase,
+                operation: "missingRoomConfiguration"
+            )
+        }
         let configuration = WebRTCPeerHostConfiguration(
-            iceServers: server.iceServers.map {
+            iceServers: roomConfiguration.capabilities.iceServers.map {
                 WebRTCICEServerConfiguration(
                     urlStrings: $0.urls,
                     username: $0.username,
                     credential: $0.credential
                 )
             },
-            forcesRelay: server.forceRelay,
+            forcesRelay: false,
             senderPolicy: LiveShareCoordinatorPolicy.senderPolicy(for: settings),
             videoCodec: webRTCVideoCodec(settings.videoCodec),
             videoEncodingMode: settings.encodingMode
@@ -348,7 +386,7 @@ final class LiveShareCoordinator {
         )
     }
 
-    private func handleSignalingEvent(_ event: GoPeepV1SignalingEvent) async {
+    private func handleSignalingEvent(_ event: ClipLiveShareSignalingEvent) async {
         guard !isEnding else { return }
         switch event {
         case let .connecting(_, reconnectAttempt):
@@ -358,57 +396,7 @@ final class LiveShareCoordinator {
             }
 
         case .connected:
-            // The WebSocket has only accepted the join frame. `joined` below is
-            // the server-authoritative transition to Ready.
-            break
-
-        case let .message(message):
-            await handleSignalingMessage(message)
-
-        case .invalidMessageReceived:
-            Self.logger.error("The signaling server sent invalid JSON")
-
-        case let .disconnected(reason, willReconnect):
-            for viewerID in peerHost?.viewerIDs ?? [] {
-                peerHost?.removePeer(viewerID)
-            }
-            peerNegotiation.removeAll()
-            cancelAuthoritativeControlReplay()
-            viewerConnectedAt.removeAll()
-            try? state.updateViewerCount(0)
-            if willReconnect {
-                if state.snapshot.phase != .reconnecting {
-                    try? state.markConnectionLost()
-                }
-                publish()
-            } else if reason == .reconnectExhausted {
-                fail(
-                    code: .connectionLost,
-                    technicalDescription: "Signaling reconnect attempts were exhausted."
-                )
-            }
-
-        case let .reconnectScheduled(attempt, _):
-            if state.snapshot.phase == .reconnecting {
-                try? state.scheduleReconnect(attempt: attempt)
-                publish()
-            }
-
-        case .eventBufferOverflow:
-            fail(
-                code: .signalingFailed,
-                technicalDescription: "The signaling event queue overflowed."
-            )
-
-        case .stopped:
-            break
-        }
-    }
-
-    private func handleSignalingMessage(_ message: GoPeepV1Message) async {
-        switch message.type {
-        case .joined:
-            guard message.role == .sharer else { return }
+            signalingIsAvailable = true
             do {
                 if state.snapshot.phase == .reconnecting {
                     try state.markReconnected()
@@ -426,86 +414,274 @@ final class LiveShareCoordinator {
                 fail(code: .signalingFailed, error: error)
             }
 
-        case .viewerJoined:
-            let viewerID = "viewer-\(nextViewerNumber)"
-            nextViewerNumber += 1
-            await sendOffer(to: viewerID, reoffer: false)
+        case let .routeOpened(routeID):
+            await beginViewerAdmission(routeID: routeID)
 
-        case .viewerReoffer:
-            guard !message.peerID.isEmpty else { return }
-            // GoPeep emits viewer-reoffer when the browser has created a new
-            // RTCPeerConnection but wants to retain its peer ID. A fresh native
-            // peer/data channel is required; renegotiating the stale connection
-            // would send media to the browser instance that already went away.
-            peerHost?.removePeer(message.peerID, notifies: false)
-            peerNegotiation.remove(message.peerID)
-            authoritativeControlDelivery.remove(message.peerID)
-            viewerConnectedAt[message.peerID] = nil
-            await sendOffer(to: message.peerID, reoffer: false)
+        case let .message(routeID, message):
+            await handleSignalingMessage(message, routeID: routeID)
 
-        case .answer, .renegotiateAnswer:
-            guard !message.peerID.isEmpty, !message.sdp.isEmpty else { return }
-            guard let peerHost,
-                  let offerToken = peerNegotiation.tokenAwaitingAnswer(
-                for: message.peerID
-            ) else { return }
-            do {
-                try await peerHost.setRemoteAnswer(message.sdp, for: message.peerID)
-                guard let pendingCandidates = peerNegotiation.completeAnswer(
-                    for: message.peerID,
-                    token: offerToken
-                ) else { return }
-                for candidate in pendingCandidates {
-                    guard peerNegotiation.contains(
-                        offerToken,
-                        for: message.peerID
-                    ) else { return }
-                    try await peerHost.addRemoteICECandidate(
-                        candidate,
-                        for: message.peerID
-                    )
+        case let .routeClosed(routeID, reason):
+            if reason == "viewer completed signaling" {
+                // The browser can observe its DataChannel opening a few
+                // milliseconds before the host callback reaches MainActor.
+                // A relay-controlled close reason is not proof that the host
+                // channel opened. Preserve both the peer and Clip's admission
+                // timeout until the native DataChannel callback confirms it.
+                if var route = pendingViewerRoutes[routeID] {
+                    route.progress.receiveSignalingHandoff()
+                    pendingViewerRoutes[routeID] = route
                 }
-            } catch {
-                guard peerNegotiation.remove(
-                    message.peerID,
-                    token: offerToken
-                ) else { return }
-                peerHost.removePeer(message.peerID)
-                logPeerFailure(error, viewerID: message.peerID)
+            } else {
+                await removePendingRoute(routeID, removesPeer: true)
             }
 
-        case .ice:
-            guard !message.peerID.isEmpty,
-                  let data = message.candidate.data(using: .utf8) else { return }
-            do {
-                let candidate = try JSONDecoder().decode(WebRTCICECandidate.self, from: data)
-                if let candidate = peerNegotiation.receiveRemoteICE(
-                    candidate,
-                    for: message.peerID
-                ) {
-                    try await peerHost?.addRemoteICECandidate(candidate, for: message.peerID)
-                }
-            } catch {
-                logPeerFailure(error, viewerID: message.peerID)
-            }
+        case let .routeRejected(routeID, _):
+            await removePendingRoute(routeID, removesPeer: true)
 
-        case .error:
-            fail(
-                code: .signalingFailed,
-                technicalDescription: LiveShareCoordinatorPolicy
-                    .redactedSignalingFailureDescription(
-                        serverMessage: message.errorMessage
-                    )
+        case let .serverError(code):
+            Self.logger.error(
+                "The signaling server rejected a request: \(code, privacy: .public)"
             )
 
-        default:
+        case .invalidMessageReceived:
+            Self.logger.error("The signaling server sent an invalid protocol message")
+
+        case let .disconnected(reason, willReconnect):
+            signalingIsAvailable = false
+            // The server routes only pending introductions. Established peers
+            // continue over their encrypted WebRTC control channels.
+            for routeID in pendingViewerRoutes.keys {
+                let viewerID = routeID.rawValue
+                peerHost?.removePeer(viewerID)
+                peerNegotiation.remove(viewerID)
+                negotiationIDs[viewerID] = nil
+                viewerSessionIDs[viewerID] = nil
+            }
+            cancelAdmissionTimeouts()
+            pendingViewerRoutes.removeAll()
+            if willReconnect {
+                // Signaling availability is independent from media state once
+                // the room has connected. Keep ready/starting/sharing/stopping
+                // intact so capture and P2P control remain fully operable. The
+                // reconnecting domain phase is reserved for initial setup.
+                if state.snapshot.phase == .connecting {
+                    try? state.markConnectionLost()
+                }
+                publish()
+            } else if reason == .reconnectExhausted {
+                // A custom bounded transport may exhaust its retry policy. Do
+                // not tear down an established P2P session merely because its
+                // rendezvous service is unavailable; media and control already
+                // travel over WebRTC. Production uses a persistent capped retry
+                // policy, so it can also admit viewers after the server returns.
+                if establishedControlViewerIDs.isEmpty {
+                    fail(
+                        code: .connectionLost,
+                        technicalDescription: "Signaling reconnect attempts were exhausted."
+                    )
+                } else {
+                    publish()
+                }
+            }
+
+        case let .reconnectScheduled(attempt, _):
+            if state.snapshot.phase == .reconnecting {
+                try? state.scheduleReconnect(attempt: attempt)
+                publish()
+            }
+
+        case .eventBufferOverflow:
+            // Signaling is an admission rendezvous, not the media transport.
+            // A hostile or slow introduction route must never tear down healthy
+            // P2P viewers. Pending routes are already bounded and independently
+            // retired by the signaling client; keep established media alive.
+            Self.logger.error("The signaling event observer fell behind")
+            publish()
+
+        case .stopped:
             break
+        }
+    }
+
+    private func beginViewerAdmission(routeID: ClipLiveShareRouteID) async {
+        let maximumViewers = WebRTCPeerResourceLimits.clipDefault.maximumViewerCount
+        guard LiveShareViewerAdmissionCapacity.canBegin(
+            routeID: routeID.rawValue,
+            allocatedViewerIDs: peerHost?.viewerIDs ?? [],
+            pendingRouteIDs: pendingViewerRoutes.keys.map(\.rawValue),
+            maximumViewers: maximumViewers
+        ) else {
+            await signaling.closeRoute(routeID)
+            return
+        }
+        let sessionID = ClipLiveShareSessionID.random()
+        let code = accessCode
+        let challenge = ClipLiveShareAuthChallenge.random(
+            sessionID: sessionID,
+            accessCodeRequired: code != nil
+        )
+        pendingViewerRoutes[routeID] = LiveSharePendingViewerRoute(
+            routeID: routeID,
+            sessionID: sessionID,
+            challenge: challenge,
+            accessCode: code
+        )
+        scheduleAdmissionTimeout(for: routeID)
+        do {
+            try await signaling.send(.authChallenge(challenge), to: routeID)
+        } catch {
+            await removePendingRoute(routeID, removesPeer: true)
+        }
+    }
+
+    private func handleSignalingMessage(
+        _ message: ClipLiveShareInnerMessage,
+        routeID: ClipLiveShareRouteID
+    ) async {
+        guard let route = pendingViewerRoutes[routeID],
+              message.sessionID == route.sessionID else {
+            await signaling.closeRoute(routeID)
+            await removePendingRoute(routeID, removesPeer: true)
+            return
+        }
+        let viewerID = routeID.rawValue
+        switch message {
+        case .authResponse(let response):
+            await handleAuthResponse(response, route: route)
+
+        case .answer(let answer):
+            await applyRemoteAnswer(answer, viewerID: viewerID)
+
+        case .ice(let candidate):
+            await applyRemoteICE(candidate, viewerID: viewerID)
+
+        case .sessionClosing:
+            await removePendingRoute(routeID, removesPeer: true)
+
+        default:
+            await signaling.closeRoute(routeID)
+            await removePendingRoute(routeID, removesPeer: true)
+        }
+    }
+
+    private func handleAuthResponse(
+        _ response: ClipLiveShareAuthResponse,
+        route: LiveSharePendingViewerRoute
+    ) async {
+        let isAllowed: Bool
+        if let code = route.accessCode {
+            isAllowed = response.proof.map {
+                ClipLiveShareAccessCodeProof.verify(
+                    $0,
+                    accessCode: code,
+                    challenge: route.challenge.challenge,
+                    sessionID: route.sessionID
+                )
+            } ?? false
+        } else {
+            isAllowed = response.proof == nil
+        }
+
+        do {
+            try await signaling.send(
+                .authResult(try ClipLiveShareAuthResult(
+                    sessionID: route.sessionID,
+                    allowed: isAllowed,
+                    reason: isAllowed ? nil : "invalid-access-code"
+                )),
+                to: route.routeID
+            )
+        } catch {
+            await removePendingRoute(route.routeID, removesPeer: true)
+            return
+        }
+        guard isAllowed else {
+            await signaling.closeRoute(route.routeID)
+            await removePendingRoute(route.routeID, removesPeer: true)
+            return
+        }
+
+        let viewerID = route.routeID.rawValue
+        guard viewerSessionIDs[viewerID] == nil else {
+            await signaling.closeRoute(route.routeID)
+            await removePendingRoute(route.routeID, removesPeer: true)
+            return
+        }
+        viewerSessionIDs[viewerID] = route.sessionID
+        await sendOffer(to: viewerID, reoffer: false)
+    }
+
+    private func applyRemoteAnswer(
+        _ answer: ClipLiveShareSessionDescription,
+        viewerID: String
+    ) async {
+        guard answer.sessionID == viewerSessionIDs[viewerID] else {
+            await rejectViewerProtocol(viewerID)
+            return
+        }
+        // Candidates and answers from the superseded negotiation can already
+        // be queued when a codec switch starts. The ordered control channel
+        // makes them harmless; only the current generation may mutate WebRTC.
+        guard answer.negotiationID == negotiationIDs[viewerID],
+              let peerHost,
+              let offerToken = peerNegotiation.tokenAwaitingAnswer(for: viewerID)
+        else { return }
+        do {
+            try await peerHost.setRemoteAnswer(answer.sdp, for: viewerID)
+            guard let pendingCandidates = peerNegotiation.completeAnswer(
+                for: viewerID,
+                token: offerToken
+            ) else { return }
+            for candidate in pendingCandidates {
+                guard peerNegotiation.contains(offerToken, for: viewerID) else { return }
+                try await peerHost.addRemoteICECandidate(candidate, for: viewerID)
+            }
+        } catch {
+            guard peerNegotiation.remove(viewerID, token: offerToken) else { return }
+            peerHost.removePeer(viewerID)
+            logPeerFailure(error, viewerID: viewerID)
+        }
+    }
+
+    private func applyRemoteICE(
+        _ value: ClipLiveShareICECandidate,
+        viewerID: String
+    ) async {
+        guard value.sessionID == viewerSessionIDs[viewerID] else {
+            await rejectViewerProtocol(viewerID)
+            return
+        }
+        guard value.negotiationID == negotiationIDs[viewerID] else { return }
+        guard let lineIndex = Int32(exactly: value.sdpMLineIndex) else {
+            await rejectViewerProtocol(viewerID)
+            return
+        }
+        let candidate = WebRTCICECandidate(
+            candidate: value.candidate,
+            sdpMid: value.sdpMid,
+            sdpMLineIndex: lineIndex
+        )
+        do {
+            switch peerNegotiation.receiveRemoteICE(candidate, for: viewerID) {
+            case .buffered:
+                return
+            case .ready(let ready):
+                try await peerHost?.addRemoteICECandidate(ready, for: viewerID)
+            case .rejected:
+                await rejectViewerProtocol(viewerID)
+            }
+        } catch {
+            logPeerFailure(error, viewerID: viewerID)
+            await rejectViewerProtocol(viewerID)
         }
     }
 
     private func sendOffer(to viewerID: String, reoffer: Bool) async {
         guard let peerHost,
+              let sessionID = viewerSessionIDs[viewerID],
               let offerToken = peerNegotiation.beginOffer(for: viewerID) else { return }
+        let negotiationID = ClipLiveShareNegotiationID.random()
+        negotiationIDs[viewerID] = negotiationID
         do {
             let offer = try await (reoffer
                 ? peerHost.createReoffer(for: viewerID)
@@ -514,11 +690,17 @@ final class LiveShareCoordinator {
                 for: viewerID,
                 token: offerToken
             ) else { return }
-            try await signaling.send(GoPeepV1Message(
-                type: .offer,
-                sdp: offer.sdp,
-                peerID: viewerID
-            ))
+            let description = try ClipLiveShareSessionDescription(
+                sessionID: sessionID,
+                negotiationID: negotiationID,
+                sdp: offer.sdp
+            )
+            try await sendNegotiationMessage(
+                establishedControlViewerIDs.contains(viewerID)
+                    ? .codecOffer(description)
+                    : .offer(description),
+                viewerID: viewerID
+            )
             guard let pendingCandidates = peerNegotiation.markOfferSent(
                 for: viewerID,
                 token: offerToken
@@ -535,7 +717,21 @@ final class LiveShareCoordinator {
     }
 
     private func handlePeerEvent(_ event: WebRTCPeerHostEvent) async {
-        guard !isEnding else { return }
+        if isEnding {
+            switch event {
+            case let .controlMessageReceived(viewerID, data, isBinary):
+                handleClosingControlAcknowledgement(
+                    viewerID: viewerID,
+                    data: data,
+                    isBinary: isBinary
+                )
+            case let .viewerRemoved(viewerID):
+                pendingSessionClosingViewerIDs.remove(viewerID)
+            default:
+                break
+            }
+            return
+        }
         switch event {
         case .viewerAdded:
             publish()
@@ -544,6 +740,16 @@ final class LiveShareCoordinator {
             peerNegotiation.remove(viewerID)
             authoritativeControlDelivery.remove(viewerID)
             viewerConnectedAt[viewerID] = nil
+            negotiationIDs[viewerID] = nil
+            viewerSessionIDs[viewerID] = nil
+            establishedControlViewerIDs.remove(viewerID)
+            pendingSessionClosingViewerIDs.remove(viewerID)
+            if let routeID = try? ClipLiveShareRouteID(rawValue: viewerID),
+               pendingViewerRoutes[routeID] != nil {
+                admissionTimeoutTasks.removeValue(forKey: routeID)?.cancel()
+                pendingViewerRoutes[routeID] = nil
+                await signaling.closeRoute(routeID)
+            }
             updateViewerCount()
             publish()
 
@@ -572,7 +778,20 @@ final class LiveShareCoordinator {
 
         case let .controlDataChannelStateChanged(viewerID, channelState):
             if channelState == .open {
+                if let routeID = try? ClipLiveShareRouteID(rawValue: viewerID),
+                   var route = pendingViewerRoutes[routeID] {
+                    route.progress.openControlDataChannel()
+                    if !route.progress.remainsPending {
+                        admissionTimeoutTasks.removeValue(forKey: routeID)?.cancel()
+                        pendingViewerRoutes[routeID] = nil
+                    }
+                }
+                establishedControlViewerIDs.insert(viewerID)
                 sendInitialControlState(to: viewerID)
+                // The browser retires the introduction route from its own
+                // DataChannel-open callback. Waiting for that remote readiness
+                // signal avoids closing signaling before WebKit has installed
+                // its control channel.
             }
             publish()
 
@@ -583,10 +802,12 @@ final class LiveShareCoordinator {
             authoritativeControlDelivery.recordNativeControlDrain(viewerID)
             scheduleAuthoritativeControlReplay()
 
-        case .controlMessageReceived:
-            // GoPeep v1 control messages are host-to-viewer only. Ignore an
-            // unsolicited viewer payload rather than giving it authority.
-            break
+        case let .controlMessageReceived(viewerID, data, isBinary):
+            await handleViewerControlMessage(
+                viewerID: viewerID,
+                data: data,
+                isBinary: isBinary
+            )
 
         case let .negotiationNeeded(viewerID):
             await sendOffer(to: viewerID, reoffer: true)
@@ -603,13 +824,125 @@ final class LiveShareCoordinator {
         _ candidate: WebRTCICECandidate,
         viewerID: String
     ) async throws {
-        let data = try JSONEncoder().encode(candidate)
-        guard let encoded = String(data: data, encoding: .utf8) else { return }
-        try await signaling.send(GoPeepV1Message(
-            type: .ice,
-            candidate: encoded,
-            peerID: viewerID
-        ))
+        guard let sessionID = viewerSessionIDs[viewerID],
+              let negotiationID = negotiationIDs[viewerID] else { return }
+        let message = try ClipLiveShareICECandidate(
+            sessionID: sessionID,
+            negotiationID: negotiationID,
+            candidate: candidate.candidate,
+            sdpMid: candidate.sdpMid,
+            sdpMLineIndex: Int(candidate.sdpMLineIndex)
+        )
+        try await sendNegotiationMessage(
+            establishedControlViewerIDs.contains(viewerID)
+                ? .codecICE(message)
+                : .ice(message),
+            viewerID: viewerID
+        )
+    }
+
+    private func sendNegotiationMessage(
+        _ message: ClipLiveShareInnerMessage,
+        viewerID: String
+    ) async throws {
+        if establishedControlViewerIDs.contains(viewerID) {
+            let data = try ClipLiveShareMessageCodec.encodeInner(message)
+            guard peerHost?.sendControl(data, to: viewerID) == true else {
+                throw ClipLiveShareNetworkError.sendFailed
+            }
+            return
+        }
+        guard let routeID = try? ClipLiveShareRouteID(rawValue: viewerID),
+              pendingViewerRoutes[routeID] != nil else {
+            throw ClipLiveShareNetworkError.routeNotFound
+        }
+        try await signaling.send(message, to: routeID)
+    }
+
+    private func handleViewerControlMessage(
+        viewerID: String,
+        data: Data,
+        isBinary: Bool
+    ) async {
+        guard !isBinary,
+              data.count <= ClipLiveShareV1.maximumInnerMessageBytes,
+              let sessionID = viewerSessionIDs[viewerID],
+              let message = try? ClipLiveShareMessageCodec.decodeInner(data),
+              message.sessionID == sessionID else {
+            peerHost?.removePeer(viewerID)
+            return
+        }
+        switch message {
+        case .codecAnswer(let answer):
+            await applyRemoteAnswer(answer, viewerID: viewerID)
+        case .codecICE(let candidate):
+            await applyRemoteICE(candidate, viewerID: viewerID)
+        case .sessionClosing:
+            if pendingSessionClosingViewerIDs.remove(viewerID) == nil {
+                peerHost?.removePeer(viewerID)
+            }
+        default:
+            peerHost?.removePeer(viewerID)
+        }
+    }
+
+    private func handleClosingControlAcknowledgement(
+        viewerID: String,
+        data: Data,
+        isBinary: Bool
+    ) {
+        guard !isBinary,
+              pendingSessionClosingViewerIDs.contains(viewerID),
+              let sessionID = viewerSessionIDs[viewerID],
+              let message = try? ClipLiveShareMessageCodec.decodeInner(data),
+              message.sessionID == sessionID,
+              case .sessionClosing = message else { return }
+        pendingSessionClosingViewerIDs.remove(viewerID)
+    }
+
+    private func removePendingRoute(
+        _ routeID: ClipLiveShareRouteID,
+        removesPeer: Bool
+    ) async {
+        admissionTimeoutTasks.removeValue(forKey: routeID)?.cancel()
+        pendingViewerRoutes[routeID] = nil
+        let viewerID = routeID.rawValue
+        guard !establishedControlViewerIDs.contains(viewerID) else { return }
+        peerNegotiation.remove(viewerID)
+        negotiationIDs[viewerID] = nil
+        viewerSessionIDs[viewerID] = nil
+        if removesPeer {
+            peerHost?.removePeer(viewerID)
+        }
+    }
+
+    private func rejectViewerProtocol(_ viewerID: String) async {
+        peerHost?.removePeer(viewerID)
+        guard let routeID = try? ClipLiveShareRouteID(rawValue: viewerID),
+              pendingViewerRoutes[routeID] != nil else { return }
+        await signaling.closeRoute(routeID)
+        await removePendingRoute(routeID, removesPeer: false)
+    }
+
+    private func scheduleAdmissionTimeout(for routeID: ClipLiveShareRouteID) {
+        admissionTimeoutTasks.removeValue(forKey: routeID)?.cancel()
+        admissionTimeoutTasks[routeID] = Task { @MainActor [weak self] in
+            do {
+                try await Task.sleep(for: .seconds(60))
+            } catch {
+                return
+            }
+            guard let self,
+                  pendingViewerRoutes[routeID] != nil,
+                  !establishedControlViewerIDs.contains(routeID.rawValue) else { return }
+            await signaling.closeRoute(routeID)
+            await removePendingRoute(routeID, removesPeer: true)
+        }
+    }
+
+    private func cancelAdmissionTimeouts() {
+        for task in admissionTimeoutTasks.values { task.cancel() }
+        admissionTimeoutTasks.removeAll()
     }
 
     private func handleCapturePipelineEvent(_ event: LiveShareCapturePipelineEvent) async {
@@ -1128,10 +1461,7 @@ final class LiveShareCoordinator {
             sourceStatuses[sourceID] = .live
             slotAllocation.focus(sourceID)
             try reconcileSharingStartIfReady()
-            broadcastAuthoritativeControlMutation(GoPeepV1Message(
-                type: .streamActivated,
-                streamActivated: streamInfo(for: slot)
-            ))
+            broadcastAuthoritativeControlMutation()
             broadcastFocusChange()
             updateCursorLoop()
             publish()
@@ -1167,7 +1497,7 @@ final class LiveShareCoordinator {
               sourceStatuses.values.contains(.live) else { return }
         try state.markSharingStarted()
         startedAt = startedAt ?? Date()
-        broadcastAuthoritativeControlMutation(GoPeepV1Message(type: .sharerStarted))
+        broadcastAuthoritativeControlMutation()
         if settings.autoShareFocusedWindows,
            state.snapshot.sources.fullscreen == nil,
            focusedWindow != nil {
@@ -1223,13 +1553,23 @@ final class LiveShareCoordinator {
             captureGeometry: geometry,
             codec: settings.videoCodec
         )
-        let stream = GoPeepV1StreamInfo(
-            trackID: slot.trackID,
-            windowName: windowName,
+        guard let browserTrackID = peerHost?.slotSnapshots
+            .first(where: { $0.index == slot.index })?.trackID else {
+            throw LiveShareTransitionError.invalidTransition(
+                from: state.snapshot.phase,
+                operation: "missingWebRTCTrack"
+            )
+        }
+        let stream = try ClipLiveShareStreamDescriptor(
+            id: slot.streamIdentity,
+            mediaTrackID: ClipLiveShareMediaTrackID(rawValue: browserTrackID),
+            active: true,
+            focused: slot.isFocused,
             appName: appName,
-            isFocused: slot.isFocused,
+            windowName: windowName,
             width: streamGeometry.width,
-            height: streamGeometry.height
+            height: streamGeometry.height,
+            order: slot.index
         )
         return LiveShareCaptureDescriptor(
             source: source,
@@ -1282,13 +1622,9 @@ final class LiveShareCoordinator {
     private func stopCaptureOnly(source: LiveShareSource, slot: Int) async {
         captureGenerations[source.id] = nil
         try? await capturePipeline?.stop(slot: slot)
-        let trackID = "video\(slot)"
-        broadcastAuthoritativeControlMutation(GoPeepV1Message(
-            type: .streamDeactivated,
-            streamDeactivated: trackID
-        ))
         sourceStatuses[source.id] = nil
         captureDescriptors[source.id] = nil
+        broadcastAuthoritativeControlMutation()
     }
 
     private func requestStopAllMedia() {
@@ -1309,15 +1645,8 @@ final class LiveShareCoordinator {
         }
         publish()
 
-        let activeSlots = slotAllocation.activeSlots
         captureGenerations.removeAll()
         await capturePipeline?.stopAll()
-        for slot in activeSlots {
-            broadcastAuthoritativeControlMutation(GoPeepV1Message(
-                type: .streamDeactivated,
-                streamDeactivated: slot.trackID
-            ))
-        }
         if state.snapshot.phase == .stopping {
             try? state.completeStopping()
         } else {
@@ -1330,6 +1659,7 @@ final class LiveShareCoordinator {
         sourceOperationIDs.removeAll()
         startedAt = nil
         latestStatistics = .init()
+        broadcastAuthoritativeControlMutation()
         updateCursorLoop()
         publish()
     }
@@ -1345,10 +1675,7 @@ final class LiveShareCoordinator {
         _ = try? slotAllocation.apply(removal)
         sourceStatuses[source.id] = nil
         captureDescriptors[source.id] = nil
-        broadcastAuthoritativeControlMutation(GoPeepV1Message(
-            type: .streamDeactivated,
-            streamDeactivated: slot.trackID
-        ))
+        broadcastAuthoritativeControlMutation()
         if state.snapshot.sources.isEmpty {
             fail(code: .captureFailed, technicalDescription: message)
         } else {
@@ -1376,22 +1703,25 @@ final class LiveShareCoordinator {
     private func updateAccessCode(enabled: Bool) async {
         guard !isEnding,
               !accessCodeIsUpdating,
-              let room = state.snapshot.room,
+              state.snapshot.room != nil,
               [.ready, .starting, .sharing].contains(state.snapshot.phase) else { return }
         accessCodeIsUpdating = true
         accessCodeError = nil
         publish()
         do {
             let updatedCode = enabled ? try LiveShareAccessCode.generate() : nil
-            try await signaling.send(GoPeepV1Message(
-                type: .passwordUpdate,
-                password: updatedCode ?? "",
-                secret: room.secret
-            ))
             guard !isEnding else { return }
             settings.accessCodeEnabled = enabled
             accessCode = updatedCode
             persistSettings()
+            // Replacing or disabling the code is a revocation boundary for
+            // viewers still in admission. Established P2P viewers remain;
+            // pending browsers reconnect and receive a fresh challenge using
+            // the new setting.
+            for routeID in Array(pendingViewerRoutes.keys) {
+                await signaling.closeRoute(routeID)
+                await removePendingRoute(routeID, removesPeer: true)
+            }
         } catch {
             accessCodeError = String(localized: "Couldn’t update the access code. Try again.")
             Self.logger.error(
@@ -1452,8 +1782,15 @@ final class LiveShareCoordinator {
                   systemAudioReconcileTaskID == taskID,
                   desiredSystemAudioRequest == request,
                   capturePipeline === pipeline else { return }
+            if request == nil {
+                setAuthoritativeSystemAudioActive(false)
+            }
             do {
                 try await pipeline.setSystemAudio(request)
+                guard systemAudioReconcileTaskID == taskID,
+                      desiredSystemAudioRequest == request,
+                      capturePipeline === pipeline else { return }
+                setAuthoritativeSystemAudioActive(request != nil)
             } catch {
                 guard systemAudioReconcileTaskID == taskID,
                       desiredSystemAudioRequest == request else { return }
@@ -1473,10 +1810,17 @@ final class LiveShareCoordinator {
         guard settings.systemAudioEnabled else { return }
         settings.systemAudioEnabled = false
         desiredSystemAudioRequest = nil
+        setAuthoritativeSystemAudioActive(false)
         try? await capturePipeline?.setSystemAudio(nil)
         persistSettings()
         NSSound.beep()
         publish()
+    }
+
+    private func setAuthoritativeSystemAudioActive(_ isActive: Bool) {
+        guard systemAudioIsActive != isActive else { return }
+        systemAudioIsActive = isActive
+        broadcastAuthoritativeControlMutation()
     }
 
     @discardableResult
@@ -1486,6 +1830,7 @@ final class LiveShareCoordinator {
         systemAudioReconcileTask = nil
         systemAudioReconcileTaskID = nil
         desiredSystemAudioRequest = nil
+        systemAudioIsActive = false
         return task
     }
 
@@ -1723,13 +2068,16 @@ final class LiveShareCoordinator {
                 showsCursor: descriptor.video.showsCursor,
                 sourceRect: descriptor.video.sourceRect
             ),
-            stream: GoPeepV1StreamInfo(
-                trackID: descriptor.stream.trackID,
-                windowName: descriptor.stream.windowName,
+            stream: try! ClipLiveShareStreamDescriptor(
+                id: descriptor.stream.id,
+                mediaTrackID: descriptor.stream.mediaTrackID,
+                active: descriptor.stream.active,
+                focused: descriptor.stream.focused,
                 appName: descriptor.stream.appName,
-                isFocused: descriptor.stream.isFocused,
+                windowName: descriptor.stream.windowName,
                 width: streamGeometry.width,
-                height: streamGeometry.height
+                height: streamGeometry.height,
+                order: descriptor.stream.order
             )
         )
     }
@@ -1737,14 +2085,8 @@ final class LiveShareCoordinator {
     private func broadcastSizeChanges(
         for descriptors: [LiveShareCaptureDescriptor]
     ) {
-        for descriptor in descriptors {
-            broadcastAuthoritativeControlMutation(GoPeepV1Message(
-                type: .sizeChange,
-                trackID: descriptor.stream.trackID,
-                width: descriptor.stream.width,
-                height: descriptor.stream.height
-            ))
-        }
+        guard !descriptors.isEmpty else { return }
+        broadcastAuthoritativeControlMutation()
     }
 
     private func setPrioritizeFocusedWindow(_ enabled: Bool) {
@@ -1937,6 +2279,14 @@ final class LiveShareCoordinator {
         peerHost = nil
         await signaling.stop()
         state.disconnect()
+        roomConfiguration = nil
+        signalingIsAvailable = false
+        cancelAdmissionTimeouts()
+        pendingViewerRoutes.removeAll()
+        viewerSessionIDs.removeAll()
+        negotiationIDs.removeAll()
+        establishedControlViewerIDs.removeAll()
+        pendingSessionClosingViewerIDs.removeAll()
         slotAllocation.clear()
         captureDescriptors.removeAll()
         captureGenerations.removeAll()
@@ -1946,7 +2296,6 @@ final class LiveShareCoordinator {
         peerNegotiation.removeAll()
         latestStatistics = .init()
         capturePressure.removeAll()
-        nextViewerNumber = 1
         startedAt = nil
         isEnding = false
         publish()
@@ -1991,9 +2340,7 @@ final class LiveShareCoordinator {
         cancelAuthoritativeControlReplay()
         await systemAudioTask?.value
 
-        if !state.snapshot.sources.isEmpty {
-            _ = try? peerHost?.broadcastControl(GoPeepV1Message(type: .sharerStopped))
-        }
+        await sendSessionClosing(reason: "host-ended-session")
         captureGenerations.removeAll()
         await capturePipeline?.stopAll()
         capturePipeline = nil
@@ -2010,6 +2357,14 @@ final class LiveShareCoordinator {
         sourceOperationIDs.removeAll()
         viewerConnectedAt.removeAll()
         peerNegotiation.removeAll()
+        roomConfiguration = nil
+        signalingIsAvailable = false
+        cancelAdmissionTimeouts()
+        pendingViewerRoutes.removeAll()
+        viewerSessionIDs.removeAll()
+        negotiationIDs.removeAll()
+        establishedControlViewerIDs.removeAll()
+        pendingSessionClosingViewerIDs.removeAll()
         startedAt = nil
         latestStatistics = .init()
         capturePressure.removeAll()
@@ -2168,12 +2523,7 @@ final class LiveShareCoordinator {
                   state.snapshot.sources.contains(source.id),
                   !isEnding else { return }
             sourceStatuses[source.id] = .live
-            broadcastAuthoritativeControlMutation(GoPeepV1Message(
-                type: .sizeChange,
-                trackID: slot.trackID,
-                width: descriptor.stream.width,
-                height: descriptor.stream.height
-            ))
+            broadcastAuthoritativeControlMutation()
             publish()
             if descriptor.video.framesPerSecond != settings.frameRate.rawValue {
                 scheduleActiveCaptureRestart()
@@ -2316,13 +2666,22 @@ final class LiveShareCoordinator {
             appKitCursor: NSEvent.mouseLocation,
             appKitWindowFrame: frame
         )
-        _ = try? peerHost?.broadcastControl(GoPeepV1Message(
-            type: .cursorPosition,
-            trackID: focusedSlot.trackID,
-            cursorX: position.xPercent,
-            cursorY: position.yPercent,
-            cursorInView: position.isInView
-        ))
+        guard let peerHost else { return }
+        for viewerID in establishedControlViewerIDs {
+            guard let sessionID = viewerSessionIDs[viewerID],
+                  let message = try? ClipLiveShareInnerMessage.cursor(
+                    ClipLiveShareCursor(
+                        sessionID: sessionID,
+                        streamID: focusedSlot.streamIdentity,
+                        x: position.xPercent,
+                        y: position.yPercent,
+                        inView: position.isInView
+                    )
+                  ),
+                  let data = try? ClipLiveShareMessageCodec.encodeInner(message)
+            else { continue }
+            _ = peerHost.sendEphemeralControl(data, to: viewerID)
+        }
     }
 
     private func appKitFrame(for sourceID: LiveShareSourceID) -> CGRect? {
@@ -2342,17 +2701,9 @@ final class LiveShareCoordinator {
         scheduleAuthoritativeControlReplay()
     }
 
-    private func broadcastAuthoritativeControlMutation(_ message: GoPeepV1Message) {
+    private func broadcastAuthoritativeControlMutation() {
         guard let peerHost else { return }
-        do {
-            let delivery = try peerHost.broadcastControl(message)
-            authoritativeControlDelivery.recordLifecycleDelivery(delivery)
-        } catch {
-            authoritativeControlDelivery.markDirty(peerHost.viewerIDs)
-            Self.logger.debug(
-                "Could not encode Live Share control state: \(error.localizedDescription, privacy: .public)"
-            )
-        }
+        authoritativeControlDelivery.markDirty(peerHost.viewerIDs)
         scheduleAuthoritativeControlReplay()
     }
 
@@ -2413,39 +2764,42 @@ final class LiveShareCoordinator {
         to viewerID: String,
         using peerHost: WebRTCPeerHost
     ) -> Bool {
-        let streams = slotAllocation.activeSlots.compactMap { streamInfo(for: $0) }
-        var messages = [GoPeepV1Message(type: .streamsInfo, streams: streams)]
-
-        // GoPeep's current viewer treats activation/deactivation as the fast
-        // path that mutates its active-track set. Replaying all four stable
-        // slots makes the streams-info snapshot authoritative even if an older
-        // delta was lost.
-        for slot in slotAllocation.slots {
-            if let info = streamInfo(for: slot) {
-                messages.append(GoPeepV1Message(
-                    type: .streamActivated,
-                    streamActivated: info
-                ))
-            } else {
-                messages.append(GoPeepV1Message(
-                    type: .streamDeactivated,
-                    streamDeactivated: slot.trackID
-                ))
-            }
+        guard let sessionID = viewerSessionIDs[viewerID] else { return false }
+        let streams = slotAllocation.activeSlots.compactMap { streamDescriptor(for: $0) }
+        let messages: [ClipLiveShareInnerMessage]
+        do {
+            messages = [
+                .manifest(try ClipLiveShareStreamManifest(
+                    sessionID: sessionID,
+                    streams: streams,
+                    maximumStreams: LiveShareTrackSlotAllocation.slotCount
+                )),
+                .sharingState(ClipLiveShareSharingState(
+                    sessionID: sessionID,
+                    sharing: !streams.isEmpty
+                )),
+                .systemAudioState(ClipLiveShareSystemAudioState(
+                    sessionID: sessionID,
+                    enabled: systemAudioIsActive
+                )),
+                .focus(ClipLiveShareFocus(
+                    sessionID: sessionID,
+                    streamID: slotAllocation.activeSlots
+                        .first(where: { $0.isFocused })?.streamIdentity
+                )),
+            ]
+        } catch {
+            Self.logger.error(
+                "Could not construct Live Share state: \(error.localizedDescription, privacy: .public)"
+            )
+            return false
         }
-        if !streams.isEmpty {
-            messages.append(GoPeepV1Message(type: .sharerStarted))
-        }
-        messages.append(GoPeepV1Message(
-            type: .focusChange,
-            focusedTrack: slotAllocation.activeSlots
-                .first(where: { $0.isFocused })?.trackID ?? ""
-        ))
 
         var delivered = true
         for message in messages {
             do {
-                let wasDelivered = try peerHost.sendControl(message, to: viewerID)
+                let data = try ClipLiveShareMessageCodec.encodeInner(message)
+                let wasDelivered = peerHost.sendControl(data, to: viewerID)
                 if !wasDelivered {
                     delivered = false
                 }
@@ -2465,24 +2819,58 @@ final class LiveShareCoordinator {
 
     private func broadcastFocusChange() {
         applyRuntimeSenderPolicies()
-        let focusedTrack = slotAllocation.activeSlots.first(where: { $0.isFocused })?.trackID ?? ""
-        broadcastAuthoritativeControlMutation(GoPeepV1Message(
-            type: .focusChange,
-            focusedTrack: focusedTrack
-        ))
+        broadcastAuthoritativeControlMutation()
     }
 
-    private func streamInfo(for slot: LiveShareTrackSlot) -> GoPeepV1StreamInfo? {
+    private func streamDescriptor(
+        for slot: LiveShareTrackSlot
+    ) -> ClipLiveShareStreamDescriptor? {
         guard let source = slot.source,
               let descriptor = captureDescriptors[source.id] else { return nil }
-        return GoPeepV1StreamInfo(
-            trackID: slot.trackID,
-            windowName: descriptor.stream.windowName,
+        return try? ClipLiveShareStreamDescriptor(
+            id: slot.streamIdentity,
+            mediaTrackID: descriptor.stream.mediaTrackID,
+            active: true,
+            focused: slot.isFocused,
             appName: descriptor.stream.appName,
-            isFocused: slot.isFocused,
+            windowName: descriptor.stream.windowName,
             width: descriptor.stream.width,
-            height: descriptor.stream.height
+            height: descriptor.stream.height,
+            order: slot.index
         )
+    }
+
+    private func sendSessionClosing(reason: String) async {
+        guard let peerHost else { return }
+        let openViewerIDs = Set(peerHost.viewerSnapshots.compactMap { viewer in
+            viewer.controlDataChannelState == .open ? viewer.viewerID : nil
+        })
+        pendingSessionClosingViewerIDs = establishedControlViewerIDs
+            .intersection(openViewerIDs)
+        for viewerID in Array(pendingSessionClosingViewerIDs) {
+            guard let sessionID = viewerSessionIDs[viewerID],
+                  let closing = try? ClipLiveShareSessionClosing(
+                    sessionID: sessionID,
+                    reason: reason
+                  ),
+                  let data = try? ClipLiveShareMessageCodec.encodeInner(
+                    .sessionClosing(closing)
+                  ) else { continue }
+            if !peerHost.sendControl(data, to: viewerID) {
+                pendingSessionClosingViewerIDs.remove(viewerID)
+            }
+        }
+
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: .milliseconds(500))
+        while !pendingSessionClosingViewerIDs.isEmpty, clock.now < deadline {
+            do {
+                try await Task.sleep(for: .milliseconds(10))
+            } catch {
+                break
+            }
+        }
+        pendingSessionClosingViewerIDs.removeAll()
     }
 
     private func updateViewerCount() {
@@ -2528,9 +2916,7 @@ final class LiveShareCoordinator {
         signalingEventTask = nil
         cancelAuthoritativeControlReplay()
         await systemAudioTask?.value
-        if !state.snapshot.sources.isEmpty {
-            _ = try? peerHost?.broadcastControl(GoPeepV1Message(type: .sharerStopped))
-        }
+        await sendSessionClosing(reason: "host-failed")
         captureGenerations.removeAll()
         await capturePipeline?.stopAll()
         capturePipeline = nil
@@ -2546,6 +2932,14 @@ final class LiveShareCoordinator {
         sourceOperationIDs.removeAll()
         viewerConnectedAt.removeAll()
         peerNegotiation.removeAll()
+        roomConfiguration = nil
+        signalingIsAvailable = false
+        cancelAdmissionTimeouts()
+        pendingViewerRoutes.removeAll()
+        viewerSessionIDs.removeAll()
+        negotiationIDs.removeAll()
+        establishedControlViewerIDs.removeAll()
+        pendingSessionClosingViewerIDs.removeAll()
         latestStatistics = .init()
         capturePressure.removeAll()
         startedAt = nil
@@ -2601,7 +2995,10 @@ final class LiveShareCoordinator {
                 phase = .live(elapsedSeconds: startedAt.map { now.timeIntervalSince($0) } ?? 0)
             case .reconnecting:
                 phase = .reconnecting(
-                    attempt: domain.reconnectAttempt,
+                    attempt: min(
+                        domain.reconnectAttempt,
+                        LiveShareCoordinatorPolicy.maximumReconnectAttempts
+                    ),
                     maximumAttempts: LiveShareCoordinatorPolicy.maximumReconnectAttempts
                 )
             case .stopping:
@@ -2615,8 +3012,9 @@ final class LiveShareCoordinator {
             .contains(domain.phase)
         let room = roomIsClaimed ? domain.room.map {
             LiveShareRoomViewSnapshot(
-                viewerURL: server.viewerURL(for: $0.room),
-                roomCode: $0.room.rawValue
+                viewerURL: $0.viewerURL,
+                roomCode: $0.name.rawValue,
+                isAvailable: signalingIsAvailable
             )
         } : nil
         let sources = slotAllocation.activeSlots.compactMap { slot -> LiveShareSourceViewSnapshot? in

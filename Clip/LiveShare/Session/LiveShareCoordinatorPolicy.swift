@@ -5,7 +5,7 @@ import CoreGraphics
 import Foundation
 
 enum LiveShareCoordinatorPolicy {
-    static let maximumReconnectAttempts = 5
+    static let maximumReconnectAttempts = 7
 
     /// Recording click highlights are a separate, file-capture preference.
     /// Live Share does not expose that setting and ScreenCaptureKit can place
@@ -112,9 +112,8 @@ enum LiveShareCoordinatorPolicy {
         )
     }
 
-    /// GoPeep's `error` field is controlled by the signaling service and may
-    /// echo room credentials or SDP. Never carry that text into public OSLog
-    /// diagnostics; the protocol type already provides enough classification.
+    /// A signaling-service error is untrusted input. Never carry its text into
+    /// public OSLog diagnostics; the protocol type provides enough context.
     static func redactedSignalingFailureDescription(
         serverMessage: String
     ) -> String {
@@ -536,8 +535,44 @@ enum LiveShareMenuBarStatus: Equatable, Sendable {
     }
 }
 
+enum LiveShareViewerAdmissionCapacity {
+    static func canBegin(
+        routeID: String,
+        allocatedViewerIDs: some Sequence<String>,
+        pendingRouteIDs: some Sequence<String>,
+        maximumViewers: Int
+    ) -> Bool {
+        let pending = Set(pendingRouteIDs)
+        guard maximumViewers > 0, !pending.contains(routeID) else { return false }
+        var distinctViewerIDs = Set(allocatedViewerIDs)
+        distinctViewerIDs.formUnion(pending)
+        return distinctViewerIDs.count < maximumViewers
+    }
+}
+
+struct LiveShareViewerAdmissionProgress: Equatable {
+    private(set) var didReceiveSignalingHandoff = false
+    private(set) var didOpenControlDataChannel = false
+
+    var remainsPending: Bool { !didOpenControlDataChannel }
+
+    mutating func receiveSignalingHandoff() {
+        didReceiveSignalingHandoff = true
+    }
+
+    mutating func openControlDataChannel() {
+        didOpenControlDataChannel = true
+    }
+}
+
 struct LiveSharePeerNegotiationLedger {
     private let resourceLimits: WebRTCPeerResourceLimits
+
+    enum RemoteICEDisposition: Equatable {
+        case buffered
+        case ready(WebRTCICECandidate)
+        case rejected
+    }
 
     struct OfferToken: Hashable, Sendable {
         fileprivate let id = UUID()
@@ -555,7 +590,7 @@ struct LiveSharePeerNegotiationLedger {
 
     private var entries: [String: Entry] = [:]
 
-    init(resourceLimits: WebRTCPeerResourceLimits = .goPeepDefault) {
+    init(resourceLimits: WebRTCPeerResourceLimits = .clipDefault) {
         self.resourceLimits = resourceLimits.normalized
     }
 
@@ -648,21 +683,21 @@ struct LiveSharePeerNegotiationLedger {
     mutating func receiveRemoteICE(
         _ candidate: WebRTCICECandidate,
         for viewerID: String
-    ) -> WebRTCICECandidate? {
-        guard var entry = entries[viewerID] else { return nil }
+    ) -> RemoteICEDisposition {
+        guard var entry = entries[viewerID] else { return .rejected }
         guard (try? candidate.validate(resourceLimits: resourceLimits)) != nil else {
-            return nil
+            return .rejected
         }
         guard entry.isRemoteDescriptionReady else {
             guard entry.bufferedRemoteICE.count
                 < resourceLimits.maximumICECandidatesPerPeer else {
-                return nil
+                return .rejected
             }
             entry.bufferedRemoteICE.append(candidate)
             entries[viewerID] = entry
-            return nil
+            return .buffered
         }
-        return candidate
+        return .ready(candidate)
     }
 
     mutating func completeAnswer(

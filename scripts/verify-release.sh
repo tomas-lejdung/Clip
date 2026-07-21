@@ -26,6 +26,7 @@ EOF
 "$ROOT/scripts/typecheck.sh"
 "$ROOT/scripts/test.sh"
 "$ROOT/scripts/run-deterministic-acceptance.sh"
+"$ROOT/scripts/run-live-share-acceptance.sh"
 
 CLIP_DERIVED_DATA_PATH="$RELEASE_DERIVED_DATA" \
   CLIP_DMG_PATH="$DMG" \

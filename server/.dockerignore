@@ -1,0 +1,9 @@
+.git
+.gitignore
+.DS_Store
+bin
+coverage.out
+*.log
+**/*_test.go
+web/clip-protocol-tests.html
+web/*.test.mjs

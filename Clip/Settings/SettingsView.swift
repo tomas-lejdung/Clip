@@ -77,7 +77,7 @@ struct SettingsExternalActions: Sendable {
     let chooseDefaultSaveDirectory: @MainActor @Sendable (URL) async -> URL?
     let openSystemSettings: @MainActor @Sendable (URL) -> Void
     let revealHistoryDirectory: @MainActor @Sendable (URL) -> Void
-    let testLiveShareServer: @MainActor @Sendable (LiveShareServerEndpoint) async throws -> Void
+    let testLiveShareServer: @MainActor @Sendable (ClipLiveShareServerEndpoint) async throws -> Void
 
     init(
         chooseDefaultSaveDirectory: @escaping @MainActor @Sendable (URL) async -> URL? = {
@@ -103,7 +103,7 @@ struct SettingsExternalActions: Sendable {
             NSWorkspace.shared.activateFileViewerSelecting([url])
         },
         testLiveShareServer: @escaping @MainActor @Sendable (
-            LiveShareServerEndpoint
+            ClipLiveShareServerEndpoint
         ) async throws -> Void = { endpoint in
             try await LiveShareServerConnectionProbe.live.test(endpoint)
         }
@@ -380,9 +380,9 @@ struct SettingsView: View {
                         resetLiveShareServerAddress()
                     }
                     .disabled(
-                        liveSharePreferences.serverEndpoint == .goPeepRemote
+                        liveSharePreferences.serverEndpoint == .official
                             && liveShareServerAddressText
-                                == LiveShareServerEndpoint.goPeepRemote.description
+                                == ClipLiveShareServerEndpoint.official.description
                     )
                     .accessibilityIdentifier("clip.settings.liveShare.server.reset")
                 }
@@ -404,7 +404,7 @@ struct SettingsView: View {
             } header: {
                 Text("Server")
             } footer: {
-                Text("Clip derives the reservation, signaling, and viewer addresses from this server root. Changes apply to the next Live Share session.")
+                Text("Clip discovers the viewer, encrypted signaling, and ICE configuration from this server root. Changes apply to the next Live Share session.")
             }
 
             Section("Default stream") {
@@ -780,13 +780,13 @@ struct SettingsView: View {
         )
     }
 
-    private var liveShareServerCandidate: LiveShareServerEndpoint? {
-        try? LiveShareServerEndpoint(userInput: liveShareServerAddressText)
+    private var liveShareServerCandidate: ClipLiveShareServerEndpoint? {
+        try? ClipLiveShareServerEndpoint(userInput: liveShareServerAddressText)
     }
 
     private func validateLiveShareServerDraft() {
         do {
-            _ = try LiveShareServerEndpoint(userInput: liveShareServerAddressText)
+            _ = try ClipLiveShareServerEndpoint(userInput: liveShareServerAddressText)
             liveShareServerValidationError = nil
         } catch let error as LocalizedError {
             liveShareServerValidationError = error.errorDescription
@@ -799,7 +799,7 @@ struct SettingsView: View {
 
     private func applyLiveShareServerAddress() {
         do {
-            let endpoint = try LiveShareServerEndpoint(
+            let endpoint = try ClipLiveShareServerEndpoint(
                 userInput: liveShareServerAddressText
             )
             isLiveShareServerAddressFocused = false
@@ -817,7 +817,7 @@ struct SettingsView: View {
     private func testLiveShareServer() {
         guard liveShareServerTestStatus != .testing else { return }
         do {
-            let endpoint = try LiveShareServerEndpoint(
+            let endpoint = try ClipLiveShareServerEndpoint(
                 userInput: liveShareServerAddressText
             )
             liveShareServerValidationError = nil
@@ -850,7 +850,7 @@ struct SettingsView: View {
 
     private func resetLiveShareServerAddress() {
         isLiveShareServerAddressFocused = false
-        liveShareServerAddressText = LiveShareServerEndpoint.goPeepRemote.description
+        liveShareServerAddressText = ClipLiveShareServerEndpoint.official.description
         liveShareServerValidationError = nil
         liveShareServerTestID = nil
         liveShareServerTestStatus = .idle

@@ -56,12 +56,12 @@ public struct WebRTCSenderPolicy: Equatable, Sendable {
         self.bitratePriority = bitratePriority
     }
 
-    public static let goPeepDefault = Self()
+    public static let clipDefault = Self()
 }
 
 /// Resource limits applied before a viewer can allocate a native peer and to
-/// every ICE exchange. GoPeep v1 has no admission acknowledgement, so the host
-/// enforces these limits locally. Eight viewers leaves useful headroom for a
+/// every ICE exchange. Admission is decided by Clip before this host allocates
+/// a native peer. Eight viewers leaves useful headroom for a
 /// personal screen-share room without allowing an untrusted room to allocate
 /// an unlimited number of four-transceiver peer connections.
 public struct WebRTCPeerResourceLimits: Equatable, Sendable {
@@ -81,7 +81,7 @@ public struct WebRTCPeerResourceLimits: Equatable, Sendable {
         maximumICECandidatePayloadBytes: Int = 4_096,
         maximumViewerIDBytes: Int = 128,
         maximumSDPPayloadBytes: Int = 262_144,
-        maximumControlMessagePayloadBytes: Int = 65_536,
+        maximumControlMessagePayloadBytes: Int = 196_400,
         maximumControlBufferedAmountBytes: Int = 262_144
     ) {
         self.maximumViewerCount = maximumViewerCount
@@ -94,12 +94,12 @@ public struct WebRTCPeerResourceLimits: Equatable, Sendable {
         self.maximumControlBufferedAmountBytes = maximumControlBufferedAmountBytes
     }
 
-    public static let goPeepDefault = Self()
+    public static let clipDefault = Self()
 
     public var normalized: Self {
         let finiteAnswerTimeout = answerTimeout.isFinite ? answerTimeout : 15
         let normalizedControlMessagePayloadBytes = min(
-            262_144,
+            196_400,
             max(1_024, maximumControlMessagePayloadBytes)
         )
         return Self(
@@ -169,8 +169,8 @@ public struct WebRTCPeerHostConfiguration: Equatable, Sendable {
     public init(
         iceServers: [WebRTCICEServerConfiguration],
         forcesRelay: Bool = false,
-        senderPolicy: WebRTCSenderPolicy = .goPeepDefault,
-        resourceLimits: WebRTCPeerResourceLimits = .goPeepDefault,
+        senderPolicy: WebRTCSenderPolicy = .clipDefault,
+        resourceLimits: WebRTCPeerResourceLimits = .clipDefault,
         videoCodec: WebRTCVideoCodec = .h264,
         videoEncodingMode: LiveShareEncodingMode = .quality
     ) {
@@ -182,7 +182,7 @@ public struct WebRTCPeerHostConfiguration: Equatable, Sendable {
         self.videoEncodingMode = videoEncodingMode
     }
 
-    public static let goPeepDefault = Self(iceServers: [
+    public static let clipDefault = Self(iceServers: [
         .init(urlStrings: ["stun:stun.l.google.com:19302"]),
         .init(urlStrings: ["stun:stun1.l.google.com:19302"]),
         .init(urlStrings: ["stun:stun2.l.google.com:19302"]),
@@ -204,8 +204,8 @@ public struct WebRTCSessionDescription: Equatable, Sendable {
     }
 }
 
-/// A transport-neutral ICE candidate suitable for embedding in GoPeep's
-/// `candidate` JSON field.
+/// A transport-neutral ICE candidate suitable for Clip's encrypted signaling
+/// and peer-to-peer control messages.
 public struct WebRTCICECandidate: Codable, Equatable, Sendable {
     public let candidate: String
     public let sdpMid: String?
@@ -242,7 +242,7 @@ public extension WebRTCICECandidate {
     /// Performs inexpensive structural validation before libwebrtc receives
     /// untrusted signaling input. Extensions after the mandatory RFC 8445
     /// fields remain accepted for browser compatibility.
-    func validate(resourceLimits: WebRTCPeerResourceLimits = .goPeepDefault) throws {
+    func validate(resourceLimits: WebRTCPeerResourceLimits = .clipDefault) throws {
         let limits = resourceLimits.normalized
         guard candidate.utf8.count <= limits.maximumICECandidatePayloadBytes else {
             throw WebRTCICECandidateValidationError.payloadTooLarge(
@@ -312,7 +312,7 @@ public struct WebRTCStreamSlotSnapshot: Equatable, Sendable, Identifiable {
     public let index: Int
     public let trackID: String
     public let streamID: String
-    public let metadata: GoPeepV1StreamInfo?
+    public let metadata: ClipLiveShareStreamDescriptor?
     public let captureGeometry: WebRTCVideoCaptureGeometry?
 
     public var id: Int { index }
@@ -322,7 +322,7 @@ public struct WebRTCStreamSlotSnapshot: Equatable, Sendable, Identifiable {
         index: Int,
         trackID: String,
         streamID: String,
-        metadata: GoPeepV1StreamInfo?,
+        metadata: ClipLiveShareStreamDescriptor?,
         captureGeometry: WebRTCVideoCaptureGeometry? = nil
     ) {
         self.index = index
@@ -334,24 +334,42 @@ public struct WebRTCStreamSlotSnapshot: Equatable, Sendable, Identifiable {
 }
 
 public struct WebRTCSystemAudioSnapshot: Equatable, Sendable {
+    public let trackID: String
+    public let streamID: String
     public let isEnabled: Bool
     public let isDeviceRecording: Bool
     public let queuedFrameCount: UInt
     public let acceptedFrameCount: UInt64
     public let droppedFrameCount: UInt64
+    public let underflowFrameCount: UInt64
+    public let deliveryCallbackCount: UInt64
+    public let deliveredFrameCount: UInt64
+    public let deliveryErrorCount: UInt64
 
     public init(
+        trackID: String,
+        streamID: String,
         isEnabled: Bool,
         isDeviceRecording: Bool,
         queuedFrameCount: UInt,
         acceptedFrameCount: UInt64,
-        droppedFrameCount: UInt64
+        droppedFrameCount: UInt64,
+        underflowFrameCount: UInt64,
+        deliveryCallbackCount: UInt64,
+        deliveredFrameCount: UInt64,
+        deliveryErrorCount: UInt64
     ) {
+        self.trackID = trackID
+        self.streamID = streamID
         self.isEnabled = isEnabled
         self.isDeviceRecording = isDeviceRecording
         self.queuedFrameCount = queuedFrameCount
         self.acceptedFrameCount = acceptedFrameCount
         self.droppedFrameCount = droppedFrameCount
+        self.underflowFrameCount = underflowFrameCount
+        self.deliveryCallbackCount = deliveryCallbackCount
+        self.deliveredFrameCount = deliveredFrameCount
+        self.deliveryErrorCount = deliveryErrorCount
     }
 }
 
@@ -459,7 +477,7 @@ public struct WebRTCOutboundViewerStatistics: Equatable, Sendable, Identifiable 
 }
 
 /// Actual outbound RTP totals aggregated across every current viewer sender
-/// for one of GoPeep's four stable video slots.
+/// for one of Clip's stable live video slots.
 public struct WebRTCOutboundSlotStatistics: Equatable, Sendable, Identifiable {
     public let slot: Int
     public let trackID: String
@@ -677,7 +695,7 @@ public enum WebRTCPeerHostError: Error, Equatable, LocalizedError, Sendable {
     case slotAlreadyActive(Int)
     case slotInactive(Int)
     case noAvailableSlot
-    case controlMessageEncodingFailed(String)
+    case controlMessagePayloadTooLarge(maximumBytes: Int)
     case stalePeerOperation(String)
 
     public var errorDescription: String? {
@@ -748,8 +766,8 @@ public enum WebRTCPeerHostError: Error, Equatable, LocalizedError, Sendable {
             "Video slot \(slot) is not active."
         case .noAvailableSlot:
             "All four video slots are already active."
-        case .controlMessageEncodingFailed(let message):
-            "The control message could not be encoded: \(message)"
+        case .controlMessagePayloadTooLarge(let maximumBytes):
+            "The viewer control message exceeds the \(maximumBytes)-byte limit."
         case .stalePeerOperation(let viewerID):
             "A superseded WebRTC operation completed for viewer \(viewerID)."
         }

@@ -45,6 +45,33 @@ appearance matrix moves to that client's post-update acceptance.
 
 ## Verification snapshot
 
+Current native Live Share service replacement checkpoint on
+`codex/native-live-share-server`:
+
+- [x] Freeze Clip Live Share Protocol v1: privacy-minimal room registry,
+  owner-token-hash authentication, URL-fragment P-256 host identity,
+  per-viewer ECDH/HKDF/AES-GCM signaling, host-side access-code admission,
+  opaque random stream identities, and `clip-control-v1` DataChannel handoff.
+- [x] Add the top-level Go `server/` with its embedded browser viewer,
+  system-audio playback controls, strict limits, in-memory leases, health and
+  capability endpoints, non-root Docker image, and multi-architecture publish
+  script.
+- [x] Add deterministic Go routing, browser crypto, cross-language vector, and
+  Swift protocol/crypto coverage. The isolated Go and browser suites pass.
+- [x] Complete the production coordinator's final native manifest/control
+  migration and delete the superseded signaling implementation/tests.
+- [x] Pass `./scripts/run-live-share-acceptance.sh`, the complete hosted
+  Swift/app suite, strict Swift 6 source/link/test-source gate, real offscreen
+  WebKit flow, final documentation/search audit and Release compilation/link
+  build from the feature tree. The installed Apple Development
+  certificate is expired, so valid distribution signing remains a release gate.
+- [ ] Run the explicit controlled-Mac browser video/audio, overlay exclusion,
+  remote/TURN, restart, and soak gates before a release advertises this service.
+
+The detailed board and evidence boundary are in
+[`docs/live-share-progress.md`](docs/live-share-progress.md). This branch does
+not replace the app currently installed in `/Applications`.
+
 Current Live Share Settings evidence completed on 2026-07-20:
 
 - The common Settings window now has a sixth native Live Share tab with a

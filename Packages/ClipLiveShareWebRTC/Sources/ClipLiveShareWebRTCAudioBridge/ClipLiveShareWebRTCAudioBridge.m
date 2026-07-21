@@ -8,6 +8,7 @@
 #import <math.h>
 #import <stdlib.h>
 #import <string.h>
+#import <time.h>
 
 typedef OSStatus (^ClipRTCAudioDeviceGetPlayoutDataBlock)(
     AudioUnitRenderActionFlags *actionFlags,
@@ -85,11 +86,24 @@ typedef OSStatus (^ClipRTCAudioDeviceDeliverRecordedDataBlock)(
 enum {
     ClipAudioChannelCount = 2,
     ClipAudioFramesPerChunk = 480,
+    // ScreenCaptureKit supplies audio in batches rather than from a real-time
+    // device callback. Hold the first 60 ms before draining a new timeline so
+    // ordinary callback jitter does not splice short runs of zeroes into it.
+    ClipAudioPrebufferFrames = 2880,
     // ScreenCaptureKit commonly batches roughly 512 ms (24,576 frames) of
     // system audio. One second absorbs two ordinary callbacks while remaining
-    // bounded; only sustained delivery overload discards the oldest frames.
+    // bounded; sustained overload or a materially stalled delivery thread
+    // discards only stale frames from the oldest end.
     ClipAudioRingCapacityFrames = 48000,
 };
+
+static uint64_t ClipAudioMonotonicNanoseconds(void) {
+    struct timespec time = {0};
+    if (clock_gettime(CLOCK_MONOTONIC, &time) != 0) {
+        return 0;
+    }
+    return (uint64_t)time.tv_sec * NSEC_PER_SEC + (uint64_t)time.tv_nsec;
+}
 
 @interface ClipLiveShareWebRTCSystemAudioDevice () <RTCAudioDevice> {
     NSLock *_lock;
@@ -99,6 +113,12 @@ enum {
     NSUInteger _ringFrameCount;
     uint64_t _acceptedFrameCount;
     uint64_t _droppedFrameCount;
+    uint64_t _underflowFrameCount;
+    uint64_t _deliveryCallbackCount;
+    uint64_t _deliveredFrameCount;
+    uint64_t _deliveryErrorCount;
+    NSUInteger _prebufferWaitedFrames;
+    BOOL _inputTimelinePrimed;
     BOOL _inputEnabled;
     BOOL _initialized;
     BOOL _playoutInitialized;
@@ -284,12 +304,45 @@ enum {
 
 - (void)recordingThreadMain {
     @autoreleasepool {
+        ClipRTCAudioDeviceRenderRecordedDataBlock renderRecordedData =
+            ^OSStatus(
+                AudioUnitRenderActionFlags *actionFlags,
+                const AudioTimeStamp *timestamp,
+                NSInteger inputBusNumber,
+                UInt32 frameCount,
+                AudioBufferList *inputData,
+                void *renderContext
+            ) {
+                const size_t expectedByteCount =
+                    (size_t)frameCount * ClipAudioChannelCount
+                    * sizeof(int16_t);
+                if (renderContext == NULL
+                    || inputData == NULL
+                    || inputData->mNumberBuffers != 1
+                    || inputData->mBuffers[0].mNumberChannels
+                        != ClipAudioChannelCount
+                    || inputData->mBuffers[0].mData == NULL
+                    || inputData->mBuffers[0].mDataByteSize
+                        != expectedByteCount) {
+                    return kAudio_ParamError;
+                }
+                memcpy(
+                    inputData->mBuffers[0].mData,
+                    renderContext,
+                    expectedByteCount
+                );
+                return noErr;
+            };
         int64_t intervalNanoseconds = (int64_t)(NSEC_PER_SEC
             * ClipAudioFramesPerChunk / ClipAudioSampleRate);
         dispatch_time_t deadline = dispatch_time(
             DISPATCH_TIME_NOW,
             intervalNanoseconds
         );
+        uint64_t clockStartNanoseconds = ClipAudioMonotonicNanoseconds();
+        uint64_t expectedWakeNanoseconds = clockStartNanoseconds == 0
+            ? 0
+            : clockStartNanoseconds + (uint64_t)intervalNanoseconds;
         int64_t sampleTime = 0;
         while (YES) {
             [_lock lock];
@@ -300,7 +353,46 @@ enum {
                 break;
             }
             dispatch_semaphore_wait(wakeup, deadline);
-            deadline = dispatch_time(deadline, intervalNanoseconds);
+            uint64_t nowNanoseconds = ClipAudioMonotonicNanoseconds();
+            uint64_t lateNanoseconds = nowNanoseconds > expectedWakeNanoseconds
+                ? nowNanoseconds - expectedWakeNanoseconds
+                : 0;
+            BOOL materiallyLate = nowNanoseconds != 0
+                && expectedWakeNanoseconds != 0
+                && lateNanoseconds > (uint64_t)intervalNanoseconds * 2;
+            NSUInteger staleFrameRequest = 0;
+            if (materiallyLate) {
+                uint64_t missedCallbacks = lateNanoseconds
+                    / (uint64_t)intervalNanoseconds;
+                uint64_t boundedCallbacks = MIN(
+                    missedCallbacks,
+                    (uint64_t)ClipAudioRingCapacityFrames
+                        / ClipAudioFramesPerChunk
+                );
+                staleFrameRequest = (NSUInteger)boundedCallbacks
+                    * ClipAudioFramesPerChunk;
+            }
+            // A suspended or starved thread must not replay several nominal
+            // 10 ms callbacks back-to-back. Such bursts produce compressed,
+            // metallic audio. Rebase after a material miss and discard only
+            // the equivalent stale input backlog below, while retaining the
+            // jitter reservoir and resuming normal real-time pacing.
+            if (materiallyLate) {
+                deadline = dispatch_time(
+                    DISPATCH_TIME_NOW,
+                    intervalNanoseconds
+                );
+                expectedWakeNanoseconds = nowNanoseconds
+                    + (uint64_t)intervalNanoseconds;
+            } else {
+                deadline = dispatch_time(deadline, intervalNanoseconds);
+                expectedWakeNanoseconds = nowNanoseconds == 0
+                    ? 0
+                    : expectedWakeNanoseconds == 0
+                        ? nowNanoseconds + (uint64_t)intervalNanoseconds
+                        : expectedWakeNanoseconds
+                            + (uint64_t)intervalNanoseconds;
+            }
 
             int16_t samples[ClipAudioFramesPerChunk * ClipAudioChannelCount];
             memset(samples, 0, sizeof(samples));
@@ -309,18 +401,40 @@ enum {
             shouldContinue = _recording;
             delegate = _delegate;
             if (shouldContinue && _inputEnabled) {
-                [self popFramesLocked:samples frameCount:ClipAudioFramesPerChunk];
+                [self discardOldestFramesLocked:staleFrameRequest
+                    preservingFrames:ClipAudioPrebufferFrames];
+                BOOL wasPrimed = _inputTimelinePrimed;
+                if (!_inputTimelinePrimed) {
+                    if (_ringFrameCount == 0) {
+                        _prebufferWaitedFrames = 0;
+                    } else {
+                        _prebufferWaitedFrames += ClipAudioFramesPerChunk;
+                        if (_prebufferWaitedFrames >= ClipAudioPrebufferFrames
+                            && _ringFrameCount >= ClipAudioPrebufferFrames) {
+                            _inputTimelinePrimed = YES;
+                        }
+                    }
+                }
+                // The tick that completes prebuffering is still part of the
+                // full 60 ms hold. Begin draining on the following tick.
+                if (wasPrimed) {
+                    NSUInteger delivered = [self popFramesLocked:samples
+                        frameCount:ClipAudioFramesPerChunk];
+                    if (delivered < ClipAudioFramesPerChunk) {
+                        _underflowFrameCount +=
+                            ClipAudioFramesPerChunk - delivered;
+                        // Re-establish the jitter margin instead of alternating
+                        // tiny audio fragments and silence at every batch edge.
+                        _inputTimelinePrimed = NO;
+                        _prebufferWaitedFrames = 0;
+                    }
+                }
             }
             [_lock unlock];
             if (!shouldContinue) {
                 break;
             }
 
-            AudioBufferList audioBuffers;
-            audioBuffers.mNumberBuffers = 1;
-            audioBuffers.mBuffers[0].mNumberChannels = ClipAudioChannelCount;
-            audioBuffers.mBuffers[0].mDataByteSize = sizeof(samples);
-            audioBuffers.mBuffers[0].mData = samples;
             AudioUnitRenderActionFlags flags = 0;
             AudioTimeStamp timestamp = {0};
             timestamp.mFlags = kAudioTimeStampSampleTimeValid;
@@ -329,15 +443,29 @@ enum {
             ClipRTCAudioDeviceDeliverRecordedDataBlock deliver =
                 delegate.deliverRecordedData;
             if (deliver != nil) {
-                deliver(
+                // The pre-filled inputData path in the pinned WebRTC M150
+                // ObjC ADM forwards only `frameCount` Int16 values to its
+                // stereo FineAudioBuffer instead of `frameCount * channels`.
+                // Supplying a synchronous render block selects its correct
+                // path, whose ADM-owned buffer contains every interleaved
+                // stereo sample.
+                OSStatus deliveryStatus = deliver(
                     &flags,
                     &timestamp,
                     0,
                     (UInt32)ClipAudioFramesPerChunk,
-                    &audioBuffers,
                     NULL,
-                    nil
+                    samples,
+                    renderRecordedData
                 );
+                [_lock lock];
+                _deliveryCallbackCount += 1;
+                if (deliveryStatus == noErr) {
+                    _deliveredFrameCount += ClipAudioFramesPerChunk;
+                } else {
+                    _deliveryErrorCount += 1;
+                }
+                [_lock unlock];
             }
         }
         [_lock lock];
@@ -388,6 +516,34 @@ enum {
 - (uint64_t)droppedFrameCount {
     [_lock lock];
     uint64_t value = _droppedFrameCount;
+    [_lock unlock];
+    return value;
+}
+
+- (uint64_t)underflowFrameCount {
+    [_lock lock];
+    uint64_t value = _underflowFrameCount;
+    [_lock unlock];
+    return value;
+}
+
+- (uint64_t)deliveryCallbackCount {
+    [_lock lock];
+    uint64_t value = _deliveryCallbackCount;
+    [_lock unlock];
+    return value;
+}
+
+- (uint64_t)deliveredFrameCount {
+    [_lock lock];
+    uint64_t value = _deliveredFrameCount;
+    [_lock unlock];
+    return value;
+}
+
+- (uint64_t)deliveryErrorCount {
+    [_lock lock];
+    uint64_t value = _deliveryErrorCount;
     [_lock unlock];
     return value;
 }
@@ -582,7 +738,7 @@ enum {
     _ringFrameCount += frameCount;
 }
 
-- (void)popFramesLocked:(int16_t *)output
+- (NSUInteger)popFramesLocked:(int16_t *)output
               frameCount:(NSUInteger)frameCount {
     NSUInteger framesToRead = MIN(frameCount, _ringFrameCount);
     NSUInteger firstFrames = MIN(
@@ -605,11 +761,30 @@ enum {
     _ringReadFrame = (_ringReadFrame + framesToRead)
         % ClipAudioRingCapacityFrames;
     _ringFrameCount -= framesToRead;
+    return framesToRead;
+}
+
+- (NSUInteger)discardOldestFramesLocked:(NSUInteger)requestedFrames
+                        preservingFrames:(NSUInteger)preservedFrames {
+    if (requestedFrames == 0 || _ringFrameCount <= preservedFrames) {
+        return 0;
+    }
+    NSUInteger discardedFrames = MIN(
+        requestedFrames,
+        _ringFrameCount - preservedFrames
+    );
+    _ringReadFrame = (_ringReadFrame + discardedFrames)
+        % ClipAudioRingCapacityFrames;
+    _ringFrameCount -= discardedFrames;
+    _droppedFrameCount += discardedFrames;
+    return discardedFrames;
 }
 
 - (void)clearQueuedAudioLocked {
     _ringReadFrame = 0;
     _ringFrameCount = 0;
+    _prebufferWaitedFrames = 0;
+    _inputTimelinePrimed = NO;
 }
 
 @end

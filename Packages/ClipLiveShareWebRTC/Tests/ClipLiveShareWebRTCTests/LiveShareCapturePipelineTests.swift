@@ -84,11 +84,10 @@ struct LiveShareCapturePipelineTests {
             sourcePixelWidth: 5_120,
             sourcePixelHeight: 2_880,
             video: CaptureVideoConfiguration(width: 4_096, height: 2_304),
-            stream: GoPeepV1StreamInfo(
-                trackID: "video0",
+            stream: ClipLiveShareWebRTCTestFixtures.streamDescriptor(
+                mediaTrackID: "test-track-0",
                 windowName: "Fixture",
                 appName: "Tests",
-                isFocused: true,
                 width: 4_096,
                 height: 2_304
             )
@@ -126,11 +125,10 @@ struct LiveShareCapturePipelineTests {
             sourcePixelWidth: 5_120,
             sourcePixelHeight: 2_880,
             video: CaptureVideoConfiguration(width: 4_096, height: 2_304),
-            stream: GoPeepV1StreamInfo(
-                trackID: "video0",
+            stream: ClipLiveShareWebRTCTestFixtures.streamDescriptor(
+                mediaTrackID: "test-track-0",
                 windowName: "Fixture",
                 appName: "Tests",
-                isFocused: true,
                 width: 4_096,
                 height: 2_304
             )
@@ -173,11 +171,10 @@ struct LiveShareCapturePipelineTests {
             source: .window(source),
             target: .window(id: 42),
             video: nativeVideo,
-            stream: GoPeepV1StreamInfo(
-                trackID: "video0",
+            stream: ClipLiveShareWebRTCTestFixtures.streamDescriptor(
+                mediaTrackID: "test-track-0",
                 windowName: "Odd Fixture",
                 appName: "Tests",
-                isFocused: true,
                 width: 1_605,
                 height: 1_108
             )
@@ -188,11 +185,10 @@ struct LiveShareCapturePipelineTests {
             source: original.source,
             target: original.target,
             video: nativeVideo,
-            stream: GoPeepV1StreamInfo(
-                trackID: "video0",
+            stream: ClipLiveShareWebRTCTestFixtures.streamDescriptor(
+                mediaTrackID: "test-track-0",
                 windowName: "Odd Fixture",
                 appName: "Tests",
-                isFocused: true,
                 width: 1_604,
                 height: 1_108
             )
@@ -435,11 +431,10 @@ struct LiveShareCapturePipelineTests {
             source: .window(source),
             target: .window(id: 42),
             video: CaptureVideoConfiguration(width: 1_280, height: 720),
-            stream: GoPeepV1StreamInfo(
-                trackID: "video0",
+            stream: ClipLiveShareWebRTCTestFixtures.streamDescriptor(
+                mediaTrackID: "test-track-0",
                 windowName: "Fixture",
                 appName: "Tests",
-                isFocused: true,
                 width: 1_280,
                 height: 720
             )
@@ -502,7 +497,7 @@ private final class FakeSlotHost: LiveShareVideoSlotHosting, @unchecked Sendable
 
     func activateSlot(
         _ slot: Int,
-        metadata: GoPeepV1StreamInfo,
+        metadata: ClipLiveShareStreamDescriptor,
         captureGeometry: WebRTCVideoCaptureGeometry
     ) throws {
         lock.withLock {
@@ -520,7 +515,7 @@ private final class FakeSlotHost: LiveShareVideoSlotHosting, @unchecked Sendable
 
     func updateSlotMetadata(
         _ slot: Int,
-        metadata: GoPeepV1StreamInfo,
+        metadata: ClipLiveShareStreamDescriptor,
         captureGeometry: WebRTCVideoCaptureGeometry
     ) throws {
         try lock.withLock {

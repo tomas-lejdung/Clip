@@ -39,11 +39,24 @@ public enum LiveShareTransitionError: Error, Equatable, Sendable {
   case invalidReconnectAttempt(Int)
 }
 
+/// The share-link information the UI is allowed to render. Room ownership,
+/// the P-256 private key, encrypted-route state, and access-code challenges are
+/// deliberately kept out of the domain snapshot.
+public struct ClipLiveSharePublicRoom: Codable, Equatable, Hashable, Sendable {
+  public let name: ClipLiveShareRoomName
+  public let viewerURL: URL
+
+  public init(name: ClipLiveShareRoomName, viewerURL: URL) {
+    self.name = name
+    self.viewerURL = viewerURL
+  }
+}
+
 /// A read-only value suitable for UI rendering and cross-actor delivery.
 public struct LiveShareSnapshot: Codable, Equatable, Hashable, Sendable {
   public let phase: LiveSharePhase
   public let sources: LiveShareSourceSelection
-  public let room: GoPeepV1RoomConfiguration?
+  public let room: ClipLiveSharePublicRoom?
   public let viewerCount: Int
   public let reconnectAttempt: Int
   public let failure: LiveShareFailure?
@@ -60,7 +73,7 @@ public struct LiveShareSnapshot: Codable, Equatable, Hashable, Sendable {
 public struct LiveShareStateMachine: Sendable {
   private var phase: LiveSharePhase
   private var sources: LiveShareSourceSelection
-  private var room: GoPeepV1RoomConfiguration?
+  private var room: ClipLiveSharePublicRoom?
   private var viewerCount: Int
   private var reconnectAttempt: Int
   private var failure: LiveShareFailure?
@@ -99,14 +112,11 @@ public struct LiveShareStateMachine: Sendable {
     phaseAfterReconnect = nil
   }
 
-  public mutating func receiveReservation(
-    _ reservation: GoPeepV1RoomReservationResponse,
-    password: String? = nil
-  ) throws {
+  public mutating func receiveRoom(_ room: ClipLiveSharePublicRoom) throws {
     guard phase == .reservingRoom else {
-      throw invalidTransition("receiveReservation")
+      throw invalidTransition("receiveRoom")
     }
-    room = GoPeepV1RoomConfiguration(reservation: reservation, password: password)
+    self.room = room
     phase = .connecting
   }
 

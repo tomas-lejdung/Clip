@@ -46,6 +46,13 @@ BUNDLE_IDENTIFIER="$(
 /usr/libexec/PlistBuddy \
   -c "Set :com.apple.security.temporary-exception.mach-lookup.global-name:1 $BUNDLE_IDENTIFIER-spki" \
   "$RESOLVED_ENTITLEMENTS"
+# Hardened Runtime library validation requires the host and every dynamic
+# framework to share a certificate-backed Team ID. Ad-hoc signatures have no
+# Team ID, so even an inside-out re-sign makes dyld reject WebRTC and Sparkle
+# before Clip reaches main. Keep Hardened Runtime enabled, but grant this
+# local/CI-only exception when no certificate is configured. Stable-signed
+# release builds retain full library validation.
+clip_resolve_library_validation_entitlement "$RESOLVED_ENTITLEMENTS"
 plutil -lint "$RESOLVED_ENTITLEMENTS" >/dev/null \
   || fail "Clip's resolved entitlements are invalid"
 if grep -Fq '$(' "$RESOLVED_ENTITLEMENTS"; then
@@ -168,4 +175,15 @@ if /usr/libexec/PlistBuddy \
     -c 'Print :com.apple.security.get-task-allow' \
     /dev/stdin <<<"$SIGNED_ENTITLEMENTS" >/dev/null 2>&1; then
   fail "distributed Clip.app must not contain com.apple.security.get-task-allow"
+fi
+LIBRARY_VALIDATION_DISABLED="$(
+  /usr/libexec/PlistBuddy \
+    -c 'Print :com.apple.security.cs.disable-library-validation' \
+    /dev/stdin <<<"$SIGNED_ENTITLEMENTS" 2>/dev/null || true
+)"
+if clip_signing_is_ad_hoc; then
+  [[ "$LIBRARY_VALIDATION_DISABLED" == "true" ]] \
+    || fail "ad-hoc Clip.app cannot load embedded frameworks with library validation enabled"
+elif [[ -n "$LIBRARY_VALIDATION_DISABLED" ]]; then
+  fail "stable-signed Clip.app must retain Hardened Runtime library validation"
 fi

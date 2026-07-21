@@ -1,0 +1,17 @@
+{
+  "protocol": "clip-live-share",
+  "versions": [1],
+  "serverVersion": "development",
+  "viewerPathTemplate": "/{room}",
+  "hostWebSocketPathTemplate": "/api/v1/rooms/{room}/host",
+  "viewerWebSocketPathTemplate": "/api/v1/rooms/{room}/viewer",
+  "iceServers": [
+    {
+      "urls": ["stun:stun.l.google.com:19302"]
+    }
+  ],
+  "limits": {
+    "maximumMessageBytes": 262144,
+    "maximumPendingViewersPerRoom": 8
+  }
+}

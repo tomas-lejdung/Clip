@@ -990,7 +990,7 @@ private extension WebRTCVideoToolboxH264Encoder {
             setQualitySoftAverage(plan)
         }
 
-        /// Mirrors GoPeep's proven VideoToolbox quality mode: Quality controls
+        /// Clip's VideoToolbox quality mode: Quality controls
         /// visual intent, AverageBitRate uses the selected Mbps as a soft
         /// target, and there is deliberately no encoder-side VBV or
         /// DataRateLimits clamp. RTP pacing remains the authoritative ceiling.

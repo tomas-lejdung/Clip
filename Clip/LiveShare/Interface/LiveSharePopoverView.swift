@@ -140,6 +140,7 @@ struct LiveSharePopoverView: View {
                             )
                         }
                         .controlSize(.small)
+                        .disabled(!room.isAvailable)
                         .accessibilityIdentifier("clip.liveShare.copyRoomCode")
                     }
 
@@ -164,7 +165,21 @@ struct LiveSharePopoverView: View {
                             )
                         }
                         .controlSize(.small)
+                        .disabled(!room.isAvailable)
                         .accessibilityIdentifier("clip.liveShare.copyLink")
+                    }
+
+                    if !room.isAvailable {
+                        Label(
+                            String(
+                                localized: "Share link temporarily unavailable. Existing viewers stay connected."
+                            ),
+                            systemImage: "exclamationmark.triangle.fill"
+                        )
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .accessibilityIdentifier("clip.liveShare.signalingUnavailable")
                     }
 
                     Toggle(
@@ -211,7 +226,7 @@ struct LiveSharePopoverView: View {
                         .padding(8)
                         .background(.quaternary.opacity(0.55), in: RoundedRectangle(cornerRadius: 8))
 
-                        Text("Applies to new viewers; signaling service can read it.")
+                        Text("Verified by this Mac; the server never receives the code.")
                             .font(.caption2)
                             .foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)

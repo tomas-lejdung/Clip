@@ -536,28 +536,23 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
                 NSSound.beep()
                 return
             }
-            do {
-                let server = try dependencies.liveSharePreferences.serverEndpoint.configuration
-                let coordinator = LiveShareCoordinator(
-                    preferences: dependencies.liveSharePreferences,
-                    server: server,
-                    onSessionEnded: { [weak self] in
-                        self?.liveShareDidEnd()
-                    },
-                    onMenuBarStatusChanged: { [weak self] status in
-                        self?.updateLiveShareStatusIcon(status)
-                    }
-                )
-                liveShareCoordinator = coordinator
-                installLiveSharePopover(model: coordinator.presentationModel)
-                updateLiveShareStatusIcon(.ready)
-                coordinator.start()
-                if let button = statusItem?.button {
-                    popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
-                    popover.contentViewController?.view.window?.makeKey()
+            let coordinator = LiveShareCoordinator(
+                preferences: dependencies.liveSharePreferences,
+                serverEndpoint: dependencies.liveSharePreferences.serverEndpoint,
+                onSessionEnded: { [weak self] in
+                    self?.liveShareDidEnd()
+                },
+                onMenuBarStatusChanged: { [weak self] status in
+                    self?.updateLiveShareStatusIcon(status)
                 }
-            } catch {
-                presentError(title: "Live Share Couldn’t Start", error: error)
+            )
+            liveShareCoordinator = coordinator
+            installLiveSharePopover(model: coordinator.presentationModel)
+            updateLiveShareStatusIcon(.ready)
+            coordinator.start()
+            if let button = statusItem?.button {
+                popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+                popover.contentViewController?.view.window?.makeKey()
             }
         }
     }

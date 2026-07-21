@@ -48,14 +48,14 @@ struct SettingsPresentationTests {
         let model = try LiveSharePreferencesModel(applicationSupportDirectory: directory)
         await model.load()
         #expect(model.settings == .default)
-        #expect(model.serverEndpoint == .goPeepRemote)
+        #expect(model.serverEndpoint == .official)
 
         model.updateSettings {
             $0.quality = .insane
             $0.videoCodec = .av1
             $0.systemAudioEnabled = true
         }
-        let customEndpoint = try LiveShareServerEndpoint(
+        let customEndpoint = try ClipLiveShareServerEndpoint(
             userInput: "https://share.example.com:8443"
         )
         model.setServerEndpoint(customEndpoint)
@@ -69,7 +69,7 @@ struct SettingsPresentationTests {
         #expect(reloaded.serverEndpoint == customEndpoint)
 
         reloaded.resetServerEndpoint()
-        #expect(reloaded.serverEndpoint == .goPeepRemote)
+        #expect(reloaded.serverEndpoint == .official)
         #expect(reloaded.settings.quality == .insane)
 
         reloaded.setServerEndpoint(customEndpoint)
@@ -98,14 +98,14 @@ struct SettingsPresentationTests {
             applicationSupportDirectory: directory
         )
         await repaired.load()
-        #expect(repaired.serverEndpoint == .goPeepRemote)
+        #expect(repaired.serverEndpoint == .official)
         #expect(repaired.lastPersistenceError == nil)
 
         let reloaded = try LiveSharePreferencesModel(
             applicationSupportDirectory: directory
         )
         await reloaded.load()
-        #expect(reloaded.serverEndpoint == .goPeepRemote)
+        #expect(reloaded.serverEndpoint == .official)
         #expect(reloaded.lastPersistenceError == nil)
     }
 
@@ -125,7 +125,7 @@ struct SettingsPresentationTests {
         await model.load()
 
         model.setServerEndpoint(
-            try LiveShareServerEndpoint(userInput: "https://share.example.com")
+            try ClipLiveShareServerEndpoint(userInput: "https://share.example.com")
         )
         await model.flushPendingPersistence()
         #expect(model.lastPersistenceError != nil)
@@ -136,40 +136,46 @@ struct SettingsPresentationTests {
     }
 
     @MainActor
-    @Test("The connection probe checks the reservation route without allocating a room")
+    @Test("The connection probe validates the capability document without allocating a room")
     func liveShareConnectionProbe() async throws {
-        let recorder = SettingsProbeRecorder(statusCode: 405)
+        let recorder = SettingsProbeRecorder()
+        let capabilities = try JSONEncoder().encode(ClipLiveShareCapabilities.v1Default)
         let probe = LiveShareServerConnectionProbe { request in
             await recorder.record(request)
+            return LiveShareServerProbeResponse(statusCode: 200, data: capabilities)
         }
-        try await probe.test(.goPeepRemote)
+        try await probe.test(.official)
 
         let request = try #require(await recorder.lastRequest())
-        #expect(request.httpMethod == "HEAD")
+        #expect(request.httpMethod == "GET")
         #expect(
             request.url?.absoluteString
-                == "https://gopeep.tineestudio.se/api/reserve"
+                == "https://clip.tineestudio.se/.well-known/clip-live-share"
         )
+        #expect(request.value(forHTTPHeaderField: "Accept") == "application/json")
         #expect(request.timeoutInterval == 5)
 
-        let incompatible = LiveShareServerConnectionProbe { _ in 404 }
+        let incompatible = LiveShareServerConnectionProbe { _ in
+            LiveShareServerProbeResponse(statusCode: 404, data: Data())
+        }
         await #expect(throws: LiveShareServerConnectionProbeError.incompatibleStatus(404)) {
-            try await incompatible.test(.goPeepRemote)
+            try await incompatible.test(.official)
+        }
+
+        let malformed = LiveShareServerConnectionProbe { _ in
+            LiveShareServerProbeResponse(statusCode: 200, data: Data("{}".utf8))
+        }
+        await #expect(throws: LiveShareServerConnectionProbeError.incompatibleProtocol) {
+            try await malformed.test(.official)
         }
     }
 }
 
 private actor SettingsProbeRecorder {
-    private let statusCode: Int
     private var request: URLRequest?
 
-    init(statusCode: Int) {
-        self.statusCode = statusCode
-    }
-
-    func record(_ request: URLRequest) -> Int {
+    func record(_ request: URLRequest) {
         self.request = request
-        return statusCode
     }
 
     func lastRequest() -> URLRequest? {

@@ -2,28 +2,38 @@ import Foundation
 
 public struct LiveShareTrackSlot: Equatable, Hashable, Sendable, Identifiable {
     public let index: Int
+    public let streamIdentity: ClipLiveShareStreamID
     public var source: LiveShareSource?
     public var isFocused: Bool
 
-    public init(index: Int, source: LiveShareSource? = nil, isFocused: Bool = false) {
+    public init(
+        index: Int,
+        streamIdentity: ClipLiveShareStreamID = .random(),
+        source: LiveShareSource? = nil,
+        isFocused: Bool = false
+    ) {
         self.index = index
+        self.streamIdentity = streamIdentity
         self.source = source
         self.isFocused = source == nil ? false : isFocused
     }
 
     public var id: Int { index }
-    public var trackID: String { "video\(index)" }
-    public var streamID: String { "gopeep-stream-\(index)" }
+    /// Transitional alias for callers that previously used a deterministic transport track ID.
+    public var trackID: String { streamIdentity.rawValue }
+    /// Opaque protocol stream identity. Random for each Live Share session.
+    public var streamID: String { streamIdentity.rawValue }
     public var isActive: Bool { source != nil }
 }
 
 public enum LiveShareTrackSlotError: Error, Equatable, Sendable {
     case invalidSlotCount(Int)
+    case duplicateStreamIdentity
     case sourceCapacityExceeded
     case fullscreenRequiresSlotZero
 }
 
-/// Stable assignment of source identity to GoPeep's four pre-negotiated tracks.
+/// Stable assignment of source identity to Clip's four pre-negotiated tracks.
 /// Removing another source never renumbers a surviving track.
 public struct LiveShareTrackSlotAllocation: Equatable, Hashable, Sendable {
     public static let slotCount = LiveShareSourceSelection.maximumWindowCount
@@ -38,6 +48,9 @@ public struct LiveShareTrackSlotAllocation: Equatable, Hashable, Sendable {
         guard slots.count == Self.slotCount,
               slots.map(\.index) == Array(0 ..< Self.slotCount) else {
             throw LiveShareTrackSlotError.invalidSlotCount(slots.count)
+        }
+        guard Set(slots.map(\.streamIdentity)).count == slots.count else {
+            throw LiveShareTrackSlotError.duplicateStreamIdentity
         }
         if let fullscreenIndex = slots.firstIndex(where: { slot in
             guard case .fullscreen = slot.source else { return false }
@@ -68,7 +81,10 @@ public struct LiveShareTrackSlotAllocation: Equatable, Hashable, Sendable {
 
         for source in change.added {
             if case .fullscreen = source {
-                slots = (0 ..< Self.slotCount).map { LiveShareTrackSlot(index: $0) }
+                for index in slots.indices {
+                    slots[index].source = nil
+                    slots[index].isFocused = false
+                }
                 slots[0].source = source
                 slots[0].isFocused = true
                 continue
@@ -94,7 +110,10 @@ public struct LiveShareTrackSlotAllocation: Equatable, Hashable, Sendable {
     }
 
     public mutating func clear() {
-        self = Self()
+        for index in slots.indices {
+            slots[index].source = nil
+            slots[index].isFocused = false
+        }
     }
 
     private mutating func normalizeFocus() {

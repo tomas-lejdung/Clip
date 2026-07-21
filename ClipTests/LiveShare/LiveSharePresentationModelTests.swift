@@ -6,7 +6,7 @@ import Testing
 @MainActor
 struct LiveSharePresentationModelTests {
     @Test
-    func testQualityLadderMatchesGoPeepV1() {
+    func testQualityLadderMatchesClipPresets() {
         #expect(
             LiveShareQualityPreset.allCases.map(\.bitsPerSecond) == [
                 500_000,
@@ -166,12 +166,36 @@ struct LiveSharePresentationModelTests {
         )
 
         model.copyLink()
-        #expect(copied == ["https://gopeep.tineestudio.se/CRISP-FROG-042"])
+        #expect(copied == ["https://clip.tineestudio.se/CRISP-FROG-042#v=1&key=fixture"])
         #expect(model.copiedItem == .link)
 
         model.copyAccessCode()
         #expect(copied.last == "tiger-42")
         #expect(model.copiedItem == .accessCode)
+    }
+
+    @Test
+    func testUnavailableRendezvousCannotCopyAStaleShareLink() {
+        var copied: [String] = []
+        let model = LiveSharePresentationModel(
+            snapshot: LiveShareViewSnapshot(
+                phase: .live(elapsedSeconds: 12),
+                room: LiveShareRoomViewSnapshot(
+                    viewerURL: URL(
+                        string: "https://clip.tineestudio.se/CRISP-FROG-042#v=1&key=fixture"
+                    )!,
+                    roomCode: "CRISP-FROG-042",
+                    isAvailable: false
+                )
+            ),
+            actions: .init(copyText: { copied.append($0) })
+        )
+
+        model.copyLink()
+        model.copyRoomCode()
+
+        #expect(copied.isEmpty)
+        #expect(model.copiedItem == nil)
     }
 
     @Test
@@ -375,7 +399,7 @@ struct LiveSharePresentationModelTests {
         LiveShareViewSnapshot(
             phase: .ready,
             room: LiveShareRoomViewSnapshot(
-                viewerURL: URL(string: "https://gopeep.tineestudio.se/CRISP-FROG-042")!,
+                viewerURL: URL(string: "https://clip.tineestudio.se/CRISP-FROG-042#v=1&key=fixture")!,
                 roomCode: "CRISP-FROG-042"
             ),
             accessCodeEnabled: true,

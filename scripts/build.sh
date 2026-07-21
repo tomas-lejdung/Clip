@@ -49,7 +49,7 @@ if [[ -n "$PACKAGE_CACHE" ]]; then
   )
 fi
 
-exec xcodebuild \
+xcodebuild \
   -project "$ROOT/Clip.xcodeproj" \
   -scheme Clip \
   -configuration "$CONFIGURATION" \
@@ -61,3 +61,18 @@ exec xcodebuild \
   CURRENT_PROJECT_VERSION="$CLIP_BUILD_VERSION" \
   "${XCODE_SIGNING_ARGUMENTS[@]}" \
   clean build
+
+# Xcode preserves independently signed binary-package frameworks. Under
+# Hardened Runtime that can leave their Team ID different from Clip's and dyld
+# aborts before application startup. Re-sign the Release bundle inside-out.
+# DMG packaging deliberately defers this until after it verifies the raw
+# dependency payload copied by Xcode.
+if [[ "$CONFIGURATION" == "Release" &&
+      "${CLIP_DEFER_RELEASE_BUNDLE_SIGNING:-0}" != "1" ]]; then
+  APP="$DERIVED_DATA/Build/Products/Release/Clip.app"
+  [[ -d "$APP" ]] || {
+    echo "Expected app bundle was not produced: $APP" >&2
+    exit 1
+  }
+  "$ROOT/scripts/sign-app-bundle.sh" "$APP"
+fi

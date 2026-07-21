@@ -34,9 +34,11 @@ func makeDisplay(_ id: UInt32 = 1) -> LiveShareDisplaySource {
   )
 }
 
-func makeReservation() throws -> GoPeepV1RoomReservationResponse {
-  try GoPeepV1RoomReservationResponse(
-    room: GoPeepV1RoomCode(rawValue: "CRISP-FROG-042"),
-    secret: "0123456789abcdef0123456789abcdef"
+func makePublicRoom() throws -> ClipLiveSharePublicRoom {
+  ClipLiveSharePublicRoom(
+    name: try ClipLiveShareRoomName(rawValue: "CRISP-FROG-042"),
+    viewerURL: URL(
+      string: "https://clip.tineestudio.se/CRISP-FROG-042#v=1&key=fixture-public-key"
+    )!
   )
 }

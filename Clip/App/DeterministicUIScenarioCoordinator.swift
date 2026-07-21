@@ -544,7 +544,7 @@ enum DeterministicLiveShareDemo {
     }
 
     private static let room = LiveShareRoomViewSnapshot(
-        viewerURL: URL(string: "https://gopeep.tineestudio.se/CRISP-FROG-042")!,
+        viewerURL: URL(string: "https://clip.tineestudio.se/CRISP-FROG-042#v=1&key=fixture")!,
         roomCode: "CRISP-FROG-042"
     )
 

@@ -11,12 +11,12 @@ public protocol LiveShareVideoSlotHosting: AnyObject, Sendable {
 
     func activateSlot(
         _ slot: Int,
-        metadata: GoPeepV1StreamInfo,
+        metadata: ClipLiveShareStreamDescriptor,
         captureGeometry: WebRTCVideoCaptureGeometry
     ) throws
     func updateSlotMetadata(
         _ slot: Int,
-        metadata: GoPeepV1StreamInfo,
+        metadata: ClipLiveShareStreamDescriptor,
         captureGeometry: WebRTCVideoCaptureGeometry
     ) throws
     func deactivateSlot(_ slot: Int)
@@ -96,7 +96,7 @@ public struct LiveShareCaptureDescriptor: Equatable, Sendable {
     public let sourcePixelWidth: Int
     public let sourcePixelHeight: Int
     public let video: CaptureVideoConfiguration
-    public let stream: GoPeepV1StreamInfo
+    public let stream: ClipLiveShareStreamDescriptor
 
     public var captureGeometry: WebRTCVideoCaptureGeometry {
         WebRTCVideoCaptureGeometry(width: video.width, height: video.height)
@@ -108,7 +108,7 @@ public struct LiveShareCaptureDescriptor: Equatable, Sendable {
         sourcePixelWidth: Int? = nil,
         sourcePixelHeight: Int? = nil,
         video: CaptureVideoConfiguration,
-        stream: GoPeepV1StreamInfo
+        stream: ClipLiveShareStreamDescriptor
     ) {
         self.source = source
         self.target = target

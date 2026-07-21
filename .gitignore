@@ -33,6 +33,7 @@ playground.xcworkspace
 .build/
 DerivedData/
 .DS_Store
+.clip-signing.local.env
 
 # CocoaPods
 #

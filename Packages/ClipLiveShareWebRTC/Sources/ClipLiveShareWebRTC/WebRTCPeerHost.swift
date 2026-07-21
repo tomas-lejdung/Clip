@@ -4,7 +4,7 @@ import ClipLiveShareWebRTCAudioBridge
 import Foundation
 @preconcurrency import WebRTC
 
-/// A native GoPeep v1-compatible WebRTC host.
+/// Clip's native WebRTC host.
 ///
 /// The host creates one libwebrtc factory and four stable screen-cast tracks.
 /// Every viewer gets its own peer connection while sharing those four sources,
@@ -20,13 +20,16 @@ public final class WebRTCPeerHost: LiveShareVideoSlotHosting, @unchecked Sendabl
         let source: RTCVideoSource
         let track: RTCVideoTrack
         let frameSource: WebRTCFrameSource
-        var metadata: GoPeepV1StreamInfo?
+        var metadata: ClipLiveShareStreamDescriptor?
         var captureGeometry: WebRTCVideoCaptureGeometry?
 
         init(index: Int, factory: RTCPeerConnectionFactory) {
             self.index = index
-            trackID = "video\(index)"
-            streamID = "gopeep-stream-\(index)"
+            // These identifiers are exposed to the remote browser by WebRTC.
+            // Keep the stable slot index local and publish only per-session,
+            // cryptographically random identities on the wire.
+            trackID = ClipLiveShareMediaTrackID.random().rawValue
+            streamID = ClipLiveShareStreamID.random().rawValue
             source = factory.videoSource(forScreenCast: true)
             track = factory.videoTrack(with: source, trackId: trackID)
             frameSource = WebRTCFrameSource(source: source)
@@ -152,6 +155,8 @@ public final class WebRTCPeerHost: LiveShareVideoSlotHosting, @unchecked Sendabl
     private let factory: RTCPeerConnectionFactory
     private let videoCodecCapabilities: [RTCRtpCodecCapability]
     private let audioCodecCapabilities: [RTCRtpCodecCapability]
+    private let systemAudioTrackID: String
+    private let systemAudioStreamID: String
     private let systemAudioTrack: RTCAudioTrack
     private let slots: [Slot]
     private var peers: [String: PeerContext] = [:]
@@ -167,7 +172,7 @@ public final class WebRTCPeerHost: LiveShareVideoSlotHosting, @unchecked Sendabl
     private var isClosed = false
 
     public init(
-        configuration: WebRTCPeerHostConfiguration = .goPeepDefault,
+        configuration: WebRTCPeerHostConfiguration = .clipDefault,
         eventQueue: DispatchQueue = .main,
         eventHandler: @escaping EventHandler = { _ in }
     ) throws {
@@ -233,11 +238,15 @@ public final class WebRTCPeerHost: LiveShareVideoSlotHosting, @unchecked Sendabl
             optionalConstraints: nil
         )
         let audioSource = peerFactory.audioSource(with: audioConstraints)
+        let audioTrackID = ClipLiveShareMediaTrackID.random().rawValue
+        let audioStreamID = ClipLiveShareStreamID.random().rawValue
         let audioTrack = peerFactory.audioTrack(
             with: audioSource,
-            trackId: WebRTCRuntimeIdentity.systemAudioTrackID
+            trackId: audioTrackID
         )
         audioTrack.isEnabled = false
+        systemAudioTrackID = audioTrackID
+        systemAudioStreamID = audioStreamID
         systemAudioTrack = audioTrack
         audioDevice.setInputEnabled(false)
         slots = (0 ..< WebRTCRuntimeIdentity.maximumVideoSlots).map {
@@ -304,11 +313,17 @@ public final class WebRTCPeerHost: LiveShareVideoSlotHosting, @unchecked Sendabl
     public var systemAudioSnapshot: WebRTCSystemAudioSnapshot {
         onQueue {
             WebRTCSystemAudioSnapshot(
+                trackID: systemAudioTrackID,
+                streamID: systemAudioStreamID,
                 isEnabled: systemAudioEnabled,
                 isDeviceRecording: systemAudioDevice.isRecording,
                 queuedFrameCount: systemAudioDevice.queuedFrameCount,
                 acceptedFrameCount: systemAudioDevice.acceptedFrameCount,
-                droppedFrameCount: systemAudioDevice.droppedFrameCount
+                droppedFrameCount: systemAudioDevice.droppedFrameCount,
+                underflowFrameCount: systemAudioDevice.underflowFrameCount,
+                deliveryCallbackCount: systemAudioDevice.deliveryCallbackCount,
+                deliveredFrameCount: systemAudioDevice.deliveredFrameCount,
+                deliveryErrorCount: systemAudioDevice.deliveryErrorCount
             )
         }
     }
@@ -536,7 +551,7 @@ public final class WebRTCPeerHost: LiveShareVideoSlotHosting, @unchecked Sendabl
     }
 
     /// Creates a new peer and a trickle-ICE offer containing all four stable
-    /// video tracks and the reliable ordered GoPeep control channel.
+    /// video tracks and Clip's reliable ordered control channel.
     public func createOffer(for viewerID: String) async throws -> WebRTCSessionDescription {
         try await withCheckedThrowingContinuation {
             (continuation: CheckedContinuation<WebRTCSessionDescription, any Error>) in
@@ -556,7 +571,7 @@ public final class WebRTCPeerHost: LiveShareVideoSlotHosting, @unchecked Sendabl
         }
     }
 
-    /// Creates a fresh offer for an existing GoPeep viewer connection.
+    /// Creates a fresh offer for an existing Clip viewer connection.
     public func createReoffer(for viewerID: String) async throws -> WebRTCSessionDescription {
         try await withCheckedThrowingContinuation {
             (continuation: CheckedContinuation<WebRTCSessionDescription, any Error>) in
@@ -619,16 +634,20 @@ public final class WebRTCPeerHost: LiveShareVideoSlotHosting, @unchecked Sendabl
                     do {
                         try candidate.validate(resourceLimits: resourceLimits)
                     } catch {
-                        throw WebRTCPeerHostError.invalidICECandidate(
+                        let peerError = WebRTCPeerHostError.invalidICECandidate(
                             error.localizedDescription
                         )
+                        removeFailedPeer(context)
+                        throw peerError
                     }
                     guard context.remoteICECandidateCount
                         < resourceLimits.maximumICECandidatesPerPeer else {
-                        throw WebRTCPeerHostError.iceCandidateLimitReached(
+                        let peerError = WebRTCPeerHostError.iceCandidateLimitReached(
                             viewerID: viewerID,
                             maximum: resourceLimits.maximumICECandidatesPerPeer
                         )
+                        removeFailedPeer(context)
+                        throw peerError
                     }
                     // Count attempts as well as candidates accepted by
                     // libwebrtc, so a peer cannot repeatedly submit candidates
@@ -734,7 +753,7 @@ public final class WebRTCPeerHost: LiveShareVideoSlotHosting, @unchecked Sendabl
         }
     }
 
-    public func activateSlot(_ slot: Int, metadata: GoPeepV1StreamInfo) throws {
+    public func activateSlot(_ slot: Int, metadata: ClipLiveShareStreamDescriptor) throws {
         try activateSlot(
             slot,
             metadata: metadata,
@@ -747,7 +766,7 @@ public final class WebRTCPeerHost: LiveShareVideoSlotHosting, @unchecked Sendabl
 
     public func activateSlot(
         _ slot: Int,
-        metadata: GoPeepV1StreamInfo,
+        metadata: ClipLiveShareStreamDescriptor,
         captureGeometry: WebRTCVideoCaptureGeometry
     ) throws {
         try onQueue {
@@ -756,11 +775,11 @@ public final class WebRTCPeerHost: LiveShareVideoSlotHosting, @unchecked Sendabl
                 throw WebRTCPeerHostError.invalidSlot(slot)
             }
             let target = slots[slot]
-            guard metadata.trackID == target.trackID else {
+            guard metadata.mediaTrackID.rawValue == target.trackID else {
                 throw WebRTCPeerHostError.slotTrackMismatch(
                     slot: slot,
                     expected: target.trackID,
-                    actual: metadata.trackID
+                    actual: metadata.mediaTrackID.rawValue
                 )
             }
             guard target.metadata == nil else {
@@ -778,7 +797,7 @@ public final class WebRTCPeerHost: LiveShareVideoSlotHosting, @unchecked Sendabl
     /// no sender, track, data channel, or peer transport is replaced.
     public func updateSlotMetadata(
         _ slot: Int,
-        metadata: GoPeepV1StreamInfo
+        metadata: ClipLiveShareStreamDescriptor
     ) throws {
         try updateSlotMetadata(
             slot,
@@ -792,7 +811,7 @@ public final class WebRTCPeerHost: LiveShareVideoSlotHosting, @unchecked Sendabl
 
     public func updateSlotMetadata(
         _ slot: Int,
-        metadata: GoPeepV1StreamInfo,
+        metadata: ClipLiveShareStreamDescriptor,
         captureGeometry: WebRTCVideoCaptureGeometry
     ) throws {
         try onQueue {
@@ -801,11 +820,11 @@ public final class WebRTCPeerHost: LiveShareVideoSlotHosting, @unchecked Sendabl
                 throw WebRTCPeerHostError.invalidSlot(slot)
             }
             let target = slots[slot]
-            guard metadata.trackID == target.trackID else {
+            guard metadata.mediaTrackID.rawValue == target.trackID else {
                 throw WebRTCPeerHostError.slotTrackMismatch(
                     slot: slot,
                     expected: target.trackID,
-                    actual: metadata.trackID
+                    actual: metadata.mediaTrackID.rawValue
                 )
             }
             guard target.metadata != nil else {
@@ -821,17 +840,17 @@ public final class WebRTCPeerHost: LiveShareVideoSlotHosting, @unchecked Sendabl
     }
 
     @discardableResult
-    public func activateFirstAvailable(metadata: GoPeepV1StreamInfo) throws -> Int {
+    public func activateFirstAvailable(metadata: ClipLiveShareStreamDescriptor) throws -> Int {
         try onQueue {
             try ensureOpen()
             guard let target = slots.first(where: { $0.metadata == nil }) else {
                 throw WebRTCPeerHostError.noAvailableSlot
             }
-            guard metadata.trackID == target.trackID else {
+            guard metadata.mediaTrackID.rawValue == target.trackID else {
                 throw WebRTCPeerHostError.slotTrackMismatch(
                     slot: target.index,
                     expected: target.trackID,
-                    actual: metadata.trackID
+                    actual: metadata.mediaTrackID.rawValue
                 )
             }
             target.frameSource.clearLatestFrame()
@@ -869,6 +888,23 @@ public final class WebRTCPeerHost: LiveShareVideoSlotHosting, @unchecked Sendabl
         )
     }
 
+    /// Sends replaceable high-frequency state such as cursor movement. When
+    /// the DataChannel is above its high-water mark this payload is dropped
+    /// without scheduling a durable replay.
+    @discardableResult
+    public func sendEphemeralControl(
+        _ data: Data,
+        to viewerID: String,
+        isBinary: Bool = false
+    ) -> Bool {
+        sendControl(
+            data,
+            to: viewerID,
+            isBinary: isBinary,
+            isDurable: false
+        )
+    }
+
     private func sendControl(
         _ data: Data,
         to viewerID: String,
@@ -901,23 +937,6 @@ public final class WebRTCPeerHost: LiveShareVideoSlotHosting, @unchecked Sendabl
                 context.awaitsDurableControlDrain = true
             }
             return didSend
-        }
-    }
-
-    @discardableResult
-    public func sendControl(
-        _ message: GoPeepV1Message,
-        to viewerID: String
-    ) throws -> Bool {
-        do {
-            return sendControl(
-                try JSONEncoder().encode(message),
-                to: viewerID,
-                isBinary: false,
-                isDurable: message.type != .cursorPosition
-            )
-        } catch {
-            throw WebRTCPeerHostError.controlMessageEncodingFailed(error.localizedDescription)
         }
     }
 
@@ -970,21 +989,6 @@ public final class WebRTCPeerHost: LiveShareVideoSlotHosting, @unchecked Sendabl
                 deliveredViewerIDs: delivered,
                 unavailableViewerIDs: unavailable
             )
-        }
-    }
-
-    @discardableResult
-    public func broadcastControl(
-        _ message: GoPeepV1Message
-    ) throws -> WebRTCControlDeliveryResult {
-        do {
-            return broadcastControl(
-                try JSONEncoder().encode(message),
-                isBinary: false,
-                isDurable: message.type != .cursorPosition
-            )
-        } catch {
-            throw WebRTCPeerHostError.controlMessageEncodingFailed(error.localizedDescription)
         }
     }
 
@@ -1050,9 +1054,7 @@ public final class WebRTCPeerHost: LiveShareVideoSlotHosting, @unchecked Sendabl
 
             let audioTransceiverConfiguration = RTCRtpTransceiverInit()
             audioTransceiverConfiguration.direction = .sendOnly
-            audioTransceiverConfiguration.streamIds = [
-                WebRTCRuntimeIdentity.systemAudioStreamID,
-            ]
+            audioTransceiverConfiguration.streamIds = [systemAudioStreamID]
             guard let audioTransceiver = connection.addTransceiver(
                 with: systemAudioTrack,
                 init: audioTransceiverConfiguration
@@ -1063,6 +1065,7 @@ public final class WebRTCPeerHost: LiveShareVideoSlotHosting, @unchecked Sendabl
                 on: audioTransceiver,
                 viewerID: viewerID
             )
+            applySystemAudioSenderPolicy(to: audioTransceiver.sender)
 
             let dataConfiguration = RTCDataChannelConfiguration()
             dataConfiguration.isOrdered = true
@@ -1161,8 +1164,10 @@ public final class WebRTCPeerHost: LiveShareVideoSlotHosting, @unchecked Sendabl
                 }
                 let upgradedDescription = RTCSessionDescription(
                     type: description.type,
-                    sdp: WebRTCH264EncoderFactory.upgradingProfileLevels(
-                        in: description.sdp
+                    sdp: WebRTCOpusMusicSDP.applying(
+                        to: WebRTCH264EncoderFactory.upgradingProfileLevels(
+                            in: description.sdp
+                        )
                     )
                 )
                 context.connection.setLocalDescription(upgradedDescription) { [weak self] error in
@@ -1207,21 +1212,28 @@ public final class WebRTCPeerHost: LiveShareVideoSlotHosting, @unchecked Sendabl
         expectedKind: WebRTCSessionDescription.Kind,
         for viewerID: String
     ) async throws {
-        guard description.kind == expectedKind else {
-            throw WebRTCPeerHostError.remoteDescriptionApplicationFailed(
-                "expected \(expectedKind.rawValue), received \(description.kind.rawValue)"
-            )
-        }
-        guard description.sdp.utf8.count <= resourceLimits.maximumSDPPayloadBytes else {
-            throw WebRTCPeerHostError.sessionDescriptionPayloadTooLarge(
-                maximumBytes: resourceLimits.maximumSDPPayloadBytes
-            )
-        }
         try await withCheckedThrowingContinuation {
             (continuation: CheckedContinuation<Void, any Error>) in
             queue.async { [self] in
                 do {
                     let context = try peer(viewerID)
+                    guard description.kind == expectedKind else {
+                        let peerError = WebRTCPeerHostError
+                            .remoteDescriptionApplicationFailed(
+                                "expected \(expectedKind.rawValue), received \(description.kind.rawValue)"
+                            )
+                        removeFailedPeer(context)
+                        throw peerError
+                    }
+                    guard description.sdp.utf8.count
+                        <= resourceLimits.maximumSDPPayloadBytes else {
+                        let peerError = WebRTCPeerHostError
+                            .sessionDescriptionPayloadTooLarge(
+                                maximumBytes: resourceLimits.maximumSDPPayloadBytes
+                            )
+                        removeFailedPeer(context)
+                        throw peerError
+                    }
                     let token = context.operationGeneration.beginRemoteDescription()
                     let rtcDescription = RTCSessionDescription(
                         type: expectedKind == .answer ? .answer : .offer,
@@ -1242,10 +1254,12 @@ public final class WebRTCPeerHost: LiveShareVideoSlotHosting, @unchecked Sendabl
                                     viewerID: viewerID,
                                     underlyingError: error
                                 )
-                                continuation.resume(throwing:
+                                let peerError =
                                     WebRTCPeerHostError.remoteDescriptionApplicationFailed(
                                         error.localizedDescription
-                                    ))
+                                    )
+                                removeFailedPeer(context)
+                                continuation.resume(throwing: peerError)
                             } else {
                                 context.answerTimeoutWorkItem?.cancel()
                                 context.answerTimeoutWorkItem = nil
@@ -1301,6 +1315,25 @@ public final class WebRTCPeerHost: LiveShareVideoSlotHosting, @unchecked Sendabl
             encoding.networkPriority = .high
         }
         sender.parameters = parameters
+    }
+
+    private func applySystemAudioSenderPolicy(to sender: RTCRtpSender) {
+        let parameters = sender.parameters
+        for encoding in parameters.encodings {
+            Self.applySystemAudioEncodingPolicy(to: encoding)
+        }
+        sender.parameters = parameters
+    }
+
+    static func applySystemAudioEncodingPolicy(
+        to encoding: RTCRtpEncodingParameters
+    ) {
+        // `maxaveragebitrate` in the negotiated Opus fmtp selects the
+        // encoder's music target. Keep the sender ceiling aligned with it.
+        let target = NSNumber(value: WebRTCOpusMusicSDP.maximumAverageBitrateBps)
+        encoding.maxBitrateBps = target
+        encoding.bitratePriority = 1
+        encoding.networkPriority = .high
     }
 
     private func setVideoCodecPreference(
@@ -1743,6 +1776,16 @@ public final class WebRTCPeerHost: LiveShareVideoSlotHosting, @unchecked Sendabl
                 context.awaitsDurableControlDrain = false
                 emit(.controlDataChannelDrained(viewerID: viewerID))
             case .controlMessage(let data, let isBinary):
+                guard data.count <= resourceLimits.maximumControlMessagePayloadBytes else {
+                    emit(.error(
+                        viewerID: viewerID,
+                        error: .controlMessagePayloadTooLarge(
+                            maximumBytes: resourceLimits.maximumControlMessagePayloadBytes
+                        )
+                    ))
+                    removeFailedPeer(context)
+                    return
+                }
                 emit(.controlMessageReceived(
                     viewerID: viewerID,
                     data: data,
@@ -1754,6 +1797,17 @@ public final class WebRTCPeerHost: LiveShareVideoSlotHosting, @unchecked Sendabl
                 emit(.error(viewerID: viewerID, error: error))
             }
         }
+    }
+
+    /// Internal boundary shared by the libwebrtc delegate and hostile-peer
+    /// regression tests. Remote control payload violations are deliberately
+    /// scoped to the sending peer.
+    func receiveRemoteControlMessage(
+        _ data: Data,
+        isBinary: Bool = false,
+        from viewerID: String
+    ) {
+        handle(.controlMessage(data, isBinary: isBinary), viewerID: viewerID, connection: nil)
     }
 
     private func emit(_ event: WebRTCPeerHostEvent) {
@@ -1883,7 +1937,7 @@ private final class WebRTCPeerDelegate: NSObject, RTCPeerConnectionDelegate,
         _ peerConnection: RTCPeerConnection,
         didOpen dataChannel: RTCDataChannel
     ) {
-        // Clip creates the GoPeep channel. Ignore unexpected remote channels.
+        // Clip creates the control channel. Ignore unexpected remote channels.
     }
 
     func peerConnection(
@@ -1919,11 +1973,9 @@ private final class WebRTCPeerDelegate: NSObject, RTCPeerConnectionDelegate,
 
     func dataChannel(
         _: RTCDataChannel,
-        didReceiveMessageWith _: RTCDataBuffer
+        didReceiveMessageWith buffer: RTCDataBuffer
     ) {
-        // GoPeep v1's control channel is host-to-viewer only. Discard viewer
-        // payloads at the native delegate boundary so an admitted peer cannot
-        // turn unsolicited messages into unbounded app/event-queue work.
+        forward(.controlMessage(buffer.data, isBinary: buffer.isBinary))
     }
 
     private static func connectionState(
