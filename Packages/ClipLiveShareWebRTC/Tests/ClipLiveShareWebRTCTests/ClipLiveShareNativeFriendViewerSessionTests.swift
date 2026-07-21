@@ -339,6 +339,17 @@ struct ClipLiveShareNativeFriendViewerSessionTests {
       at: fixture.now
     )
 
+    let descriptorData = try ClipLiveShareNativeV2MessageCodec.encode(
+      fixture.signedDescriptor()
+    )
+    harness.peer.emit(
+      .controlMessageReceived(data: descriptorData, isBinary: false)
+    )
+    try await nativeFriendViewerEventually {
+      await harness.recorder.nativeControlMessages() == [descriptorData]
+    }
+    #expect(await harness.recorder.failures().isEmpty)
+
     let failuresBeforeDisconnect = await harness.recorder.failures()
     await harness.transport.emit(
       .disconnected(reason: .connectionLost, willReconnect: false)
@@ -875,6 +886,13 @@ private actor NativeFriendViewerEventRecorder {
     events.count { event in
       if case .rendezvousHandoffCompleted = event { return true }
       return false
+    }
+  }
+
+  func nativeControlMessages() -> [Data] {
+    events.compactMap { event in
+      if case let .nativeControlMessage(data) = event { return data }
+      return nil
     }
   }
 }

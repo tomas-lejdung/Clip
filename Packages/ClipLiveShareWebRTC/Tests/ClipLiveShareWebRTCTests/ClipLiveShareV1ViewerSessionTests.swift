@@ -221,6 +221,17 @@ struct ClipLiveShareV1ViewerSessionTests {
     }
     #expect(closedRoute == fixture.routeID)
 
+    let descriptorData = try ClipLiveShareNativeV2MessageCodec.encode(
+      fixture.signedNativeDescriptor()
+    )
+    sessionPeer.emit(
+      .controlMessageReceived(data: descriptorData, isBinary: false)
+    )
+    try await v1ViewerEventually {
+      await recorder.nativeControlMessages() == [descriptorData]
+    }
+    #expect(await recorder.failures().isEmpty)
+
     await session.close()
     await session.close()
     try await v1ViewerEventually { await recorder.closedCount() == 1 }
@@ -455,6 +466,25 @@ private struct V1ViewerSessionFixture: Sendable {
     return V1ViewerSessionTestHTTP { _, _ in
       .init(statusCode: 200, data: data)
     }
+  }
+
+  func signedNativeDescriptor() throws -> ClipLiveShareSignedNativeSessionDescriptor {
+    let signer = ClipLiveShareSoftwareIdentitySigner()
+    let issuedAt = try ClipLiveShareNativeTimestamp(millisecondsSince1970: 1_000_000)
+    let descriptor = try ClipLiveShareNativeSessionDescriptor(
+      endpoint: endpoint,
+      room: room,
+      rendezvousID: ClipLiveShareRendezvousID(
+        bytes: Data(repeating: 0x51, count: ClipLiveShareNativeV2.rendezvousIDByteCount)
+      ),
+      hostIdentity: signer.publicKey,
+      roomPublicKey: roomIdentity.publicKey,
+      sessionID: sessionID,
+      issuedAt: issuedAt,
+      expiresAt: issuedAt.adding(milliseconds: 300_000),
+      stateRevision: ClipLiveShareStateRevision(rawValue: 1)
+    )
+    return try .init(signing: descriptor, with: signer)
   }
 }
 
@@ -719,6 +749,13 @@ private actor V1ViewerSessionEventRecorder {
   func failures() -> [ClipLiveShareV1ViewerSessionError] {
     events.compactMap { event in
       if case let .failed(error) = event { return error }
+      return nil
+    }
+  }
+
+  func nativeControlMessages() -> [Data] {
+    events.compactMap { event in
+      if case let .nativeControlMessage(data) = event { return data }
       return nil
     }
   }
