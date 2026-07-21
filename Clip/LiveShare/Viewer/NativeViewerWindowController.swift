@@ -14,54 +14,14 @@ private enum NativeViewerHeaderAction {
 }
 
 @MainActor
-private final class NativeViewerHeaderView: NSView {
-    static let height: CGFloat = 34
-
-    private let titleLabel = NSTextField(labelWithString: "")
-    private let controls = NSVisualEffectView()
-    private let zoomButton = NSButton()
-    private let closeButton = NSButton()
+private final class NativeViewerHeaderButton: NSButton {
     private var trackingArea: NSTrackingArea?
-
-    var onAction: ((NativeViewerHeaderAction) -> Void)?
-
-    override var mouseDownCanMoveWindow: Bool { false }
-    override var isOpaque: Bool { false }
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
-
-        titleLabel.font = .systemFont(ofSize: 12, weight: .semibold)
-        titleLabel.textColor = .white
-        titleLabel.lineBreakMode = .byTruncatingTail
-        titleLabel.isSelectable = false
-        titleLabel.setAccessibilityIdentifier("clip.nativeViewer.windowTitle")
-        addSubview(titleLabel)
-
-        controls.material = .hudWindow
-        controls.blendingMode = .withinWindow
-        controls.state = .active
-        controls.wantsLayer = true
-        controls.layer?.cornerRadius = 8
-        controls.layer?.masksToBounds = true
-        controls.alphaValue = 0.48
-        addSubview(controls)
-
-        configureButton(zoomButton, action: #selector(showZoomMenu))
-        zoomButton.title = "100%"
-        zoomButton.image = NSImage(systemSymbolName: "magnifyingglass", accessibilityDescription: nil)
-        zoomButton.imagePosition = .imageLeading
-        zoomButton.setAccessibilityLabel("Viewer zoom")
-        zoomButton.setAccessibilityIdentifier("clip.nativeViewer.zoom")
-        controls.addSubview(zoomButton)
-
-        configureButton(closeButton, action: #selector(closeWindow))
-        closeButton.title = ""
-        closeButton.image = NSImage(systemSymbolName: "xmark", accessibilityDescription: "Close")
-        closeButton.imagePosition = .imageOnly
-        closeButton.setAccessibilityLabel("Close shared window")
-        closeButton.setAccessibilityIdentifier("clip.nativeViewer.close")
-        controls.addSubview(closeButton)
+        wantsLayer = true
+        layer?.backgroundColor = NSColor.clear.cgColor
+        alphaValue = 0.62
     }
 
     @available(*, unavailable)
@@ -83,31 +43,92 @@ private final class NativeViewerHeaderView: NSView {
         super.updateTrackingAreas()
     }
 
+    override func mouseEntered(with event: NSEvent) {
+        setHovered(true)
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        setHovered(false)
+    }
+
+    private func setHovered(_ hovered: Bool) {
+        let targetAlpha: CGFloat = hovered ? 1 : 0.62
+        guard alphaValue != targetAlpha else { return }
+        let duration = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion ? 0 : 0.1
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = duration
+            context.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            animator().alphaValue = targetAlpha
+        }
+    }
+}
+
+@MainActor
+private final class NativeViewerHeaderView: NSView {
+    static let height: CGFloat = 28
+
+    private let titleLabel = NSTextField(labelWithString: "")
+    private let zoomButton = NativeViewerHeaderButton()
+    private let closeButton = NativeViewerHeaderButton()
+
+    var onAction: ((NativeViewerHeaderAction) -> Void)?
+
+    override var mouseDownCanMoveWindow: Bool { false }
+    override var isOpaque: Bool { false }
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+
+        titleLabel.font = .systemFont(ofSize: 12, weight: .semibold)
+        titleLabel.textColor = .white
+        titleLabel.lineBreakMode = .byTruncatingTail
+        titleLabel.isSelectable = false
+        titleLabel.setAccessibilityIdentifier("clip.nativeViewer.windowTitle")
+        addSubview(titleLabel)
+
+        configureButton(zoomButton, action: #selector(showZoomMenu))
+        zoomButton.title = "100%"
+        zoomButton.image = NSImage(systemSymbolName: "magnifyingglass", accessibilityDescription: nil)
+        zoomButton.imagePosition = .imageLeading
+        zoomButton.setAccessibilityLabel("Viewer zoom")
+        zoomButton.setAccessibilityIdentifier("clip.nativeViewer.zoom")
+        addSubview(zoomButton)
+
+        configureButton(closeButton, action: #selector(closeWindow))
+        closeButton.title = ""
+        closeButton.image = NSImage(systemSymbolName: "xmark", accessibilityDescription: "Close")
+        closeButton.imagePosition = .imageOnly
+        closeButton.setAccessibilityLabel("Close shared window")
+        closeButton.setAccessibilityIdentifier("clip.nativeViewer.close")
+        addSubview(closeButton)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
     override func layout() {
         super.layout()
-        let controlWidth: CGFloat = 104
-        controls.frame = CGRect(
-            x: max(6, bounds.width - controlWidth - 5),
-            y: 3,
-            width: min(controlWidth, max(0, bounds.width - 11)),
-            height: max(0, bounds.height - 6)
-        )
+        let closeWidth: CGFloat = 24
+        let zoomWidth: CGFloat = 60
+        let controlHeight = min(CGFloat(22), max(0, bounds.height - 4))
         closeButton.frame = CGRect(
-            x: max(0, controls.bounds.width - 31),
-            y: 0,
-            width: 31,
-            height: controls.bounds.height
+            x: max(4, bounds.width - closeWidth - 4),
+            y: floor((bounds.height - controlHeight) / 2),
+            width: min(closeWidth, max(0, bounds.width - 8)),
+            height: controlHeight
         )
         zoomButton.frame = CGRect(
-            x: 0,
-            y: 0,
-            width: max(0, controls.bounds.width - closeButton.frame.width),
-            height: controls.bounds.height
+            x: max(4, closeButton.frame.minX - zoomWidth - 2),
+            y: closeButton.frame.minY,
+            width: min(zoomWidth, max(0, closeButton.frame.minX - 6)),
+            height: controlHeight
         )
         titleLabel.frame = CGRect(
             x: 8,
             y: floor((bounds.height - 17) / 2),
-            width: max(0, controls.frame.minX - 15),
+            width: max(0, zoomButton.frame.minX - 15),
             height: 17
         )
     }
@@ -115,7 +136,9 @@ private final class NativeViewerHeaderView: NSView {
     override func hitTest(_ point: NSPoint) -> NSView? {
         let hit = super.hitTest(point)
         if let hit,
-           hit === controls || hit.isDescendant(of: controls) {
+           hit === zoomButton || hit === closeButton
+            || hit.isDescendant(of: zoomButton)
+            || hit.isDescendant(of: closeButton) {
             return hit
         }
         return bounds.contains(point) ? self : nil
@@ -125,14 +148,6 @@ private final class NativeViewerHeaderView: NSView {
 
     override func mouseDown(with event: NSEvent) {
         window?.performDrag(with: event)
-    }
-
-    override func mouseEntered(with event: NSEvent) {
-        setControlsVisible(true)
-    }
-
-    override func mouseExited(with event: NSEvent) {
-        setControlsVisible(false)
     }
 
     func updateTitle(_ title: String) {
@@ -156,7 +171,17 @@ private final class NativeViewerHeaderView: NSView {
             : .white
     }
 
-    var controlsOpacity: CGFloat { controls.alphaValue }
+    var controlFrames: (zoom: CGRect, close: CGRect) {
+        (zoomButton.frame, closeButton.frame)
+    }
+
+    var controlOpacities: [CGFloat] {
+        [zoomButton.alphaValue, closeButton.alphaValue]
+    }
+
+    var controlTintColors: [NSColor?] {
+        [zoomButton.contentTintColor, closeButton.contentTintColor]
+    }
 
     private func configureButton(_ button: NSButton, action: Selector) {
         button.target = self
@@ -164,19 +189,8 @@ private final class NativeViewerHeaderView: NSView {
         button.bezelStyle = .inline
         button.isBordered = false
         button.font = .systemFont(ofSize: 11, weight: .semibold)
-        button.contentTintColor = .white
+        button.contentTintColor = .black
         button.focusRingType = .none
-    }
-
-    private func setControlsVisible(_ visible: Bool) {
-        let alpha: CGFloat = visible ? 1 : 0.48
-        guard controls.alphaValue != alpha else { return }
-        let duration = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion ? 0 : 0.14
-        NSAnimationContext.runAnimationGroup { context in
-            context.duration = duration
-            context.timingFunction = CAMediaTimingFunction(name: .easeOut)
-            controls.animator().alphaValue = alpha
-        }
     }
 
     @objc private func showZoomMenu() {
@@ -208,7 +222,7 @@ private final class NativeViewerHeaderView: NSView {
         menu.popUp(
             positioning: nil,
             at: CGPoint(x: zoomButton.frame.minX, y: zoomButton.frame.minY),
-            in: controls
+            in: self
         )
     }
 
@@ -467,7 +481,11 @@ final class NativeViewerContentView: NSView {
             renderedContentSize: videoView.frame.size
         ) ?? 100
     }
-    var idleControlsOpacity: CGFloat { headerView.controlsOpacity }
+    var headerControlFrames: (zoom: CGRect, close: CGRect) {
+        headerView.controlFrames
+    }
+    var headerControlOpacities: [CGFloat] { headerView.controlOpacities }
+    var headerControlTintColors: [NSColor?] { headerView.controlTintColors }
 
     private func layoutVideoSurface() {
         guard videoViewport.bounds.width > 0, videoViewport.bounds.height > 0 else {

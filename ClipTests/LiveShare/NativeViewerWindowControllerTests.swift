@@ -96,10 +96,12 @@ struct NativeViewerWindowControllerTests {
         content.layoutSubtreeIfNeeded()
 
         #expect(content.videoViewportFrame == CGRect(x: 6, y: 6, width: 1_000, height: 500))
-        #expect(content.headerFrame == CGRect(x: 6, y: 506, width: 1_000, height: 34))
+        #expect(content.headerFrame == CGRect(x: 6, y: 506, width: 1_000, height: 28))
         #expect(video.frame == CGRect(x: 0, y: 0, width: 1_000, height: 500))
         #expect(content.headerFrame.minY == content.videoViewportFrame.maxY)
-        #expect(content.idleControlsOpacity < 0.5)
+        #expect(content.headerControlFrames.zoom.maxX < content.headerControlFrames.close.minX)
+        #expect(content.headerControlOpacities.allSatisfy { $0 < 1 })
+        #expect(content.headerControlTintColors.allSatisfy { $0 == .black })
     }
 
     @Test("Viewer windows start windowed and never auto-tab")
