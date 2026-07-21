@@ -38,6 +38,18 @@ struct WebRTCPeerHostTests {
         #expect(snapshot.queuedFrameCount == 0)
     }
 
+    @Test("system audio caps the Opus sender at its music-quality allocation")
+    func systemAudioSenderPolicy() {
+        let encoding = RTCRtpEncodingParameters()
+
+        WebRTCPeerHost.applySystemAudioEncodingPolicy(to: encoding)
+
+        #expect(encoding.minBitrateBps == nil)
+        #expect(encoding.maxBitrateBps?.intValue == 128_000)
+        #expect(encoding.bitratePriority == 1)
+        #expect(encoding.networkPriority == .high)
+    }
+
     @Test("slot activation validates bounds and stable track identity")
     func slotActivation() throws {
         let host = try WebRTCPeerHost(eventQueue: .global())
@@ -95,6 +107,10 @@ struct WebRTCPeerHostTests {
         #expect(!offer.sdp.contains(" AV1/90000"))
         #expect(Self.occurrences(of: "m=audio", in: offer.sdp) == 1)
         #expect(offer.sdp.localizedCaseInsensitiveContains(" opus/48000/2"))
+        #expect(offer.sdp.contains("stereo=1"))
+        #expect(offer.sdp.contains("sprop-stereo=1"))
+        #expect(offer.sdp.contains("maxaveragebitrate=128000"))
+        #expect(offer.sdp.contains("usedtx=0"))
         let audio = host.systemAudioSnapshot
         #expect(offer.sdp.contains("\(audio.streamID) \(audio.trackID)"))
         #expect(offer.sdp.contains("m=application"))

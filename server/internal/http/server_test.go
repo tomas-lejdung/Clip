@@ -188,6 +188,14 @@ func TestCapabilitiesViewerAndSecurityHeaders(t *testing.T) {
 	if assetResponse.StatusCode != http.StatusOK || !strings.Contains(assetResponse.Header.Get("Content-Type"), "javascript") {
 		t.Fatalf("asset response = %d, %q", assetResponse.StatusCode, assetResponse.Header.Get("Content-Type"))
 	}
+	mediaAssetResponse, err := http.Get(server.URL + "/assets/clip-media.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	mediaAssetResponse.Body.Close()
+	if mediaAssetResponse.StatusCode != http.StatusOK || !strings.Contains(mediaAssetResponse.Header.Get("Content-Type"), "javascript") {
+		t.Fatalf("media asset response = %d, %q", mediaAssetResponse.StatusCode, mediaAssetResponse.Header.Get("Content-Type"))
+	}
 	fixtureResponse, err := http.Get(server.URL + "/assets/clip-protocol-tests.html")
 	if err != nil {
 		t.Fatal(err)

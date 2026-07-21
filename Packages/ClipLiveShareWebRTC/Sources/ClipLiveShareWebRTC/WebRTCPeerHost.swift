@@ -319,7 +319,11 @@ public final class WebRTCPeerHost: LiveShareVideoSlotHosting, @unchecked Sendabl
                 isDeviceRecording: systemAudioDevice.isRecording,
                 queuedFrameCount: systemAudioDevice.queuedFrameCount,
                 acceptedFrameCount: systemAudioDevice.acceptedFrameCount,
-                droppedFrameCount: systemAudioDevice.droppedFrameCount
+                droppedFrameCount: systemAudioDevice.droppedFrameCount,
+                underflowFrameCount: systemAudioDevice.underflowFrameCount,
+                deliveryCallbackCount: systemAudioDevice.deliveryCallbackCount,
+                deliveredFrameCount: systemAudioDevice.deliveredFrameCount,
+                deliveryErrorCount: systemAudioDevice.deliveryErrorCount
             )
         }
     }
@@ -1061,6 +1065,7 @@ public final class WebRTCPeerHost: LiveShareVideoSlotHosting, @unchecked Sendabl
                 on: audioTransceiver,
                 viewerID: viewerID
             )
+            applySystemAudioSenderPolicy(to: audioTransceiver.sender)
 
             let dataConfiguration = RTCDataChannelConfiguration()
             dataConfiguration.isOrdered = true
@@ -1159,8 +1164,10 @@ public final class WebRTCPeerHost: LiveShareVideoSlotHosting, @unchecked Sendabl
                 }
                 let upgradedDescription = RTCSessionDescription(
                     type: description.type,
-                    sdp: WebRTCH264EncoderFactory.upgradingProfileLevels(
-                        in: description.sdp
+                    sdp: WebRTCOpusMusicSDP.applying(
+                        to: WebRTCH264EncoderFactory.upgradingProfileLevels(
+                            in: description.sdp
+                        )
                     )
                 )
                 context.connection.setLocalDescription(upgradedDescription) { [weak self] error in
@@ -1308,6 +1315,25 @@ public final class WebRTCPeerHost: LiveShareVideoSlotHosting, @unchecked Sendabl
             encoding.networkPriority = .high
         }
         sender.parameters = parameters
+    }
+
+    private func applySystemAudioSenderPolicy(to sender: RTCRtpSender) {
+        let parameters = sender.parameters
+        for encoding in parameters.encodings {
+            Self.applySystemAudioEncodingPolicy(to: encoding)
+        }
+        sender.parameters = parameters
+    }
+
+    static func applySystemAudioEncodingPolicy(
+        to encoding: RTCRtpEncodingParameters
+    ) {
+        // `maxaveragebitrate` in the negotiated Opus fmtp selects the
+        // encoder's music target. Keep the sender ceiling aligned with it.
+        let target = NSNumber(value: WebRTCOpusMusicSDP.maximumAverageBitrateBps)
+        encoding.maxBitrateBps = target
+        encoding.bitratePriority = 1
+        encoding.networkPriority = .high
     }
 
     private func setVideoCodecPreference(

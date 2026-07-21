@@ -48,6 +48,7 @@ ditto "$ROOT/Clip/Resources/Clip.entitlements" "$RESOLVED_ENTITLEMENTS"
 /usr/libexec/PlistBuddy \
   -c 'Set :com.apple.security.temporary-exception.mach-lookup.global-name:1 com.tomaslejdung.clip-spki' \
   "$RESOLVED_ENTITLEMENTS"
+clip_resolve_library_validation_entitlement "$RESOLVED_ENTITLEMENTS"
 plutil -lint "$RESOLVED_ENTITLEMENTS" >/dev/null
 if grep -Fq '$(' "$RESOLVED_ENTITLEMENTS"; then
   echo "Manual app entitlements contain an unresolved Xcode build setting" >&2

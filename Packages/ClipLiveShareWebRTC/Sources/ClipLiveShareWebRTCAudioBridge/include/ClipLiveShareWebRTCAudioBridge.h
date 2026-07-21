@@ -28,6 +28,15 @@ NS_ASSUME_NONNULL_BEGIN
 @property(nonatomic, readonly) NSUInteger queuedFrameCount;
 @property(nonatomic, readonly) uint64_t acceptedFrameCount;
 @property(nonatomic, readonly) uint64_t droppedFrameCount;
+/// Captured frames that could not be delivered because the input queue ran
+/// dry after playout had started. Initial prebuffering silence is excluded.
+@property(nonatomic, readonly) uint64_t underflowFrameCount;
+/// Calls made into WebRTC's synchronous recording delivery block.
+@property(nonatomic, readonly) uint64_t deliveryCallbackCount;
+/// Stereo PCM frames accepted by WebRTC's recording delivery block.
+@property(nonatomic, readonly) uint64_t deliveredFrameCount;
+/// Recording delivery calls rejected by WebRTC or its render callback.
+@property(nonatomic, readonly) uint64_t deliveryErrorCount;
 
 @end
 

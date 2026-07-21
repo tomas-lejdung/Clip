@@ -85,9 +85,46 @@ struct NativeWebKitViewerAcceptanceTests {
             return
         }
         #expect(await harness.completedEncryptedAdmission)
-        #expect(await harness.completedBidirectionalICEExchange)
+        // The data channel can open before the actor has consumed the final
+        // trickled-candidate callback. Wait for the same strict evidence
+        // instead of racing its bookkeeping immediately after control-open.
+        #expect(await harness.waitUntilBidirectionalICEExchange(
+            timeout: .seconds(3)
+        ))
         #expect(await harness.offerContainsSystemAudioTrack)
         #expect(await harness.closedServerIntroductionRoute)
+        let opusNegotiation = await harness.opusNegotiationSnapshot
+        #expect(opusNegotiation.offerRtpmap.contains("opus/48000/2"))
+        #expect(
+            opusFmtpParameter("stereo", in: opusNegotiation.offerFmtp) == "1",
+            Comment(rawValue:
+                "The host offered speech-oriented mono Opus: "
+                    + opusNegotiation.description)
+        )
+        #expect(
+            opusFmtpParameter("stereo", in: opusNegotiation.answerFmtp) == "1",
+            Comment(rawValue:
+                "WebKit did not negotiate stereo Opus: "
+                    + opusNegotiation.description)
+        )
+        #expect(opusFmtpParameter(
+            "sprop-stereo",
+            in: opusNegotiation.offerFmtp
+        ) == "1")
+        #expect(opusFmtpParameter(
+            "sprop-stereo",
+            in: opusNegotiation.answerFmtp
+        ) == "1")
+        #expect(opusFmtpParameter(
+            "maxaveragebitrate",
+            in: opusNegotiation.offerFmtp
+        ) == "128000")
+        #expect(opusFmtpParameter(
+            "maxaveragebitrate",
+            in: opusNegotiation.answerFmtp
+        ) == "128000")
+        #expect(opusFmtpParameter("usedtx", in: opusNegotiation.offerFmtp) == "0")
+        #expect(opusFmtpParameter("usedtx", in: opusNegotiation.answerFmtp) == "0")
 
         // The audio transceiver is intentionally present in the initial offer,
         // but that must not imply that ScreenCaptureKit audio is active. The
@@ -181,6 +218,141 @@ struct NativeWebKitViewerAcceptanceTests {
             timeout: .seconds(2)
         ) { $0.audioTrackVisible && $0.audioControlEnabled }
         #expect(audioReenabled)
+
+        // Track presence and inbound byte counters cannot distinguish valid
+        // music from a mono, starved, clipped, or otherwise damaged stream.
+        // Analyse decoded PCM in WebKit while routing the probe through a
+        // zero-gain node so this unattended lane never reaches the speakers.
+        let probeStarted = try await startNativeWebKitAudioQualityProbe(in: webView)
+        #expect(probeStarted)
+
+        let batchFrames = 25_200
+        var firstFrame = 0
+        // Prime the Opus path and the browser jitter buffer before measuring.
+        for _ in 0..<2 {
+            try await harness.sendAudioQualityFixture(
+                firstFrame: firstFrame,
+                frameCount: batchFrames
+            )
+            firstFrame += batchFrames
+            try await Task.sleep(for: .milliseconds(480))
+        }
+        try await resetNativeWebKitAudioQualityProbe(in: webView)
+
+        let deliveryBefore = await harness.systemAudioDeliverySnapshot
+        for _ in 0..<6 {
+            try await harness.sendAudioQualityFixture(
+                firstFrame: firstFrame,
+                frameCount: batchFrames
+            )
+            firstFrame += batchFrames
+            try await Task.sleep(for: .milliseconds(480))
+        }
+        let deliveryAfter = await harness.systemAudioDeliverySnapshot
+        let quality = try await nativeWebKitAudioQualitySnapshot(webView)
+        if ProcessInfo.processInfo.environment["CLIP_LIVE_SHARE_AUDIO_DIAGNOSTICS"] == "1" {
+            print("CLIP_AUDIO_OPUS \(opusNegotiation.description)")
+            print(
+                "CLIP_AUDIO_QUALITY context=\(quality.contextState) "
+                    + "sampleRate=\(quality.sampleRate) "
+                    + "channels=\(quality.channelCount) "
+                    + "samples=\(quality.sampleCount) "
+                    + "silentBlocks=\(quality.silentBlockRatio) "
+                    + "clippedSamples=\(quality.clippedSampleRatio) "
+                    + "leftRMS=\(quality.leftRMS) rightRMS=\(quality.rightRMS) "
+                    + "leftToneRatio=\(quality.leftDesiredToneRatio) "
+                    + "rightToneRatio=\(quality.rightDesiredToneRatio) "
+                    + "leftSeparationDB=\(quality.leftSeparationDB) "
+                    + "rightSeparationDB=\(quality.rightSeparationDB) "
+                    + "leftFrequencyHz=\(quality.leftDominantFrequencyHz) "
+                    + "rightFrequencyHz=\(quality.rightDominantFrequencyHz) "
+                    + "measurementMs=\(quality.measurementMilliseconds) "
+                    + "inboundBitrateBps=\(String(describing: quality.inboundBitrateBps)) "
+                    + "inboundCodec=\(String(describing: quality.inboundCodec)) "
+                    + "statsMs="
+                    + "\(String(describing: quality.inboundStatisticsMilliseconds)) "
+                    + "bytesDelta="
+                    + "\(String(describing: quality.inboundBytesReceivedDelta)) "
+                    + "packetsDelta="
+                    + "\(String(describing: quality.inboundPacketsReceivedDelta)) "
+                    + "packetsPerSecond="
+                    + "\(String(describing: quality.inboundPacketsPerSecond)) "
+                    + "samplesDelta="
+                    + "\(String(describing: quality.inboundTotalSamplesDelta)) "
+                    + "samplesPerSecond="
+                    + "\(String(describing: quality.inboundSamplesPerSecond)) "
+                    + "concealedDelta="
+                    + "\(String(describing: quality.inboundConcealedSamplesDelta)) "
+                    + "silentConcealedDelta="
+                    + "\(String(describing: quality.inboundSilentConcealedSamplesDelta)) "
+                    + "packetLossPercent="
+                    + "\(String(describing: quality.inboundPacketLossPercent)) "
+                    + "concealedSamplePercent="
+                    + "\(String(describing: quality.inboundConcealedSamplePercent)) "
+                    + "insertedSamples="
+                    + "\(String(describing: quality.inboundInsertedSamples)) "
+                    + "removedSamples="
+                    + "\(String(describing: quality.inboundRemovedSamples))"
+            )
+            print("CLIP_AUDIO_DELIVERY before=\(deliveryBefore) after=\(deliveryAfter)")
+        }
+        try await stopNativeWebKitAudioQualityProbe(in: webView)
+
+        #expect(deliveryAfter.acceptedFrameCount - deliveryBefore.acceptedFrameCount
+            == UInt64(batchFrames * 6))
+        #expect(deliveryAfter.droppedFrameCount == deliveryBefore.droppedFrameCount)
+        #expect(deliveryAfter.underflowFrameCount == deliveryBefore.underflowFrameCount)
+        #expect(deliveryAfter.deliveryErrorCount == deliveryBefore.deliveryErrorCount)
+        let deliveredCallbacks = deliveryAfter.deliveryCallbackCount
+            - deliveryBefore.deliveryCallbackCount
+        let deliveredFrames = deliveryAfter.deliveredFrameCount
+            - deliveryBefore.deliveredFrameCount
+        #expect(deliveredFrames == deliveredCallbacks * 480)
+        #expect(deliveredFrames >= 96_000)
+
+        // These generous bounds reject the original half-buffer/mono failure
+        // and audible starvation while leaving ample room for ordinary Opus
+        // loss, WebKit clock correction, and scheduler variance.
+        #expect(quality.contextState == "running")
+        #expect(quality.channelCount >= 2)
+        #expect(quality.sampleCount >= 96_000)
+        #expect(quality.silentBlockRatio < 0.08)
+        #expect(quality.clippedSampleRatio < 0.001)
+        #expect(quality.leftRMS > 0.03 && quality.leftRMS < 0.16)
+        #expect(quality.rightRMS > 0.03 && quality.rightRMS < 0.16)
+        #expect(quality.leftDesiredToneRatio > 0.65)
+        #expect(quality.rightDesiredToneRatio > 0.65)
+        #expect(quality.leftSeparationDB > 8)
+        #expect(quality.rightSeparationDB > 8)
+        #expect(abs(quality.leftDominantFrequencyHz - 440) < 15)
+        #expect(abs(quality.rightDominantFrequencyHz - 997) < 20)
+
+        // RTCStats fields are not mandatory in every WebKit release. When
+        // present, validate cadence and concealment over the same measured
+        // interval instead of relying on lifetime counters.
+        if let codec = quality.inboundCodec {
+            #expect(codec.lowercased() == "audio/opus")
+        }
+        if let bitrate = quality.inboundBitrateBps {
+            #expect(bitrate > 96_000 && bitrate < 160_000)
+        }
+        if let packetsPerSecond = quality.inboundPacketsPerSecond {
+            #expect(packetsPerSecond > 40 && packetsPerSecond < 60)
+        }
+        if let samplesPerSecond = quality.inboundSamplesPerSecond {
+            #expect(samplesPerSecond > 45_000 && samplesPerSecond < 51_000)
+        }
+        if let loss = quality.inboundPacketLossPercent {
+            #expect(loss < 1)
+        }
+        if let concealment = quality.inboundConcealedSamplePercent {
+            #expect(concealment < 1)
+        }
+        if let sampleCount = quality.inboundTotalSamplesDelta {
+            let inserted = quality.inboundInsertedSamples ?? 0
+            let removed = quality.inboundRemovedSamples ?? 0
+            #expect(inserted + removed < sampleCount * 0.02)
+        }
     }
 }
 }
@@ -260,6 +432,17 @@ private actor NativeWebKitHostHarness {
     }
     var closedServerIntroductionRoute: Bool { serverRouteCloseRequested }
     var failureDescription: String? { failure }
+    var systemAudioDeliverySnapshot: WebRTCSystemAudioSnapshot {
+        peerHost.systemAudioSnapshot
+    }
+    var opusNegotiationSnapshot: NativeWebKitOpusNegotiationSnapshot {
+        NativeWebKitOpusNegotiationSnapshot(
+            offerRtpmap: opusRtpmap(in: offerSDP),
+            offerFmtp: opusFmtp(in: offerSDP),
+            answerRtpmap: opusRtpmap(in: answerSDP),
+            answerFmtp: opusFmtp(in: answerSDP)
+        )
+    }
 
     func start() async throws -> URL {
         let events = await signaling.events()
@@ -288,6 +471,12 @@ private actor NativeWebKitHostHarness {
     func waitUntilControlOpen(timeout: Duration) async -> Bool {
         await waitUntil(timeout: timeout) { controlIsOpen || failure != nil }
             && controlIsOpen
+    }
+
+    func waitUntilBidirectionalICEExchange(timeout: Duration) async -> Bool {
+        await waitUntil(timeout: timeout) {
+            completedBidirectionalICEExchange || failure != nil
+        } && completedBidirectionalICEExchange
     }
 
     func activateFixtureSlot() throws {
@@ -364,6 +553,24 @@ private actor NativeWebKitHostHarness {
             )),
             to: viewerID
         )
+    }
+
+    func sendAudioQualityFixture(
+        firstFrame: Int,
+        frameCount: Int
+    ) throws {
+        if let failure {
+            throw NativeWebKitAcceptanceError.runtime(failure)
+        }
+        let sample = try makeNativeWebKitStereoAudioFixture(
+            firstFrame: firstFrame,
+            frameCount: frameCount
+        )
+        guard peerHost.send(BorrowedCaptureAudioSample(sampleBuffer: sample)) else {
+            throw NativeWebKitAcceptanceError.runtime(
+                "The native host rejected deterministic system audio."
+            )
+        }
     }
 
     func sendFixtureFrame(index: Int) throws {
@@ -838,12 +1045,524 @@ private func selectNativeScale(in webView: WKWebView) async throws {
     }
 }
 
+private struct NativeWebKitAudioQualitySnapshot: Decodable {
+    let contextState: String
+    let sampleRate: Double
+    let channelCount: Int
+    let sampleCount: Int
+    let silentBlockRatio: Double
+    let clippedSampleRatio: Double
+    let leftRMS: Double
+    let rightRMS: Double
+    let leftDesiredToneRatio: Double
+    let rightDesiredToneRatio: Double
+    let leftSeparationDB: Double
+    let rightSeparationDB: Double
+    let leftDominantFrequencyHz: Double
+    let rightDominantFrequencyHz: Double
+    let measurementMilliseconds: Double
+    let inboundBitrateBps: Double?
+    let inboundCodec: String?
+    let inboundStatisticsMilliseconds: Double?
+    let inboundBytesReceivedDelta: Double?
+    let inboundPacketsReceivedDelta: Double?
+    let inboundPacketsPerSecond: Double?
+    let inboundTotalSamplesDelta: Double?
+    let inboundSamplesPerSecond: Double?
+    let inboundConcealedSamplesDelta: Double?
+    let inboundSilentConcealedSamplesDelta: Double?
+    let inboundPacketLossPercent: Double?
+    let inboundConcealedSamplePercent: Double?
+    let inboundInsertedSamples: Double?
+    let inboundRemovedSamples: Double?
+}
+
+@MainActor
+private func startNativeWebKitAudioQualityProbe(in webView: WKWebView) async throws -> Bool {
+    let result = try await webView.evaluateJavaScript(#"""
+    (() => {
+      if (window.__clipNativeAcceptanceAudioProbe) return true;
+      const element = document.getElementById("system-audio");
+      const track = element?.srcObject?.getAudioTracks?.()[0] || null;
+      const Context = window.AudioContext || window.webkitAudioContext;
+      if (!track || !Context) return false;
+
+      let context;
+      try {
+        context = new Context({ latencyHint: "interactive", sampleRate: 48000 });
+      } catch (_) {
+        context = new Context();
+      }
+      const source = context.createMediaStreamSource(new MediaStream([track]));
+      const processor = context.createScriptProcessor(2048, 2, 2);
+      const silentOutput = context.createGain();
+      silentOutput.gain.value = 0;
+      const previousElementMuted = element.muted;
+      element.muted = true;
+
+      const makeChannel = () => ({
+        samples: 0,
+        sumSquares: 0,
+        clipped: 0,
+        positiveCrossings: 0,
+        previousSample: 0,
+        toneRatios: [],
+        separationDB: [],
+      });
+      const probe = {
+        context,
+        source,
+        processor,
+        silentOutput,
+        element,
+        previousElementMuted,
+        channelCount: 0,
+        blocks: 0,
+        silentBlocks: 0,
+        channels: [makeChannel(), makeChannel()],
+        reset() {
+          const diagnostics = window.__clipLiveShareAudioDiagnostics;
+          const inbound = diagnostics?.tracks?.[0];
+          const counter = (value) => Number.isFinite(value) ? value : null;
+          this.channelCount = 0;
+          this.blocks = 0;
+          this.silentBlocks = 0;
+          this.channels = [makeChannel(), makeChannel()];
+          this.startedAt = performance.now();
+          this.inboundStart = {
+            updatedAt: counter(diagnostics?.updatedAt),
+            trackIdentifier: typeof inbound?.trackIdentifier === "string"
+              ? inbound.trackIdentifier : null,
+            bytesReceived: counter(inbound?.bytesReceived),
+            packetsReceived: counter(inbound?.packetsReceived),
+            packetsLost: counter(inbound?.packetsLost),
+            totalSamplesReceived: counter(inbound?.totalSamplesReceived),
+            concealedSamples: counter(inbound?.concealedSamples),
+            silentConcealedSamples: counter(inbound?.silentConcealedSamples),
+            insertedSamplesForDeceleration:
+              counter(inbound?.insertedSamplesForDeceleration),
+            removedSamplesForAcceleration:
+              counter(inbound?.removedSamplesForAcceleration),
+          };
+        },
+      };
+
+      processor.onaudioprocess = (event) => {
+        const input = event.inputBuffer;
+        probe.channelCount = Math.max(probe.channelCount, input.numberOfChannels);
+        const channelData = [
+          input.getChannelData(0),
+          input.getChannelData(Math.min(1, input.numberOfChannels - 1)),
+        ];
+        let blockSquares = 0;
+        for (let channelIndex = 0; channelIndex < 2; channelIndex += 1) {
+          const samples = channelData[channelIndex];
+          const state = probe.channels[channelIndex];
+          const desiredFrequency = channelIndex === 0 ? 440 : 997;
+          const wrongFrequency = channelIndex === 0 ? 997 : 440;
+          let desiredCos = 0;
+          let desiredSin = 0;
+          let wrongCos = 0;
+          let wrongSin = 0;
+          let windowSum = 0;
+          let channelBlockSquares = 0;
+          for (let index = 0; index < samples.length; index += 1) {
+            const value = samples[index];
+            const window = samples.length > 1
+              ? 0.5 - 0.5 * Math.cos(2 * Math.PI * index / (samples.length - 1))
+              : 1;
+            const desiredPhase = 2 * Math.PI * desiredFrequency
+              * index / input.sampleRate;
+            const wrongPhase = 2 * Math.PI * wrongFrequency
+              * index / input.sampleRate;
+            state.sumSquares += value * value;
+            channelBlockSquares += value * value;
+            blockSquares += value * value;
+            if (Math.abs(value) >= 0.999) state.clipped += 1;
+            if (state.previousSample <= 0 && value > 0) {
+              state.positiveCrossings += 1;
+            }
+            state.previousSample = value;
+            desiredCos += value * window * Math.cos(desiredPhase);
+            desiredSin += value * window * Math.sin(desiredPhase);
+            wrongCos += value * window * Math.cos(wrongPhase);
+            wrongSin += value * window * Math.sin(wrongPhase);
+            windowSum += window;
+          }
+          const blockRMS = Math.sqrt(channelBlockSquares / samples.length);
+          if (blockRMS >= 0.005) {
+            const desiredAmplitude = 2 * Math.hypot(desiredCos, desiredSin)
+              / Math.max(1, windowSum);
+            const wrongAmplitude = 2 * Math.hypot(wrongCos, wrongSin)
+              / Math.max(1, windowSum);
+            state.toneRatios.push(
+              desiredAmplitude / Math.max(1e-9, Math.SQRT2 * blockRMS),
+            );
+            state.separationDB.push(20 * Math.log10(
+              Math.max(1e-9, desiredAmplitude) / Math.max(1e-9, wrongAmplitude),
+            ));
+          }
+          state.samples += samples.length;
+        }
+        probe.blocks += 1;
+        const blockSampleCount = channelData[0].length * 2;
+        if (Math.sqrt(blockSquares / Math.max(1, blockSampleCount)) < 0.005) {
+          probe.silentBlocks += 1;
+        }
+      };
+
+      source.connect(processor);
+      processor.connect(silentOutput);
+      silentOutput.connect(context.destination);
+      window.__clipNativeAcceptanceAudioProbe = probe;
+      context.resume().catch(() => {});
+      return true;
+    })()
+    """#)
+    return result as? Bool == true
+}
+
+@MainActor
+private func resetNativeWebKitAudioQualityProbe(in webView: WKWebView) async throws {
+    let reset = try await webView.evaluateJavaScript(#"""
+    (() => {
+      const probe = window.__clipNativeAcceptanceAudioProbe;
+      if (!probe) return false;
+      probe.reset();
+      return true;
+    })()
+    """#)
+    guard reset as? Bool == true else {
+        throw NativeWebKitAcceptanceError.runtime(
+            "The WebKit decoded-audio quality probe was unavailable."
+        )
+    }
+}
+
+@MainActor
+private func stopNativeWebKitAudioQualityProbe(in webView: WKWebView) async throws {
+    let stopped = try await webView.evaluateJavaScript(#"""
+    (() => {
+      const probe = window.__clipNativeAcceptanceAudioProbe;
+      if (!probe) return false;
+      probe.processor.onaudioprocess = null;
+      probe.source.disconnect();
+      probe.processor.disconnect();
+      probe.silentOutput.disconnect();
+      probe.element.muted = probe.previousElementMuted;
+      probe.context.close().catch(() => {});
+      delete window.__clipNativeAcceptanceAudioProbe;
+      return true;
+    })()
+    """#)
+    guard stopped as? Bool == true else {
+        throw NativeWebKitAcceptanceError.runtime(
+            "The WebKit decoded-audio quality probe could not be stopped."
+        )
+    }
+}
+
+@MainActor
+private func nativeWebKitAudioQualitySnapshot(
+    _ webView: WKWebView
+) async throws -> NativeWebKitAudioQualitySnapshot {
+    let result = try await webView.evaluateJavaScript(#"""
+    (() => {
+      const probe = window.__clipNativeAcceptanceAudioProbe;
+      if (!probe) return null;
+      const median = (values) => {
+        if (!Array.isArray(values) || values.length === 0) return 0;
+        const sorted = [...values].sort((left, right) => left - right);
+        const middle = Math.floor(sorted.length / 2);
+        return sorted.length % 2 === 0
+          ? (sorted[middle - 1] + sorted[middle]) / 2
+          : sorted[middle];
+      };
+      const metrics = probe.channels.map((channel) => {
+        const count = Math.max(1, channel.samples);
+        const rms = Math.sqrt(channel.sumSquares / count);
+        return {
+          rms,
+          clippedRatio: channel.clipped / count,
+          desiredRatio: median(channel.toneRatios),
+          separationDB: median(channel.separationDB),
+          dominantFrequencyHz: channel.positiveCrossings
+            * probe.context.sampleRate / count,
+        };
+      });
+      const diagnostics = window.__clipLiveShareAudioDiagnostics;
+      const inbound = diagnostics?.tracks?.find((track) =>
+        !probe.inboundStart?.trackIdentifier
+          || track.trackIdentifier === probe.inboundStart.trackIdentifier
+      ) || diagnostics?.tracks?.[0] || null;
+      const measurementMilliseconds = performance.now() - probe.startedAt;
+      const counter = (value) => Number.isFinite(value) ? value : null;
+      const counterDelta = (end, start) => {
+        const current = counter(end);
+        const previous = counter(start);
+        return current !== null && previous !== null && current >= previous
+          ? current - previous : null;
+      };
+      const inboundStatisticsMilliseconds =
+        counter(diagnostics?.updatedAt) !== null
+        && counter(probe.inboundStart?.updatedAt) !== null
+        && diagnostics.updatedAt > probe.inboundStart.updatedAt
+          ? diagnostics.updatedAt - probe.inboundStart.updatedAt : null;
+      const inboundBytesReceivedDelta = counterDelta(
+        inbound?.bytesReceived,
+        probe.inboundStart?.bytesReceived,
+      );
+      const inboundPacketsReceivedDelta = counterDelta(
+        inbound?.packetsReceived,
+        probe.inboundStart?.packetsReceived,
+      );
+      const inboundPacketsLostDelta = counterDelta(
+        inbound?.packetsLost,
+        probe.inboundStart?.packetsLost,
+      );
+      const inboundTotalSamplesDelta = counterDelta(
+        inbound?.totalSamplesReceived,
+        probe.inboundStart?.totalSamplesReceived,
+      );
+      const inboundConcealedSamplesDelta = counterDelta(
+        inbound?.concealedSamples,
+        probe.inboundStart?.concealedSamples,
+      );
+      const inboundSilentConcealedSamplesDelta = counterDelta(
+        inbound?.silentConcealedSamples,
+        probe.inboundStart?.silentConcealedSamples,
+      );
+      const inboundInsertedSamplesDelta = counterDelta(
+        inbound?.insertedSamplesForDeceleration,
+        probe.inboundStart?.insertedSamplesForDeceleration,
+      );
+      const inboundRemovedSamplesDelta = counterDelta(
+        inbound?.removedSamplesForAcceleration,
+        probe.inboundStart?.removedSamplesForAcceleration,
+      );
+      const statisticsSeconds = inboundStatisticsMilliseconds === null
+        ? null : inboundStatisticsMilliseconds / 1000;
+      const packetDenominator = inboundPacketsReceivedDelta !== null
+        && inboundPacketsLostDelta !== null
+          ? inboundPacketsReceivedDelta + Math.max(0, inboundPacketsLostDelta)
+          : null;
+      return JSON.stringify({
+        contextState: probe.context.state,
+        sampleRate: probe.context.sampleRate,
+        channelCount: probe.channelCount,
+        sampleCount: Math.min(
+          probe.channels[0].samples,
+          probe.channels[1].samples,
+        ),
+        silentBlockRatio: probe.silentBlocks / Math.max(1, probe.blocks),
+        clippedSampleRatio: Math.max(
+          metrics[0].clippedRatio,
+          metrics[1].clippedRatio,
+        ),
+        leftRMS: metrics[0].rms,
+        rightRMS: metrics[1].rms,
+        leftDesiredToneRatio: metrics[0].desiredRatio,
+        rightDesiredToneRatio: metrics[1].desiredRatio,
+        leftSeparationDB: metrics[0].separationDB,
+        rightSeparationDB: metrics[1].separationDB,
+        leftDominantFrequencyHz: metrics[0].dominantFrequencyHz,
+        rightDominantFrequencyHz: metrics[1].dominantFrequencyHz,
+        measurementMilliseconds,
+        inboundBitrateBps: inboundBytesReceivedDelta === null
+          || statisticsSeconds === null
+          ? null
+          : inboundBytesReceivedDelta * 8 / statisticsSeconds,
+        inboundCodec: typeof inbound?.codec === "string" ? inbound.codec : null,
+        inboundStatisticsMilliseconds,
+        inboundBytesReceivedDelta,
+        inboundPacketsReceivedDelta,
+        inboundPacketsPerSecond: inboundPacketsReceivedDelta === null
+          || statisticsSeconds === null
+          ? null : inboundPacketsReceivedDelta / statisticsSeconds,
+        inboundTotalSamplesDelta,
+        inboundSamplesPerSecond: inboundTotalSamplesDelta === null
+          || statisticsSeconds === null
+          ? null : inboundTotalSamplesDelta / statisticsSeconds,
+        inboundConcealedSamplesDelta,
+        inboundSilentConcealedSamplesDelta,
+        inboundPacketLossPercent: inboundPacketsLostDelta === null
+          || packetDenominator === null || packetDenominator <= 0
+          ? null : inboundPacketsLostDelta * 100 / packetDenominator,
+        inboundConcealedSamplePercent: inboundConcealedSamplesDelta === null
+          || inboundTotalSamplesDelta === null || inboundTotalSamplesDelta <= 0
+          ? null : inboundConcealedSamplesDelta * 100 / inboundTotalSamplesDelta,
+        inboundInsertedSamples: inboundInsertedSamplesDelta,
+        inboundRemovedSamples: inboundRemovedSamplesDelta,
+      });
+    })()
+    """#)
+    guard let json = result as? String,
+          let data = json.data(using: .utf8) else {
+        throw NativeWebKitAcceptanceError.runtime(
+            "WebKit did not return decoded-audio quality measurements."
+        )
+    }
+    return try JSONDecoder().decode(NativeWebKitAudioQualitySnapshot.self, from: data)
+}
+
 private func javaScriptStringLiteral(_ value: String) throws -> String {
     let data = try JSONEncoder().encode(value)
     guard let literal = String(data: data, encoding: .utf8) else {
         throw NativeWebKitAcceptanceError.invalidBrowserSnapshot
     }
     return literal
+}
+
+private struct NativeWebKitOpusNegotiationSnapshot: Sendable {
+    let offerRtpmap: String
+    let offerFmtp: String
+    let answerRtpmap: String
+    let answerFmtp: String
+
+    var description: String {
+        "offer=[\(offerRtpmap); \(offerFmtp)] "
+            + "answer=[\(answerRtpmap); \(answerFmtp)]"
+    }
+}
+
+private func opusRtpmap(in sdp: String) -> String {
+    sdp.components(separatedBy: .newlines).first {
+        $0.localizedCaseInsensitiveContains("opus/48000")
+            && $0.hasPrefix("a=rtpmap:")
+    }?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "<missing>"
+}
+
+private func opusFmtp(in sdp: String) -> String {
+    let rtpmap = opusRtpmap(in: sdp)
+    guard rtpmap != "<missing>",
+          let payload = rtpmap
+            .dropFirst("a=rtpmap:".count)
+            .split(separator: " ")
+            .first else {
+        return "<missing>"
+    }
+    let prefix = "a=fmtp:\(payload)"
+    return sdp.components(separatedBy: .newlines).first {
+        $0.hasPrefix(prefix)
+    }?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "<missing>"
+}
+
+private func opusFmtpParameter(_ name: String, in line: String) -> String? {
+    let components = line.split(separator: " ", maxSplits: 1)
+    guard components.count == 2 else { return nil }
+    let parameters = components[1]
+    for parameter in parameters.split(separator: ";") {
+        let pair = parameter.split(separator: "=", maxSplits: 1)
+        guard pair.count == 2 else { continue }
+        if pair[0].trimmingCharacters(in: .whitespaces).lowercased()
+            == name.lowercased() {
+            return pair[1].trimmingCharacters(in: .whitespaces)
+        }
+    }
+    return nil
+}
+
+private enum NativeWebKitAudioFixtureError: Error {
+    case blockBuffer(OSStatus)
+    case fillBlockBuffer(OSStatus)
+    case format(OSStatus)
+    case sample(OSStatus)
+}
+
+/// Phase-continuous stereo music surrogate: the independent frequencies make
+/// mono collapse and cross-channel corruption objectively visible after Opus.
+private func makeNativeWebKitStereoAudioFixture(
+    firstFrame: Int,
+    frameCount: Int
+) throws -> CMSampleBuffer {
+    let channels = 2
+    let sampleRate = 48_000.0
+    var samples = [Float](repeating: 0, count: frameCount * channels)
+    for frame in 0..<frameCount {
+        let absoluteFrame = firstFrame + frame
+        samples[frame * channels] = Float(
+            sin(2 * .pi * 440 * Double(absoluteFrame) / sampleRate) * 0.1
+        )
+        samples[frame * channels + 1] = Float(
+            sin(2 * .pi * 997 * Double(absoluteFrame) / sampleRate) * 0.1
+        )
+    }
+
+    let byteCount = samples.count * MemoryLayout<Float>.size
+    var blockBuffer: CMBlockBuffer?
+    let blockStatus = CMBlockBufferCreateWithMemoryBlock(
+        allocator: kCFAllocatorDefault,
+        memoryBlock: nil,
+        blockLength: byteCount,
+        blockAllocator: kCFAllocatorDefault,
+        customBlockSource: nil,
+        offsetToData: 0,
+        dataLength: byteCount,
+        flags: 0,
+        blockBufferOut: &blockBuffer
+    )
+    guard blockStatus == kCMBlockBufferNoErr, let blockBuffer else {
+        throw NativeWebKitAudioFixtureError.blockBuffer(blockStatus)
+    }
+    let fillStatus = samples.withUnsafeBytes { bytes in
+        CMBlockBufferReplaceDataBytes(
+            with: bytes.baseAddress!,
+            blockBuffer: blockBuffer,
+            offsetIntoDestination: 0,
+            dataLength: byteCount
+        )
+    }
+    guard fillStatus == kCMBlockBufferNoErr else {
+        throw NativeWebKitAudioFixtureError.fillBlockBuffer(fillStatus)
+    }
+
+    let bytesPerFrame = UInt32(channels * MemoryLayout<Float>.size)
+    var description = AudioStreamBasicDescription(
+        mSampleRate: sampleRate,
+        mFormatID: kAudioFormatLinearPCM,
+        mFormatFlags: kAudioFormatFlagIsFloat | kAudioFormatFlagIsPacked,
+        mBytesPerPacket: bytesPerFrame,
+        mFramesPerPacket: 1,
+        mBytesPerFrame: bytesPerFrame,
+        mChannelsPerFrame: UInt32(channels),
+        mBitsPerChannel: 32,
+        mReserved: 0
+    )
+    var format: CMAudioFormatDescription?
+    let formatStatus = CMAudioFormatDescriptionCreate(
+        allocator: kCFAllocatorDefault,
+        asbd: &description,
+        layoutSize: 0,
+        layout: nil,
+        magicCookieSize: 0,
+        magicCookie: nil,
+        extensions: nil,
+        formatDescriptionOut: &format
+    )
+    guard formatStatus == noErr, let format else {
+        throw NativeWebKitAudioFixtureError.format(formatStatus)
+    }
+
+    var sample: CMSampleBuffer?
+    let sampleStatus = CMAudioSampleBufferCreateWithPacketDescriptions(
+        allocator: kCFAllocatorDefault,
+        dataBuffer: blockBuffer,
+        dataReady: true,
+        makeDataReadyCallback: nil,
+        refcon: nil,
+        formatDescription: format,
+        sampleCount: frameCount,
+        presentationTimeStamp: CMTime(
+            value: CMTimeValue(firstFrame),
+            timescale: 48_000
+        ),
+        packetDescriptions: nil,
+        sampleBufferOut: &sample
+    )
+    guard sampleStatus == noErr, let sample else {
+        throw NativeWebKitAudioFixtureError.sample(sampleStatus)
+    }
+    return sample
 }
 
 private enum NativeWebKitAcceptanceError: Error, LocalizedError {

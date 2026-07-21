@@ -122,5 +122,5 @@ CLIP_LIVE_SHARE_ACCEPTANCE_ENDPOINT="http://127.0.0.1:$PORT" \
   swift test --package-path "$WEBRTC_PACKAGE"
 
 echo "Clip Live Share local acceptance passed."
-echo "Covered: in-memory room ownership, authenticated host routing, encrypted signaling, the embedded WebKit viewer, browser crypto/viewer assets, native peer/control/audio tests, and strict resource bounds."
+echo "Covered: in-memory room ownership, authenticated host routing, encrypted signaling, browser crypto/viewer assets, native peer/control tests, and decoded stereo Opus waveform quality through the embedded WebKit viewer."
 echo "Not claimed: real ScreenCaptureKit content, audible hardware output, remote Internet/TURN traversal, overlay exclusion, or signed-DMG packaging."

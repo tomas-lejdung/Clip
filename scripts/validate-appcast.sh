@@ -207,6 +207,11 @@ if /usr/libexec/PlistBuddy \
     /dev/stdin <<<"$ENTITLEMENTS" >/dev/null 2>&1; then
   fail "packaged app contains com.apple.security.get-task-allow"
 fi
+if /usr/libexec/PlistBuddy \
+    -c 'Print :com.apple.security.cs.disable-library-validation' \
+    /dev/stdin <<<"$ENTITLEMENTS" >/dev/null 2>&1; then
+  fail "published updates must retain Hardened Runtime library validation"
+fi
 
 for SERVICE in \
   "com.tomaslejdung.clip-spks" \

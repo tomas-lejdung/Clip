@@ -341,6 +341,10 @@ public struct WebRTCSystemAudioSnapshot: Equatable, Sendable {
     public let queuedFrameCount: UInt
     public let acceptedFrameCount: UInt64
     public let droppedFrameCount: UInt64
+    public let underflowFrameCount: UInt64
+    public let deliveryCallbackCount: UInt64
+    public let deliveredFrameCount: UInt64
+    public let deliveryErrorCount: UInt64
 
     public init(
         trackID: String,
@@ -349,7 +353,11 @@ public struct WebRTCSystemAudioSnapshot: Equatable, Sendable {
         isDeviceRecording: Bool,
         queuedFrameCount: UInt,
         acceptedFrameCount: UInt64,
-        droppedFrameCount: UInt64
+        droppedFrameCount: UInt64,
+        underflowFrameCount: UInt64,
+        deliveryCallbackCount: UInt64,
+        deliveredFrameCount: UInt64,
+        deliveryErrorCount: UInt64
     ) {
         self.trackID = trackID
         self.streamID = streamID
@@ -358,6 +366,10 @@ public struct WebRTCSystemAudioSnapshot: Equatable, Sendable {
         self.queuedFrameCount = queuedFrameCount
         self.acceptedFrameCount = acceptedFrameCount
         self.droppedFrameCount = droppedFrameCount
+        self.underflowFrameCount = underflowFrameCount
+        self.deliveryCallbackCount = deliveryCallbackCount
+        self.deliveredFrameCount = deliveredFrameCount
+        self.deliveryErrorCount = deliveryErrorCount
     }
 }
 

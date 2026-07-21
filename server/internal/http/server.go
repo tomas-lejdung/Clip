@@ -296,7 +296,9 @@ func (s *Service) viewerPage(writer http.ResponseWriter, request *http.Request) 
 
 func (s *Service) viewerAsset(writer http.ResponseWriter, request *http.Request) {
 	asset := request.PathValue("asset")
-	if asset != "clip-viewer.js" && asset != "clip-protocol.js" {
+	if asset != "clip-viewer.js" &&
+		asset != "clip-protocol.js" &&
+		asset != "clip-media.js" {
 		http.NotFound(writer, request)
 		return
 	}

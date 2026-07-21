@@ -34,6 +34,13 @@ outbound-codec statistics, bounded SDP/ICE/control input, reliable ordered
 viewer tests cover encrypted host admission, opaque manifest-to-track binding,
 focus/cursor state, audio attachment, mute/volume and autoplay recovery.
 
+The offscreen WebKit case also sends phase-continuous, independent 440 Hz and
+997 Hz stereo PCM through the production native audio bridge and Opus sender,
+then analyses the browser's decoded waveform through a zero-gain Web Audio
+node. It rejects silence, clipping, mono collapse, channel corruption, wrong
+frequencies, dropped source frames, and damaged Opus negotiation without
+producing audible output.
+
 The offscreen WebKit viewer does not expose or move a pointer. The lane never
 opens the installed app, calls ScreenCaptureKit, requests a
 privacy permission, uses the general clipboard, or controls the keyboard or
@@ -47,8 +54,8 @@ sleep/wake behavior or soak stability.
 | --- | --- | --- |
 | Encrypted protocol | Cross-language crypto vectors, typed bounds, replay/tamper rejection, encrypted admission/SDP/ICE, opaque random stream identities and DataChannel handoff. | A malicious viewer deployment, traffic-analysis resistance or service availability. |
 | Go service | In-memory ownership/leases, authenticated host replacement, route isolation, strict opaque relay, origin policy, embedded assets and real localhost WebSockets. | Multi-replica routing, production TLS/reverse proxy or remote NAT traversal. |
-| Native WebRTC | Per-viewer negotiation, documented codec fallbacks, bounded capture/control queues, RTP statistics, Opus input and teardown. | Four simultaneous real browser-rendered sources, real system audio or controlled TURN. |
-| Browser viewer | Protocol crypto, admission UI, opaque manifest binding, multi-stream state, audio controls and reconnect behavior. | Subjective text/audio quality or every target browser/OS combination. |
+| Native WebRTC | Per-viewer negotiation, documented codec fallbacks, bounded capture/control queues, RTP statistics, and decoded stereo Opus waveform quality through WebKit. | Four simultaneous real browser-rendered sources, real ScreenCaptureKit system audio or controlled TURN. |
+| Browser viewer | Protocol crypto, admission UI, opaque manifest binding, multi-stream state, audio controls, reconnect behavior and deterministic decoded-audio analysis. | Subjective quality on physical speakers or every target browser/OS combination. |
 | UI and capture | Deterministic state/policy tests for popover, overlays, source rules, geometry and audio filters. | Production ScreenCaptureKit permission, Spaces/displays, click consumption and capture exclusion. |
 | Distribution | Source audits cover dependency pins, sandbox entitlements and server container structure. | Final signed DMG, published image provenance and notarization. |
 
@@ -177,6 +184,10 @@ keyboard, general clipboard, browser, or user application content.
 ## Signing for permission-backed lanes
 
 The default build is ad-hoc signed so permission-free CI needs no certificate.
+It keeps Hardened Runtime and App Sandbox enabled, but dynamically receives a
+library-validation exception because certificate-free host/framework binaries
+cannot share a Team ID. Certificate-signed builds explicitly omit that
+exception and retain full library validation.
 Because macOS gives each ad-hoc rebuild a different privacy identity, use one
 stable certificate before approving Screen Recording, System Audio, or
 Microphone access:

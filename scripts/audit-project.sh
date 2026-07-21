@@ -50,6 +50,11 @@ SPARKLE_PUBLIC_KEY="$(plutil -extract SUPublicEDKey raw -o - "$ROOT/Clip/Resourc
   || fail "outgoing network entitlement is required for updates"
 [[ "$(plutil -extract 'com\.apple\.security\.network\.server' raw -o - "$ROOT/Clip/Resources/Clip.entitlements")" == "true" ]] \
   || fail "incoming UDP entitlement is required for WebRTC ICE"
+if /usr/libexec/PlistBuddy \
+    -c 'Print :com.apple.security.cs.disable-library-validation' \
+    "$ROOT/Clip/Resources/Clip.entitlements" >/dev/null 2>&1; then
+  fail "library validation may only be disabled dynamically for ad-hoc diagnostic builds"
+fi
 MACH_LOOKUP_ENTITLEMENTS="$(
   plutil -extract 'com\.apple\.security\.temporary-exception\.mach-lookup\.global-name' \
     xml1 -o - "$ROOT/Clip/Resources/Clip.entitlements"

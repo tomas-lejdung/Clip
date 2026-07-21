@@ -104,9 +104,48 @@ struct WebRTCLoopbackTests {
         try await Task.sleep(for: .milliseconds(250))
         #expect(await receiver.inboundSystemAudioBytesReceived() > 0)
 
+        // Start a fresh input timeline and model an ordinary late callback
+        // followed by an early one while preserving ScreenCaptureKit's 512 ms
+        // average cadence. The 60 ms prebuffer must absorb both without
+        // inserting zero-filled encoder input.
         host.setSystemAudioEnabled(false)
         #expect(!host.systemAudioSnapshot.isEnabled)
         #expect(host.systemAudioSnapshot.queuedFrameCount == 0)
+        host.setSystemAudioEnabled(true)
+        #expect(await waitUntil(timeout: .seconds(2)) {
+            host.systemAudioSnapshot.isDeviceRecording
+        })
+        let ordinaryBatchFrames = 24_576
+        let jitterBatches = try (0 ..< 3).map { _ in
+            try makeSystemAudioFixture(frameCount: ordinaryBatchFrames)
+        }
+        let jitterBaseline = host.systemAudioSnapshot
+        #expect(host.send(BorrowedCaptureAudioSample(
+            sampleBuffer: jitterBatches[0]
+        )))
+        #expect(
+            host.systemAudioSnapshot.acceptedFrameCount
+                - jitterBaseline.acceptedFrameCount == ordinaryBatchFrames
+        )
+        try await Task.sleep(for: .milliseconds(530))
+        #expect(host.send(BorrowedCaptureAudioSample(
+            sampleBuffer: jitterBatches[1]
+        )))
+        try await Task.sleep(for: .milliseconds(494))
+        #expect(host.send(BorrowedCaptureAudioSample(
+            sampleBuffer: jitterBatches[2]
+        )))
+        try await Task.sleep(for: .milliseconds(100))
+
+        #expect(
+            host.systemAudioSnapshot.acceptedFrameCount
+                - jitterBaseline.acceptedFrameCount == ordinaryBatchFrames * 3
+        )
+        #expect(
+            host.systemAudioSnapshot.underflowFrameCount
+                == jitterBaseline.underflowFrameCount
+        )
+        host.setSystemAudioEnabled(false)
     }
 
     @Test("idle peer renegotiates H264 to VP8 without replacing transports")

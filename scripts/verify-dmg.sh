@@ -170,6 +170,13 @@ if clip_signing_is_ad_hoc; then
   grep -q "TeamIdentifier=not set" <<<"$SIGNATURE_INFO" || fail "unexpected Team ID"
   [[ "$DESIGNATED_REQUIREMENT" == "designated => cdhash "* ]] \
     || fail "ad-hoc signature does not have a build-specific cdhash requirement"
+  LIBRARY_VALIDATION_DISABLED="$(
+    /usr/libexec/PlistBuddy \
+      -c 'Print :com.apple.security.cs.disable-library-validation' \
+      /dev/stdin <<<"$ENTITLEMENTS" 2>/dev/null || true
+  )"
+  [[ "$LIBRARY_VALIDATION_DISABLED" == "true" ]] \
+    || fail "ad-hoc app cannot load embedded frameworks with library validation enabled"
 else
   if grep -q "Signature=adhoc" <<<"$SIGNATURE_INFO"; then
     fail "requested stable identity '$CLIP_CODE_SIGN_IDENTITY' produced an ad-hoc signature"
@@ -191,6 +198,11 @@ else
 
   [[ "$DESIGNATED_REQUIREMENT" != *"cdhash"* ]] \
     || fail "requested stable identity produced a build-specific cdhash requirement"
+  if /usr/libexec/PlistBuddy \
+      -c 'Print :com.apple.security.cs.disable-library-validation' \
+      /dev/stdin <<<"$ENTITLEMENTS" >/dev/null 2>&1; then
+    fail "stable-signed app disables Hardened Runtime library validation"
+  fi
 fi
 
 [[ -f "$DESIGNATED_REQUIREMENT_SIDECAR" ]] \

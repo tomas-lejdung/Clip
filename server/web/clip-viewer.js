@@ -27,6 +27,13 @@ import {
   utf8Length,
   websocketURL,
 } from "./clip-protocol.js";
+import {
+  configureReceiverLatency,
+  inboundAudioDiagnostics,
+  initialAudioMuted,
+  normalizeOpusSystemAudioSDP,
+  publicAudioDiagnostics,
+} from "./clip-media.js";
 
 // Elements
 const mainVideo = document.getElementById("main-video");
@@ -94,6 +101,11 @@ let uiTimeout;
 let statsInterval;
 let statsCollectionGeneration = 0;
 const inboundStatsHistory = new Map();
+const inboundAudioStatsHistory = new Map();
+window.__clipLiveShareAudioDiagnostics = Object.freeze({
+  updatedAt: null,
+  tracks: Object.freeze([]),
+});
 let showStats = false;
 let currentScale = "fit";
 let accessCode = "";
@@ -961,10 +973,15 @@ async function handleRenegotiationOffer(sdp, negotiationId) {
     const answer = await connection.createAnswer();
     if (!isCurrent()) return;
     console.log("Answer created, setting local description");
-    await connection.setLocalDescription(answer);
+    const normalizedAnswer = {
+      type: answer.type,
+      sdp: normalizeOpusSystemAudioSDP(answer.sdp),
+    };
+    await connection.setLocalDescription(normalizedAnswer);
     if (!isCurrent()) return;
 
-    const answerSDP = connection.localDescription?.sdp || answer.sdp;
+    const answerSDP =
+      connection.localDescription?.sdp || normalizedAnswer.sdp;
     assertSessionDescription(answerSDP, negotiationId, "invalid-codec-answer");
 
     sendControlMessage({
@@ -1167,6 +1184,11 @@ function startStatsCollection() {
   const generation = ++statsCollectionGeneration;
   let pollInFlight = false;
   inboundStatsHistory.clear();
+  inboundAudioStatsHistory.clear();
+  window.__clipLiveShareAudioDiagnostics = Object.freeze({
+    updatedAt: null,
+    tracks: Object.freeze([]),
+  });
 
   statsInterval = setInterval(async () => {
     if (!pc || pollInFlight) return;
@@ -1186,6 +1208,7 @@ function startStatsCollection() {
       const displayedTrackId =
         mainVideo.srcObject?.getVideoTracks?.()[0]?.id || null;
       const inboundVideoStats = [];
+      const inboundAudioStats = [];
       const historyKeyFor = (report) =>
         report.id ||
         report.ssrc ||
@@ -1195,7 +1218,45 @@ function startStatsCollection() {
       stats.forEach((report) => {
         if (report.type === "inbound-rtp" && report.kind === "video") {
           inboundVideoStats.push(report);
+        } else if (
+          report.type === "inbound-rtp" &&
+          report.kind === "audio"
+        ) {
+          inboundAudioStats.push(report);
         }
+      });
+
+      const activeAudioHistoryKeys = new Set();
+      const audioDiagnostics = inboundAudioStats.flatMap((report) => {
+        const historyKey =
+          report.id ||
+          report.ssrc ||
+          report.trackIdentifier ||
+          "unidentified-audio";
+        activeAudioHistoryKeys.add(historyKey);
+        const diagnostic = inboundAudioDiagnostics(
+          report,
+          inboundAudioStatsHistory.get(historyKey),
+        );
+        if (!diagnostic) return [];
+        inboundAudioStatsHistory.set(historyKey, diagnostic._baseline);
+        const publicValue = publicAudioDiagnostics(diagnostic);
+        const codec = report.codecId ? stats.get(report.codecId) : null;
+        return [
+          {
+            ...publicValue,
+            codec: typeof codec?.mimeType === "string" ? codec.mimeType : null,
+          },
+        ];
+      });
+      for (const historyKey of inboundAudioStatsHistory.keys()) {
+        if (!activeAudioHistoryKeys.has(historyKey)) {
+          inboundAudioStatsHistory.delete(historyKey);
+        }
+      }
+      window.__clipLiveShareAudioDiagnostics = Object.freeze({
+        updatedAt: Date.now(),
+        tracks: Object.freeze(audioDiagnostics),
       });
 
       videoStats = inboundVideoStats.find((report) => {
@@ -1437,6 +1498,11 @@ function startStatsCollection() {
 function stopStatsCollection() {
   statsCollectionGeneration++;
   inboundStatsHistory.clear();
+  inboundAudioStatsHistory.clear();
+  window.__clipLiveShareAudioDiagnostics = Object.freeze({
+    updatedAt: null,
+    tracks: Object.freeze([]),
+  });
   if (statsInterval) {
     clearInterval(statsInterval);
     statsInterval = null;
@@ -1808,16 +1874,6 @@ async function handleInnerMessage(message) {
   }
 }
 
-function configureLowLatencyReceiver(receiver) {
-  if (!receiver) return;
-  try {
-    if ("jitterBufferTarget" in receiver) receiver.jitterBufferTarget = 0;
-    if ("playoutDelayHint" in receiver) receiver.playoutDelayHint = 0;
-  } catch (error) {
-    console.debug("Low-latency receiver hints unavailable:", error);
-  }
-}
-
 function attachSystemAudioTrack(track) {
   audioTrack = track;
   track.onended = () => {
@@ -1948,7 +2004,7 @@ async function handleInitialOffer(sdp, negotiationId) {
   };
   connection.ontrack = (event) => {
     if (!isCurrent()) return;
-    configureLowLatencyReceiver(event.receiver);
+    configureReceiverLatency(event.receiver, event.track.kind);
     if (event.track.kind === "audio") {
       attachSystemAudioTrack(event.track);
     } else if (event.track.kind === "video") {
@@ -2027,9 +2083,13 @@ async function handleInitialOffer(sdp, negotiationId) {
   }
   const answer = await connection.createAnswer();
   if (!isCurrent()) return;
-  await connection.setLocalDescription(answer);
+  const normalizedAnswer = {
+    type: answer.type,
+    sdp: normalizeOpusSystemAudioSDP(answer.sdp),
+  };
+  await connection.setLocalDescription(normalizedAnswer);
   if (!isCurrent()) return;
-  const answerSDP = connection.localDescription?.sdp || answer.sdp;
+  const answerSDP = connection.localDescription?.sdp || normalizedAnswer.sdp;
   assertSessionDescription(answerSDP, negotiationId, "invalid-answer");
   await sendInner({
     type: "answer",
@@ -3111,7 +3171,9 @@ async function boot() {
     passwordRoomCode.textContent = roomCode;
     document.title = roomCode + " — Clip Live Share";
 
-    audioMuted = localStorage.getItem("clip-live-share-audio-muted") === "1";
+    audioMuted = initialAudioMuted(
+      localStorage.getItem("clip-live-share-audio-muted"),
+    );
     const storedVolume = Number(localStorage.getItem("clip-live-share-audio-volume"));
     if (Number.isFinite(storedVolume) && storedVolume >= 0 && storedVolume <= 100) {
       audioVolume.value = String(storedVolume);

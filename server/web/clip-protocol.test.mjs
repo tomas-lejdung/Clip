@@ -20,6 +20,140 @@ import {
   signalingAAD,
   validateCapabilities,
 } from "./clip-protocol.js";
+import {
+  AUDIO_JITTER_BUFFER_TARGET_MILLISECONDS,
+  configureReceiverLatency,
+  inboundAudioDiagnostics,
+  initialAudioMuted,
+  normalizeOpusSystemAudioSDP,
+  publicAudioDiagnostics,
+} from "./clip-media.js";
+
+test("receiver latency keeps video live without starving audio", () => {
+  const audioReceiver = { jitterBufferTarget: 0, playoutDelayHint: 125 };
+  assert.equal(configureReceiverLatency(audioReceiver, "audio"), true);
+  assert.equal(
+    audioReceiver.jitterBufferTarget,
+    AUDIO_JITTER_BUFFER_TARGET_MILLISECONDS,
+  );
+  assert.equal(audioReceiver.playoutDelayHint, 125);
+
+  const videoReceiver = { jitterBufferTarget: 80, playoutDelayHint: 80 };
+  assert.equal(configureReceiverLatency(videoReceiver, "video"), true);
+  assert.deepEqual(videoReceiver, {
+    jitterBufferTarget: 0,
+    playoutDelayHint: 0,
+  });
+
+  const unsupportedReceiver = {};
+  assert.equal(configureReceiverLatency(unsupportedReceiver, "audio"), true);
+  assert.deepEqual(unsupportedReceiver, {});
+  assert.equal(configureReceiverLatency(null, "audio"), false);
+  assert.equal(configureReceiverLatency({}, "data"), false);
+});
+
+test("Opus answers explicitly accept stereo music quality", () => {
+  const source = [
+    "v=0",
+    "m=audio 9 UDP/TLS/RTP/SAVPF 111",
+    "a=rtpmap:111 opus/48000/2",
+    "a=fmtp:111 minptime=10;useinbandfec=1;stereo=0;usedtx=1",
+    "m=video 9 UDP/TLS/RTP/SAVPF 96",
+    "a=rtpmap:96 VP8/90000",
+    "a=fmtp:96 stereo=0",
+    "",
+  ].join("\r\n");
+  const normalized = normalizeOpusSystemAudioSDP(source);
+  assert.match(
+    normalized,
+    /a=fmtp:111 minptime=10;useinbandfec=1;stereo=1;usedtx=0;sprop-stereo=1;maxaveragebitrate=128000\r\n/u,
+  );
+  assert.match(normalized, /a=fmtp:96 stereo=0\r\n/u);
+  assert.equal(normalizeOpusSystemAudioSDP(normalized), normalized);
+
+  const withoutFmtp = [
+    "v=0",
+    "m=audio 9 UDP/TLS/RTP/SAVPF 109",
+    "a=rtpmap:109 opus/48000/2",
+  ].join("\n");
+  assert.equal(
+    normalizeOpusSystemAudioSDP(withoutFmtp),
+    [
+      "v=0",
+      "m=audio 9 UDP/TLS/RTP/SAVPF 109",
+      "a=rtpmap:109 opus/48000/2",
+      "a=fmtp:109 stereo=1;sprop-stereo=1;maxaveragebitrate=128000;usedtx=0",
+    ].join("\n"),
+  );
+});
+
+test("fresh viewers stay muted until they explicitly opt in", () => {
+  assert.equal(initialAudioMuted(null), true);
+  assert.equal(initialAudioMuted(undefined), true);
+  assert.equal(initialAudioMuted("1"), true);
+  assert.equal(initialAudioMuted("0"), false);
+  assert.equal(initialAudioMuted("invalid"), true);
+});
+
+test("audio diagnostics expose interval loss, concealment and clock repair", () => {
+  const first = inboundAudioDiagnostics({
+    id: "audio-inbound",
+    type: "inbound-rtp",
+    kind: "audio",
+    timestamp: 1_000,
+    trackIdentifier: "opaque-audio",
+    codecId: "codec-opus",
+    jitter: 0.004,
+    audioLevel: 0.25,
+    bytesReceived: 8_000,
+    packetsReceived: 100,
+    packetsLost: 2,
+    totalSamplesReceived: 48_000,
+    concealedSamples: 480,
+    silentConcealedSamples: 240,
+    concealmentEvents: 1,
+    insertedSamplesForDeceleration: 20,
+    removedSamplesForAcceleration: 10,
+    jitterBufferDelay: 4,
+    jitterBufferEmittedCount: 48_000,
+  });
+  assert.equal(first.interval.durationMilliseconds, null);
+
+  const second = inboundAudioDiagnostics({
+    id: "audio-inbound",
+    type: "inbound-rtp",
+    kind: "audio",
+    timestamp: 2_000,
+    trackIdentifier: "opaque-audio",
+    codecId: "codec-opus",
+    jitter: 0.006,
+    audioLevel: 0.5,
+    bytesReceived: 16_000,
+    packetsReceived: 200,
+    packetsLost: 3,
+    totalSamplesReceived: 96_000,
+    concealedSamples: 960,
+    silentConcealedSamples: 480,
+    concealmentEvents: 3,
+    insertedSamplesForDeceleration: 30,
+    removedSamplesForAcceleration: 14,
+    jitterBufferDelay: 52,
+    jitterBufferEmittedCount: 96_000,
+  }, first._baseline);
+
+  assert.equal(second.jitterMilliseconds, 6);
+  assert.equal(second.interval.durationMilliseconds, 1_000);
+  assert.ok(Math.abs(second.interval.packetLossPercent - 100 / 101) < 1e-9);
+  assert.equal(second.interval.concealedSamplePercent, 1);
+  assert.equal(second.interval.concealedSamples, 480);
+  assert.equal(second.interval.silentConcealedSamples, 240);
+  assert.equal(second.interval.concealmentEvents, 2);
+  assert.equal(second.interval.insertedSamplesForDeceleration, 10);
+  assert.equal(second.interval.removedSamplesForAcceleration, 4);
+  assert.equal(second.interval.averageJitterBufferDelayMilliseconds, 1);
+  assert.equal("_baseline" in publicAudioDiagnostics(second), false);
+  assert.equal(inboundAudioDiagnostics({ type: "inbound-rtp", kind: "video" }), null);
+});
 
 test("room and base64url values are canonical and bounded", () => {
   assert.equal(normalizeRoom(" ab-c "), "AB-C");

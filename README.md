@@ -205,7 +205,7 @@ and embedded viewer themselves.
 ./scripts/verify-dmg.sh .build/Clip.dmg
 ```
 
-The result is `.build/Clip.dmg`, containing `Clip.app` and an Applications shortcut. The bundle identifier is permanently `com.tomaslejdung.clip`, with Hardened Runtime and App Sandbox enabled. By default the app is ad-hoc signed, which is appropriate for permission-free CI but gives every rebuild a different macOS privacy identity.
+The result is `.build/Clip.dmg`, containing `Clip.app` and an Applications shortcut. The bundle identifier is permanently `com.tomaslejdung.clip`, with Hardened Runtime and App Sandbox enabled. By default the app is ad-hoc signed, which is appropriate for permission-free CI but gives every rebuild a different macOS privacy identity. Because ad-hoc code has no certificate-backed Team ID, only those diagnostic builds receive the Hardened Runtime library-validation exception needed to load the embedded WebRTC and Sparkle frameworks. Stable-signed builds retain full library validation.
 
 Before permission-backed testing, use one stable certificate for every build,
 test, manual-build, and package command. Set its unique 40-character SHA-1 as

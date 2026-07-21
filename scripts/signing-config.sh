@@ -5,8 +5,16 @@
 # Use the unambiguous 40-character certificate SHA-1 shown by:
 #   security find-identity -v -p codesigning
 #
-# An unset or empty value intentionally preserves the permission-free CI
-# default: an ad-hoc signature (`codesign --sign -`).
+# A developer may persist a machine-local identity in
+# `.clip-signing.local.env`; the file is ignored by Git. An explicitly set
+# environment variable always wins, including `CLIP_CODE_SIGN_IDENTITY=-` for
+# a deliberate ad-hoc build. With neither source present, CI keeps the
+# permission-free ad-hoc default (`codesign --sign -`).
+CLIP_SIGNING_CONFIG_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+CLIP_LOCAL_SIGNING_CONFIG="$CLIP_SIGNING_CONFIG_ROOT/.clip-signing.local.env"
+if [[ -z "${CLIP_CODE_SIGN_IDENTITY+x}" && -f "$CLIP_LOCAL_SIGNING_CONFIG" ]]; then
+  source "$CLIP_LOCAL_SIGNING_CONFIG"
+fi
 CLIP_CODE_SIGN_IDENTITY="${CLIP_CODE_SIGN_IDENTITY:--}"
 export CLIP_CODE_SIGN_IDENTITY
 
@@ -176,6 +184,22 @@ privacy approvals may need to be granted again after every rebuild. Set
 CLIP_CODE_SIGN_IDENTITY to one stable code-signing certificate's 40-character
 SHA-1 identity before permission-backed testing.
 EOF
+}
+
+# Resolve the one Hardened Runtime exception needed by certificate-free builds
+# that embed dynamic frameworks. Delete first so stable signing fails closed
+# even if the checked-in entitlement source ever drifts.
+clip_resolve_library_validation_entitlement() {
+  local entitlements="$1"
+
+  /usr/libexec/PlistBuddy \
+    -c 'Delete :com.apple.security.cs.disable-library-validation' \
+    "$entitlements" >/dev/null 2>&1 || true
+  if clip_signing_is_ad_hoc; then
+    /usr/libexec/PlistBuddy \
+      -c 'Add :com.apple.security.cs.disable-library-validation bool true' \
+      "$entitlements"
+  fi
 }
 
 clip_designated_requirement() {

@@ -2,7 +2,7 @@
 
 Branch: `codex/native-live-share-server`
 
-Last updated: 2026-07-20
+Last updated: 2026-07-21
 
 Architecture: [live-share-architecture.md](live-share-architecture.md)
 
@@ -32,11 +32,11 @@ branch is not published and development does not replace `/Applications/Clip.app
 | LS-03 | Browser viewer | `DONE` | The embedded viewer performs fragment-pinned key agreement, encrypted admission/SDP/ICE, opaque manifest binding, reconnect, multi-stream presentation, system-audio playback, mute/volume and autoplay recovery. Node protocol tests cover crypto, tamper, replay and bounds. |
 | LS-04 | Native signaling transport | `DONE` | Clip advertises rooms, authenticates with an owner token, handles encrypted per-viewer routes, re-advertises indefinitely with a capped backoff, removes its room on stop, enforces negotiated limits, isolates hostile routes and keeps secrets out of public snapshots. Mock, hostile-input and real-WebKit integration coverage pass. |
 | LS-05 | Coordinator migration | `DONE` | Host-side access-code admission, encrypted initial negotiation, browser-reported handoff plus host-confirmed DataChannel readiness, peer-owned viewer counts, authoritative control manifests and peer survival across signaling outages are production-wired. Obsolete legacy code, fixtures, scripts and assumptions are removed. |
-| LS-06 | Native WebRTC media | `DONE` | Four random-identity video slots, random audio identity, exact H.264/VP8 choices, VP9/AV1 preference fallback, transactional live switching, RTP statistics, bounded frame delivery, reliable `clip-control-v1`, authoritative audio state, Opus input and peer-isolated teardown pass the 80-test package gate. |
+| LS-06 | Native WebRTC media | `DONE` | Four random-identity video slots, random audio identity, exact H.264/VP8 choices, VP9/AV1 preference fallback, transactional live switching, RTP statistics, bounded frame delivery, reliable `clip-control-v1`, authoritative audio state, stereo music Opus input and peer-isolated teardown pass the package gate. |
 | LS-07 | Capture and streaming | `EXTERNAL_GATE` | Software VP8/VP9/AV1 preserve native geometry; oversized hardware H.264 is bounded without unbounded queues. Window-audio filters deduplicate owning applications; Fullscreen excludes Clip. Real desktop/audio/overload evidence remains controlled-Mac work. |
 | LS-08 | Live Share interface | `DONE` | Popover, endpoint settings, overlays, HUD, source controls, unavailable-link behavior and permission-free presentation tests use the native room/link model. Settings probes stream through a hard response-size bound. |
 | LS-09 | Privacy and reliability | `DONE` | The server cannot decrypt signaling; secrets are session-only; replay/tamper/size/route checks, persistent capped reconnect, per-peer failure isolation, admission timeouts, bounded queues and static log/storage scans pass. Runtime network/soak evidence remains under LS-12. |
-| LS-10 | Local acceptance | `DONE` | The unified pointer-free gate passes the hardened Go service, 11 browser crypto/protocol tests, 55 core tests, a real offscreen WebKit encrypted video/audio flow and all 80 native WebRTC tests. The full hosted app suite and strict Swift 6 source/link/test-source gate also pass. |
+| LS-10 | Local acceptance | `DONE` | The unified pointer-free gate passes the hardened Go service, browser crypto/protocol tests, core tests, a real offscreen WebKit encrypted video flow with decoded stereo Opus waveform analysis, and the native WebRTC suite. The full hosted app suite and strict Swift 6 source/link/test-source gate also pass. |
 | LS-11 | Packaging and self-hosting | `EXTERNAL_GATE` | Non-root multi-architecture Docker build/publish support and deployment documentation exist, and the Release app compiles and links. The installed Apple Development certificate expired in 2025, so valid distribution signing, final container publication/inspection and the DMG remain deliberate release actions. |
 | LS-12 | Controlled real-Mac acceptance | `EXTERNAL_GATE` | Requires ScreenCaptureKit permission and owner-authorized runtime testing for real window/Fullscreen video, browser audio, overlays, focus churn, sleep/wake and lifecycle soak. |
 | LS-20 | Native Clip viewer | `DEFERRED` | A future Clip-to-Clip receiver may reuse the same encrypted signaling and WebRTC protocol after measurement. Browser viewing remains the supported receiver now. |
@@ -94,10 +94,13 @@ branch is not published and development does not replace `/Applications/Clip.app
 - A persisted, default-Off toggle drives one deduplicated ScreenCaptureKit
   audio session: unique owning applications for window sources or system audio
   excluding Clip for Fullscreen.
-- Borrowed 48 kHz stereo samples feed one Opus send track through the native
-  bridge. No microphone track exists.
-- The browser viewer has audible playback support, mute and volume controls,
-  and an explicit user-gesture recovery when autoplay is blocked.
+- Borrowed 48 kHz stereo samples feed one full-band Opus send track through the
+  native bridge. The bridge prebuffers ordinary ScreenCaptureKit batch jitter
+  and delivers complete interleaved stereo buffers. No microphone track exists.
+- The browser viewer negotiates stereo music Opus, preserves an audio jitter
+  margin, starts muted, and has mute, volume and explicit autoplay recovery.
+  An offscreen WebKit test decodes and measures independent left/right tones
+  through this production path without sending audio to speakers.
 - Durable DataChannel state is regenerated from authoritative snapshots after
   low-water drain instead of accumulating an application queue. Cursor state
   is deliberately ephemeral.
