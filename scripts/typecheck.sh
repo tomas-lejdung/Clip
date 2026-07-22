@@ -16,12 +16,6 @@ LIVE_SHARE_BUILD="$ROOT/Packages/ClipLiveShareWebRTC/.build/arm64-apple-macosx/d
 LIVE_SHARE_MODULES="$LIVE_SHARE_BUILD/Modules"
 LIVE_SHARE_AUDIO_BRIDGE_BUILD="$LIVE_SHARE_BUILD/ClipLiveShareWebRTCAudioBridge.build"
 LIVE_SHARE_AUDIO_BRIDGE_MODULE_MAP="$LIVE_SHARE_AUDIO_BRIDGE_BUILD/module.modulemap"
-CORE_OBJECTS=("$ROOT"/Packages/ClipCore/.build/arm64-apple-macosx/debug/ClipCore.build/*.swift.o)
-MEDIA_OBJECTS=("$ROOT"/Packages/ClipMedia/.build/arm64-apple-macosx/debug/ClipMedia.build/*.swift.o)
-CAPTURE_OBJECTS=("$LIVE_SHARE_BUILD"/ClipCapture.build/*.swift.o)
-LIVE_SHARE_OBJECTS=("$LIVE_SHARE_BUILD"/ClipLiveShare.build/*.swift.o)
-LIVE_SHARE_WEBRTC_OBJECTS=("$LIVE_SHARE_BUILD"/ClipLiveShareWebRTC.build/*.swift.o)
-LIVE_SHARE_AUDIO_BRIDGE_OBJECTS=("$LIVE_SHARE_AUDIO_BRIDGE_BUILD"/*.o)
 MANUAL_BUILD="$ROOT/.build/Manual"
 SOURCES=()
 TEST_SOURCES=()
@@ -48,6 +42,16 @@ swift test --package-path "$ROOT/Packages/ClipMedia"
 swift test --package-path "$ROOT/Packages/ClipCapture"
 swift test --package-path "$ROOT/Packages/ClipLiveShare"
 swift test --package-path "$ROOT/Packages/ClipLiveShareWebRTC"
+
+# Resolve object globs only after SwiftPM has created a clean package build.
+# Expanding them at script startup leaves literal `*.o` arguments whenever the
+# package cache is initially absent, which makes the later manual link fail.
+CORE_OBJECTS=("$ROOT"/Packages/ClipCore/.build/arm64-apple-macosx/debug/ClipCore.build/*.swift.o)
+MEDIA_OBJECTS=("$ROOT"/Packages/ClipMedia/.build/arm64-apple-macosx/debug/ClipMedia.build/*.swift.o)
+CAPTURE_OBJECTS=("$LIVE_SHARE_BUILD"/ClipCapture.build/*.swift.o)
+LIVE_SHARE_OBJECTS=("$LIVE_SHARE_BUILD"/ClipLiveShare.build/*.swift.o)
+LIVE_SHARE_WEBRTC_OBJECTS=("$LIVE_SHARE_BUILD"/ClipLiveShareWebRTC.build/*.swift.o)
+LIVE_SHARE_AUDIO_BRIDGE_OBJECTS=("$LIVE_SHARE_AUDIO_BRIDGE_BUILD"/*.o)
 
 WEBRTC_SEARCH_ROOT="$ROOT/Packages/ClipLiveShareWebRTC/.build/artifacts"
 if [[ -d "$ROOT/Packages/ClipLiveShareWebRTC/Vendor/WebRTC.xcframework" ]]; then
