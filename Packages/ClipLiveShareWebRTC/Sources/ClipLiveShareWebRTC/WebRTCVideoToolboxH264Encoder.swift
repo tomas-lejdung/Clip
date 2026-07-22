@@ -355,6 +355,15 @@ final class WebRTCVideoToolboxH264Encoder: NSObject, RTCVideoEncoder,
     private func ensureCurrentSession() -> Bool {
         guard startConfiguration != nil else { return false }
         let snapshot = configurationController.snapshot()
+        if let activeConfigurationRevision,
+           activeConfigurationRevision != snapshot.revision
+        {
+            // Rebuilding creates a new reference chain. Keep an explicit IDR
+            // request armed as well so the callback contract cannot expose a
+            // delta even if a platform encoder ever changes first-frame
+            // behavior.
+            keyFrameRequest.request()
+        }
         if compressionSession == nil
             || activeConfigurationRevision != snapshot.revision
             || compressionSession?.isHealthy == false
@@ -419,6 +428,7 @@ final class WebRTCVideoToolboxH264Encoder: NSObject, RTCVideoEncoder,
                 height: startConfiguration.height,
                 framesPerSecond: framesPerSecond,
                 keyFrameIntervalSeconds: snapshot.configuration.keyFrameIntervalSeconds,
+                maximumQuantizer: snapshot.configuration.maximumQuantizer,
                 profile: profile,
                 rateControl: plan
             )
@@ -648,6 +658,7 @@ private extension WebRTCVideoToolboxH264Encoder {
             height: Int,
             framesPerSecond: Int,
             keyFrameIntervalSeconds: Int,
+            maximumQuantizer: Int?,
             profile: H264Profile,
             rateControl: WebRTCH264RateControlPlan
         ) throws {
@@ -722,6 +733,12 @@ private extension WebRTCVideoToolboxH264Encoder {
                     kVTCompressionPropertyKey_MaxKeyFrameIntervalDuration,
                     NSNumber(value: keyFrameIntervalSeconds)
                 )
+                if let maximumQuantizer {
+                    try setIfSupported(
+                        kVTCompressionPropertyKey_MaxAllowedFrameQP,
+                        NSNumber(value: maximumQuantizer)
+                    )
+                }
                 try set(
                     kVTCompressionPropertyKey_ColorPrimaries,
                     kCMFormatDescriptionColorPrimaries_ITU_R_709_2

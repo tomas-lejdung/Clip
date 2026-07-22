@@ -22,10 +22,15 @@ struct LiveSharePresentationActions {
     var setQuality: (LiveShareQualityPreset) -> Void
     var setFrameRate: (LiveShareFrameRate) -> Void
     var setCodec: (LiveShareVideoCodec) -> Void
+    var setColorMode: (LiveShareColorMode) -> Void
     var setSystemAudioEnabled: (Bool) -> Void
     var setCursorUpdatesMatchFrameRate: (Bool) -> Void
     var setPrioritizeFocusedWindow: (Bool) -> Void
     var setMode: (LiveShareEncodingMode) -> Void
+    var setAdvancedVideoSettings: (
+        LiveShareVideoCodec,
+        LiveShareCodecAdvancedSettings
+    ) -> Void
     var setAutoShareEnabled: (Bool) -> Void
     var stopAllMedia: () -> Void
     var retry: () -> Void
@@ -46,10 +51,15 @@ struct LiveSharePresentationActions {
         setQuality: @escaping (LiveShareQualityPreset) -> Void = { _ in },
         setFrameRate: @escaping (LiveShareFrameRate) -> Void = { _ in },
         setCodec: @escaping (LiveShareVideoCodec) -> Void = { _ in },
+        setColorMode: @escaping (LiveShareColorMode) -> Void = { _ in },
         setSystemAudioEnabled: @escaping (Bool) -> Void = { _ in },
         setCursorUpdatesMatchFrameRate: @escaping (Bool) -> Void = { _ in },
         setPrioritizeFocusedWindow: @escaping (Bool) -> Void = { _ in },
         setMode: @escaping (LiveShareEncodingMode) -> Void = { _ in },
+        setAdvancedVideoSettings: @escaping (
+            LiveShareVideoCodec,
+            LiveShareCodecAdvancedSettings
+        ) -> Void = { _, _ in },
         setAutoShareEnabled: @escaping (Bool) -> Void = { _ in },
         stopAllMedia: @escaping () -> Void = {},
         retry: @escaping () -> Void = {},
@@ -69,10 +79,12 @@ struct LiveSharePresentationActions {
         self.setQuality = setQuality
         self.setFrameRate = setFrameRate
         self.setCodec = setCodec
+        self.setColorMode = setColorMode
         self.setSystemAudioEnabled = setSystemAudioEnabled
         self.setCursorUpdatesMatchFrameRate = setCursorUpdatesMatchFrameRate
         self.setPrioritizeFocusedWindow = setPrioritizeFocusedWindow
         self.setMode = setMode
+        self.setAdvancedVideoSettings = setAdvancedVideoSettings
         self.setAutoShareEnabled = setAutoShareEnabled
         self.stopAllMedia = stopAllMedia
         self.retry = retry
@@ -207,6 +219,11 @@ final class LiveSharePresentationModel: ObservableObject {
         actions.setCodec(codec)
     }
 
+    func setColorMode(_ colorMode: LiveShareColorMode) {
+        guard snapshot.settings.canChangeColorMode else { return }
+        actions.setColorMode(colorMode)
+    }
+
     func setSystemAudioEnabled(_ enabled: Bool) {
         guard snapshot.settings.canChangeSystemAudio else { return }
         actions.setSystemAudioEnabled(enabled)
@@ -225,6 +242,14 @@ final class LiveSharePresentationModel: ObservableObject {
     func setMode(_ mode: LiveShareEncodingMode) {
         guard snapshot.settings.canChangeMode else { return }
         actions.setMode(mode)
+    }
+
+    func setAdvancedVideoSettings(
+        _ settings: LiveShareCodecAdvancedSettings,
+        for codec: LiveShareVideoCodec
+    ) {
+        guard snapshot.settings.canChangeMode else { return }
+        actions.setAdvancedVideoSettings(codec, settings.normalized(for: codec))
     }
 
     func setAutoShareEnabled(_ enabled: Bool) {

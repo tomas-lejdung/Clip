@@ -128,6 +128,7 @@ SPARKLE_FRAMEWORK="$APP/Contents/Frameworks/Sparkle.framework"
 WEBRTC_FRAMEWORK="$APP/Contents/Frameworks/WebRTC.framework"
 WEBRTC_EXECUTABLE="$WEBRTC_FRAMEWORK/Versions/A/WebRTC"
 THIRD_PARTY_NOTICES="$APP/Contents/Resources/ThirdPartyNotices.txt"
+WEBRTC_THIRD_PARTY_NOTICES="$APP/Contents/Resources/WebRTCThirdPartyNotices.txt"
 
 [[ -d "$APP" ]] || fail "DMG does not contain Clip.app"
 [[ -f "$INFO" ]] || fail "packaged Clip.app has no Info.plist"
@@ -135,16 +136,37 @@ THIRD_PARTY_NOTICES="$APP/Contents/Resources/ThirdPartyNotices.txt"
 [[ -d "$WEBRTC_FRAMEWORK" ]] || fail "packaged Clip.app does not embed WebRTC.framework"
 [[ -f "$WEBRTC_EXECUTABLE" ]] || fail "packaged WebRTC runtime is missing"
 [[ -f "$THIRD_PARTY_NOTICES" ]] || fail "packaged third-party notices are missing"
+[[ -f "$WEBRTC_THIRD_PARTY_NOTICES" ]] \
+  || fail "packaged official WebRTC third-party notices are missing"
 codesign --verify --strict "$WEBRTC_FRAMEWORK" >/dev/null 2>&1 \
   || fail "packaged WebRTC.framework has an invalid code signature"
-file "$WEBRTC_EXECUTABLE" | grep -q 'arm64' \
-  || fail "packaged WebRTC runtime has no arm64 slice"
-grep -Fq "Source: $CLIP_WEBRTC_REPOSITORY_URL, version $CLIP_WEBRTC_VERSION" \
+[[ "$(lipo -archs "$WEBRTC_EXECUTABLE")" == "arm64" ]] \
+  || fail "packaged WebRTC runtime must contain exactly the arm64 architecture"
+WEBRTC_NORMALIZED_ARM64_SHA256="$(
+  clip_webrtc_normalized_payload_sha256 "$WEBRTC_EXECUTABLE" arm64
+)" || fail "could not normalize the packaged WebRTC arm64 payload"
+[[ "$WEBRTC_NORMALIZED_ARM64_SHA256" == \
+  "$CLIP_WEBRTC_NORMALIZED_ARM64_SHA256" ]] \
+  || fail "packaged WebRTC runtime differs from the reviewed arm64 payload"
+grep -Fq "Source: $CLIP_WEBRTC_UPSTREAM_REPOSITORY_URL, version $CLIP_WEBRTC_VERSION" \
   "$THIRD_PARTY_NOTICES" \
-  || fail "packaged WebRTC notice has an unexpected source or version"
-grep -Fq "Source revision: $CLIP_WEBRTC_WRAPPER_REVISION" \
+  || fail "packaged WebRTC notice has an unexpected upstream source or version"
+grep -Fq "Source commit: $CLIP_WEBRTC_UPSTREAM_REVISION" \
   "$THIRD_PARTY_NOTICES" \
-  || fail "packaged WebRTC notice has an unexpected wrapper revision"
+  || fail "packaged WebRTC notice has an unexpected upstream revision"
+grep -Fq "Clip binary artifact: $CLIP_WEBRTC_ARTIFACT_URL" \
+  "$THIRD_PARTY_NOTICES" \
+  || fail "packaged WebRTC notice has an unexpected Clip binary artifact"
+grep -Fq "Clip patch SHA-256: $CLIP_WEBRTC_PATCH_SHA256" \
+  "$THIRD_PARTY_NOTICES" \
+  || fail "packaged WebRTC notice has an unexpected Clip patch hash"
+[[ "$(shasum -a 256 "$WEBRTC_THIRD_PARTY_NOTICES" | awk '{print $1}')" == \
+  "$CLIP_WEBRTC_LICENSE_SHA256" ]] \
+  || fail "official WebRTC third-party notices differ from the reviewed file"
+for MARKER in '# webrtc' '# libaom' '# libvpx' '# opus'; do
+  grep -Fq "$MARKER" "$WEBRTC_THIRD_PARTY_NOTICES" \
+    || fail "official WebRTC third-party notices are missing: $MARKER"
+done
 codesign --verify --deep --strict "$APP" >/dev/null 2>&1 \
   || fail "packaged Clip.app has an invalid code signature"
 

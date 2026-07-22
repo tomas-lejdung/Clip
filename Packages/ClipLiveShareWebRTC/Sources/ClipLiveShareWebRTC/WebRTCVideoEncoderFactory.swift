@@ -15,15 +15,18 @@ final class WebRTCVideoEncoderFactory: NSObject, RTCVideoEncoderFactory,
 
     init(
         preferredCodec: WebRTCVideoCodec,
-        h264Factory: WebRTCH264EncoderFactory = WebRTCH264EncoderFactory(),
+        h264Factory: WebRTCH264EncoderFactory? = nil,
+        advancedConfigurations: WebRTCAdvancedVideoConfigurations = .clipDefault,
         supportsVP9: Bool = RTCVideoEncoderVP9.isSupported(),
         supportsAV1: Bool = RTCVideoEncoderAV1.isSupported()
     ) {
-        self.h264Factory = h264Factory
+        self.h264Factory = h264Factory ?? WebRTCH264EncoderFactory(
+            advancedConfiguration: advancedConfigurations.h264
+        )
         self.supportsVP9 = supportsVP9
         self.supportsAV1 = supportsAV1
 
-        // Captured screen frames are 8-bit BGRA. VP9 profile 2 is intended for
+        // Live Share captures 8-bit SDR video. VP9 profile 2 is intended for
         // higher bit depths, so only advertise the interoperable profile 0.
         let vp9Codecs = supportsVP9
             ? RTCVideoEncoderVP9.supportedCodecs().filter {
@@ -31,7 +34,7 @@ final class WebRTCVideoEncoderFactory: NSObject, RTCVideoEncoderFactory,
             }
             : []
         let codecsByKind: [WebRTCVideoCodec: [RTCVideoCodecInfo]] = [
-            .h264: h264Factory.supportedCodecs(),
+            .h264: self.h264Factory.supportedCodecs(),
             .vp8: RTCVideoEncoderVP8.supportedCodecs(),
             .vp9: vp9Codecs,
             .av1: supportsAV1 ? RTCVideoEncoderAV1.supportedCodecs() : [],
@@ -49,21 +52,31 @@ final class WebRTCVideoEncoderFactory: NSObject, RTCVideoEncoderFactory,
     func createEncoder(_ info: RTCVideoCodecInfo) -> (any RTCVideoEncoder)? {
         switch info.name.uppercased() {
         case WebRTCVideoCodec.h264.rtcName:
-            h264Factory.createEncoder(info)
+            return h264Factory.createEncoder(info)
         case WebRTCVideoCodec.vp8.rtcName:
-            RTCVideoEncoderVP8.vp8Encoder()
+            return RTCVideoEncoderVP8.vp8Encoder()
         case WebRTCVideoCodec.vp9.rtcName:
-            supportsVP9 && Self.isVP9ProfileZero(info)
-                ? RTCVideoEncoderVP9.vp9Encoder()
-                : nil
+            guard supportsVP9, Self.isVP9ProfileZero(info) else { return nil }
+            return RTCVideoEncoderVP9.vp9Encoder()
         case WebRTCVideoCodec.av1.rtcName:
-            supportsAV1 ? RTCVideoEncoderAV1.av1Encoder() : nil
+            guard supportsAV1 else { return nil }
+            return RTCVideoEncoderAV1.av1Encoder()
         default:
-            nil
+            return nil
+        }
+    }
+
+    func updateAdvancedConfiguration(
+        _ configuration: WebRTCCodecAdvancedConfiguration
+    ) {
+        switch configuration {
+        case let .h264(configuration):
+            h264Factory.updateAdvancedConfiguration(configuration)
         }
     }
 
     private static func isVP9ProfileZero(_ info: RTCVideoCodecInfo) -> Bool {
         info.parameters["profile-id"].map { $0 == "0" } ?? true
     }
+
 }

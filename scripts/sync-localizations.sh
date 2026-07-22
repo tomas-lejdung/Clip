@@ -11,7 +11,6 @@ MEDIA_MODULES="$ROOT/Packages/ClipMedia/.build/arm64-apple-macosx/debug/Modules"
 LIVE_SHARE_BUILD="$ROOT/Packages/ClipLiveShareWebRTC/.build/arm64-apple-macosx/debug"
 LIVE_SHARE_MODULES="$LIVE_SHARE_BUILD/Modules"
 LIVE_SHARE_AUDIO_BRIDGE_MODULE_MAP="$LIVE_SHARE_BUILD/ClipLiveShareWebRTCAudioBridge.build/module.modulemap"
-WEBRTC_FRAMEWORKS="$ROOT/Packages/ClipLiveShareWebRTC/.build/artifacts/webrtc/WebRTC/WebRTC.xcframework/macos-x86_64_arm64"
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/clip-localization.XXXXXX")"
 STRINGS_DATA="$WORK/stringsdata"
 SOURCES=()
@@ -28,6 +27,23 @@ export SWIFTPM_MODULECACHE_OVERRIDE="$MODULE_CACHE"
 swift build --package-path "$ROOT/Packages/ClipCore" >/dev/null
 swift build --package-path "$ROOT/Packages/ClipMedia" >/dev/null
 swift build --package-path "$ROOT/Packages/ClipLiveShareWebRTC" >/dev/null
+
+WEBRTC_SEARCH_ROOT="$ROOT/Packages/ClipLiveShareWebRTC/.build/artifacts"
+if [[ -d "$ROOT/Packages/ClipLiveShareWebRTC/Vendor/WebRTC.xcframework" ]]; then
+  WEBRTC_SEARCH_ROOT="$ROOT/Packages/ClipLiveShareWebRTC/Vendor/WebRTC.xcframework"
+fi
+WEBRTC_FRAMEWORK_CANDIDATES=()
+while IFS= read -r FRAMEWORK; do
+  WEBRTC_FRAMEWORK_CANDIDATES+=("$FRAMEWORK")
+done < <(
+  find -L "$WEBRTC_SEARCH_ROOT" \
+    -type d -name 'WebRTC.framework' -prune | sort
+)
+[[ "${#WEBRTC_FRAMEWORK_CANDIDATES[@]}" == "1" ]] || {
+  echo "Localization extraction requires exactly one resolved WebRTC.framework (found ${#WEBRTC_FRAMEWORK_CANDIDATES[@]})." >&2
+  exit 1
+}
+WEBRTC_FRAMEWORKS="$(dirname "${WEBRTC_FRAMEWORK_CANDIDATES[0]}")"
 
 while IFS= read -r -d '' source; do
   SOURCES+=("$source")

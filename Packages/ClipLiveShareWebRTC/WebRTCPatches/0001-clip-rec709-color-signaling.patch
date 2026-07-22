@@ -1,0 +1,395 @@
+--- a/sdk/objc/native/src/objc_video_track_source.mm
++++ b/sdk/objc/native/src/objc_video_track_source.mm
+@@ -14,6 +14,7 @@
+ #import "base/RTCVideoFrameBuffer.h"
+ #import "components/video_frame_buffer/RTCCVPixelBuffer.h"
+ 
++#include "api/video/color_space.h"
+ #include "api/video/i420_buffer.h"
+ #include "sdk/objc/native/src/objc_frame_buffer.h"
+ 
+@@ -132,11 +133,36 @@
+     rotation = kVideoRotation_0;
+   }
+ 
+-  OnFrame(VideoFrame::Builder()
+-              .set_video_frame_buffer(buffer)
+-              .set_rotation(rotation)
+-              .set_timestamp_us(translated_timestamp_us)
+-              .build());
++  std::optional<ColorSpace> color_space;
++  if ([frame.buffer
++          isKindOfClass:[RTC_OBJC_TYPE(RTCCVPixelBuffer) class]]) {
++    RTC_OBJC_TYPE(RTCCVPixelBuffer) *rtc_pixel_buffer =
++        (RTC_OBJC_TYPE(RTCCVPixelBuffer) *)frame.buffer;
++    const OSType pixel_format =
++        CVPixelBufferGetPixelFormatType(rtc_pixel_buffer.pixelBuffer);
++    if (pixel_format ==
++        kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange) {
++      color_space.emplace(ColorSpace::PrimaryID::kBT709,
++                          ColorSpace::TransferID::kBT709,
++                          ColorSpace::MatrixID::kBT709,
++                          ColorSpace::RangeID::kLimited);
++    } else if (pixel_format ==
++               kCVPixelFormatType_420YpCbCr8BiPlanarFullRange) {
++      color_space.emplace(ColorSpace::PrimaryID::kBT709,
++                          ColorSpace::TransferID::kBT709,
++                          ColorSpace::MatrixID::kBT709,
++                          ColorSpace::RangeID::kFull);
++    }
++  }
++
++  VideoFrame::Builder builder;
++  builder.set_video_frame_buffer(buffer)
++      .set_rotation(rotation)
++      .set_timestamp_us(translated_timestamp_us);
++  if (color_space.has_value()) {
++    builder.set_color_space(color_space);
++  }
++  OnFrame(builder.build());
+ }
+ 
+ }  // namespace webrtc
+--- a/modules/video_coding/codecs/av1/libaom_av1_encoder.cc
++++ b/modules/video_coding/codecs/av1/libaom_av1_encoder.cc
+@@ -208,6 +208,8 @@ class LibaomAv1Encoder final : public VideoEncoder {
+   bool inited_;
+   bool rates_configured_;
+   std::optional<aom_svc_params_t> svc_params_;
++  bool color_space_controls_initialized_ = false;
++  std::optional<ColorSpace> configured_color_space_;
+   VideoCodec encoder_settings_;
+   LibaomAv1EncoderSettings settings_;
+   aom_image_t* frame_for_encode_;
+@@ -668,6 +670,8 @@ int32_t LibaomAv1Encoder::Release() {
+   }
+   speed_controllers_.clear();
+   rates_configured_ = false;
++  color_space_controls_initialized_ = false;
++  configured_color_space_.reset();
+   return WEBRTC_VIDEO_CODEC_OK;
+ }
+ 
+@@ -782,6 +786,32 @@ int32_t LibaomAv1Encoder::Encode(
+       frame_types != nullptr &&
+       absl::c_linear_search(*frame_types, VideoFrameType::kVideoFrameKey);
+ 
++  // libaom otherwise writes unspecified CICP values into its sequence header,
++  // even though WebRTC carries ColorSpace separately on VideoFrame. Keep the
++  // AV1 bitstream self-describing for receivers that do not negotiate the
++  // WebRTC color-space RTP extension.
++  if (!color_space_controls_initialized_ ||
++      frame.color_space() != configured_color_space_) {
++    const ColorSpace color_space = frame.color_space().value_or(ColorSpace());
++    SET_ENCODER_PARAM_OR_RETURN_ERROR(
++        AV1E_SET_COLOR_PRIMARIES,
++        static_cast<int>(color_space.primaries()));
++    SET_ENCODER_PARAM_OR_RETURN_ERROR(
++        AV1E_SET_TRANSFER_CHARACTERISTICS,
++        static_cast<int>(color_space.transfer()));
++    SET_ENCODER_PARAM_OR_RETURN_ERROR(
++        AV1E_SET_MATRIX_COEFFICIENTS,
++        static_cast<int>(color_space.matrix()));
++    SET_ENCODER_PARAM_OR_RETURN_ERROR(
++        AV1E_SET_COLOR_RANGE,
++        color_space.range() == ColorSpace::RangeID::kFull
++            ? AOM_CR_FULL_RANGE
++            : AOM_CR_STUDIO_RANGE);
++    configured_color_space_ = frame.color_space();
++    color_space_controls_initialized_ = true;
++    keyframe_required = true;
++  }
++
+   std::vector<ScalableVideoController::LayerFrameConfig> layer_frames =
+       svc_controller_->NextFrameConfig(keyframe_required);
+ 
+--- a/sdk/objc/base/RTCVideoFrame.h
++++ b/sdk/objc/base/RTCVideoFrame.h
+@@ -22,6 +22,16 @@ typedef NS_ENUM(NSInteger, RTCVideoRotation) {
+   RTCVideoRotation_270 = 270,
+ };
+ 
++/** CICP color description corresponding to webrtc::ColorSpace. A frame whose
++ *  `hasColorSpace` is NO retains WebRTC's legacy renderer behavior.
++ */
++typedef struct RTCVideoColorSpace {
++  int32_t primaries;
++  int32_t transfer;
++  int32_t matrix;
++  int32_t range;
++} RTCVideoColorSpace;
++
+ @protocol RTC_OBJC_TYPE
+ (RTCVideoFrameBuffer);
+ 
+@@ -44,6 +54,10 @@ RTC_OBJC_EXPORT
+ 
+ @property(nonatomic, readonly) id<RTC_OBJC_TYPE(RTCVideoFrameBuffer)> buffer;
+ 
++/** Encoded/decoded color description when one was supplied by WebRTC. */
++@property(nonatomic, assign) BOOL hasColorSpace;
++@property(nonatomic, assign) RTCVideoColorSpace colorSpace;
++
+ - (instancetype)init NS_UNAVAILABLE;
+ - (instancetype)new NS_UNAVAILABLE;
+ 
+--- a/sdk/objc/base/RTCVideoFrame.mm
++++ b/sdk/objc/base/RTCVideoFrame.mm
+@@ -16,10 +16,14 @@
+ @implementation RTC_OBJC_TYPE (RTCVideoFrame) {
+   RTCVideoRotation _rotation;
+   int64_t _timeStampNs;
++  BOOL _hasColorSpace;
++  RTCVideoColorSpace _colorSpace;
+ }
+ 
+ @synthesize buffer = _buffer;
+ @synthesize timeStamp;
++@synthesize hasColorSpace = _hasColorSpace;
++@synthesize colorSpace = _colorSpace;
+ 
+ - (int)width {
+   return _buffer.width;
+@@ -38,9 +42,14 @@ - (int64_t)timeStampNs {
+ }
+ 
+ - (RTC_OBJC_TYPE(RTCVideoFrame) *)newI420VideoFrame {
+-  return [[RTC_OBJC_TYPE(RTCVideoFrame) alloc] initWithBuffer:[_buffer toI420]
+-                                                     rotation:_rotation
+-                                                  timeStampNs:_timeStampNs];
++  RTC_OBJC_TYPE(RTCVideoFrame) *frame =
++      [[RTC_OBJC_TYPE(RTCVideoFrame) alloc] initWithBuffer:[_buffer toI420]
++                                                  rotation:_rotation
++                                               timeStampNs:_timeStampNs];
++  frame.timeStamp = self.timeStamp;
++  frame.hasColorSpace = self.hasColorSpace;
++  frame.colorSpace = self.colorSpace;
++  return frame;
+ }
+ 
+ - (instancetype)initWithBuffer:(id<RTC_OBJC_TYPE(RTCVideoFrameBuffer)>)buffer
+@@ -51,6 +60,8 @@ - (instancetype)initWithBuffer:(id<RTC_OBJC_TYPE(RTCVideoFrameBuffer)>)buffer
+     _buffer = buffer;
+     _rotation = rotation;
+     _timeStampNs = timeStampNs;
++    _hasColorSpace = NO;
++    _colorSpace = (RTCVideoColorSpace){0, 0, 0, 0};
+   }
+   return self;
+ }
+--- a/sdk/objc/native/src/objc_video_frame.mm
++++ b/sdk/objc/native/src/objc_video_frame.mm
+@@ -10,6 +10,8 @@
+ 
+ #include "sdk/objc/native/src/objc_video_frame.h"
+ 
++#import "components/video_frame_buffer/RTCCVPixelBuffer.h"
++
+ #include "rtc_base/time_utils.h"
+ #include "sdk/objc/native/src/objc_frame_buffer.h"
+ 
+@@ -23,6 +25,38 @@ RTC_OBJC_TYPE(RTCVideoFrame) *ToObjCVideoFrame(const VideoFrame &frame) {
+          timeStampNs:frame.timestamp_us() * webrtc::kNumNanosecsPerMicrosec];
+   videoFrame.timeStamp = frame.rtp_timestamp();
+ 
++  if (frame.color_space().has_value()) {
++    const ColorSpace& color_space = *frame.color_space();
++    RTCVideoColorSpace objc_color_space = {
++        static_cast<int32_t>(color_space.primaries()),
++        static_cast<int32_t>(color_space.transfer()),
++        static_cast<int32_t>(color_space.matrix()),
++        static_cast<int32_t>(color_space.range())};
++
++    // VideoToolbox may expand a limited-range H.264 bitstream into a
++    // full-range NV12 pixel buffer. Rendering must describe the physical
++    // decoded samples, not repeat the bitstream's range in that case.
++    if ([videoFrame.buffer
++            isKindOfClass:[RTC_OBJC_TYPE(RTCCVPixelBuffer) class]]) {
++      RTC_OBJC_TYPE(RTCCVPixelBuffer) *pixel_buffer =
++          (RTC_OBJC_TYPE(RTCCVPixelBuffer) *)videoFrame.buffer;
++      const OSType pixel_format =
++          CVPixelBufferGetPixelFormatType(pixel_buffer.pixelBuffer);
++      if (pixel_format ==
++          kCVPixelFormatType_420YpCbCr8BiPlanarFullRange) {
++        objc_color_space.range =
++            static_cast<int32_t>(ColorSpace::RangeID::kFull);
++      } else if (pixel_format ==
++                 kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange) {
++        objc_color_space.range =
++            static_cast<int32_t>(ColorSpace::RangeID::kLimited);
++      }
++    }
++
++    videoFrame.colorSpace = objc_color_space;
++    videoFrame.hasColorSpace = YES;
++  }
++
+   return videoFrame;
+ }
+ 
+--- a/sdk/objc/components/renderer/metal/RTCMTLI420Renderer.mm
++++ b/sdk/objc/components/renderer/metal/RTCMTLI420Renderer.mm
+@@ -33,6 +33,11 @@ static NSString *const shaderSource = MTL_STRINGIFY(
+       float2 texcoord;
+     } Varyings;
+ 
++    typedef struct {
++      float4 luma;
++      float4 chroma;
++    } ColorConversion;
++
+     vertex Varyings vertexPassthrough(constant Vertex * verticies [[buffer(0)]],
+                                       unsigned int vid [[vertex_id]]) {
+       Varyings out;
+@@ -47,7 +52,8 @@ fragment half4 fragmentColorConversion(
+         Varyings in [[stage_in]],
+         texture2d<float, access::sample> textureY [[texture(0)]],
+         texture2d<float, access::sample> textureU [[texture(1)]],
+-        texture2d<float, access::sample> textureV [[texture(2)]]) {
++        texture2d<float, access::sample> textureV [[texture(2)]],
++        constant ColorConversion &conversion [[buffer(0)]]) {
+       constexpr sampler s(address::clamp_to_edge, filter::linear);
+       float y;
+       float u;
+@@ -55,26 +61,32 @@ fragment half4 fragmentColorConversion(
+       float r;
+       float g;
+       float b;
+-      // Conversion for YUV to rgb from http://www.fourcc.org/fccyvrgb.php
+-      y = textureY.sample(s, in.texcoord).r;
++      y = (textureY.sample(s, in.texcoord).r + conversion.luma.x) *
++          conversion.luma.y;
+       u = textureU.sample(s, in.texcoord).r;
+       v = textureV.sample(s, in.texcoord).r;
+-      u = u - 0.5;
+-      v = v - 0.5;
++      u = u - conversion.chroma.z;
++      v = v - conversion.chroma.z;
+-      r = y + 1.403 * v;
+-      g = y - 0.344 * u - 0.714 * v;
+-      b = y + 1.770 * u;
++      r = y + conversion.luma.z * v;
++      g = y + conversion.luma.w * u + conversion.chroma.x * v;
++      b = y + conversion.chroma.y * u;
+ 
+       float4 out = float4(r, g, b, 1.0);
+ 
+       return half4(out);
+     });
+ 
++typedef struct RTCI420ColorConversion {
++  simd_float4 luma;
++  simd_float4 chroma;
++} RTCI420ColorConversion;
++
+ @implementation RTC_OBJC_TYPE (RTCMTLI420Renderer) {
+   // Textures.
+   id<MTLTexture> _yTexture;
+   id<MTLTexture> _uTexture;
+   id<MTLTexture> _vTexture;
++  id<MTLBuffer> _colorConversionBuffer;
+ 
+   MTLTextureDescriptor *_descriptor;
+   MTLTextureDescriptor *_chromaDescriptor;
+@@ -116,6 +128,45 @@ - (BOOL)setupTexturesForFrame:(nonnull RTC_OBJC_TYPE(RTCVideoFrame) *)frame {
+     return NO;
+   }
+ 
++  if (!_colorConversionBuffer) {
++    _colorConversionBuffer =
++        [device newBufferWithLength:sizeof(RTCI420ColorConversion)
++                            options:MTLResourceCPUCacheModeWriteCombined];
++  }
++  if (!_colorConversionBuffer) {
++    return NO;
++  }
++  RTCI420ColorConversion *conversion =
++      (RTCI420ColorConversion *)_colorConversionBuffer.contents;
++  if (frame.hasColorSpace && frame.colorSpace.matrix == 1 &&
++      frame.colorSpace.range == 1) {
++    // Rec.709 video range: expand 16-235 luma and 16-240 chroma.
++    conversion->luma = (simd_float4){-16.0f / 255.0f,
++                                     255.0f / 219.0f,
++                                     1.792741f,
++                                     -0.213249f};
++    conversion->chroma = (simd_float4){-0.532909f,
++                                       2.112402f,
++                                       128.0f / 255.0f,
++                                       0.0f};
++  } else if (frame.hasColorSpace && frame.colorSpace.matrix == 1 &&
++             frame.colorSpace.range == 2) {
++    // Rec.709 full range.
++    conversion->luma =
++        (simd_float4){0.0f, 1.0f, 1.5748f, -0.187324f};
++    conversion->chroma = (simd_float4){-0.468124f,
++                                       1.8556f,
++                                       128.0f / 255.0f,
++                                       0.0f};
++  } else {
++    // Preserve WebRTC's legacy full-range BT.601-like conversion when color
++    // metadata is absent or describes a matrix this renderer does not handle.
++    conversion->luma =
++        (simd_float4){0.0f, 1.0f, 1.403f, -0.344f};
++    conversion->chroma =
++        (simd_float4){-0.714f, 1.770f, 0.5f, 0.0f};
++  }
++
+   // Chroma size must be >= 1 as per the Apple documentation, so skip ?x1
+   // and 1x? frames.
+   // See: https://bugs.chromium.org/p/webrtc/issues/detail?id=14892
+@@ -175,6 +226,9 @@ - (void)uploadTexturesToRenderEncoder:
+   [renderEncoder setFragmentTexture:_yTexture atIndex:0];
+   [renderEncoder setFragmentTexture:_uTexture atIndex:1];
+   [renderEncoder setFragmentTexture:_vTexture atIndex:2];
++  [renderEncoder setFragmentBuffer:_colorConversionBuffer
++                            offset:0
++                           atIndex:0];
+ }
+ 
+ @end
+--- a/sdk/objc/components/renderer/metal/RTCMTLNSVideoView.m
++++ b/sdk/objc/components/renderer/metal/RTCMTLNSVideoView.m
+@@ -21,6 +21,7 @@ @interface RTC_OBJC_TYPE (RTCMTLNSVideoView)
+ ()<MTKViewDelegate> @property(nonatomic) id<RTCMTLRenderer> renderer;
+ @property(nonatomic, strong) MTKView *metalView;
+ @property(atomic, strong) RTC_OBJC_TYPE(RTCVideoFrame) * videoFrame;
++@property(atomic) BOOL rendersRec709;
+ @end
+ 
+ @implementation RTC_OBJC_TYPE (RTCMTLNSVideoView) {
+@@ -31,6 +32,7 @@ @implementation RTC_OBJC_TYPE (RTCMTLNSVideoView) {
+ @synthesize renderer = _renderer;
+ @synthesize metalView = _metalView;
+ @synthesize videoFrame = _videoFrame;
++@synthesize rendersRec709 = _rendersRec709;
+ 
+ - (instancetype)initWithFrame:(CGRect)frameRect {
+   self = [super initWithFrame:frameRect];
+@@ -118,6 +120,27 @@ - (void)renderFrame:(nullable RTC_OBJC_TYPE(RTCVideoFrame) *)frame {
+     return;
+   }
+   self.videoFrame = [frame newI420VideoFrame];
++  const BOOL renders_rec709 =
++      self.videoFrame.hasColorSpace &&
++      self.videoFrame.colorSpace.primaries == 1;
++  if (renders_rec709 != self.rendersRec709) {
++    self.rendersRec709 = renders_rec709;
++    dispatch_async(dispatch_get_main_queue(), ^{
++      if (renders_rec709 != self.rendersRec709) {
++        return;
++      }
++      if (@available(macOS 10.12, *)) {
++        if (renders_rec709) {
++          CGColorSpaceRef color_space =
++              CGColorSpaceCreateWithName(kCGColorSpaceITUR_709);
++          self.metalView.colorspace = color_space;
++          CGColorSpaceRelease(color_space);
++        } else {
++          self.metalView.colorspace = nil;
++        }
++      }
++    });
++  }
+ }
+ 
+ @end

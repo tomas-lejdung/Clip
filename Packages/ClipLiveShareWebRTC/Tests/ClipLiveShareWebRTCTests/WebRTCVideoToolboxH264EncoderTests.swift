@@ -300,6 +300,30 @@ struct WebRTCVideoToolboxH264EncoderTests {
         #expect(controller.snapshot().revision == changed.revision)
     }
 
+    @Test("live H264 controls preserve mode and advance the rebuild revision")
+    func advancedConfigurationController() {
+        let controller = WebRTCH264EncoderConfigurationController(
+            configuration: .performance
+        )
+        let initial = controller.snapshot()
+        let advanced = WebRTCH264AdvancedConfiguration(
+            maximumQuantizer: 36,
+            qualityFraction: 0.91,
+            keyFrameIntervalSeconds: 5
+        )
+
+        controller.updateAdvancedConfiguration(advanced)
+        let changed = controller.snapshot()
+        #expect(changed.revision == initial.revision + 1)
+        #expect(changed.configuration.mode == .performance)
+        #expect(changed.configuration.maximumQuantizer == 36)
+        #expect(changed.configuration.quality == 0.91)
+        #expect(changed.configuration.keyFrameIntervalSeconds == 5)
+
+        controller.updateAdvancedConfiguration(advanced)
+        #expect(controller.snapshot().revision == changed.revision)
+    }
+
     @Test("length-prefixed NAL units become complete Annex-B units")
     func annexBConversion() {
         let avcc = Data([

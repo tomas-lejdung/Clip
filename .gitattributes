@@ -1,0 +1,4 @@
+# Preserve byte-exact generated dependency provenance. These files intentionally
+# retain upstream whitespace because their SHA-256 values are release inputs.
+Clip/Resources/WebRTCThirdPartyNotices.txt -whitespace
+Packages/ClipLiveShareWebRTC/WebRTCPatches/0001-clip-rec709-color-signaling.patch -whitespace

@@ -96,6 +96,7 @@
 		L2B10000000000000000000E /* LiveSharePresentationModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = L2F10000000000000000000E /* LiveSharePresentationModelTests.swift */; };
 		L2B10000000000000000000F /* LiveShareWindowCoordinateTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = L2F10000000000000000000F /* LiveShareWindowCoordinateTests.swift */; };
 		L2B100000000000000000010 /* ThirdPartyNotices.txt in Resources */ = {isa = PBXBuildFile; fileRef = L2F100000000000000000010 /* ThirdPartyNotices.txt */; };
+		L2B100000000000000000014 /* WebRTCThirdPartyNotices.txt in Resources */ = {isa = PBXBuildFile; fileRef = L2F100000000000000000014 /* WebRTCThirdPartyNotices.txt */; };
 		L2B100000000000000000011 /* LiveShareCoordinatorPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = L2F100000000000000000011 /* LiveShareCoordinatorPolicy.swift */; };
 		L2B100000000000000000012 /* LiveShareCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = L2F100000000000000000012 /* LiveShareCoordinator.swift */; };
 		L2B100000000000000000013 /* LiveShareCoordinatorPolicyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = L2F100000000000000000013 /* LiveShareCoordinatorPolicyTests.swift */; };
@@ -225,6 +226,7 @@
 		L2F10000000000000000000E /* LiveSharePresentationModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveSharePresentationModelTests.swift; sourceTree = "<group>"; };
 		L2F10000000000000000000F /* LiveShareWindowCoordinateTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveShareWindowCoordinateTests.swift; sourceTree = "<group>"; };
 		L2F100000000000000000010 /* ThirdPartyNotices.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = ThirdPartyNotices.txt; sourceTree = "<group>"; };
+		L2F100000000000000000014 /* WebRTCThirdPartyNotices.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = WebRTCThirdPartyNotices.txt; sourceTree = "<group>"; };
 		L2F100000000000000000011 /* LiveShareCoordinatorPolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveShareCoordinatorPolicy.swift; sourceTree = "<group>"; };
 		L2F100000000000000000012 /* LiveShareCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveShareCoordinator.swift; sourceTree = "<group>"; };
 		L2F100000000000000000013 /* LiveShareCoordinatorPolicyTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveShareCoordinatorPolicyTests.swift; sourceTree = "<group>"; };
@@ -376,6 +378,7 @@
 				F00000000000000000000009 /* Assets.xcassets */,
 				F0000000000000000000000A /* Localizable.xcstrings */,
 				L2F100000000000000000010 /* ThirdPartyNotices.txt */,
+				L2F100000000000000000014 /* WebRTCThirdPartyNotices.txt */,
 				F0000000000000000000000B /* Info.plist */,
 				F0000000000000000000000C /* Clip.entitlements */,
 			);
@@ -769,6 +772,7 @@
 				B00000000000000000000009 /* Assets.xcassets in Resources */,
 				B0000000000000000000000A /* Localizable.xcstrings in Resources */,
 				L2B100000000000000000010 /* ThirdPartyNotices.txt in Resources */,
+				L2B100000000000000000014 /* WebRTCThirdPartyNotices.txt in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -1148,7 +1152,7 @@
 				CODE_SIGN_IDENTITY = "-";
 				CODE_SIGN_STYLE = Manual;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 11;
+				CURRENT_PROJECT_VERSION = 12;
 				ENABLE_APP_SANDBOX = YES;
 				ENABLE_HARDENED_RUNTIME = YES;
 				ENABLE_PREVIEWS = YES;
@@ -1159,7 +1163,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 1.3.6;
+				MARKETING_VERSION = 1.3.7;
 				PRODUCT_BUNDLE_IDENTIFIER = com.tomaslejdung.clip;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
@@ -1176,7 +1180,7 @@
 				CODE_SIGN_IDENTITY = "-";
 				CODE_SIGN_STYLE = Manual;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 11;
+				CURRENT_PROJECT_VERSION = 12;
 				ENABLE_APP_SANDBOX = YES;
 				ENABLE_HARDENED_RUNTIME = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -1186,7 +1190,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 1.3.6;
+				MARKETING_VERSION = 1.3.7;
 				PRODUCT_BUNDLE_IDENTIFIER = com.tomaslejdung.clip;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;

@@ -248,10 +248,20 @@ Software VP8, VP9, and AV1 use the native source frame geometry delivered by
 ScreenCaptureKit. Hardware H.264 aspect-fits only sources that exceed its
 4,096-pixel-side, 4,096 × 2,304 luma, or Level 5.2 macroblock envelope; an
 under-limit odd dimension is cropped by at most one final row or column at the
-encoder boundary. Clip does not perform a manual BGRA copy or synthetic
-timestamp rewrite. Capture-to-WebRTC pressure is bounded and observable; Live
-Share favors the latest frame to prevent latency growth and must report
-sustained overload rather than accumulating an unbounded queue.
+encoder boundary. By default, Live Share normalizes capture to opaque SDR
+Rec.709: software VP8, VP9, and AV1 receive video-range NV12 while the native
+VideoToolbox H.264 path retains BGRA input tagged as Rec.709. The host may
+instead select full-range Rec.709 or experimental display-native capture as
+described below. Clip does not perform a manual BGRA copy or synthetic
+timestamp rewrite. Clip's patched WebRTC M150 bridge carries NV12 Rec.709
+matrix/range metadata onto native frames. AV1 writes matching CICP into its
+sequence header, and the native viewer preserves the decoded metadata through
+its Objective-C frame bridge and uses the corresponding Rec.709 Metal
+conversion. Compatible Rec.709 therefore has the same color interpretation in
+browser and native AV1 viewers as the H.264 reference path.
+Capture-to-WebRTC pressure is bounded and observable; Live Share favors the
+latest frame to prevent latency growth and must report sustained overload
+rather than accumulating an unbounded queue.
 
 Signaling, SDP, ICE, viewer IDs, and control DataChannel payloads have explicit
 allocation limits before native peer work. Control delivery also has a native
@@ -313,6 +323,31 @@ an explicit user-gesture recovery when autoplay is blocked. Thirty FPS is the
 supported video default and 15 FPS is selectable.
 Sixty FPS may be exposed when the current hardware path supports it, but it is
 not a release requirement.
+
+The host can change Live Share color handling independently from codec and
+quality. **Compatible Rec.709** is the default 8-bit SDR video-range mode.
+**Full-range Rec.709** uses 8-bit SDR full-range YCbCr with VP8, VP9, and AV1;
+the native H.264 path continues to use its standard Rec.709 conversion.
+**Native Display** restores display-dependent ScreenCaptureKit color and is
+marked experimental because wide-gamut metadata is not reliably preserved by
+every encoder and viewer. Changing the mode updates active captures in place
+without replacing the room or peer connection. These modes do not select
+4:2:0 versus 4:2:2 or enable 10-bit encoding. AV1 color controls are changed
+only when the source color description changes; that transition forces one
+keyframe rather than reconfiguring libaom on every captured frame.
+
+Each codec has separately persisted advanced stream controls, available both
+as session defaults in Settings and beside the active codec selector. Changes
+remain a draft until **Apply**. In the active Live Share menu, the editor
+replaces the menu content inline; **Back** or **Cancel** discards the draft
+without creating a nested menu-bar popover. Applying updates the current sender
+immediately without replacing its peer connection.
+**Reset** restores that codec's automatic defaults. Every codec supports a
+requested bitrate floor, congestion behavior, temporal-layer count, and RTP
+resolution scale. The native H.264 encoder additionally exposes maximum QP,
+VideoToolbox quality, and keyframe interval. The bundled WebRTC VP8, VP9, and
+AV1 encoders remain native factory objects and do not expose a safe public QP
+override.
 
 ## Protocol and privacy
 
@@ -1067,6 +1102,8 @@ exceed the window; controls and labels remain single-line where practical.
 - Local Friends management with editable names, Block/Unblock, and Remove.
 - Default video codec, quality/bandwidth rung, frame rate, and Performance or
   Quality encoding mode.
+- Per-codec advanced stream defaults with Apply and Reset, including shared
+  sender controls and H.264-specific VideoToolbox controls.
 - Default System Audio, access-code requirement, Prioritize Focused Window, and
   Auto-share Focused Windows states.
 - Restore All Live Share Defaults, restoring session defaults without changing
@@ -1346,18 +1383,19 @@ boundaries:
 
 - Sparkle 2, pinned exactly for update discovery, download, verification,
   installation, and relaunch.
-- [`stasel/WebRTC`](https://github.com/stasel/WebRTC) `150.0.0`, pinned exactly
-  behind `Packages/ClipLiveShareWebRTC` for ICE, DTLS-SRTP, SCTP DataChannel,
-  congestion control, Opus system-audio transport, and
-  hardware-H.264/software-VP8/VP9/AV1 browser transport.
+- WebRTC M150, pinned to one upstream source commit plus Clip's reviewed color
+  patch and published as an immutable checksummed arm64 XCFramework behind
+  `Packages/ClipLiveShareWebRTC`, for ICE, DTLS-SRTP, SCTP DataChannel,
+  congestion control, Opus system-audio transport, and hardware-H.264 plus
+  software-VP8/VP9/AV1 browser transport.
 
 WebRTC is a media-transport runtime, not Clip's recording/export encoder. Clip
 still bundles no FFmpeg, libx264, or helper media executable. Test-only
 dependencies should be avoided unless they materially improve deterministic
-verification. Publishable DMGs resolve both exact revisions and reviewed binary
-checksums in a fresh isolated package cache, compare the embedded WebRTC
-payload with that reviewed artifact, and include complete third-party notices;
-ignored development-package state is not accepted as release provenance.
+verification. Publishable DMGs resolve Sparkle and the reviewed WebRTC binary
+in a fresh isolated package cache, compare the embedded WebRTC payload with
+that artifact, and include complete third-party notices; ignored development
+package state is not accepted as release provenance.
 
 ## Live Share service deployment
 

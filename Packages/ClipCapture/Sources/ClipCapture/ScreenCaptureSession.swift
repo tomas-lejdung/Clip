@@ -147,7 +147,7 @@ public final class ScreenCaptureSession: NSObject, @unchecked Sendable {
         }
     }
 
-    private static func makeConfiguration(
+    static func makeConfiguration(
         for video: CaptureVideoConfiguration
     ) -> SCStreamConfiguration {
         let configuration = SCStreamConfiguration()
@@ -161,7 +161,27 @@ public final class ScreenCaptureSession: NSObject, @unchecked Sendable {
         // hiccup without allowing roughly five frame intervals of stale video
         // to accumulate under encoder pressure.
         configuration.queueDepth = liveQueueDepth
-        configuration.pixelFormat = kCVPixelFormatType_32BGRA
+        switch video.pixelFormat {
+        case .bgra:
+            configuration.pixelFormat = kCVPixelFormatType_32BGRA
+        case .rec709BGRA:
+            configuration.pixelFormat = kCVPixelFormatType_32BGRA
+            configuration.captureDynamicRange = .SDR
+            configuration.colorSpaceName = CGColorSpace.itur_709
+            configuration.shouldBeOpaque = true
+        case .rec709VideoRange:
+            configuration.pixelFormat = kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
+            configuration.captureDynamicRange = .SDR
+            configuration.colorSpaceName = CGColorSpace.itur_709
+            configuration.colorMatrix = CGDisplayStream.yCbCrMatrix_ITU_R_709_2
+            configuration.shouldBeOpaque = true
+        case .rec709FullRange:
+            configuration.pixelFormat = kCVPixelFormatType_420YpCbCr8BiPlanarFullRange
+            configuration.captureDynamicRange = .SDR
+            configuration.colorSpaceName = CGColorSpace.itur_709
+            configuration.colorMatrix = CGDisplayStream.yCbCrMatrix_ITU_R_709_2
+            configuration.shouldBeOpaque = true
+        }
         configuration.captureResolution = .best
         // Live Share may intentionally request an aspect-fitted H.264 frame
         // below the native 5K/6K source size. Equal source/output dimensions

@@ -1761,6 +1761,9 @@ final class LiveShareCoordinator {
             setCodec: { [weak self] codec in
                 self?.requestVideoCodecChange(codec)
             },
+            setColorMode: { [weak self] colorMode in
+                self?.setColorMode(colorMode)
+            },
             setSystemAudioEnabled: { [weak self] enabled in
                 self?.setSystemAudioEnabled(enabled)
             },
@@ -1771,6 +1774,9 @@ final class LiveShareCoordinator {
                 self?.setPrioritizeFocusedWindow(enabled)
             },
             setMode: { [weak self] mode in self?.setEncodingMode(mode) },
+            setAdvancedVideoSettings: { [weak self] codec, advanced in
+                self?.setAdvancedVideoSettings(advanced, for: codec)
+            },
             setAutoShareEnabled: { [weak self] enabled in
                 self?.setAutoShareEnabled(enabled)
             },
@@ -2178,7 +2184,10 @@ final class LiveShareCoordinator {
             forcesRelay: false,
             senderPolicy: LiveShareCoordinatorPolicy.senderPolicy(for: settings),
             videoCodec: webRTCVideoCodec(settings.videoCodec),
-            videoEncodingMode: settings.encodingMode
+            videoEncodingMode: settings.encodingMode,
+            advancedVideoConfigurations: webRTCAdvancedVideoConfigurations(
+                settings.advancedVideoSettings
+            )
         )
         let host = try WebRTCPeerHost(
             configuration: configuration,
@@ -4033,6 +4042,8 @@ final class LiveShareCoordinator {
                 width: geometry.width,
                 height: geometry.height,
                 framesPerSecond: settings.frameRate.rawValue,
+                codec: settings.videoCodec,
+                colorMode: settings.colorMode,
                 showsCursor: slot.isFocused
             ),
             stream: stream
@@ -4305,6 +4316,17 @@ final class LiveShareCoordinator {
         publish()
     }
 
+    private func setColorMode(_ colorMode: LiveShareColorMode) {
+        guard codecChangeTask == nil,
+              settings.colorMode != colorMode else { return }
+        settings.colorMode = colorMode
+        persistSettings()
+        publish()
+        if !state.snapshot.sources.isEmpty {
+            scheduleActiveCaptureRestart()
+        }
+    }
+
     private func requestVideoCodecChange(_ codec: LiveShareVideoCodec) {
         guard codec != settings.videoCodec, codecChangeTask == nil else { return }
         guard let host = peerHost else {
@@ -4525,6 +4547,8 @@ final class LiveShareCoordinator {
                 width: geometry.width,
                 height: geometry.height,
                 framesPerSecond: framesPerSecond,
+                codec: codec,
+                colorMode: settings.colorMode,
                 showsCursor: descriptor.video.showsCursor,
                 sourceRect: descriptor.video.sourceRect
             ),
@@ -4563,6 +4587,26 @@ final class LiveShareCoordinator {
         applySenderPolicyAndPersist()
     }
 
+    private func setAdvancedVideoSettings(
+        _ advanced: LiveShareCodecAdvancedSettings,
+        for codec: LiveShareVideoCodec
+    ) {
+        guard codecChangeTask == nil else { return }
+        let normalized = advanced.normalized(for: codec)
+        settings.advancedVideoSettings.set(normalized, for: codec)
+        if let encoderConfiguration = webRTCAdvancedVideoConfiguration(
+            normalized,
+            for: codec
+        ) {
+            peerHost?.updateAdvancedVideoConfiguration(encoderConfiguration)
+        }
+        if settings.videoCodec == codec {
+            applyRuntimeSenderPolicies()
+        }
+        persistSettings()
+        publish()
+    }
+
     private func setAutoShareEnabled(_ enabled: Bool) {
         settings.autoShareFocusedWindows = enabled
         if !enabled {
@@ -4599,6 +4643,38 @@ final class LiveShareCoordinator {
         }
     }
 
+    private func webRTCAdvancedVideoConfigurations(
+        _ settings: LiveShareAdvancedVideoSettings
+    ) -> WebRTCAdvancedVideoConfigurations {
+        WebRTCAdvancedVideoConfigurations(
+            h264: webRTCH264AdvancedVideoConfiguration(settings.h264)
+        )
+    }
+
+    private func webRTCAdvancedVideoConfiguration(
+        _ advanced: LiveShareCodecAdvancedSettings,
+        for codec: LiveShareVideoCodec
+    ) -> WebRTCCodecAdvancedConfiguration? {
+        let normalized = advanced.normalized(for: codec)
+        switch codec {
+        case .h264:
+            return .h264(webRTCH264AdvancedVideoConfiguration(normalized))
+        case .vp8, .vp9, .av1:
+            return nil
+        }
+    }
+
+    private func webRTCH264AdvancedVideoConfiguration(
+        _ advanced: LiveShareCodecAdvancedSettings
+    ) -> WebRTCH264AdvancedConfiguration {
+        let normalized = advanced.normalized(for: .h264)
+        return WebRTCH264AdvancedConfiguration(
+            maximumQuantizer: normalized.maximumQuantizer,
+            qualityFraction: Double(normalized.h264QualityPercent ?? 98) / 100,
+            keyFrameIntervalSeconds: normalized.h264KeyFrameIntervalSeconds ?? 2
+        )
+    }
+
     private func persistSettings() {
         let value = settings
         let baseline = persistedSettingsBaseline
@@ -4615,6 +4691,12 @@ final class LiveShareCoordinator {
             }
             if baseline.videoCodec != value.videoCodec {
                 stored.videoCodec = value.videoCodec
+            }
+            if baseline.colorMode != value.colorMode {
+                stored.colorMode = value.colorMode
+            }
+            if baseline.advancedVideoSettings != value.advancedVideoSettings {
+                stored.advancedVideoSettings = value.advancedVideoSettings
             }
             if baseline.systemAudioEnabled != value.systemAudioEnabled {
                 stored.systemAudioEnabled = value.systemAudioEnabled
@@ -4636,9 +4718,11 @@ final class LiveShareCoordinator {
 
     private func scheduleActiveCaptureRestart() {
         let previous = captureRestartTask
+        let pendingSourceTransition = sourceTransitionTask
         let requestID = UUID()
         captureRestartRequestID = requestID
         captureRestartTask = Task { @MainActor [weak self] in
+            await pendingSourceTransition?.value
             await previous?.value
             guard let self,
                   !Task.isCancelled,
@@ -5784,15 +5868,18 @@ final class LiveShareCoordinator {
                     codec: settings.videoCodec,
                     acceleration: settings.videoCodec == .h264 ? .hardware : .software
                 ),
+                colorMode: settings.colorMode,
                 systemAudioEnabled: settings.systemAudioEnabled,
                 cursorUpdatesMatchFrameRate: settings.cursorUpdatesMatchFrameRate,
                 prioritizeFocusedWindow: settings.prioritizeFocusedWindow,
                 mode: settings.encodingMode,
+                advancedVideoSettings: settings.advancedVideoSettings,
                 autoShareFocusedWindows: settings.autoShareFocusedWindows,
                 canChangeQuality: canChangeSettings,
                 canChangeFrameRate: canChangeSettings && codecChangeTask == nil,
                 availableFrameRates: availableFrameRates,
                 canChangeCodec: canChangeSettings && codecChangeTask == nil,
+                canChangeColorMode: canChangeSettings && codecChangeTask == nil,
                 canChangeSystemAudio: canChangeSettings,
                 canChangeCursorUpdateRate: canChangeSettings,
                 canChangePrioritizeFocusedWindow: canChangeSettings,

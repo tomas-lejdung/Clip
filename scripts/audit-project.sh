@@ -5,7 +5,8 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PROJECT="$ROOT/Clip.xcodeproj/project.pbxproj"
 PACKAGE_RESOLUTION="$ROOT/Clip.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved"
-WEBRTC_PACKAGE_RESOLUTION="$ROOT/Packages/ClipLiveShareWebRTC/Package.resolved"
+WEBRTC_PACKAGE_MANIFEST="$ROOT/Packages/ClipLiveShareWebRTC/Package.swift"
+WEBRTC_PATCH="$ROOT/Packages/ClipLiveShareWebRTC/WebRTCPatches/0001-clip-rec709-color-signaling.patch"
 CATALOG="$ROOT/Clip/Resources/Localizable.xcstrings"
 
 source "$ROOT/scripts/sparkle-config.sh"
@@ -18,16 +19,21 @@ fail() {
 
 test -f "$PROJECT" || fail "missing $PROJECT"
 test -f "$PACKAGE_RESOLUTION" || fail "missing shared Swift package resolution"
+[[ "$CLIP_WEBRTC_ARTIFACT_URL" == \
+  "$CLIP_WEBRTC_ARTIFACT_REPOSITORY_URL/releases/download/$CLIP_WEBRTC_ARTIFACT_TAG/$CLIP_WEBRTC_ARTIFACT_NAME" ]] \
+  || fail "reviewed WebRTC artifact URL is inconsistent with its repository, tag, or name"
 [[ "$CLIP_WEBRTC_ARTIFACT_CHECKSUM" =~ ^[0-9a-f]{64}$ ]] \
   || fail "reviewed WebRTC artifact checksum is malformed"
 [[ "$CLIP_WEBRTC_MACOS_EXECUTABLE_SHA256" =~ ^[0-9a-f]{64}$ ]] \
   || fail "reviewed WebRTC macOS payload hash is malformed"
-test -f "$WEBRTC_PACKAGE_RESOLUTION" \
-  || fail "missing ClipLiveShareWebRTC Swift package resolution"
+[[ "$CLIP_WEBRTC_NORMALIZED_ARM64_SHA256" =~ ^[0-9a-f]{64}$ ]] \
+  || fail "reviewed WebRTC normalized arm64 payload hash is malformed"
+[[ "$CLIP_WEBRTC_PATCH_SHA256" =~ ^[0-9a-f]{64}$ ]] \
+  || fail "reviewed WebRTC patch hash is malformed"
+[[ "$CLIP_WEBRTC_LICENSE_SHA256" =~ ^[0-9a-f]{64}$ ]] \
+  || fail "reviewed WebRTC license hash is malformed"
 [[ "$(plutil -extract version raw -o - "$PACKAGE_RESOLUTION")" == "3" ]] \
   || fail "shared Swift package resolution is invalid or unsupported"
-[[ "$(plutil -extract version raw -o - "$WEBRTC_PACKAGE_RESOLUTION")" == "3" ]] \
-  || fail "ClipLiveShareWebRTC Swift package resolution is invalid or unsupported"
 plutil -lint "$ROOT/Clip/Resources/Info.plist" >/dev/null
 plutil -lint "$ROOT/Clip/Resources/Clip.entitlements" >/dev/null
 [[ "$(/usr/libexec/PlistBuddy -c 'Print :NSAudioCaptureUsageDescription' "$ROOT/Clip/Resources/Info.plist")" != "" ]] \
@@ -130,19 +136,11 @@ audit_resolved_pin() {
     || fail "$resolution pin $index has an unexpected version"
 }
 
-[[ "$(plutil -extract pins raw -o - "$PACKAGE_RESOLUTION")" == "2" ]] \
-  || fail "shared Swift package resolution must contain only Sparkle and WebRTC"
+[[ "$(plutil -extract pins raw -o - "$PACKAGE_RESOLUTION")" == "1" ]] \
+  || fail "shared Swift package resolution must contain only Sparkle"
 audit_resolved_pin \
   "$PACKAGE_RESOLUTION" 0 sparkle "$CLIP_SPARKLE_REPOSITORY_URL" \
   "$CLIP_SPARKLE_REVISION" "$CLIP_SPARKLE_VERSION"
-audit_resolved_pin \
-  "$PACKAGE_RESOLUTION" 1 webrtc "$CLIP_WEBRTC_REPOSITORY_URL.git" \
-  "$CLIP_WEBRTC_WRAPPER_REVISION" "$CLIP_WEBRTC_VERSION"
-[[ "$(plutil -extract pins raw -o - "$WEBRTC_PACKAGE_RESOLUTION")" == "1" ]] \
-  || fail "ClipLiveShareWebRTC resolution must contain only WebRTC"
-audit_resolved_pin \
-  "$WEBRTC_PACKAGE_RESOLUTION" 0 webrtc "$CLIP_WEBRTC_REPOSITORY_URL.git" \
-  "$CLIP_WEBRTC_WRAPPER_REVISION" "$CLIP_WEBRTC_VERSION"
 
 [[ "$(rg -F -c 'ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;' "$PROJECT")" == "2" ]] \
   || fail "AppIcon must be configured for Debug and Release"
@@ -173,17 +171,26 @@ rg -F -q 'productName = ClipLiveShare;' "$PROJECT" \
   || fail "ClipLiveShare product dependency is missing"
 rg -F -q 'productName = ClipLiveShareWebRTC;' "$PROJECT" \
   || fail "ClipLiveShareWebRTC product dependency is missing"
-rg -F -q "\"revision\" : \"$CLIP_WEBRTC_WRAPPER_REVISION\"" \
-  "$PACKAGE_RESOLUTION" \
-  || fail "WebRTC wrapper resolution is not the reviewed revision"
-rg -F -q "\"version\" : \"$CLIP_WEBRTC_VERSION\"" "$PACKAGE_RESOLUTION" \
-  || fail "WebRTC shared package resolution is not the reviewed version"
-rg -F -q "exact: \"$CLIP_WEBRTC_VERSION\"" \
-  "$ROOT/Packages/ClipLiveShareWebRTC/Package.swift" \
-  || fail "WebRTC dependency must remain exact"
+[[ "$(rg -F -c "$CLIP_WEBRTC_ARTIFACT_URL" "$WEBRTC_PACKAGE_MANIFEST" || true)" == "1" ]] \
+  || fail "WebRTC package must contain the reviewed direct binary URL exactly once"
+[[ "$(rg -F -c "$CLIP_WEBRTC_ARTIFACT_CHECKSUM" "$WEBRTC_PACKAGE_MANIFEST" || true)" == "1" ]] \
+  || fail "WebRTC package must contain the reviewed binary checksum exactly once"
+rg -F -q '.binaryTarget' "$WEBRTC_PACKAGE_MANIFEST" \
+  || fail "WebRTC must be declared as a direct binary target"
+if rg -q '\.package\([^)]*(stasel/WebRTC|webrtc\.googlesource)' "$WEBRTC_PACKAGE_MANIFEST"; then
+  fail "WebRTC must not be resolved through a source-package wrapper"
+fi
+test -f "$WEBRTC_PATCH" || fail "reviewed WebRTC source patch is missing"
+git -C "$ROOT" ls-files --error-unmatch \
+  "${WEBRTC_PATCH#"$ROOT/"}" >/dev/null 2>&1 \
+  || fail "reviewed WebRTC source patch must be tracked in Git"
+[[ "$(shasum -a 256 "$WEBRTC_PATCH" | awk '{print $1}')" == \
+  "$CLIP_WEBRTC_PATCH_SHA256" ]] \
+  || fail "committed WebRTC source patch differs from the reviewed hash"
 [[ -f "$ROOT/Clip/Resources/ThirdPartyNotices.txt" ]] \
   || fail "third-party notices are missing"
 NOTICES="$ROOT/Clip/Resources/ThirdPartyNotices.txt"
+WEBRTC_NOTICES="$ROOT/Clip/Resources/WebRTCThirdPartyNotices.txt"
 grep -Fq "Source: $CLIP_SPARKLE_REPOSITORY_URL, version $CLIP_SPARKLE_VERSION" \
   "$NOTICES" \
   || fail "Sparkle third-party notice has an unexpected source or version"
@@ -199,13 +206,30 @@ for MARKER in \
   grep -Fq "$MARKER" "$NOTICES" \
     || fail "Sparkle external license section is missing: $MARKER"
 done
-grep -Fq "Source: $CLIP_WEBRTC_REPOSITORY_URL, version $CLIP_WEBRTC_VERSION" \
+grep -Fq "Source: $CLIP_WEBRTC_UPSTREAM_REPOSITORY_URL, version $CLIP_WEBRTC_VERSION" \
   "$NOTICES" \
-  || fail "WebRTC wrapper notice has an unexpected source or version"
-grep -Fq "Source revision: $CLIP_WEBRTC_WRAPPER_REVISION" "$NOTICES" \
-  || fail "WebRTC wrapper notice has an unexpected revision"
+  || fail "WebRTC notice has an unexpected upstream source or version"
 grep -Fq "Source commit: $CLIP_WEBRTC_UPSTREAM_REVISION" "$NOTICES" \
   || fail "Google WebRTC notice has an unexpected upstream revision"
+grep -Fq "Clip binary artifact: $CLIP_WEBRTC_ARTIFACT_URL" "$NOTICES" \
+  || fail "WebRTC notice has an unexpected Clip binary artifact"
+grep -Fq "Clip patch SHA-256: $CLIP_WEBRTC_PATCH_SHA256" "$NOTICES" \
+  || fail "WebRTC notice has an unexpected Clip patch hash"
+test -f "$WEBRTC_NOTICES" || fail "official WebRTC third-party notices are missing"
+git -C "$ROOT" ls-files --error-unmatch \
+  "${WEBRTC_NOTICES#"$ROOT/"}" >/dev/null 2>&1 \
+  || fail "official WebRTC third-party notices must be tracked in Git"
+[[ "$(rg -F -c 'path = WebRTCThirdPartyNotices.txt;' "$PROJECT" || true)" == "1" ]] \
+  || fail "official WebRTC third-party notices must have one Xcode file reference"
+[[ "$(rg -F -c 'WebRTCThirdPartyNotices.txt in Resources' "$PROJECT" || true)" == "2" ]] \
+  || fail "official WebRTC third-party notices must be in the app resource phase"
+[[ "$(shasum -a 256 "$WEBRTC_NOTICES" | awk '{print $1}')" == \
+  "$CLIP_WEBRTC_LICENSE_SHA256" ]] \
+  || fail "official WebRTC third-party notices differ from the reviewed hash"
+for MARKER in '# webrtc' '# libaom' '# libvpx' '# opus'; do
+  grep -Fq "$MARKER" "$WEBRTC_NOTICES" \
+    || fail "official WebRTC third-party notices are missing: $MARKER"
+done
 if rg -q -- '--deep' "$ROOT/scripts/package-dmg.sh"; then
   fail "release packaging must never deep-sign Sparkle's sandbox helpers"
 fi

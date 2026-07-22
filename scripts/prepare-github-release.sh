@@ -189,21 +189,38 @@ PROVENANCE_SPARKLE_REVISION="$(provenance_value sparkle_revision)"
 PROVENANCE_SPARKLE_REPOSITORY="$(provenance_value sparkle_repository)"
 PROVENANCE_SPARKLE_CHECKSUM="$(provenance_value sparkle_artifact_checksum)"
 PROVENANCE_WEBRTC_VERSION="$(provenance_value webrtc_version)"
-PROVENANCE_WEBRTC_WRAPPER_REVISION="$(provenance_value webrtc_wrapper_revision)"
+PROVENANCE_WEBRTC_ARTIFACT_REPOSITORY="$(
+  provenance_value webrtc_artifact_repository
+)"
+PROVENANCE_WEBRTC_ARTIFACT_TAG="$(provenance_value webrtc_artifact_tag)"
+PROVENANCE_WEBRTC_ARTIFACT_NAME="$(provenance_value webrtc_artifact_name)"
+PROVENANCE_WEBRTC_ARTIFACT_URL="$(provenance_value webrtc_artifact_url)"
+PROVENANCE_WEBRTC_UPSTREAM_REPOSITORY="$(
+  provenance_value webrtc_upstream_repository
+)"
 PROVENANCE_WEBRTC_UPSTREAM_REVISION="$(provenance_value webrtc_upstream_revision)"
-PROVENANCE_WEBRTC_REPOSITORY="$(provenance_value webrtc_repository)"
+PROVENANCE_WEBRTC_PATCH_SHA256="$(provenance_value webrtc_patch_sha256)"
 PROVENANCE_WEBRTC_CHECKSUM="$(provenance_value webrtc_artifact_checksum)"
 PROVENANCE_WEBRTC_ARTIFACT_EXECUTABLE_SHA256="$(
   provenance_value webrtc_artifact_executable_sha256
 )"
+PROVENANCE_WEBRTC_NORMALIZED_ARM64_SHA256="$(
+  provenance_value webrtc_normalized_arm64_sha256
+)"
 PROVENANCE_WEBRTC_EXECUTABLE_SHA256="$(provenance_value webrtc_executable_sha256)"
+PROVENANCE_WEBRTC_EXECUTABLE_NORMALIZED_ARM64_SHA256="$(
+  provenance_value webrtc_executable_normalized_arm64_sha256
+)"
 PROVENANCE_THIRD_PARTY_NOTICES_SHA256="$(provenance_value third_party_notices_sha256)"
+PROVENANCE_WEBRTC_THIRD_PARTY_NOTICES_SHA256="$(
+  provenance_value webrtc_third_party_notices_sha256
+)"
 PROVENANCE_PACKAGE_RESOLUTION="$(provenance_value swift_package_resolution)"
 PROVENANCE_EXECUTABLE_SHA256="$(provenance_value app_executable_sha256)"
 PROVENANCE_DMG_SHA256="$(provenance_value dmg_sha256)"
 ACTUAL_SOURCE_DMG_SHA256="$(shasum -a 256 "$DMG" | awk '{print $1}')"
 
-[[ "$PROVENANCE_SCHEMA" == "3" ]] || fail "unsupported DMG provenance schema"
+[[ "$PROVENANCE_SCHEMA" == "4" ]] || fail "unsupported DMG provenance schema"
 [[ "$PROVENANCE_CLEAN" == "true" ]] \
   || fail "DMG was not built from a clean, unchanged Git worktree"
 [[ "$PROVENANCE_COMMIT" == "$GIT_COMMIT" ]] \
@@ -228,21 +245,40 @@ ACTUAL_SOURCE_DMG_SHA256="$(shasum -a 256 "$DMG" | awk '{print $1}')"
   || fail "DMG provenance has an unexpected Sparkle binary checksum"
 [[ "$PROVENANCE_WEBRTC_VERSION" == "$CLIP_WEBRTC_VERSION" ]] \
   || fail "DMG provenance has an unexpected WebRTC version"
-[[ "$PROVENANCE_WEBRTC_WRAPPER_REVISION" == "$CLIP_WEBRTC_WRAPPER_REVISION" ]] \
-  || fail "DMG provenance has an unexpected WebRTC wrapper revision"
+[[ "$PROVENANCE_WEBRTC_ARTIFACT_REPOSITORY" == \
+  "$CLIP_WEBRTC_ARTIFACT_REPOSITORY_URL" ]] \
+  || fail "DMG provenance has an unexpected WebRTC artifact repository"
+[[ "$PROVENANCE_WEBRTC_ARTIFACT_TAG" == "$CLIP_WEBRTC_ARTIFACT_TAG" ]] \
+  || fail "DMG provenance has an unexpected WebRTC artifact tag"
+[[ "$PROVENANCE_WEBRTC_ARTIFACT_NAME" == "$CLIP_WEBRTC_ARTIFACT_NAME" ]] \
+  || fail "DMG provenance has an unexpected WebRTC artifact name"
+[[ "$PROVENANCE_WEBRTC_ARTIFACT_URL" == "$CLIP_WEBRTC_ARTIFACT_URL" ]] \
+  || fail "DMG provenance has an unexpected WebRTC artifact URL"
+[[ "$PROVENANCE_WEBRTC_UPSTREAM_REPOSITORY" == \
+  "$CLIP_WEBRTC_UPSTREAM_REPOSITORY_URL" ]] \
+  || fail "DMG provenance has an unexpected WebRTC upstream repository"
 [[ "$PROVENANCE_WEBRTC_UPSTREAM_REVISION" == "$CLIP_WEBRTC_UPSTREAM_REVISION" ]] \
   || fail "DMG provenance has an unexpected WebRTC upstream revision"
-[[ "$PROVENANCE_WEBRTC_REPOSITORY" == "$CLIP_WEBRTC_REPOSITORY_URL" ]] \
-  || fail "DMG provenance has an unexpected WebRTC source repository"
+[[ "$PROVENANCE_WEBRTC_PATCH_SHA256" == "$CLIP_WEBRTC_PATCH_SHA256" ]] \
+  || fail "DMG provenance has an unexpected WebRTC patch hash"
 [[ "$PROVENANCE_WEBRTC_CHECKSUM" == "$CLIP_WEBRTC_ARTIFACT_CHECKSUM" ]] \
   || fail "DMG provenance has an unexpected WebRTC binary checksum"
 [[ "$PROVENANCE_WEBRTC_ARTIFACT_EXECUTABLE_SHA256" == \
    "$CLIP_WEBRTC_MACOS_EXECUTABLE_SHA256" ]] \
   || fail "DMG provenance has an unexpected WebRTC source-artifact hash"
+[[ "$PROVENANCE_WEBRTC_NORMALIZED_ARM64_SHA256" == \
+  "$CLIP_WEBRTC_NORMALIZED_ARM64_SHA256" ]] \
+  || fail "DMG provenance has an unexpected WebRTC normalized arm64 hash"
 [[ "$PROVENANCE_WEBRTC_EXECUTABLE_SHA256" =~ ^[0-9a-f]{64}$ ]] \
   || fail "DMG provenance has an invalid packaged WebRTC hash"
+[[ "$PROVENANCE_WEBRTC_EXECUTABLE_NORMALIZED_ARM64_SHA256" == \
+  "$CLIP_WEBRTC_NORMALIZED_ARM64_SHA256" ]] \
+  || fail "DMG provenance has an unexpected packaged WebRTC arm64 hash"
 [[ "$PROVENANCE_THIRD_PARTY_NOTICES_SHA256" =~ ^[0-9a-f]{64}$ ]] \
   || fail "DMG provenance has an invalid third-party-notices hash"
+[[ "$PROVENANCE_WEBRTC_THIRD_PARTY_NOTICES_SHA256" == \
+  "$CLIP_WEBRTC_LICENSE_SHA256" ]] \
+  || fail "DMG provenance has an unexpected official WebRTC notices hash"
 [[ "$PROVENANCE_PACKAGE_RESOLUTION" == "fresh" ]] \
   || fail "DMG was not built with an isolated Swift package resolution"
 
@@ -296,18 +332,31 @@ PACKAGED_EXECUTABLE="$APP/Contents/MacOS/Clip"
 PACKAGED_SPARKLE_INFO="$APP/Contents/Frameworks/Sparkle.framework/Versions/Current/Resources/Info.plist"
 PACKAGED_WEBRTC_EXECUTABLE="$APP/Contents/Frameworks/WebRTC.framework/Versions/A/WebRTC"
 PACKAGED_THIRD_PARTY_NOTICES="$APP/Contents/Resources/ThirdPartyNotices.txt"
+PACKAGED_WEBRTC_THIRD_PARTY_NOTICES="$APP/Contents/Resources/WebRTCThirdPartyNotices.txt"
 [[ -f "$PACKAGED_WEBRTC_EXECUTABLE" ]] \
   || fail "DMG does not contain the WebRTC runtime"
 [[ -f "$PACKAGED_THIRD_PARTY_NOTICES" ]] \
   || fail "DMG does not contain third-party notices"
+[[ -f "$PACKAGED_WEBRTC_THIRD_PARTY_NOTICES" ]] \
+  || fail "DMG does not contain official WebRTC third-party notices"
 PACKAGED_EXECUTABLE_SHA256="$(
   shasum -a 256 "$PACKAGED_EXECUTABLE" | awk '{print $1}'
 )"
 PACKAGED_WEBRTC_EXECUTABLE_SHA256="$(
   shasum -a 256 "$PACKAGED_WEBRTC_EXECUTABLE" | awk '{print $1}'
 )"
+[[ "$(lipo -archs "$PACKAGED_WEBRTC_EXECUTABLE")" == "arm64" ]] \
+  || fail "packaged WebRTC runtime must contain exactly the arm64 architecture"
+PACKAGED_WEBRTC_EXECUTABLE_NORMALIZED_ARM64_SHA256="$(
+  clip_webrtc_normalized_payload_sha256 \
+    "$PACKAGED_WEBRTC_EXECUTABLE" \
+    arm64
+)" || fail "could not normalize the packaged WebRTC arm64 payload"
 PACKAGED_THIRD_PARTY_NOTICES_SHA256="$(
   shasum -a 256 "$PACKAGED_THIRD_PARTY_NOTICES" | awk '{print $1}'
+)"
+PACKAGED_WEBRTC_THIRD_PARTY_NOTICES_SHA256="$(
+  shasum -a 256 "$PACKAGED_WEBRTC_THIRD_PARTY_NOTICES" | awk '{print $1}'
 )"
 PACKAGED_SPARKLE_VERSION="$(
   plutil -extract CFBundleShortVersionString raw -o - "$PACKAGED_SPARKLE_INFO"
@@ -463,9 +512,15 @@ fi
 [[ "$PROVENANCE_WEBRTC_EXECUTABLE_SHA256" == \
    "$PACKAGED_WEBRTC_EXECUTABLE_SHA256" ]] \
   || fail "packaged WebRTC executable differs from build provenance"
+[[ "$PROVENANCE_WEBRTC_EXECUTABLE_NORMALIZED_ARM64_SHA256" == \
+   "$PACKAGED_WEBRTC_EXECUTABLE_NORMALIZED_ARM64_SHA256" ]] \
+  || fail "packaged WebRTC arm64 payload differs from build provenance"
 [[ "$PROVENANCE_THIRD_PARTY_NOTICES_SHA256" == \
    "$PACKAGED_THIRD_PARTY_NOTICES_SHA256" ]] \
   || fail "packaged third-party notices differ from build provenance"
+[[ "$PROVENANCE_WEBRTC_THIRD_PARTY_NOTICES_SHA256" == \
+   "$PACKAGED_WEBRTC_THIRD_PARTY_NOTICES_SHA256" ]] \
+  || fail "packaged official WebRTC notices differ from build provenance"
 [[ -d "$APP/Contents/Frameworks/Sparkle.framework" ]] \
   || fail "packaged app does not embed Sparkle.framework"
 if grep -q 'Signature=adhoc' <<<"$SIGNATURE_INFO"; then
@@ -544,13 +599,20 @@ sparkle_revision=$PROVENANCE_SPARKLE_REVISION
 sparkle_repository=$PROVENANCE_SPARKLE_REPOSITORY
 sparkle_artifact_checksum=$PROVENANCE_SPARKLE_CHECKSUM
 webrtc_version=$PROVENANCE_WEBRTC_VERSION
-webrtc_wrapper_revision=$PROVENANCE_WEBRTC_WRAPPER_REVISION
+webrtc_artifact_repository=$PROVENANCE_WEBRTC_ARTIFACT_REPOSITORY
+webrtc_artifact_tag=$PROVENANCE_WEBRTC_ARTIFACT_TAG
+webrtc_artifact_name=$PROVENANCE_WEBRTC_ARTIFACT_NAME
+webrtc_artifact_url=$PROVENANCE_WEBRTC_ARTIFACT_URL
+webrtc_upstream_repository=$PROVENANCE_WEBRTC_UPSTREAM_REPOSITORY
 webrtc_upstream_revision=$PROVENANCE_WEBRTC_UPSTREAM_REVISION
-webrtc_repository=$PROVENANCE_WEBRTC_REPOSITORY
+webrtc_patch_sha256=$PROVENANCE_WEBRTC_PATCH_SHA256
 webrtc_artifact_checksum=$PROVENANCE_WEBRTC_CHECKSUM
 webrtc_artifact_executable_sha256=$PROVENANCE_WEBRTC_ARTIFACT_EXECUTABLE_SHA256
+webrtc_normalized_arm64_sha256=$PROVENANCE_WEBRTC_NORMALIZED_ARM64_SHA256
 webrtc_executable_sha256=$PACKAGED_WEBRTC_EXECUTABLE_SHA256
+webrtc_executable_normalized_arm64_sha256=$PACKAGED_WEBRTC_EXECUTABLE_NORMALIZED_ARM64_SHA256
 third_party_notices_sha256=$PACKAGED_THIRD_PARTY_NOTICES_SHA256
+webrtc_third_party_notices_sha256=$PACKAGED_WEBRTC_THIRD_PARTY_NOTICES_SHA256
 swift_package_resolution=$PROVENANCE_PACKAGE_RESOLUTION
 appcast_sha256=$APPCAST_SHA256
 feed_url=$EXPECTED_FEED_URL

@@ -24,6 +24,22 @@ public enum CaptureTarget: Equatable, Sendable {
     }
 }
 
+/// The pixel and color format requested from ScreenCaptureKit.
+public enum CaptureVideoPixelFormat: Equatable, Sendable {
+    /// The existing capture behavior: 8-bit BGRA in the source display's color space.
+    case bgra
+
+    /// 8-bit BGRA normalized to SDR Rec.709. Hardware encoders can consume
+    /// BGRA directly while avoiding display-dependent Display P3 values.
+    case rec709BGRA
+
+    /// 8-bit video-range NV12 converted to the SDR Rec.709 color space.
+    case rec709VideoRange
+
+    /// 8-bit full-range NV12 converted to the SDR Rec.709 color space.
+    case rec709FullRange
+}
+
 public struct CaptureVideoConfiguration: Equatable, Sendable {
     public var width: Int
     public var height: Int
@@ -31,6 +47,7 @@ public struct CaptureVideoConfiguration: Equatable, Sendable {
     public var showsCursor: Bool
     public var showsClickHighlights: Bool
     public var sourceRect: CGRect?
+    public var pixelFormat: CaptureVideoPixelFormat
 
     public init(
         width: Int,
@@ -38,7 +55,8 @@ public struct CaptureVideoConfiguration: Equatable, Sendable {
         framesPerSecond: Int = 30,
         showsCursor: Bool = true,
         showsClickHighlights: Bool = false,
-        sourceRect: CGRect? = nil
+        sourceRect: CGRect? = nil,
+        pixelFormat: CaptureVideoPixelFormat = .bgra
     ) {
         self.width = max(1, width)
         self.height = max(1, height)
@@ -46,6 +64,7 @@ public struct CaptureVideoConfiguration: Equatable, Sendable {
         self.showsCursor = showsCursor
         self.showsClickHighlights = showsClickHighlights
         self.sourceRect = sourceRect
+        self.pixelFormat = pixelFormat
     }
 }
 

@@ -50,6 +50,40 @@ struct WebRTCPeerHostTests {
         #expect(encoding.networkPriority == .high)
     }
 
+    @Test("advanced sender policy maps every live RTP field")
+    func advancedSenderPolicy() {
+        #expect(WebRTCPeerHost.rtcDegradationPreference(for: .resolution)
+            == .maintainResolution)
+        #expect(WebRTCPeerHost.rtcDegradationPreference(for: .balanced)
+            == .balanced)
+        #expect(WebRTCPeerHost.rtcDegradationPreference(for: .framerate)
+            == .maintainFramerate)
+        #expect(WebRTCPeerHost.rtcDegradationPreference(for: .disabled)
+            == .disabled)
+
+        let encoding = RTCRtpEncodingParameters()
+        WebRTCPeerHost.applyVideoSenderPolicy(
+            WebRTCSenderPolicy(
+                maximumBitrateBps: 8_000_000,
+                minimumBitrateBps: 2_000_000,
+                maximumFramesPerSecond: 24,
+                degradationStrategy: .balanced,
+                temporalLayerCount: 3,
+                resolutionScale: 1.5,
+                bitratePriority: 1.25
+            ),
+            to: encoding
+        )
+
+        #expect(encoding.maxBitrateBps?.intValue == 8_000_000)
+        #expect(encoding.minBitrateBps?.intValue == 2_000_000)
+        #expect(encoding.maxFramerate?.intValue == 24)
+        #expect(encoding.numTemporalLayers?.intValue == 3)
+        #expect(encoding.scaleResolutionDownBy?.doubleValue == 1.5)
+        #expect(encoding.bitratePriority == 1.25)
+        #expect(encoding.networkPriority == .high)
+    }
+
     @Test("slot activation validates bounds and stable track identity")
     func slotActivation() throws {
         let host = try WebRTCPeerHost(eventQueue: .global())
@@ -215,6 +249,9 @@ struct WebRTCPeerHostTests {
         #expect(supportedFactory.createEncoder(
             RTCVideoCodecInfo(name: WebRTCVideoCodec.av1.rtcName)
         ) != nil)
+        #expect(supportedFactory.createEncoder(
+            RTCVideoCodecInfo(name: WebRTCVideoCodec.vp8.rtcName)
+        ) != nil)
     }
 
     @Test("VP8 host offers VP8 exclusively while retaining stable stream IDs")
@@ -275,6 +312,9 @@ struct WebRTCPeerHostTests {
             #expect(offer.sdp.contains("level-idx=5"))
             #expect(offer.sdp.contains("profile=0"))
             #expect(offer.sdp.contains("tier=0"))
+            #expect(offer.sdp.contains(
+                "http://www.webrtc.org/experiments/rtp-hdrext/color-space"
+            ))
         }
     }
 
@@ -581,6 +621,10 @@ struct WebRTCPeerHostTests {
     func configurationPolicy() throws {
         #expect(WebRTCPeerHostConfiguration.clipDefault.senderPolicy == .clipDefault)
         #expect(WebRTCSenderPolicy.clipDefault.maintainsResolution)
+        #expect(WebRTCSenderPolicy.clipDefault.degradationStrategy == .resolution)
+        #expect(WebRTCSenderPolicy.clipDefault.minimumBitrateBps == nil)
+        #expect(WebRTCSenderPolicy.clipDefault.temporalLayerCount == nil)
+        #expect(WebRTCSenderPolicy.clipDefault.resolutionScale == 1)
         #expect(WebRTCSenderPolicy.clipDefault.bitratePriority == 1)
         #expect(WebRTCSenderPolicy.clipDefault.maximumFramesPerSecond == 30)
         #expect(WebRTCSenderPolicy.clipDefault.maximumBitrateBps == 12_000_000)
@@ -624,12 +668,20 @@ struct WebRTCPeerHostTests {
         #expect(custom.forcesRelay)
         #expect(custom.senderPolicy.maximumFramesPerSecond == 24)
         #expect(custom.videoEncodingMode == .performance)
+        #expect(custom.advancedVideoConfigurations == .clipDefault)
 
         let host = try WebRTCPeerHost(configuration: custom, eventQueue: .global())
         defer { host.close() }
         #expect(host.videoEncodingMode == .performance)
         host.updateVideoEncodingMode(.quality)
         #expect(host.videoEncodingMode == .quality)
+        let h264Advanced = WebRTCH264AdvancedConfiguration(
+            maximumQuantizer: 35,
+            qualityFraction: 0.95,
+            keyFrameIntervalSeconds: 4
+        )
+        host.updateAdvancedVideoConfiguration(.h264(h264Advanced))
+        #expect(host.advancedVideoConfigurations.h264 == h264Advanced)
         let updated = WebRTCSenderPolicy(
             maximumBitrateBps: 8_000_000,
             maximumFramesPerSecond: 30,

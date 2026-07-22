@@ -260,6 +260,10 @@ struct SettingsView: View {
     let historyDirectory: URL
     let storageActions: SettingsStorageActions?
     let externalActions: SettingsExternalActions
+    let applyLiveShareAdvancedSettings: @MainActor (
+        LiveShareVideoCodec,
+        LiveShareCodecAdvancedSettings
+    ) -> Void
 
     @State private var storageUsage: SettingsStorageSnapshot?
     @State private var storageError: String?
@@ -291,6 +295,10 @@ struct SettingsView: View {
         historyDirectory: URL,
         storageActions: SettingsStorageActions? = nil,
         externalActions: SettingsExternalActions = SettingsExternalActions(),
+        applyLiveShareAdvancedSettings: @escaping @MainActor (
+            LiveShareVideoCodec,
+            LiveShareCodecAdvancedSettings
+        ) -> Void = { _, _ in },
         initialTab: SettingsTab = .initial
     ) {
         _model = ObservedObject(wrappedValue: model)
@@ -303,6 +311,7 @@ struct SettingsView: View {
         self.historyDirectory = historyDirectory
         self.storageActions = storageActions
         self.externalActions = externalActions
+        self.applyLiveShareAdvancedSettings = applyLiveShareAdvancedSettings
         _filenameTemplateText = State(
             initialValue: Self.filenameTemplateEditorText(
                 for: model.settings.defaultFilenameTemplate
@@ -651,6 +660,42 @@ struct SettingsView: View {
                     }
                 }
                 .accessibilityIdentifier("clip.settings.liveShare.codec")
+
+                Picker(
+                    "Color",
+                    selection: liveShareSetting(\.colorMode)
+                ) {
+                    ForEach(LiveShareColorMode.allCases) { colorMode in
+                        Text(colorMode.title).tag(colorMode)
+                    }
+                }
+                .accessibilityIdentifier("clip.settings.liveShare.colorMode")
+
+                LabeledContent("Color behavior") {
+                    Text(
+                        liveSharePreferences.settings.colorMode.detail(
+                            for: liveSharePreferences.settings.videoCodec
+                        )
+                    )
+                    .foregroundStyle(.secondary)
+                }
+
+                LabeledContent("Codec controls") {
+                    LiveShareAdvancedCodecSettingsButton(
+                        codec: liveSharePreferences.settings.videoCodec,
+                        current: liveSharePreferences.settings.advancedVideoSettings.settings(
+                            for: liveSharePreferences.settings.videoCodec
+                        ),
+                        onApply: { codec, advanced in
+                            liveSharePreferences.updateSettings {
+                                $0.advancedVideoSettings.set(advanced, for: codec)
+                            }
+                            applyLiveShareAdvancedSettings(codec, advanced)
+                        }
+                    )
+                    .id(liveSharePreferences.settings.videoCodec)
+                }
+                .accessibilityIdentifier("clip.settings.liveShare.codec.advanced")
 
                 Picker(
                     "Quality",

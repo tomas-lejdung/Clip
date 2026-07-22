@@ -315,10 +315,18 @@ and `linux/arm64` tags with provenance and SBOM through Buildx. See
 
 ## WebRTC dependency boundary
 
-Apple does not provide a public native WebRTC framework. Clip pins
-[`stasel/WebRTC`](https://github.com/stasel/WebRTC) `150.0.0` behind
+Apple does not provide a public native WebRTC framework. Clip builds the
+pinned upstream WebRTC M150 source revision and publishes the reviewed arm64
+XCFramework as a dedicated, immutable GitHub Release dependency behind
 `Packages/ClipLiveShareWebRTC`. Other Swift targets do not import its
 Objective-C concurrency surface directly.
+
+Clip maintains a source patch against WebRTC M150 for Rec.709 fidelity. It
+maps captured `420v`/`420f` frames to limited/full Rec.709, writes AV1 CICP,
+preserves decoded color metadata across the Objective-C bridge, and selects
+the matching conversion in the macOS Metal renderer. The ignored local binary
+override is for development validation only; release packaging rejects it and
+resolves the exact public checksummed dependency into an isolated cache.
 
 Release packaging verifies the exact artifact pin and checksum, normalized
 framework payload, architectures, license notice, sandbox/Hardened Runtime

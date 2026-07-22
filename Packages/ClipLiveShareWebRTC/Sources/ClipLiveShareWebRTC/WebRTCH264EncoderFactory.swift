@@ -23,10 +23,19 @@ final class WebRTCH264EncoderFactory: NSObject, RTCVideoEncoderFactory,
 
     init(
         configuration: WebRTCH264EncoderConfiguration = .quality,
+        advancedConfiguration: WebRTCH264AdvancedConfiguration? = nil,
         configurationController: WebRTCH264EncoderConfigurationController? = nil
     ) {
+        let initialConfiguration = advancedConfiguration.map {
+            WebRTCH264EncoderConfiguration(
+                mode: configuration.mode,
+                advancedConfiguration: $0
+            )
+        } ?? configuration
         self.configurationController = configurationController
-            ?? WebRTCH264EncoderConfigurationController(configuration: configuration)
+            ?? WebRTCH264EncoderConfigurationController(
+                configuration: initialConfiguration
+            )
         super.init()
     }
 
@@ -36,6 +45,12 @@ final class WebRTCH264EncoderFactory: NSObject, RTCVideoEncoderFactory,
 
     func updateConfiguration(_ configuration: WebRTCH264EncoderConfiguration) {
         configurationController.update(configuration)
+    }
+
+    func updateAdvancedConfiguration(
+        _ configuration: WebRTCH264AdvancedConfiguration
+    ) {
+        configurationController.updateAdvancedConfiguration(configuration)
     }
 
     var submissionBackpressureDropCount: UInt64 {

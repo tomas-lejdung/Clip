@@ -50,23 +50,39 @@ struct WebRTCH264EncoderConfiguration: Equatable, Sendable {
     var qualityTargetFraction: Double
     var performanceTargetFraction: Double
     var keyFrameIntervalSeconds: Int
+    var maximumQuantizer: Int?
 
     init(
         mode: WebRTCH264EncodingMode = .quality,
         quality: Double = 0.98,
         qualityTargetFraction: Double = 1,
         performanceTargetFraction: Double = 1,
-        keyFrameIntervalSeconds: Int = 2
+        keyFrameIntervalSeconds: Int = 2,
+        maximumQuantizer: Int? = nil
     ) {
         precondition((0 ... 1).contains(quality))
         precondition((0 ... 1).contains(qualityTargetFraction))
         precondition((0 ... 1).contains(performanceTargetFraction))
         precondition(keyFrameIntervalSeconds > 0)
+        precondition(maximumQuantizer.map { (0 ... 51).contains($0) } ?? true)
         self.mode = mode
         self.quality = quality
         self.qualityTargetFraction = qualityTargetFraction
         self.performanceTargetFraction = performanceTargetFraction
         self.keyFrameIntervalSeconds = keyFrameIntervalSeconds
+        self.maximumQuantizer = maximumQuantizer
+    }
+
+    init(
+        mode: WebRTCH264EncodingMode,
+        advancedConfiguration: WebRTCH264AdvancedConfiguration
+    ) {
+        self.init(
+            mode: mode,
+            quality: advancedConfiguration.qualityFraction,
+            keyFrameIntervalSeconds: advancedConfiguration.keyFrameIntervalSeconds,
+            maximumQuantizer: advancedConfiguration.maximumQuantizer
+        )
     }
 
     static let quality = Self()
@@ -352,6 +368,22 @@ final class WebRTCH264EncoderConfigurationController: @unchecked Sendable {
         lock.withLock {
             guard configuration.mode != mode else { return }
             configuration.mode = mode
+            revision &+= 1
+        }
+    }
+
+    func updateAdvancedConfiguration(
+        _ advancedConfiguration: WebRTCH264AdvancedConfiguration
+    ) {
+        lock.withLock {
+            var replacement = configuration
+            replacement.quality = advancedConfiguration.qualityFraction
+            replacement.keyFrameIntervalSeconds =
+                advancedConfiguration.keyFrameIntervalSeconds
+            replacement.maximumQuantizer =
+                advancedConfiguration.maximumQuantizer
+            guard replacement != configuration else { return }
+            configuration = replacement
             revision &+= 1
         }
     }

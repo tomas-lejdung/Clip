@@ -151,6 +151,7 @@ public final class WebRTCPeerHost: LiveShareVideoSlotHosting, @unchecked Sendabl
     private let queueKey = DispatchSpecificKey<UInt8>()
     private let sslLease: WebRTCSSLRuntimeLease
     private let h264EncoderFactory: WebRTCH264EncoderFactory
+    private let videoEncoderFactory: WebRTCVideoEncoderFactory
     private let systemAudioDevice: ClipLiveShareWebRTCSystemAudioDevice
     private let factory: RTCPeerConnectionFactory
     private let videoCodecCapabilities: [RTCRtpCodecCapability]
@@ -166,6 +167,7 @@ public final class WebRTCPeerHost: LiveShareVideoSlotHosting, @unchecked Sendabl
     private var previousH264SubmissionBackpressureDrops: UInt64?
     private var activeVideoCodec: WebRTCVideoCodec
     private var activeVideoEncodingMode: LiveShareEncodingMode
+    private var activeAdvancedVideoConfigurations: WebRTCAdvancedVideoConfigurations
     private var systemAudioEnabled = false
     private var pendingVideoCodecSwitch: PendingVideoCodecSwitch?
     private var pendingVideoCodecRestoration: PendingVideoCodecRestoration?
@@ -184,6 +186,7 @@ public final class WebRTCPeerHost: LiveShareVideoSlotHosting, @unchecked Sendabl
         activeSenderPolicy = configuration.senderPolicy
         activeVideoCodec = configuration.videoCodec
         activeVideoEncodingMode = configuration.videoEncodingMode
+        activeAdvancedVideoConfigurations = configuration.advancedVideoConfigurations
         self.eventQueue = eventQueue
         self.eventHandler = eventHandler
         queue = DispatchQueue(
@@ -194,14 +197,17 @@ public final class WebRTCPeerHost: LiveShareVideoSlotHosting, @unchecked Sendabl
         let nativeH264Factory = WebRTCH264EncoderFactory(
             configuration: WebRTCH264EncoderConfiguration(
                 mode: WebRTCH264EncodingMode(configuration.videoEncodingMode)
-            )
+            ),
+            advancedConfiguration: configuration.advancedVideoConfigurations.h264
         )
         h264EncoderFactory = nativeH264Factory
         let audioDevice = ClipLiveShareWebRTCSystemAudioDevice()
         let videoEncoderFactory = WebRTCVideoEncoderFactory(
             preferredCodec: configuration.videoCodec,
-            h264Factory: nativeH264Factory
+            h264Factory: nativeH264Factory,
+            advancedConfigurations: configuration.advancedVideoConfigurations
         )
+        self.videoEncoderFactory = videoEncoderFactory
         let videoDecoderFactory = RTCDefaultVideoDecoderFactory()
         let peerFactory = ClipLiveShareWebRTCCreatePeerConnectionFactory(
             videoEncoderFactory,
@@ -298,6 +304,10 @@ public final class WebRTCPeerHost: LiveShareVideoSlotHosting, @unchecked Sendabl
         onQueue { activeVideoEncodingMode }
     }
 
+    public var advancedVideoConfigurations: WebRTCAdvancedVideoConfigurations {
+        onQueue { activeAdvancedVideoConfigurations }
+    }
+
     public func senderPolicy(forSlot slot: Int) -> WebRTCSenderPolicy {
         onQueue { senderPoliciesBySlot[slot] ?? activeSenderPolicy }
     }
@@ -385,6 +395,22 @@ public final class WebRTCPeerHost: LiveShareVideoSlotHosting, @unchecked Sendabl
             guard !isClosed else { return }
             activeVideoEncodingMode = mode
             h264EncoderFactory.updateMode(WebRTCH264EncodingMode(mode))
+        }
+    }
+
+    /// Applies H.264 encoder controls to current and future VideoToolbox
+    /// instances. The session rebuilds before its next frame and forces a
+    /// keyframe without replacing tracks or renegotiating.
+    public func updateAdvancedVideoConfiguration(
+        _ configuration: WebRTCCodecAdvancedConfiguration
+    ) {
+        onQueue {
+            guard !isClosed else { return }
+            switch configuration {
+            case let .h264(value):
+                activeAdvancedVideoConfigurations.h264 = value
+            }
+            videoEncoderFactory.updateAdvancedConfiguration(configuration)
         }
     }
 
@@ -1302,19 +1328,38 @@ public final class WebRTCPeerHost: LiveShareVideoSlotHosting, @unchecked Sendabl
     private func applySenderPolicy(to sender: RTCRtpSender, slot: Int) {
         let policy = senderPoliciesBySlot[slot] ?? activeSenderPolicy
         let parameters = sender.parameters
-        parameters.degradationPreference = NSNumber(value:
-            policy.maintainsResolution
-                ? RTCDegradationPreference.maintainResolution.rawValue
-                : RTCDegradationPreference.maintainFramerate.rawValue
+        parameters.degradationPreference = NSNumber(
+            value: Self.rtcDegradationPreference(for: policy.degradationStrategy)
+                .rawValue
         )
         for encoding in parameters.encodings {
-            encoding.maxBitrateBps = policy.maximumBitrateBps.map(NSNumber.init)
-            encoding.maxFramerate = policy.maximumFramesPerSecond.map(NSNumber.init)
-            encoding.scaleResolutionDownBy = 1
-            encoding.bitratePriority = policy.bitratePriority
-            encoding.networkPriority = .high
+            Self.applyVideoSenderPolicy(policy, to: encoding)
         }
         sender.parameters = parameters
+    }
+
+    static func rtcDegradationPreference(
+        for strategy: WebRTCSenderDegradationStrategy
+    ) -> RTCDegradationPreference {
+        switch strategy {
+        case .resolution: .maintainResolution
+        case .balanced: .balanced
+        case .framerate: .maintainFramerate
+        case .disabled: .disabled
+        }
+    }
+
+    static func applyVideoSenderPolicy(
+        _ policy: WebRTCSenderPolicy,
+        to encoding: RTCRtpEncodingParameters
+    ) {
+        encoding.maxBitrateBps = policy.maximumBitrateBps.map(NSNumber.init)
+        encoding.minBitrateBps = policy.minimumBitrateBps.map(NSNumber.init)
+        encoding.maxFramerate = policy.maximumFramesPerSecond.map(NSNumber.init)
+        encoding.numTemporalLayers = policy.temporalLayerCount.map(NSNumber.init)
+        encoding.scaleResolutionDownBy = policy.resolutionScale.map(NSNumber.init)
+        encoding.bitratePriority = policy.bitratePriority
+        encoding.networkPriority = .high
     }
 
     private func applySystemAudioSenderPolicy(to sender: RTCRtpSender) {

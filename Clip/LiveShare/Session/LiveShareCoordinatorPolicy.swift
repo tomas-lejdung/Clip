@@ -24,6 +24,8 @@ enum LiveShareCoordinatorPolicy {
         width: Int,
         height: Int,
         framesPerSecond: Int,
+        codec: LiveShareVideoCodec,
+        colorMode: LiveShareColorMode = .compatibleRec709,
         showsCursor: Bool = true,
         sourceRect: CGRect? = nil
     ) -> CaptureVideoConfiguration {
@@ -33,8 +35,32 @@ enum LiveShareCoordinatorPolicy {
             framesPerSecond: framesPerSecond,
             showsCursor: showsCursor,
             showsClickHighlights: false,
-            sourceRect: sourceRect
+            sourceRect: sourceRect,
+            pixelFormat: capturePixelFormat(codec: codec, colorMode: colorMode)
         )
+    }
+
+    /// H.264's custom VideoToolbox encoder consumes BGRA and performs its own
+    /// Rec.709 conversion. The bundled software WebRTC encoders consume NV12
+    /// directly, so they can distinguish video and full range at capture.
+    private static func capturePixelFormat(
+        codec: LiveShareVideoCodec,
+        colorMode: LiveShareColorMode
+    ) -> CaptureVideoPixelFormat {
+        if colorMode == .nativeDisplay {
+            return .bgra
+        }
+        if codec == .h264 {
+            return .rec709BGRA
+        }
+        switch colorMode {
+        case .compatibleRec709:
+            return .rec709VideoRange
+        case .fullRangeRec709:
+            return .rec709FullRange
+        case .nativeDisplay:
+            return .bgra
+        }
     }
 
     /// ScreenCaptureKit input geometry for a live source. Native pixels remain
@@ -206,13 +232,43 @@ enum LiveShareCoordinatorPolicy {
         maximumBitrateBps: Int? = nil,
         bitratePriority: Double = 1
     ) -> WebRTCSenderPolicy {
+        let advanced = settings.advancedVideoSettings
+            .settings(for: settings.videoCodec)
+            .normalized(for: settings.videoCodec)
+        let maximumBitrate = maximumBitrateBps
+            ?? settings.quality.maximumBitrateBitsPerSecond
         return WebRTCSenderPolicy(
-            maximumBitrateBps: maximumBitrateBps
-                ?? settings.quality.maximumBitrateBitsPerSecond,
+            maximumBitrateBps: maximumBitrate,
+            minimumBitrateBps: advanced.minimumBitratePercent.map {
+                maximumBitrate * $0 / 100
+            },
             maximumFramesPerSecond: settings.frameRate.rawValue,
-            maintainsResolution: settings.encodingMode == .quality,
+            degradationStrategy: degradationStrategy(
+                preference: advanced.degradationPreference,
+                mode: settings.encodingMode
+            ),
+            temporalLayerCount: advanced.temporalLayerCount,
+            resolutionScale: advanced.scaleResolutionDownBy ?? 1,
             bitratePriority: bitratePriority
         )
+    }
+
+    private static func degradationStrategy(
+        preference: LiveShareDegradationPreference,
+        mode: LiveShareEncodingMode
+    ) -> WebRTCSenderDegradationStrategy {
+        switch preference {
+        case .automatic:
+            mode == .quality ? .resolution : .framerate
+        case .preserveResolution:
+            .resolution
+        case .balanced:
+            .balanced
+        case .preserveFrameRate:
+            .framerate
+        case .disabled:
+            .disabled
+        }
     }
 
     /// Divides one viewer's selected video budget across all active tracks.

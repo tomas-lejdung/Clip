@@ -1,14 +1,18 @@
 #!/bin/bash
 
 # Immutable dependency provenance for Clip Live Share.
-CLIP_WEBRTC_REPOSITORY_URL="https://github.com/stasel/WebRTC"
 CLIP_WEBRTC_VERSION="150.0.0"
-CLIP_WEBRTC_WRAPPER_REVISION="6ed87f05368632f71dc95c89c14c051561710925"
+CLIP_WEBRTC_ARTIFACT_REPOSITORY_URL="https://github.com/tomas-lejdung/Clip"
+CLIP_WEBRTC_ARTIFACT_TAG="webrtc-m150-clip-rec709-1"
+CLIP_WEBRTC_ARTIFACT_NAME="WebRTC-150.0.0-clip-native-color-macos-arm64.xcframework.zip"
+CLIP_WEBRTC_ARTIFACT_URL="$CLIP_WEBRTC_ARTIFACT_REPOSITORY_URL/releases/download/$CLIP_WEBRTC_ARTIFACT_TAG/$CLIP_WEBRTC_ARTIFACT_NAME"
+CLIP_WEBRTC_UPSTREAM_REPOSITORY_URL="https://webrtc.googlesource.com/src"
 CLIP_WEBRTC_UPSTREAM_REVISION="1f975dfd761af6e5d76d28333191973b258d82a8"
-CLIP_WEBRTC_ARTIFACT_CHECKSUM="f9890492b0016e4c88ab20f07867b8b420054caedc8a692b2ec6ac041f3cf6b2"
-# Hash of the universal macOS WebRTC executable before Clip re-signs it. This
-# binds the reviewed archive checksum to the exact payload Xcode embeds.
-CLIP_WEBRTC_MACOS_EXECUTABLE_SHA256="8a6936a1beceab72283c54a0396c905313084ed1f9094781c02e3a9f39d55fe3"
+CLIP_WEBRTC_PATCH_SHA256="167fe7e336ce93e274aafa9a810aee938a03ae0109c3e8dc0301103438743778"
+CLIP_WEBRTC_ARTIFACT_CHECKSUM="da95cddeff04e1483cad83c17c0ed21a95d2ece8ea1b12f2aa3ab14382f7a2d3"
+CLIP_WEBRTC_MACOS_EXECUTABLE_SHA256="95f7d80af9bffc6c7196f4e3db2360f8d5ee712649f21f9e5d9536edb0faef11"
+CLIP_WEBRTC_NORMALIZED_ARM64_SHA256="b2cabb091a750e8a497bf3b67794f432b28e061d0451ed4dd8991bf1ca29f95e"
+CLIP_WEBRTC_LICENSE_SHA256="5b08f62df6d3d7cf1191586b30386055596a1971d4d5fad8974e496096ff4e07"
 
 # Xcode re-signs embedded dynamic frameworks, so their whole-file hashes no
 # longer match the reviewed upstream artifact. Normalize one architecture with
@@ -19,12 +23,22 @@ clip_webrtc_normalized_payload_sha256() {
   local executable="$1"
   local architecture="$2"
   local thin_executable=""
+  local architectures=""
   local signature_offset=""
   local payload_sha256=""
 
   thin_executable="$(mktemp "${TMPDIR:-/tmp}/clip-webrtc-payload.XXXXXX")" \
     || return 1
-  if ! lipo "$executable" -thin "$architecture" -output "$thin_executable"; then
+  architectures="$(lipo -archs "$executable")" || {
+    rm -f "$thin_executable"
+    return 1
+  }
+  if [[ "$architectures" == "$architecture" ]]; then
+    if ! ditto "$executable" "$thin_executable"; then
+      rm -f "$thin_executable"
+      return 1
+    fi
+  elif ! lipo "$executable" -thin "$architecture" -output "$thin_executable"; then
     rm -f "$thin_executable"
     return 1
   fi

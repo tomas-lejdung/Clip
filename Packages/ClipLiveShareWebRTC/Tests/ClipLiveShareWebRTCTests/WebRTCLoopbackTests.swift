@@ -441,11 +441,51 @@ struct WebRTCLoopbackTests {
         arguments: [WebRTCVideoCodec.vp9, .av1]
     )
     func optionalSoftwareCodecFrameLoopback(codec: WebRTCVideoCodec) async throws {
-        try await assertSoftwareCodecFrameLoopback(
+        try await assertCodecFrameLoopback(
             preferredCodec: codec,
             decoderFactory: RTCDefaultVideoDecoderFactory(),
             expectedCodecName: codec.rtcName
         )
+    }
+
+    @Test("AV1 decoded Rec.709 RGB accuracy stays comparable to H264")
+    func av1Rec709DecodedColorFidelity() async throws {
+        guard RTCVideoEncoderAV1.isSupported() else {
+            Issue.record("The pinned WebRTC runtime does not support AV1 on this Mac")
+            return
+        }
+
+        let h264 = try #require(await decodeRec709ColorFixture(using: .h264))
+        let av1 = try #require(await decodeRec709ColorFixture(using: .av1))
+        // WebRTC's native H.264 decode path expands video levels to full-range
+        // I420, while its software AV1 decoder preserves the source's 420v
+        // values. Compare the represented Rec.709 RGB, not unlike raw ranges.
+        let expected = rec709Bars.map(\.rgb)
+        let h264RGB = h264.rgb(.full)
+        let av1RGB = av1.rgb(.video)
+        let h264Error = meanRGBError(h264RGB, expected)
+        let av1Error = meanRGBError(av1RGB, expected)
+        let codecDifference = meanRGBError(av1RGB, h264RGB)
+
+        #expect(h264Error <= 4, Comment(rawValue:
+            "H264 mean RGB patch error was \(h264Error) levels; "
+                + h264.summary
+        ))
+        #expect(av1Error <= 4, Comment(rawValue:
+            "AV1 mean RGB patch error was \(av1Error) levels; "
+                + av1.summary
+        ))
+        #expect(codecDifference <= 4, Comment(rawValue:
+            "AV1 and H264 decoded RGB patches differed by \(codecDifference) levels; "
+                + "H264 " + h264.summary + "; AV1 " + av1.summary
+        ))
+        // Runtime lookup keeps this test compilable against the immutable M150
+        // artifact while validating the extended Objective-C ABI when present.
+        if av1.exposesColorSpaceAPI {
+            #expect(av1.colorSpace == .rec709Limited, Comment(rawValue:
+                "Decoded AV1 color metadata was \(String(describing: av1.colorSpace))"
+            ))
+        }
     }
 
     @Test(
@@ -453,7 +493,7 @@ struct WebRTCLoopbackTests {
         arguments: [WebRTCVideoCodec.vp9, .av1]
     )
     func optionalSoftwareCodecVP8Fallback(codec: WebRTCVideoCodec) async throws {
-        try await assertSoftwareCodecFrameLoopback(
+        try await assertCodecFrameLoopback(
             preferredCodec: codec,
             decoderFactory: VP8OnlyVideoDecoderFactory(),
             expectedCodecName: WebRTCVideoCodec.vp8.rtcName
@@ -644,12 +684,19 @@ struct WebRTCLoopbackTests {
         )
     }
 
-    private func assertSoftwareCodecFrameLoopback(
+    @discardableResult
+    private func assertCodecFrameLoopback(
         preferredCodec: WebRTCVideoCodec,
         decoderFactory: any RTCVideoDecoderFactory,
-        expectedCodecName: String
-    ) async throws {
-        let bridge = LoopbackBridge()
+        expectedCodecName: String,
+        capturesDecodedVideoFrame: Bool = false,
+        frameFactory: (Int) throws -> BorrowedCaptureVideoFrame = {
+            try makeFixtureFrame(index: $0, width: 320, height: 180)
+        }
+    ) async throws -> DecodedColorBars? {
+        let bridge = LoopbackBridge(
+            capturesDecodedVideoFrame: capturesDecodedVideoFrame
+        )
         let host = try WebRTCPeerHost(
             configuration: .init(
                 iceServers: [],
@@ -671,8 +718,10 @@ struct WebRTCLoopbackTests {
         #expect(offer.sdp.localizedCaseInsensitiveContains(
             " \(preferredCodec.rtcName)/90000"
         ))
-        #expect(offer.sdp.contains(" VP8/90000"))
-        #expect(!offer.sdp.contains(" H264/90000"))
+        if preferredCodec != .h264 {
+            #expect(offer.sdp.contains(" VP8/90000"))
+            #expect(!offer.sdp.contains(" H264/90000"))
+        }
         let receiver = try LoopbackReceiver(
             bridge: bridge,
             decoderFactory: decoderFactory
@@ -704,7 +753,7 @@ struct WebRTCLoopbackTests {
         ))
         for index in 0 ..< 60 {
             #expect(host.send(
-                try makeFixtureFrame(index: index, width: 320, height: 180),
+                try frameFactory(index),
                 toSlot: 0
             ) == .accepted)
             try await Task.sleep(for: .milliseconds(12))
@@ -719,6 +768,27 @@ struct WebRTCLoopbackTests {
         #expect(slot.framesEncoded > 0)
         #expect(slot.framesSent > 0)
         #expect(slot.codecs.contains(expectedCodecName))
+        return bridge.decodedVideoFrame
+    }
+
+    private func decodeRec709ColorFixture(
+        using codec: WebRTCVideoCodec
+    ) async throws -> DecodedColorBars? {
+        try await assertCodecFrameLoopback(
+            preferredCodec: codec,
+            decoderFactory: RTCDefaultVideoDecoderFactory(),
+            expectedCodecName: codec.rtcName,
+            capturesDecodedVideoFrame: true
+        ) { index in
+            try makeRec709ColorFixtureFrame(
+                index: index,
+                width: 320,
+                height: 180,
+                pixelFormat: codec == .h264
+                    ? kCVPixelFormatType_32BGRA
+                    : kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
+            )
+        }
     }
 
     @Test("native Retina-sized windows encode and render at source resolution")
@@ -1099,6 +1169,7 @@ private final class LoopbackBridge: @unchecked Sendable {
     let eventQueue = DispatchQueue(label: "com.tomaslejdung.clip.tests.webrtc-events")
 
     private let viewerID: String
+    private let capturesDecodedVideoFrame: Bool
     private let lock = NSLock()
     private weak var storedHost: WebRTCPeerHost?
     private var storedReceiver: RTCPeerConnection?
@@ -1114,11 +1185,16 @@ private final class LoopbackBridge: @unchecked Sendable {
     private var storedControlMessage: Data?
     private var storedFrameCount = 0
     private var storedVideoSize = CGSize.zero
+    private var storedDecodedVideoFrame: DecodedColorBars?
     private var storedSystemAudioTrack = false
     private var storedNegotiationNeededCount = 0
 
-    init(viewerID: String = "loopback-viewer") {
+    init(
+        viewerID: String = "loopback-viewer",
+        capturesDecodedVideoFrame: Bool = false
+    ) {
         self.viewerID = viewerID
+        self.capturesDecodedVideoFrame = capturesDecodedVideoFrame
     }
 
     var host: WebRTCPeerHost? {
@@ -1140,6 +1216,9 @@ private final class LoopbackBridge: @unchecked Sendable {
     var lastControlMessage: Data? { lock.withLock { storedControlMessage } }
     var receivedVideoFrameCount: Int { lock.withLock { storedFrameCount } }
     var receivedVideoSize: CGSize { lock.withLock { storedVideoSize } }
+    var decodedVideoFrame: DecodedColorBars? {
+        lock.withLock { storedDecodedVideoFrame }
+    }
     var receivedSystemAudioTrack: Bool {
         lock.withLock { storedSystemAudioTrack }
     }
@@ -1220,10 +1299,17 @@ private final class LoopbackBridge: @unchecked Sendable {
         lock.withLock { storedControlMessage = data }
     }
 
-    func receiverRenderedFrame(size: CGSize) {
+    func receiverRenderedFrame(_ frame: RTCVideoFrame) {
+        let decodedFrame = capturesDecodedVideoFrame
+            ? DecodedColorBars(frame)
+            : nil
         lock.withLock {
             storedFrameCount += 1
-            storedVideoSize = size
+            storedVideoSize = CGSize(
+                width: CGFloat(frame.width),
+                height: CGFloat(frame.height)
+            )
+            storedDecodedVideoFrame = decodedFrame
         }
     }
 
@@ -1470,11 +1556,129 @@ private final class LoopbackReceiver: NSObject, RTCPeerConnectionDelegate,
 
     func renderFrame(_ frame: RTCVideoFrame?) {
         guard let frame else { return }
-        bridge.receiverRenderedFrame(size: CGSize(
-            width: CGFloat(frame.width),
-            height: CGFloat(frame.height)
-        ))
+        bridge.receiverRenderedFrame(frame)
     }
+}
+
+private struct Rec709Bar: Sendable {
+    let rgb: SIMD3<Double>
+    let yuv: SIMD3<UInt8>
+}
+
+private let rec709Bars = [
+    Rec709Bar(rgb: .init(0, 0, 0), yuv: .init(16, 128, 128)),
+    Rec709Bar(rgb: .init(255, 0, 0), yuv: .init(63, 102, 240)),
+    Rec709Bar(rgb: .init(0, 255, 0), yuv: .init(173, 42, 26)),
+    Rec709Bar(rgb: .init(0, 0, 255), yuv: .init(32, 240, 118)),
+    Rec709Bar(rgb: .init(255, 255, 255), yuv: .init(235, 128, 128)),
+]
+
+/// Samples only the centers of the wide fixture bars, retaining no decoded
+/// frame data after the renderer callback returns.
+private struct DecodedColorBars: Sendable {
+    enum SignalRange: Sendable {
+        case video
+        case full
+    }
+
+    let yuv: [SIMD3<Double>]
+    let exposesColorSpaceAPI: Bool
+    let colorSpace: DecodedColorSpace?
+
+    init(_ frame: RTCVideoFrame) {
+        let buffer = frame.buffer.toI420()
+        exposesColorSpaceAPI = frame.responds(to: NSSelectorFromString("colorSpace"))
+        colorSpace = exposesColorSpaceAPI ? DecodedColorSpace(frame) : nil
+        yuv = rec709Bars.indices.map { bar in
+            SIMD3(
+                Self.sample(buffer.dataY, stride: Int(buffer.strideY),
+                            width: Int(buffer.width), height: Int(buffer.height), bar: bar),
+                Self.sample(buffer.dataU, stride: Int(buffer.strideU),
+                            width: Int(buffer.chromaWidth), height: Int(buffer.chromaHeight),
+                            bar: bar),
+                Self.sample(buffer.dataV, stride: Int(buffer.strideV),
+                            width: Int(buffer.chromaWidth), height: Int(buffer.chromaHeight),
+                            bar: bar)
+            )
+        }
+    }
+
+    func rgb(_ range: SignalRange) -> [SIMD3<Double>] {
+        yuv.map { sample in
+            let y = range == .video ? (sample.x - 16) * 255 / 219 : sample.x
+            let scale = range == .video ? 255.0 / 224 : 1
+            let cb = (sample.y - 128) * scale
+            let cr = (sample.z - 128) * scale
+            return SIMD3(
+                Self.clamp(y + 1.5748 * cr),
+                Self.clamp(y - 0.1873 * cb - 0.4681 * cr),
+                Self.clamp(y + 1.8556 * cb)
+            )
+        }
+    }
+
+    var summary: String {
+        yuv.map {
+            String(format: "(%.1f,%.1f,%.1f)", $0.x, $0.y, $0.z)
+        }.joined(separator: " ")
+    }
+
+    private static func sample(
+        _ source: UnsafePointer<UInt8>,
+        stride: Int,
+        width: Int,
+        height: Int,
+        bar: Int
+    ) -> Double {
+        let centerX = (bar * 2 + 1) * width / (rec709Bars.count * 2)
+        let centerY = height / 2
+        var sum = 0
+        for y in (centerY - 3) ... (centerY + 3) {
+            for x in (centerX - 3) ... (centerX + 3) {
+                sum += Int(source[y * stride + x])
+            }
+        }
+        return Double(sum) / 49
+    }
+
+    private static func clamp(_ value: Double) -> Double {
+        min(255, max(0, value))
+    }
+}
+
+private struct DecodedColorSpace: Equatable, Sendable {
+    var primaries: Int32
+    var transfer: Int32
+    var matrix: Int32
+    var range: Int32
+
+    static let rec709Limited = Self(primaries: 1, transfer: 1, matrix: 1, range: 1)
+
+    private init(primaries: Int32, transfer: Int32, matrix: Int32, range: Int32) {
+        self.primaries = primaries
+        self.transfer = transfer
+        self.matrix = matrix
+        self.range = range
+    }
+
+    init?(_ frame: RTCVideoFrame) {
+        guard frame.responds(to: NSSelectorFromString("hasColorSpace")),
+              (frame.value(forKey: "hasColorSpace") as? NSNumber)?.boolValue == true,
+              let value = frame.value(forKey: "colorSpace") as? NSValue
+        else { return nil }
+        self = .init(primaries: 0, transfer: 0, matrix: 0, range: 0)
+        value.getValue(&self, size: MemoryLayout<Self>.size)
+    }
+}
+
+private func meanRGBError(_ lhs: [SIMD3<Double>], _ rhs: [SIMD3<Double>]) -> Double {
+    guard lhs.count == rhs.count, !lhs.isEmpty else { return .infinity }
+    let total = zip(lhs, rhs).reduce(0.0) { sum, pair in
+        sum + abs(pair.0.x - pair.1.x)
+            + abs(pair.0.y - pair.1.y)
+            + abs(pair.0.z - pair.1.z)
+    }
+    return total / Double(lhs.count * 3)
 }
 
 private enum SystemAudioFixtureError: Error {
@@ -1578,22 +1782,95 @@ private func waitUntil(
     return condition()
 }
 
+private func makeRec709ColorFixtureFrame(
+    index: Int,
+    width: Int,
+    height: Int,
+    pixelFormat: OSType
+) throws -> BorrowedCaptureVideoFrame {
+    try makeFixtureFrame(
+        index: index,
+        width: width,
+        height: height,
+        pixelFormat: pixelFormat
+    ) { buffer in
+        let metadata = [
+            (kCVImageBufferColorPrimariesKey, kCVImageBufferColorPrimaries_ITU_R_709_2),
+            (kCVImageBufferTransferFunctionKey, kCVImageBufferTransferFunction_ITU_R_709_2),
+            (kCVImageBufferYCbCrMatrixKey, kCVImageBufferYCbCrMatrix_ITU_R_709_2),
+        ]
+        for (key, value) in metadata {
+            CVBufferSetAttachment(buffer, key, value, .shouldPropagate)
+        }
+
+        func bar(at x: Int, width: Int) -> Rec709Bar {
+            rec709Bars[min(rec709Bars.count - 1, x * rec709Bars.count / width)]
+        }
+        if pixelFormat == kCVPixelFormatType_32BGRA,
+           let base = CVPixelBufferGetBaseAddress(buffer)
+        {
+            let bytes = base.assumingMemoryBound(to: UInt8.self)
+            let stride = CVPixelBufferGetBytesPerRow(buffer)
+            for y in 0 ..< height {
+                for x in 0 ..< width {
+                    let color = bar(at: x, width: width).rgb
+                    let offset = y * stride + x * 4
+                    bytes[offset] = UInt8(color.z)
+                    bytes[offset + 1] = UInt8(color.y)
+                    bytes[offset + 2] = UInt8(color.x)
+                    bytes[offset + 3] = 255
+                }
+            }
+            return
+        }
+
+        guard pixelFormat == kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
+              let yBase = CVPixelBufferGetBaseAddressOfPlane(buffer, 0),
+              let uvBase = CVPixelBufferGetBaseAddressOfPlane(buffer, 1)
+        else {
+            throw WebRTCPeerHostError.localDescriptionCreationFailed(
+                "Rec.709 fixture planes"
+            )
+        }
+        for plane in 0 ... 1 {
+            let base = (plane == 0 ? yBase : uvBase).assumingMemoryBound(to: UInt8.self)
+            let planeWidth = CVPixelBufferGetWidthOfPlane(buffer, plane)
+            let planeHeight = CVPixelBufferGetHeightOfPlane(buffer, plane)
+            let stride = CVPixelBufferGetBytesPerRowOfPlane(buffer, plane)
+            for y in 0 ..< planeHeight {
+                for x in 0 ..< planeWidth {
+                    let color = bar(at: x, width: planeWidth).yuv
+                    if plane == 0 { base[y * stride + x] = color.x }
+                    else {
+                        base[y * stride + x * 2] = color.y
+                        base[y * stride + x * 2 + 1] = color.z
+                    }
+                }
+            }
+        }
+    }
+}
+
 private func makeFixtureFrame(
     index: Int,
     width: Int,
-    height: Int
+    height: Int,
+    pixelFormat: OSType = kCVPixelFormatType_32BGRA,
+    fill: ((CVPixelBuffer) throws -> Void)? = nil
 ) throws -> BorrowedCaptureVideoFrame {
     var pixelBuffer: CVPixelBuffer?
-    let attributes: CFDictionary = [
+    var attributes: [CFString: Any] = [
         kCVPixelBufferIOSurfacePropertiesKey: [:] as CFDictionary,
-        kCVPixelBufferMetalCompatibilityKey: true,
-    ] as CFDictionary
+    ]
+    if pixelFormat == kCVPixelFormatType_32BGRA {
+        attributes[kCVPixelBufferMetalCompatibilityKey] = true
+    }
     guard CVPixelBufferCreate(
         kCFAllocatorDefault,
         width,
         height,
-        kCVPixelFormatType_32BGRA,
-        attributes,
+        pixelFormat,
+        attributes as CFDictionary,
         &pixelBuffer
     ) == kCVReturnSuccess,
         let pixelBuffer else {
@@ -1601,10 +1878,12 @@ private func makeFixtureFrame(
     }
 
     CVPixelBufferLockBaseAddress(pixelBuffer, [])
-    if let base = CVPixelBufferGetBaseAddress(pixelBuffer) {
+    defer { CVPixelBufferUnlockBaseAddress(pixelBuffer, []) }
+    if let fill {
+        try fill(pixelBuffer)
+    } else if let base = CVPixelBufferGetBaseAddress(pixelBuffer) {
         memset(base, Int32(index & 0xff), CVPixelBufferGetDataSize(pixelBuffer))
     }
-    CVPixelBufferUnlockBaseAddress(pixelBuffer, [])
 
     var formatDescription: CMVideoFormatDescription?
     guard CMVideoFormatDescriptionCreateForImageBuffer(

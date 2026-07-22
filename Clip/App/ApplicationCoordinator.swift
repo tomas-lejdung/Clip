@@ -2565,7 +2565,11 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
             permissions: dependencies.permissions,
             audio: dependencies.audio,
             historyDirectory: historyDirectory,
-            storageActions: storageActions
+            storageActions: storageActions,
+            applyLiveShareAdvancedSettings: { [weak self] codec, advanced in
+                self?.liveShareCoordinator?.presentationModel
+                    .setAdvancedVideoSettings(advanced, for: codec)
+            }
         )
         let window = NSWindow(
             contentRect: CGRect(origin: .zero, size: SettingsView.contentSize),

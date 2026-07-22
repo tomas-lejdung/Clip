@@ -14,6 +14,7 @@ struct LiveShareCoordinatorPolicyTests {
             width: 1_605,
             height: 1_108,
             framesPerSecond: 30,
+            codec: .vp8,
             sourceRect: CGRect(x: 10, y: 20, width: 800, height: 600)
         )
 
@@ -21,7 +22,60 @@ struct LiveShareCoordinatorPolicyTests {
         #expect(!configuration.showsClickHighlights)
         #expect(configuration.width == 1_605)
         #expect(configuration.height == 1_108)
+        #expect(configuration.pixelFormat == .rec709VideoRange)
         #expect(configuration.sourceRect == CGRect(x: 10, y: 20, width: 800, height: 600))
+
+        let h264 = LiveShareCoordinatorPolicy.captureVideoConfiguration(
+            width: 1_605,
+            height: 1_108,
+            framesPerSecond: 30,
+            codec: .h264
+        )
+        #expect(h264.pixelFormat == .rec709BGRA)
+    }
+
+    @Test("color mode and codec select the intended capture pixel format")
+    func colorModeCaptureFormats() {
+        for codec in [LiveShareVideoCodec.vp8, .vp9, .av1] {
+            #expect(LiveShareCoordinatorPolicy.captureVideoConfiguration(
+                width: 1_920,
+                height: 1_080,
+                framesPerSecond: 30,
+                codec: codec,
+                colorMode: .compatibleRec709
+            ).pixelFormat == .rec709VideoRange)
+            #expect(LiveShareCoordinatorPolicy.captureVideoConfiguration(
+                width: 1_920,
+                height: 1_080,
+                framesPerSecond: 30,
+                codec: codec,
+                colorMode: .fullRangeRec709
+            ).pixelFormat == .rec709FullRange)
+            #expect(LiveShareCoordinatorPolicy.captureVideoConfiguration(
+                width: 1_920,
+                height: 1_080,
+                framesPerSecond: 30,
+                codec: codec,
+                colorMode: .nativeDisplay
+            ).pixelFormat == .bgra)
+        }
+
+        for mode in [LiveShareColorMode.compatibleRec709, .fullRangeRec709] {
+            #expect(LiveShareCoordinatorPolicy.captureVideoConfiguration(
+                width: 1_920,
+                height: 1_080,
+                framesPerSecond: 30,
+                codec: .h264,
+                colorMode: mode
+            ).pixelFormat == .rec709BGRA)
+        }
+        #expect(LiveShareCoordinatorPolicy.captureVideoConfiguration(
+            width: 1_920,
+            height: 1_080,
+            framesPerSecond: 30,
+            codec: .h264,
+            colorMode: .nativeDisplay
+        ).pixelFormat == .bgra)
     }
 
     @Test("capture cursor follows focus and disables the old source first")
@@ -282,6 +336,28 @@ struct LiveShareCoordinatorPolicyTests {
         #expect(performance.maximumBitrateBps == 500_000)
         #expect(performance.maximumFramesPerSecond == 15)
         #expect(!performance.maintainsResolution)
+    }
+
+    @Test("codec overrides map to a live sender policy")
+    func advancedSenderPolicy() {
+        var advanced = LiveShareAdvancedVideoSettings.default
+        advanced.vp9 = LiveShareCodecAdvancedSettings(
+            minimumBitratePercent: 40,
+            degradationPreference: .balanced,
+            temporalLayerCount: 3,
+            scaleResolutionDownBy: 1.5
+        )
+        let policy = LiveShareCoordinatorPolicy.senderPolicy(for: LiveShareSettings(
+            quality: .high,
+            videoCodec: .vp9,
+            advancedVideoSettings: advanced
+        ))
+
+        #expect(policy.maximumBitrateBps == 3_000_000)
+        #expect(policy.minimumBitrateBps == 1_200_000)
+        #expect(policy.degradationStrategy == .balanced)
+        #expect(policy.temporalLayerCount == 3)
+        #expect(policy.resolutionScale == 1.5)
     }
 
     @Test("cursor cadence stays at 20 Hz unless matching the stream frame rate")

@@ -133,6 +133,7 @@ struct SettingsPresentationTests {
         model.updateSettings {
             $0.quality = .insane
             $0.videoCodec = .av1
+            $0.colorMode = .nativeDisplay
             $0.systemAudioEnabled = true
             $0.cursorUpdatesMatchFrameRate = true
         }
@@ -146,6 +147,7 @@ struct SettingsPresentationTests {
         await reloaded.load()
         #expect(reloaded.settings.quality == .insane)
         #expect(reloaded.settings.videoCodec == .av1)
+        #expect(reloaded.settings.colorMode == .nativeDisplay)
         #expect(reloaded.settings.systemAudioEnabled)
         #expect(reloaded.settings.cursorUpdatesMatchFrameRate)
         #expect(reloaded.serverEndpoint == customEndpoint)

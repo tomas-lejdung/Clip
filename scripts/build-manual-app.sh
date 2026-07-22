@@ -8,7 +8,6 @@ APP="$MANUAL_BUILD/Clip.app"
 CONTENTS="$APP/Contents"
 RESOURCES="$CONTENTS/Resources"
 FRAMEWORKS="$CONTENTS/Frameworks"
-WEBRTC_FRAMEWORK="$ROOT/Packages/ClipLiveShareWebRTC/.build/artifacts/webrtc/WebRTC/WebRTC.xcframework/macos-x86_64_arm64/WebRTC.framework"
 PARTIAL_INFO="$MANUAL_BUILD/asset-info.plist"
 RESOLVED_ENTITLEMENTS=""
 
@@ -25,11 +24,31 @@ trap cleanup EXIT
 
 "$ROOT/scripts/typecheck.sh"
 
+WEBRTC_SEARCH_ROOT="$ROOT/Packages/ClipLiveShareWebRTC/.build/artifacts"
+if [[ -d "$ROOT/Packages/ClipLiveShareWebRTC/Vendor/WebRTC.xcframework" ]]; then
+  WEBRTC_SEARCH_ROOT="$ROOT/Packages/ClipLiveShareWebRTC/Vendor/WebRTC.xcframework"
+fi
+WEBRTC_FRAMEWORKS=()
+while IFS= read -r FRAMEWORK; do
+  WEBRTC_FRAMEWORKS+=("$FRAMEWORK")
+done < <(
+  find -L "$WEBRTC_SEARCH_ROOT" \
+    -type d -name 'WebRTC.framework' -prune | sort
+)
+[[ "${#WEBRTC_FRAMEWORKS[@]}" == "1" ]] || {
+  echo "Manual build requires exactly one resolved WebRTC.framework (found ${#WEBRTC_FRAMEWORKS[@]})." >&2
+  exit 1
+}
+WEBRTC_FRAMEWORK="${WEBRTC_FRAMEWORKS[0]}"
+
 rm -rf "$APP"
 mkdir -p "$CONTENTS/MacOS" "$RESOURCES" "$FRAMEWORKS"
 ditto "$MANUAL_BUILD/Clip" "$CONTENTS/MacOS/Clip"
 ditto "$ROOT/Clip/Resources/Info.plist" "$CONTENTS/Info.plist"
 ditto "$ROOT/Clip/Resources/ThirdPartyNotices.txt" "$RESOURCES/ThirdPartyNotices.txt"
+ditto \
+  "$ROOT/Clip/Resources/WebRTCThirdPartyNotices.txt" \
+  "$RESOURCES/WebRTCThirdPartyNotices.txt"
 ditto "$WEBRTC_FRAMEWORK" "$FRAMEWORKS/WebRTC.framework"
 
 /usr/libexec/PlistBuddy -c "Set :CFBundleDevelopmentRegion en" "$CONTENTS/Info.plist"

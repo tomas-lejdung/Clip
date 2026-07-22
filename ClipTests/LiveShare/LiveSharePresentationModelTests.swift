@@ -124,6 +124,41 @@ struct LiveSharePresentationModelTests {
     }
 
     @Test
+    func testAdvancedCodecApplyUsesTheLiveSettingsGate() {
+        var appliedCodec: LiveShareVideoCodec?
+        var appliedSettings: LiveShareCodecAdvancedSettings?
+        var applicationCount = 0
+        let model = LiveSharePresentationModel(
+            snapshot: LiveShareViewSnapshot(
+                phase: .live(elapsedSeconds: 12),
+                settings: .init(canChangeMode: true)
+            ),
+            actions: .init(setAdvancedVideoSettings: { codec, settings in
+                applicationCount += 1
+                appliedCodec = codec
+                appliedSettings = settings
+            })
+        )
+        let requested = LiveShareCodecAdvancedSettings(
+            maximumQuantizer: 99,
+            minimumBitratePercent: 30
+        )
+
+        model.setAdvancedVideoSettings(requested, for: .vp9)
+
+        #expect(appliedCodec == .vp9)
+        #expect(appliedSettings?.maximumQuantizer == nil)
+        #expect(appliedSettings?.minimumBitratePercent == 30)
+
+        model.update(LiveShareViewSnapshot(
+            phase: .reconnecting(attempt: 1, maximumAttempts: 5),
+            settings: .init(canChangeMode: false)
+        ))
+        model.setAdvancedVideoSettings(.default, for: .vp9)
+        #expect(applicationCount == 1)
+    }
+
+    @Test
     func testSystemAudioToggleUsesPresentationCapabilityGate() {
         var changes: [Bool] = []
         let model = LiveSharePresentationModel(

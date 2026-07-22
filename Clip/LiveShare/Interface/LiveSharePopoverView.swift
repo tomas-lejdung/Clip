@@ -9,6 +9,7 @@ struct LiveSharePopoverView: View {
     @State private var statisticsExpanded: Bool
     @State private var showsInviteEntry = false
     @State private var inviteEntry = ""
+    @State private var advancedCodec: LiveShareVideoCodec?
 
     init(
         model: LiveSharePresentationModel,
@@ -16,12 +17,26 @@ struct LiveSharePopoverView: View {
     ) {
         self.model = model
         _statisticsExpanded = State(initialValue: initiallyExpandsStatistics)
+        _advancedCodec = State(initialValue: nil)
     }
 
     var body: some View {
+        Group {
+            if let advancedCodec {
+                inlineAdvancedSettings(for: advancedCodec)
+            } else {
+                mainContent
+            }
+        }
+        .frame(width: Self.contentSize.width, height: Self.contentSize.height)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("clip.liveShare.popover")
+    }
+
+    private var mainContent: some View {
         VStack(spacing: 0) {
             ScrollView {
-                LazyVStack(alignment: .leading, spacing: 14) {
+                VStack(alignment: .leading, spacing: 14) {
                     header
                     if let warning = model.snapshot.capturePressureWarning {
                         capturePressureBanner(warning)
@@ -48,9 +63,22 @@ struct LiveSharePopoverView: View {
                 .padding(12)
                 .background(.bar)
         }
-        .frame(width: Self.contentSize.width, height: Self.contentSize.height)
-        .accessibilityElement(children: .contain)
-        .accessibilityIdentifier("clip.liveShare.popover")
+    }
+
+    private func inlineAdvancedSettings(for codec: LiveShareVideoCodec) -> some View {
+        LiveShareAdvancedCodecSettingsEditor(
+            codec: codec,
+            current: model.snapshot.settings.advancedVideoSettings.settings(for: codec),
+            presentationStyle: .inline,
+            onApply: { advanced in
+                model.setAdvancedVideoSettings(advanced, for: codec)
+                advancedCodec = nil
+            },
+            onCancel: {
+                advancedCodec = nil
+            }
+        )
+        .id(codec)
     }
 
     private var header: some View {
@@ -551,26 +579,70 @@ struct LiveSharePopoverView: View {
 
             LiveShareSettingRow(title: String(localized: "Codec")) {
                 VStack(alignment: .trailing, spacing: 1) {
-                    Picker(
-                        String(localized: "Codec"),
-                        selection: Binding(
-                            get: { model.snapshot.settings.codec.codec },
-                            set: { model.setCodec($0) }
-                        )
-                    ) {
-                        ForEach(LiveShareVideoCodec.allCases) { codec in
-                            Text(codec.displayName).tag(codec)
+                    HStack(spacing: 6) {
+                        Picker(
+                            String(localized: "Codec"),
+                            selection: Binding(
+                                get: { model.snapshot.settings.codec.codec },
+                                set: { model.setCodec($0) }
+                            )
+                        ) {
+                            ForEach(LiveShareVideoCodec.allCases) { codec in
+                                Text(codec.displayName).tag(codec)
+                            }
                         }
+                        .labelsHidden()
+                        .pickerStyle(.menu)
+                        .frame(width: 128, alignment: .trailing)
+                        .disabled(!model.snapshot.settings.canChangeCodec)
+                        .accessibilityIdentifier("clip.liveShare.codec")
+
+                        Button {
+                            advancedCodec = model.snapshot.settings.codec.codec
+                        } label: {
+                            Image(systemName: "slider.horizontal.3")
+                                .accessibilityLabel(
+                                    "Advanced \(model.snapshot.settings.codec.codec.displayName) Settings"
+                                )
+                        }
+                        .buttonStyle(.borderless)
+                        .disabled(!model.snapshot.settings.canChangeMode)
+                        .accessibilityIdentifier("clip.liveShare.codec.advanced")
+                        .id(model.snapshot.settings.codec.codec)
                     }
-                    .labelsHidden()
-                    .pickerStyle(.menu)
-                    .frame(width: 165, alignment: .trailing)
-                    .disabled(!model.snapshot.settings.canChangeCodec)
-                    .accessibilityIdentifier("clip.liveShare.codec")
 
                     Text(model.snapshot.settings.codec.detail)
                         .font(.caption2)
                         .foregroundStyle(.secondary)
+                }
+            }
+
+            LiveShareSettingRow(title: String(localized: "Color")) {
+                VStack(alignment: .trailing, spacing: 1) {
+                    Picker(
+                        String(localized: "Color"),
+                        selection: Binding(
+                            get: { model.snapshot.settings.colorMode },
+                            set: { model.setColorMode($0) }
+                        )
+                    ) {
+                        ForEach(LiveShareColorMode.allCases) { colorMode in
+                            Text(colorMode.title).tag(colorMode)
+                        }
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.menu)
+                    .frame(width: 190, alignment: .trailing)
+                    .disabled(!model.snapshot.settings.canChangeColorMode)
+                    .accessibilityIdentifier("clip.liveShare.colorMode")
+
+                    Text(
+                        model.snapshot.settings.colorMode.detail(
+                            for: model.snapshot.settings.codec.codec
+                        )
+                    )
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
                 }
             }
 
@@ -780,6 +852,377 @@ struct LiveSharePopoverView: View {
     private func sectionHeader(_ title: String, systemImage: String) -> some View {
         Label(title, systemImage: systemImage)
             .font(.subheadline.weight(.semibold))
+    }
+}
+
+/// Opens the reusable codec editor from a normal window such as Settings. The
+/// transient menu-bar popover embeds the editor inline instead of nesting a
+/// second popover.
+struct LiveShareAdvancedCodecSettingsButton: View {
+    let codec: LiveShareVideoCodec
+    let current: LiveShareCodecAdvancedSettings
+    var isEnabled = true
+    let onApply: (LiveShareVideoCodec, LiveShareCodecAdvancedSettings) -> Void
+
+    @State private var isPresented = false
+
+    var body: some View {
+        Button {
+            isPresented = true
+        } label: {
+            Label("Advanced…", systemImage: "slider.horizontal.3")
+        }
+        .buttonStyle(.borderless)
+        .disabled(!isEnabled)
+        .accessibilityIdentifier("clip.liveShare.codec.advanced")
+        .popover(isPresented: $isPresented, arrowEdge: .trailing) {
+            LiveShareAdvancedCodecSettingsEditor(
+                codec: codec,
+                current: current,
+                onApply: { advanced in
+                    onApply(codec, advanced)
+                    isPresented = false
+                },
+                onCancel: { isPresented = false }
+            )
+        }
+    }
+}
+
+private enum LiveShareAdvancedCodecSettingsPresentationStyle {
+    case popover
+    case inline
+}
+
+private struct LiveShareAdvancedCodecSettingsEditor: View {
+    let codec: LiveShareVideoCodec
+    let current: LiveShareCodecAdvancedSettings
+    let presentationStyle: LiveShareAdvancedCodecSettingsPresentationStyle
+    let onApply: (LiveShareCodecAdvancedSettings) -> Void
+    let onCancel: () -> Void
+
+    @State private var draft: LiveShareCodecAdvancedSettings
+
+    init(
+        codec: LiveShareVideoCodec,
+        current: LiveShareCodecAdvancedSettings,
+        presentationStyle: LiveShareAdvancedCodecSettingsPresentationStyle = .popover,
+        onApply: @escaping (LiveShareCodecAdvancedSettings) -> Void,
+        onCancel: @escaping () -> Void
+    ) {
+        self.codec = codec
+        self.current = current
+        self.presentationStyle = presentationStyle
+        self.onApply = onApply
+        self.onCancel = onCancel
+        _draft = State(initialValue: current.normalized(for: codec))
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 10) {
+                if presentationStyle == .inline {
+                    Button(action: onCancel) {
+                        Label("Back", systemImage: "chevron.left")
+                    }
+                    .buttonStyle(.borderless)
+                    .accessibilityIdentifier("clip.liveShare.codec.advanced.back")
+                } else {
+                    Image(systemName: "slider.horizontal.3")
+                        .font(.title3)
+                        .foregroundStyle(.tint)
+                }
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("Advanced \(codec.displayName)")
+                        .font(.headline)
+                    Text("Applied changes affect the current stream immediately.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+            }
+            .padding(14)
+
+            Divider()
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: 14) {
+                    optionalMinimumBitrate
+                    degradationPreference
+                    temporalLayers
+                    resolutionScale
+                    if codec == .h264 {
+                        optionalMaximumQuantizer
+                        h264Quality
+                        h264KeyFrameInterval
+                    }
+
+                    Text(codec == .h264
+                         ? "Auto uses Clip and WebRTC defaults. Lower maximum QP preserves more detail but can increase frame drops or latency when bandwidth is constrained."
+                         : "Auto uses WebRTC's codec defaults. Sender controls still apply without replacing the built-in encoder.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .padding(14)
+            }
+
+            Divider()
+
+            HStack {
+                Button("Reset") {
+                    draft = .default
+                }
+                .disabled(draft == .default)
+                Spacer()
+                Button("Cancel", action: onCancel)
+                    .accessibilityIdentifier("clip.liveShare.codec.advanced.cancel")
+                Button("Apply") {
+                    onApply(draft.normalized(for: codec))
+                }
+                .buttonStyle(.borderedProminent)
+                .keyboardShortcut(.defaultAction)
+                .accessibilityIdentifier("clip.liveShare.codec.advanced.apply")
+            }
+            .padding(12)
+            .background(.bar)
+        }
+        .frame(
+            width: presentationStyle == .inline ? LiveSharePopoverView.contentSize.width : 370,
+            height: presentationStyle == .inline
+                ? LiveSharePopoverView.contentSize.height
+                : (codec == .h264 ? 565 : 425)
+        )
+        .accessibilityIdentifier("clip.liveShare.codec.advanced.editor")
+        .onChange(of: current) { _, updated in
+            draft = updated.normalized(for: codec)
+        }
+    }
+
+    private var optionalMaximumQuantizer: some View {
+        advancedControl("Maximum QP") {
+            HStack {
+                Toggle(
+                    "Custom",
+                    isOn: optionalToggle(
+                        get: { draft.maximumQuantizer },
+                        set: { draft.maximumQuantizer = $0 },
+                        defaultValue: suggestedMaximumQuantizer
+                    )
+                )
+                .toggleStyle(.switch)
+                Spacer()
+                if draft.maximumQuantizer != nil {
+                    Stepper(
+                        value: optionalInt(
+                            get: { draft.maximumQuantizer },
+                            set: { draft.maximumQuantizer = $0 },
+                            defaultValue: suggestedMaximumQuantizer
+                        ),
+                        in: LiveShareCodecAdvancedSettings.h264MaximumQuantizerRange
+                    ) {
+                        Text("\(draft.maximumQuantizer ?? suggestedMaximumQuantizer)")
+                            .monospacedDigit()
+                    }
+                } else {
+                    Text("Auto").foregroundStyle(.secondary)
+                }
+            }
+        }
+    }
+
+    private var optionalMinimumBitrate: some View {
+        advancedControl("Requested Bitrate Floor") {
+            HStack {
+                Toggle(
+                    "Custom",
+                    isOn: optionalToggle(
+                        get: { draft.minimumBitratePercent },
+                        set: { draft.minimumBitratePercent = $0 },
+                        defaultValue: 25
+                    )
+                )
+                .toggleStyle(.switch)
+                Spacer()
+                if draft.minimumBitratePercent != nil {
+                    Stepper(
+                        value: optionalInt(
+                            get: { draft.minimumBitratePercent },
+                            set: { draft.minimumBitratePercent = $0 },
+                            defaultValue: 25
+                        ),
+                        in: LiveShareCodecAdvancedSettings.minimumBitratePercentRange,
+                        step: 5
+                    ) {
+                        Text("\(draft.minimumBitratePercent ?? 25)%")
+                            .monospacedDigit()
+                    }
+                } else {
+                    Text("Auto").foregroundStyle(.secondary)
+                }
+            }
+        }
+    }
+
+    private var degradationPreference: some View {
+        advancedControl("Congestion Behavior") {
+            Picker("Congestion Behavior", selection: $draft.degradationPreference) {
+                ForEach(LiveShareDegradationPreference.allCases) { preference in
+                    Text(preference.advancedTitle).tag(preference)
+                }
+            }
+            .labelsHidden()
+        }
+    }
+
+    private var temporalLayers: some View {
+        advancedControl("Temporal Layers") {
+            Picker(
+                "Temporal Layers",
+                selection: Binding(
+                    get: { draft.temporalLayerCount },
+                    set: { draft.temporalLayerCount = $0 }
+                )
+            ) {
+                Text("Auto").tag(nil as Int?)
+                ForEach(LiveShareCodecAdvancedSettings.temporalLayerCountRange, id: \.self) {
+                    Text("L1T\($0)").tag(Optional($0))
+                }
+            }
+            .labelsHidden()
+        }
+    }
+
+    private var resolutionScale: some View {
+        advancedControl("Resolution Scale") {
+            Picker(
+                "Resolution Scale",
+                selection: Binding(
+                    get: { draft.scaleResolutionDownBy },
+                    set: { draft.scaleResolutionDownBy = $0 }
+                )
+            ) {
+                Text("Auto · Native").tag(nil as Double?)
+                Text("Native · 1×").tag(Optional(1.0))
+                Text("80% · 1.25×").tag(Optional(1.25))
+                Text("67% · 1.5×").tag(Optional(1.5))
+                Text("50% · 2×").tag(Optional(2.0))
+            }
+            .labelsHidden()
+        }
+    }
+
+    private var h264Quality: some View {
+        advancedControl("VideoToolbox Quality") {
+            HStack {
+                Toggle(
+                    "Custom",
+                    isOn: optionalToggle(
+                        get: { draft.h264QualityPercent },
+                        set: { draft.h264QualityPercent = $0 },
+                        defaultValue: 98
+                    )
+                )
+                .toggleStyle(.switch)
+                Spacer()
+                if draft.h264QualityPercent != nil {
+                    Stepper(
+                        value: optionalInt(
+                            get: { draft.h264QualityPercent },
+                            set: { draft.h264QualityPercent = $0 },
+                            defaultValue: 98
+                        ),
+                        in: LiveShareCodecAdvancedSettings.h264QualityPercentRange
+                    ) {
+                        Text("\(draft.h264QualityPercent ?? 98)%")
+                            .monospacedDigit()
+                    }
+                } else {
+                    Text("Auto · 98%").foregroundStyle(.secondary)
+                }
+            }
+        }
+    }
+
+    private var h264KeyFrameInterval: some View {
+        advancedControl("Keyframe Interval") {
+            HStack {
+                Toggle(
+                    "Custom",
+                    isOn: optionalToggle(
+                        get: { draft.h264KeyFrameIntervalSeconds },
+                        set: { draft.h264KeyFrameIntervalSeconds = $0 },
+                        defaultValue: 2
+                    )
+                )
+                .toggleStyle(.switch)
+                Spacer()
+                if draft.h264KeyFrameIntervalSeconds != nil {
+                    Stepper(
+                        value: optionalInt(
+                            get: { draft.h264KeyFrameIntervalSeconds },
+                            set: { draft.h264KeyFrameIntervalSeconds = $0 },
+                            defaultValue: 2
+                        ),
+                        in: LiveShareCodecAdvancedSettings.h264KeyFrameIntervalSecondsRange
+                    ) {
+                        Text("\(draft.h264KeyFrameIntervalSeconds ?? 2) s")
+                            .monospacedDigit()
+                    }
+                } else {
+                    Text("Auto · 2 s").foregroundStyle(.secondary)
+                }
+            }
+        }
+    }
+
+    private func advancedControl<Content: View>(
+        _ title: LocalizedStringKey,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Text(title)
+                .font(.subheadline.weight(.medium))
+            content()
+        }
+    }
+
+    private var suggestedMaximumQuantizer: Int {
+        38
+    }
+
+    private func optionalToggle(
+        get: @escaping () -> Int?,
+        set: @escaping (Int?) -> Void,
+        defaultValue: Int
+    ) -> Binding<Bool> {
+        Binding(
+            get: { get() != nil },
+            set: { enabled in set(enabled ? (get() ?? defaultValue) : nil) }
+        )
+    }
+
+    private func optionalInt(
+        get: @escaping () -> Int?,
+        set: @escaping (Int?) -> Void,
+        defaultValue: Int
+    ) -> Binding<Int> {
+        Binding(
+            get: { get() ?? defaultValue },
+            set: { set($0) }
+        )
+    }
+}
+
+private extension LiveShareDegradationPreference {
+    var advancedTitle: String {
+        switch self {
+        case .automatic: String(localized: "Auto · Follow Mode")
+        case .preserveResolution: String(localized: "Preserve Resolution")
+        case .balanced: String(localized: "Balanced")
+        case .preserveFrameRate: String(localized: "Preserve Frame Rate")
+        case .disabled: String(localized: "Disable Adaptation")
+        }
     }
 }
 

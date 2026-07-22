@@ -79,8 +79,14 @@ test -d "$WEBRTC_FRAMEWORK" || fail "WebRTC.framework is missing"
 test -f "$WEBRTC_EXECUTABLE" || fail "WebRTC executable is missing"
 codesign --verify --strict "$WEBRTC_FRAMEWORK" \
   || fail "embedded WebRTC.framework has an invalid signature"
-file "$WEBRTC_EXECUTABLE" | grep -q 'arm64' \
-  || fail "embedded WebRTC runtime has no arm64 slice"
+[[ "$(lipo -archs "$WEBRTC_EXECUTABLE")" == "arm64" ]] \
+  || fail "embedded WebRTC runtime must contain exactly the arm64 architecture"
+WEBRTC_NORMALIZED_ARM64_SHA256="$(
+  clip_webrtc_normalized_payload_sha256 "$WEBRTC_EXECUTABLE" arm64
+)" || fail "could not normalize the embedded WebRTC arm64 payload"
+[[ "$WEBRTC_NORMALIZED_ARM64_SHA256" == \
+  "$CLIP_WEBRTC_NORMALIZED_ARM64_SHA256" ]] \
+  || fail "embedded WebRTC runtime differs from the reviewed arm64 payload"
 WEBRTC_IDENTIFIER="$(
   plutil -extract CFBundleIdentifier raw -o - \
     "$WEBRTC_FRAMEWORK/Versions/A/Resources/Info.plist"
@@ -105,15 +111,28 @@ for MARKER in \
   grep -Fq "$MARKER" "$THIRD_PARTY_NOTICES" \
     || fail "packaged Sparkle external license section is missing: $MARKER"
 done
-grep -Fq "Source: $CLIP_WEBRTC_REPOSITORY_URL, version $CLIP_WEBRTC_VERSION" \
+grep -Fq "Source: $CLIP_WEBRTC_UPSTREAM_REPOSITORY_URL, version $CLIP_WEBRTC_VERSION" \
   "$THIRD_PARTY_NOTICES" \
-  || fail "packaged WebRTC notice has an unexpected source or version"
-grep -Fq "Source revision: $CLIP_WEBRTC_WRAPPER_REVISION" \
-  "$THIRD_PARTY_NOTICES" \
-  || fail "packaged WebRTC notice has an unexpected wrapper revision"
+  || fail "packaged WebRTC notice has an unexpected upstream source or version"
 grep -Fq "Source commit: $CLIP_WEBRTC_UPSTREAM_REVISION" \
   "$THIRD_PARTY_NOTICES" \
   || fail "packaged WebRTC notice has an unexpected upstream revision"
+grep -Fq "Clip binary artifact: $CLIP_WEBRTC_ARTIFACT_URL" \
+  "$THIRD_PARTY_NOTICES" \
+  || fail "packaged WebRTC notice has an unexpected Clip binary artifact"
+grep -Fq "Clip patch SHA-256: $CLIP_WEBRTC_PATCH_SHA256" \
+  "$THIRD_PARTY_NOTICES" \
+  || fail "packaged WebRTC notice has an unexpected Clip patch hash"
+WEBRTC_THIRD_PARTY_NOTICES="$APP/Contents/Resources/WebRTCThirdPartyNotices.txt"
+test -f "$WEBRTC_THIRD_PARTY_NOTICES" \
+  || fail "official WebRTC third-party notices are missing"
+[[ "$(shasum -a 256 "$WEBRTC_THIRD_PARTY_NOTICES" | awk '{print $1}')" == \
+  "$CLIP_WEBRTC_LICENSE_SHA256" ]] \
+  || fail "official WebRTC third-party notices differ from the reviewed file"
+for MARKER in '# webrtc' '# libaom' '# libvpx' '# opus'; do
+  grep -Fq "$MARKER" "$WEBRTC_THIRD_PARTY_NOTICES" \
+    || fail "official WebRTC third-party notices are missing: $MARKER"
+done
 
 INFO_XML="$(plutil -convert xml1 -o - "$INFO")"
 if grep -Fq '$(' <<<"$INFO_XML"; then

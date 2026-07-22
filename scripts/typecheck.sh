@@ -16,7 +16,6 @@ LIVE_SHARE_BUILD="$ROOT/Packages/ClipLiveShareWebRTC/.build/arm64-apple-macosx/d
 LIVE_SHARE_MODULES="$LIVE_SHARE_BUILD/Modules"
 LIVE_SHARE_AUDIO_BRIDGE_BUILD="$LIVE_SHARE_BUILD/ClipLiveShareWebRTCAudioBridge.build"
 LIVE_SHARE_AUDIO_BRIDGE_MODULE_MAP="$LIVE_SHARE_AUDIO_BRIDGE_BUILD/module.modulemap"
-WEBRTC_FRAMEWORKS="$ROOT/Packages/ClipLiveShareWebRTC/.build/artifacts/webrtc/WebRTC/WebRTC.xcframework/macos-x86_64_arm64"
 CORE_OBJECTS=("$ROOT"/Packages/ClipCore/.build/arm64-apple-macosx/debug/ClipCore.build/*.swift.o)
 MEDIA_OBJECTS=("$ROOT"/Packages/ClipMedia/.build/arm64-apple-macosx/debug/ClipMedia.build/*.swift.o)
 CAPTURE_OBJECTS=("$LIVE_SHARE_BUILD"/ClipCapture.build/*.swift.o)
@@ -49,6 +48,23 @@ swift test --package-path "$ROOT/Packages/ClipMedia"
 swift test --package-path "$ROOT/Packages/ClipCapture"
 swift test --package-path "$ROOT/Packages/ClipLiveShare"
 swift test --package-path "$ROOT/Packages/ClipLiveShareWebRTC"
+
+WEBRTC_SEARCH_ROOT="$ROOT/Packages/ClipLiveShareWebRTC/.build/artifacts"
+if [[ -d "$ROOT/Packages/ClipLiveShareWebRTC/Vendor/WebRTC.xcframework" ]]; then
+  WEBRTC_SEARCH_ROOT="$ROOT/Packages/ClipLiveShareWebRTC/Vendor/WebRTC.xcframework"
+fi
+WEBRTC_FRAMEWORK_CANDIDATES=()
+while IFS= read -r FRAMEWORK; do
+  WEBRTC_FRAMEWORK_CANDIDATES+=("$FRAMEWORK")
+done < <(
+  find -L "$WEBRTC_SEARCH_ROOT" \
+    -type d -name 'WebRTC.framework' -prune | sort
+)
+[[ "${#WEBRTC_FRAMEWORK_CANDIDATES[@]}" == "1" ]] || {
+  echo "Typecheck requires exactly one resolved WebRTC.framework (found ${#WEBRTC_FRAMEWORK_CANDIDATES[@]})." >&2
+  exit 1
+}
+WEBRTC_FRAMEWORKS="$(dirname "${WEBRTC_FRAMEWORK_CANDIDATES[0]}")"
 
 xcrun swiftc \
   -typecheck \

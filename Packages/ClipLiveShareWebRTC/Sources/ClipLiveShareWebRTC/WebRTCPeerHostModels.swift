@@ -22,6 +22,51 @@ public enum WebRTCVideoCodec: String, CaseIterable, Codable, Equatable, Sendable
     }
 }
 
+/// Clip's codec-specific controls for its native VideoToolbox H.264 encoder.
+public struct WebRTCH264AdvancedConfiguration: Equatable, Sendable {
+    public var maximumQuantizer: Int?
+    public var qualityFraction: Double
+    public var keyFrameIntervalSeconds: Int
+
+    public init(
+        maximumQuantizer: Int? = nil,
+        qualityFraction: Double = 0.98,
+        keyFrameIntervalSeconds: Int = 2
+    ) {
+        self.maximumQuantizer = maximumQuantizer.map { min(51, max(0, $0)) }
+        self.qualityFraction = min(1, max(0, qualityFraction))
+        self.keyFrameIntervalSeconds = max(1, keyFrameIntervalSeconds)
+    }
+
+    public static let clipDefault = Self()
+}
+
+/// Initial advanced state for Clip's configurable VideoToolbox encoder.
+/// Sender-level controls for every codec live in `WebRTCSenderPolicy`.
+public struct WebRTCAdvancedVideoConfigurations: Equatable, Sendable {
+    public var h264: WebRTCH264AdvancedConfiguration
+
+    public init(
+        h264: WebRTCH264AdvancedConfiguration = .clipDefault
+    ) {
+        self.h264 = h264
+    }
+
+    public static let clipDefault = Self()
+}
+
+/// A type-safe live encoder update. Associating the codec with its payload
+/// prevents H.264-only fields from accidentally being sent to another codec.
+public enum WebRTCCodecAdvancedConfiguration: Equatable, Sendable {
+    case h264(WebRTCH264AdvancedConfiguration)
+
+    public var codec: WebRTCVideoCodec {
+        switch self {
+        case .h264: .h264
+        }
+    }
+}
+
 public struct WebRTCICEServerConfiguration: Equatable, Sendable {
     public var urlStrings: [String]
     public var username: String?
@@ -38,22 +83,67 @@ public struct WebRTCICEServerConfiguration: Equatable, Sendable {
     }
 }
 
+public enum WebRTCSenderDegradationStrategy: String, CaseIterable, Codable,
+    Equatable, Sendable
+{
+    /// Prefer dropping frames over reducing the captured pixel dimensions.
+    case resolution
+    /// Let libwebrtc trade frame rate and resolution together.
+    case balanced
+    /// Prefer reducing resolution while retaining the requested cadence.
+    case framerate
+    /// Disable libwebrtc's frame-rate and resolution adaptation.
+    case disabled
+}
+
 public struct WebRTCSenderPolicy: Equatable, Sendable {
     public var maximumBitrateBps: Int?
+    public var minimumBitrateBps: Int?
     public var maximumFramesPerSecond: Int?
-    public var maintainsResolution: Bool
+    public var degradationStrategy: WebRTCSenderDegradationStrategy
+    public var temporalLayerCount: Int?
+    public var resolutionScale: Double?
     public var bitratePriority: Double
+
+    /// Compatibility projection for callers that still expose the original
+    /// Quality/Performance switch. New advanced UI should use
+    /// `degradationStrategy` so Balanced and Disabled remain representable.
+    public var maintainsResolution: Bool {
+        get { degradationStrategy == .resolution }
+        set { degradationStrategy = newValue ? .resolution : .framerate }
+    }
 
     public init(
         maximumBitrateBps: Int? = 12_000_000,
+        minimumBitrateBps: Int? = nil,
         maximumFramesPerSecond: Int? = 30,
-        maintainsResolution: Bool = true,
+        degradationStrategy: WebRTCSenderDegradationStrategy = .resolution,
+        temporalLayerCount: Int? = nil,
+        resolutionScale: Double? = 1,
         bitratePriority: Double = 1
     ) {
         self.maximumBitrateBps = maximumBitrateBps
+        self.minimumBitrateBps = minimumBitrateBps
         self.maximumFramesPerSecond = maximumFramesPerSecond
-        self.maintainsResolution = maintainsResolution
+        self.degradationStrategy = degradationStrategy
+        self.temporalLayerCount = temporalLayerCount
+        self.resolutionScale = resolutionScale
         self.bitratePriority = bitratePriority
+    }
+
+    /// Source-compatible initializer for the existing preset mapping.
+    public init(
+        maximumBitrateBps: Int? = 12_000_000,
+        maximumFramesPerSecond: Int? = 30,
+        maintainsResolution: Bool,
+        bitratePriority: Double = 1
+    ) {
+        self.init(
+            maximumBitrateBps: maximumBitrateBps,
+            maximumFramesPerSecond: maximumFramesPerSecond,
+            degradationStrategy: maintainsResolution ? .resolution : .framerate,
+            bitratePriority: bitratePriority
+        )
     }
 
     public static let clipDefault = Self()
@@ -172,6 +262,7 @@ public struct WebRTCPeerHostConfiguration: Equatable, Sendable {
     public var resourceLimits: WebRTCPeerResourceLimits
     public var videoCodec: WebRTCVideoCodec
     public var videoEncodingMode: LiveShareEncodingMode
+    public var advancedVideoConfigurations: WebRTCAdvancedVideoConfigurations
 
     public init(
         iceServers: [WebRTCICEServerConfiguration],
@@ -179,7 +270,8 @@ public struct WebRTCPeerHostConfiguration: Equatable, Sendable {
         senderPolicy: WebRTCSenderPolicy = .clipDefault,
         resourceLimits: WebRTCPeerResourceLimits = .clipDefault,
         videoCodec: WebRTCVideoCodec = .h264,
-        videoEncodingMode: LiveShareEncodingMode = .quality
+        videoEncodingMode: LiveShareEncodingMode = .quality,
+        advancedVideoConfigurations: WebRTCAdvancedVideoConfigurations = .clipDefault
     ) {
         self.iceServers = iceServers
         self.forcesRelay = forcesRelay
@@ -187,6 +279,7 @@ public struct WebRTCPeerHostConfiguration: Equatable, Sendable {
         self.resourceLimits = resourceLimits
         self.videoCodec = videoCodec
         self.videoEncodingMode = videoEncodingMode
+        self.advancedVideoConfigurations = advancedVideoConfigurations
     }
 
     public static let clipDefault = Self(iceServers: [

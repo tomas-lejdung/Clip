@@ -190,6 +190,113 @@ final class ClipLaunchTests: XCTestCase {
         attachScenarioScreenshot(app: app, name: "Live Share — live — bottom")
     }
 
+    /// Exercises the advanced codec editor in the same deterministic Live Share
+    /// container that previously hosted a nested child popover. Repeated dismissal
+    /// ensures the parent remains responsive after SwiftUI tears down each draft.
+    @MainActor
+    func testDeterministicLiveShareAdvancedCodecEditorRemainsResponsive() throws {
+        let app = launchDeterministicScenario("live-share-live-bottom")
+        defer { app.terminate() }
+
+        let root = app.descendants(matching: .any)
+            .matching(identifier: "clip.uiScenario.live-share-live-bottom")
+            .firstMatch
+        XCTAssertTrue(root.waitForExistence(timeout: 10))
+
+        for cycle in 1 ... 3 {
+            let trigger = app.buttons["clip.liveShare.codec.advanced"]
+            XCTAssertTrue(
+                trigger.waitForExistence(timeout: 5),
+                "Advanced settings trigger disappeared before cancel cycle \(cycle)."
+            )
+            XCTAssertTrue(
+                waitForHittable(trigger, timeout: 5),
+                "Advanced settings trigger stopped responding before cancel cycle \(cycle)."
+            )
+            trigger.click()
+
+            let editor = app.descendants(matching: .any)
+                .matching(identifier: "clip.liveShare.codec.advanced.editor")
+                .firstMatch
+            XCTAssertTrue(
+                editor.waitForExistence(timeout: 5),
+                "Advanced settings editor did not open during cancel cycle \(cycle)."
+            )
+
+            let cancel = app.buttons["clip.liveShare.codec.advanced.cancel"]
+            XCTAssertTrue(cancel.waitForExistence(timeout: 5))
+            cancel.click()
+            XCTAssertFalse(
+                editor.waitForExistence(timeout: 1),
+                "Cancel did not return to Live Share during cycle \(cycle)."
+            )
+        }
+
+        let trigger = app.buttons["clip.liveShare.codec.advanced"]
+        XCTAssertTrue(waitForHittable(trigger, timeout: 5))
+        trigger.click()
+        let editor = app.descendants(matching: .any)
+            .matching(identifier: "clip.liveShare.codec.advanced.editor")
+            .firstMatch
+        XCTAssertTrue(editor.waitForExistence(timeout: 5))
+        let back = app.buttons["clip.liveShare.codec.advanced.back"]
+        XCTAssertTrue(back.waitForExistence(timeout: 5))
+        back.click()
+        XCTAssertFalse(editor.waitForExistence(timeout: 1))
+
+        XCTAssertTrue(waitForHittable(trigger, timeout: 5))
+        trigger.click()
+        XCTAssertTrue(editor.waitForExistence(timeout: 5))
+        let apply = app.buttons["clip.liveShare.codec.advanced.apply"]
+        XCTAssertTrue(apply.waitForExistence(timeout: 5))
+        apply.click()
+        XCTAssertFalse(editor.waitForExistence(timeout: 1))
+
+        XCTAssertTrue(
+            waitForHittable(app.buttons["clip.liveShare.codec.advanced"], timeout: 5),
+            "Live Share did not remain responsive after applying advanced settings."
+        )
+    }
+
+    /// Settings intentionally keeps the reusable child popover because it is hosted
+    /// by a normal settings window rather than Clip's transient menu-bar popover.
+    @MainActor
+    func testDeterministicSettingsAdvancedCodecPopoverStillOpens() throws {
+        let app = launchDeterministicScenario("settings-live-share")
+        defer { app.terminate() }
+
+        let root = app.descendants(matching: .any)
+            .matching(identifier: "clip.uiScenario.settings-live-share")
+            .firstMatch
+        XCTAssertTrue(root.waitForExistence(timeout: 10))
+
+        let codecControls = app.descendants(matching: .any)
+            .matching(identifier: "clip.settings.liveShare.codec.advanced")
+            .firstMatch
+        let trigger = app.buttons["clip.liveShare.codec.advanced"]
+        if !trigger.waitForExistence(timeout: 2) || !trigger.isHittable {
+            let scrollView = root.scrollViews.firstMatch.exists
+                ? root.scrollViews.firstMatch
+                : app.scrollViews.firstMatch
+            XCTAssertTrue(scrollView.waitForExistence(timeout: 2))
+            scrollView.scroll(byDeltaX: 0, deltaY: -1_000)
+        }
+        XCTAssertTrue(codecControls.waitForExistence(timeout: 5))
+        XCTAssertTrue(trigger.waitForExistence(timeout: 5))
+        XCTAssertTrue(waitForHittable(trigger, timeout: 5))
+        trigger.click()
+
+        let editor = app.descendants(matching: .any)
+            .matching(identifier: "clip.liveShare.codec.advanced.editor")
+            .firstMatch
+        XCTAssertTrue(editor.waitForExistence(timeout: 5))
+        let cancel = app.buttons["clip.liveShare.codec.advanced.cancel"]
+        XCTAssertTrue(cancel.waitForExistence(timeout: 5))
+        cancel.click()
+        XCTAssertFalse(editor.waitForExistence(timeout: 1))
+        XCTAssertTrue(waitForHittable(trigger, timeout: 5))
+    }
+
     /// Renders both native-viewer phases with inert state. This covers the
     /// production popover without opening a socket, peer connection, audio
     /// device, remote window, or macOS privacy prompt.

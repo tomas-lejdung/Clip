@@ -242,14 +242,17 @@ Evidence:
 - [x] Keep the protected `.mp4` suffix outside the filename editor while appending and persisting it automatically.
 - [x] Add a validated editable Live Share server address, non-destructive connection test, and independent Reset Server Address action; apply address changes to the next session only.
 - [x] Persist Live Share defaults for codec, quality, FPS, mode, System Audio, access code, Prioritize Focused Window, and Auto-share Focused Windows.
+- [x] Add separately persisted advanced controls for every Live Share codec, live Apply/Reset in the active popover, native H.264 QP/quality/keyframe tuning, and SDR Rec.709 capture.
+- [x] Add persisted Compatible Rec.709, Full-range Rec.709, and experimental Native Display Live Share color modes with in-place active-capture updates; preserve Rec.709 CICP through AV1 and the native Metal viewer so Compatible mode matches the H.264 color reference.
 - [x] Restore all Live Share session defaults independently from the server-address reset.
 - [x] Add direct deterministic launches for all six Settings tabs plus top-and-fully-scrolled-bottom visual snapshots for each tab.
 
 Evidence:
 
 - The 81 passing ClipCore tests cover defaults, Click Highlights missing-key compatibility and snapshots, Capture App persistence, filename formatting and schema migration, validation, shortcut conflicts, history, migrations, Remove audio persistence and legacy decoding, and the multi-hour 10,000-cycle Pause/Resume state soak. Executed app tests cover immediate and ordered quick-setting persistence, filename-template persistence/use, Carbon registration, and security-scoped bookmark restoration.
-- Settings presentation has a deterministic initial-tab/content-size seam, stable control identifiers, an extensionless filename editor adapter, inert external actions for scenario launches, and compile-only assertions for every tab. The 760-point native tab bar keeps all six panes outside macOS toolbar overflow, enforced by a pointer-free hosted AppKit regression. The visual lane covers twelve top/bottom PNGs, and its manifest verifies each scrollable form can reach its bottom.
+- Settings presentation has a deterministic initial-tab/content-size seam, stable control identifiers, an extensionless filename editor adapter, inert external actions for scenario launches, and compile-only assertions for every tab. The 760-point native tab bar keeps all six panes outside macOS toolbar overflow, enforced by a pointer-free hosted AppKit regression. The visual lane covers twelve top/bottom PNGs, and its manifest verifies each scrollable form can reach its bottom. Live Share now reuses one codec-specific draft popover for persisted defaults and active-session tuning; sender-level controls apply to every codec, while only the native VideoToolbox H.264 path exposes QP, quality, and keyframe overrides.
 - Runtime checks for login-item registration, Dock switching, and sandbox bookmark restoration remain in the installed-app pass.
+- The patched M150 AV1 loopback proves Rec.709 limited CICP survives capture, encode, decode, and the Objective-C frame bridge. Its deterministic color bars stay within four RGB levels of both the source fixture and the H.264 reference. The native renderer now selects explicit limited/full Rec.709 matrices, while the AV1 encoder updates CICP controls only on an actual color-mode transition and emits a keyframe for that transition.
 
 ### CAP-01 — Displays and capture selection
 

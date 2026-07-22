@@ -5,6 +5,9 @@ typealias LiveShareQualityPreset = ClipLiveShare.LiveShareQualityPreset
 typealias LiveShareFrameRate = ClipLiveShare.LiveShareFrameRate
 typealias LiveShareEncodingMode = ClipLiveShare.LiveShareEncodingMode
 typealias LiveShareVideoCodec = ClipLiveShare.LiveShareVideoCodec
+typealias LiveShareColorMode = ClipLiveShare.LiveShareColorMode
+typealias LiveShareCodecAdvancedSettings = ClipLiveShare.LiveShareCodecAdvancedSettings
+typealias LiveShareDegradationPreference = ClipLiveShare.LiveShareDegradationPreference
 
 enum LiveShareViewPhase: Equatable, Sendable {
     case inactive
@@ -281,15 +284,18 @@ struct LiveShareSettingsViewSnapshot: Equatable, Sendable {
     let quality: LiveShareQualityPreset
     let frameRate: LiveShareFrameRate
     let codec: LiveShareCodecViewSnapshot
+    let colorMode: LiveShareColorMode
     let systemAudioEnabled: Bool
     let cursorUpdatesMatchFrameRate: Bool
     let prioritizeFocusedWindow: Bool
     let mode: LiveShareEncodingMode
+    let advancedVideoSettings: LiveShareAdvancedVideoSettings
     let autoShareFocusedWindows: Bool
     let canChangeQuality: Bool
     let canChangeFrameRate: Bool
     let availableFrameRates: Set<LiveShareFrameRate>
     let canChangeCodec: Bool
+    let canChangeColorMode: Bool
     let canChangeSystemAudio: Bool
     let canChangeCursorUpdateRate: Bool
     let canChangePrioritizeFocusedWindow: Bool
@@ -300,15 +306,18 @@ struct LiveShareSettingsViewSnapshot: Equatable, Sendable {
         quality: LiveShareQualityPreset = .veryHigh,
         frameRate: LiveShareFrameRate = .thirty,
         codec: LiveShareCodecViewSnapshot = .init(),
+        colorMode: LiveShareColorMode = .compatibleRec709,
         systemAudioEnabled: Bool = false,
         cursorUpdatesMatchFrameRate: Bool = false,
         prioritizeFocusedWindow: Bool = true,
         mode: LiveShareEncodingMode = .quality,
+        advancedVideoSettings: LiveShareAdvancedVideoSettings = .init(),
         autoShareFocusedWindows: Bool = false,
         canChangeQuality: Bool = true,
         canChangeFrameRate: Bool = true,
         availableFrameRates: Set<LiveShareFrameRate> = Set(LiveShareFrameRate.allCases),
         canChangeCodec: Bool = true,
+        canChangeColorMode: Bool = true,
         canChangeSystemAudio: Bool = true,
         canChangeCursorUpdateRate: Bool = true,
         canChangePrioritizeFocusedWindow: Bool = true,
@@ -318,20 +327,49 @@ struct LiveShareSettingsViewSnapshot: Equatable, Sendable {
         self.quality = quality
         self.frameRate = frameRate
         self.codec = codec
+        self.colorMode = colorMode
         self.systemAudioEnabled = systemAudioEnabled
         self.cursorUpdatesMatchFrameRate = cursorUpdatesMatchFrameRate
         self.prioritizeFocusedWindow = prioritizeFocusedWindow
         self.mode = mode
+        self.advancedVideoSettings = advancedVideoSettings
         self.autoShareFocusedWindows = autoShareFocusedWindows
         self.canChangeQuality = canChangeQuality
         self.canChangeFrameRate = canChangeFrameRate
         self.availableFrameRates = availableFrameRates
         self.canChangeCodec = canChangeCodec
+        self.canChangeColorMode = canChangeColorMode
         self.canChangeSystemAudio = canChangeSystemAudio
         self.canChangeCursorUpdateRate = canChangeCursorUpdateRate
         self.canChangePrioritizeFocusedWindow = canChangePrioritizeFocusedWindow
         self.canChangeMode = canChangeMode
         self.canChangeAutoShare = canChangeAutoShare
+    }
+}
+
+extension LiveShareColorMode {
+    var title: String {
+        switch self {
+        case .compatibleRec709:
+            String(localized: "Compatible Rec.709")
+        case .fullRangeRec709:
+            String(localized: "Full-range Rec.709")
+        case .nativeDisplay:
+            String(localized: "Native Display")
+        }
+    }
+
+    func detail(for codec: LiveShareVideoCodec) -> String {
+        switch self {
+        case .compatibleRec709:
+            String(localized: "SDR · 8-bit · video range")
+        case .fullRangeRec709 where codec == .h264:
+            String(localized: "SDR · H.264 uses its standard range")
+        case .fullRangeRec709:
+            String(localized: "SDR · 8-bit · full range")
+        case .nativeDisplay:
+            String(localized: "Display-dependent · experimental")
+        }
     }
 }
 
