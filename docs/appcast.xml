@@ -3,43 +3,41 @@
     <channel>
         <title>Clip</title>
         <item>
-            <title>1.3.7</title>
-            <pubDate>Wed, 22 Jul 2026 15:30:35 +0200</pubDate>
-            <sparkle:version>12</sparkle:version>
-            <sparkle:shortVersionString>1.3.7</sparkle:shortVersionString>
+            <title>1.3.8</title>
+            <pubDate>Fri, 24 Jul 2026 16:43:59 +0200</pubDate>
+            <sparkle:version>13</sparkle:version>
+            <sparkle:shortVersionString>1.3.8</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
             <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
-            <description sparkle:format="markdown"><![CDATA[# Clip 1.3.7
+            <description sparkle:format="markdown"><![CDATA[# Clip 1.3.8
 
-Clip 1.3.7 adds live, codec-specific stream tuning and more predictable color
-for Live Share.
+Clip 1.3.8 makes the menu bar experience faster, more reliable, and more
+consistent across recording and Live Share.
+
+## Menu bar
+
+- Switch between Clip's normal, recording, Live Share, and viewer screens
+  inside one stable popover, avoiding delayed focus and first-click misses.
+- Expand each menu row's real click target so capture, display, and recent
+  recording actions respond reliably.
+- Keep the normal menu fully visible after returning from Live Share.
+- Replace the nested recording card with a compact, flat recording status
+  layout that belongs directly to the popover.
 
 ## Live Share
 
-- Add advanced controls for VP8, VP9, AV1, and H.264, available from both
-  Settings and an active Live Share session.
-- Apply advanced changes to the current stream immediately, preview the result,
-  reset one codec to Clip's defaults, and persist each codec independently.
-- Add Compatible Rec.709, Full-range Rec.709, and experimental Native Display
-  color modes.
-- Preserve Rec.709 color metadata through AV1 encoding, decoding, and Clip's
-  native Metal viewer for more accurate color and flatter solid-color regions.
-- Keep H.264's VideoToolbox-specific quality, QP, and keyframe controls while
-  exposing the applicable WebRTC sender controls consistently for every codec.
-
-## Dependency update
-
-- Use Clip's reviewed WebRTC M150 build with an auditable source patch,
-  immutable binary checksum, and complete bundled third-party notices.
-
-The Live Share server protocol and web viewer are unchanged.
+- Make Native the default Web Viewer scale mode.
+- Show a trusted friend's saved name in the viewer list after their identity
+  has been cryptographically verified.
+- Simplify the pre-share joining guidance and remove implementation-specific
+  wording from the Friends section.
 
 ## Requirements
 
 Clip requires macOS 15 or later on Apple silicon. This build uses the same
 stable Apple Development identity as previous updater releases.
 ]]></description>
-            <enclosure url="https://github.com/tomas-lejdung/Clip/releases/download/v1.3.7/Clip-1.3.7.dmg" length="12061180" type="application/octet-stream" sparkle:edSignature="8EscqYOtzUf+IPVEN4kTs88mb+tcqsB+Ufb52ZZyDXeRL7MFzCN2tRzfNXBcA8s3dnWSxpDLbGXBkG3Qb/lVAw=="/>
+            <enclosure url="https://github.com/tomas-lejdung/Clip/releases/download/v1.3.8/Clip-1.3.8.dmg" length="12062595" type="application/octet-stream" sparkle:edSignature="hGLOKp0uyX0EpewYErtDpjpIbBCwVuII6M52ne0uVrZpS1A1qziEkU3z972K0uIFiWDU6zVND7+gmr38D1hVBQ=="/>
         </item>
     </channel>
 </rss>
