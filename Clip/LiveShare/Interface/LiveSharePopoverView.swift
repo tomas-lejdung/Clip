@@ -285,15 +285,11 @@ struct LiveSharePopoverView: View {
 
     private var preparationSection: some View {
         VStack(alignment: .leading, spacing: 9) {
-            sectionHeader(String(localized: "Before You Share"), systemImage: "checklist")
-            Label(
-                String(localized: "Nothing is being captured yet."),
-                systemImage: "eye.slash"
+            sectionHeader(
+                String(localized: "Join a Share"),
+                systemImage: "rectangle.portrait.and.arrow.right"
             )
-            .font(.subheadline)
-            Text(
-                "Set an optional guest access code, copy the complete invite, then start when you are ready. Friends who are currently sharing will also appear here."
-            )
+            Text("Paste an invite from another Clip user to view their share.")
             .font(.caption)
             .foregroundStyle(.secondary)
             .fixedSize(horizontal: false, vertical: true)
@@ -340,7 +336,7 @@ struct LiveSharePopoverView: View {
                 }
             }
             if model.snapshot.friends.isEmpty {
-                Text("Friends you add after a native session will appear here.")
+                Text("Friends you add will appear here.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             } else {
@@ -718,8 +714,12 @@ struct LiveSharePopoverView: View {
                             .fill(viewer.connection.isConnected ? .green : .secondary.opacity(0.5))
                             .frame(width: 7, height: 7)
                             .accessibilityHidden(true)
-                        Text(viewer.id)
-                            .font(.caption.monospaced())
+                        Text(viewer.displayName)
+                            .font(
+                                viewer.displayName == viewer.id
+                                    ? .caption.monospaced()
+                                    : .caption
+                            )
                             .lineLimit(1)
                             .truncationMode(.middle)
                         Spacer()

@@ -180,6 +180,11 @@ func TestCapabilitiesViewerAndSecurityHeaders(t *testing.T) {
 	if viewerResponse.StatusCode != http.StatusOK || !bytes.Contains(viewerBody, []byte("clip-viewer.js")) {
 		t.Fatalf("viewer response = %d, %d bytes", viewerResponse.StatusCode, len(viewerBody))
 	}
+	if !bytes.Contains(viewerBody, []byte(`class="pan-zoom-content native-mode"`)) ||
+		!bytes.Contains(viewerBody, []byte(`class="main-video scale-native"`)) ||
+		!bytes.Contains(viewerBody, []byte(`class="scale-btn active" data-scale="native"`)) {
+		t.Fatal("viewer does not render Native as the default scale mode")
+	}
 	assetResponse, err := http.Get(server.URL + "/assets/clip-protocol.js")
 	if err != nil {
 		t.Fatal(err)
@@ -195,6 +200,16 @@ func TestCapabilitiesViewerAndSecurityHeaders(t *testing.T) {
 	mediaAssetResponse.Body.Close()
 	if mediaAssetResponse.StatusCode != http.StatusOK || !strings.Contains(mediaAssetResponse.Header.Get("Content-Type"), "javascript") {
 		t.Fatalf("media asset response = %d, %q", mediaAssetResponse.StatusCode, mediaAssetResponse.Header.Get("Content-Type"))
+	}
+	viewerAssetResponse, err := http.Get(server.URL + "/assets/clip-viewer.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	viewerAssetBody, _ := io.ReadAll(viewerAssetResponse.Body)
+	viewerAssetResponse.Body.Close()
+	if viewerAssetResponse.StatusCode != http.StatusOK ||
+		!bytes.Contains(viewerAssetBody, []byte(`let currentScale = "native";`)) {
+		t.Fatal("viewer script does not initialize Native as the default scale mode")
 	}
 	fixtureResponse, err := http.Get(server.URL + "/assets/clip-protocol-tests.html")
 	if err != nil {

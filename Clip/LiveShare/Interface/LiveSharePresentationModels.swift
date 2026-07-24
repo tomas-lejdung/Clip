@@ -397,8 +397,23 @@ enum LiveShareViewerConnection: String, Equatable, Sendable {
 
 struct LiveShareViewerViewSnapshot: Equatable, Identifiable, Sendable {
     let id: String
+    /// A trusted friend's saved name when the viewer proved that identity.
+    /// Anonymous app and web viewers deliberately retain their opaque route ID.
+    let displayName: String
     let connection: LiveShareViewerConnection
     let connectedDuration: TimeInterval?
+
+    init(
+        id: String,
+        displayName: String? = nil,
+        connection: LiveShareViewerConnection,
+        connectedDuration: TimeInterval?
+    ) {
+        self.id = id
+        self.displayName = displayName ?? id
+        self.connection = connection
+        self.connectedDuration = connectedDuration
+    }
 }
 
 struct LiveShareStreamStatisticsViewSnapshot: Equatable, Identifiable, Sendable {

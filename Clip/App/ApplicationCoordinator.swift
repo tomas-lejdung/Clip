@@ -186,11 +186,61 @@ enum PeriodicStorageMaintenanceLoop {
     }
 }
 
+/// Keeps one AppKit content host attached to the status-item popover while its
+/// SwiftUI screen changes. Replacing the popover itself briefly resigns key
+/// status and makes the first click in the next screen reactivate the window;
+/// swapping children in place preserves focus and gives the transition an
+/// immediate visual response.
+@MainActor
+final class PopoverContentContainerViewController: NSViewController {
+    private(set) var currentContentViewController: NSViewController?
+
+    override func loadView() {
+        view = NSView(frame: .zero)
+    }
+
+    func replaceContent(
+        with next: NSViewController,
+        animated: Bool
+    ) {
+        loadViewIfNeeded()
+        next.view.frame = view.bounds
+        next.view.autoresizingMask = [.width, .height]
+
+        guard let currentContentViewController else {
+            addChild(next)
+            view.addSubview(next.view)
+            self.currentContentViewController = next
+            return
+        }
+
+        addChild(next)
+        self.currentContentViewController = next
+        guard animated, view.window != nil else {
+            currentContentViewController.view.removeFromSuperview()
+            currentContentViewController.removeFromParent()
+            view.addSubview(next.view)
+            return
+        }
+
+        transition(
+            from: currentContentViewController,
+            to: next,
+            options: [.crossfade, .allowUserInteraction]
+        ) {
+            Task { @MainActor in
+                currentContentViewController.removeFromParent()
+            }
+        }
+    }
+}
+
 @MainActor
 final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerminationHandling {
     private let dependencies: AppDependencies
     private let statusBar: NSStatusBar
     private let popover = NSPopover()
+    private let popoverContentController = PopoverContentContainerViewController()
     private let lastAreaStore: LastAreaStore
     private let applicationBehavior = ApplicationBehaviorService()
     private let menuBarModel = MenuBarPopoverModel()
@@ -565,10 +615,28 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
         popover.behavior = .transient
         popover.animates = true
         popover.delegate = self
-        popover.contentSize = NSSize(width: 300, height: 360)
-        popover.contentViewController = NSHostingController(
-            rootView: MenuBarPopoverView(model: menuBarModel, actions: actions)
+        installPopoverContent(
+            MenuBarPopoverView(model: menuBarModel, actions: actions),
+            size: MenuBarPopoverView.contentSize
         )
+    }
+
+    private func installPopoverContent<Content: View>(
+        _ content: Content,
+        size: NSSize
+    ) {
+        let shouldAnimate = popover.isShown
+        if popover.contentViewController !== popoverContentController {
+            popover.contentViewController = popoverContentController
+        }
+        popover.contentSize = size
+        popoverContentController.replaceContent(
+            with: NSHostingController(rootView: content),
+            animated: shouldAnimate
+        )
+        if shouldAnimate {
+            popover.contentViewController?.view.window?.makeKey()
+        }
     }
 
     private func checkForUpdates() {
@@ -583,9 +651,9 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
 
     private func installRecordingPopover(model: RecordingPresentationModel) {
         guard !isPreparingForTermination else { return }
-        popover.contentSize = NSSize(width: 330, height: 285)
-        popover.contentViewController = NSHostingController(
-            rootView: RecordingStatusView(model: model)
+        installPopoverContent(
+            RecordingStatusView(model: model),
+            size: RecordingStatusView.contentSize
         )
     }
 
@@ -594,9 +662,9 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
         popover.behavior = .transient
         popover.animates = true
         popover.delegate = self
-        popover.contentSize = LiveSharePopoverView.contentSize
-        popover.contentViewController = NSHostingController(
-            rootView: LiveSharePopoverView(model: model)
+        installPopoverContent(
+            LiveSharePopoverView(model: model),
+            size: LiveSharePopoverView.contentSize
         )
     }
 
@@ -605,9 +673,9 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
         popover.behavior = .transient
         popover.animates = true
         popover.delegate = self
-        popover.contentSize = NativeViewerPopoverView.contentSize
-        popover.contentViewController = NSHostingController(
-            rootView: NativeViewerPopoverView(model: model)
+        installPopoverContent(
+            NativeViewerPopoverView(model: model),
+            size: NativeViewerPopoverView.contentSize
         )
     }
 
@@ -632,60 +700,53 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
     }
 
     private func startLiveShare() {
-        popover.performClose(nil)
-        Task { @MainActor [weak self] in
-            guard let self,
-                  !isStartingLiveShare,
-                  !isPreparingCapture,
-                  !hasActiveLiveShareRole,
-                  recordingPresentationModel == nil,
-                  [.idle, .canceled, .failed, .preview].contains(recordingState.phase) else {
-                NSSound.beep()
-                return
+        guard !isStartingLiveShare,
+              !isPreparingCapture,
+              !hasActiveLiveShareRole,
+              recordingPresentationModel == nil,
+              [.idle, .canceled, .failed, .preview].contains(recordingState.phase),
+              !isPreparingForTermination else {
+            NSSound.beep()
+            return
+        }
+        isStartingLiveShare = true
+        defer { isStartingLiveShare = false }
+
+        let roleToken = UUID()
+        let coordinator = LiveShareCoordinator(
+            preferences: dependencies.liveSharePreferences,
+            nativeFriends: dependencies.nativeFriends,
+            serverEndpoint: dependencies.liveSharePreferences.serverEndpoint,
+            requestScreenRecordingPermission: { [weak self] in
+                await self?.ensureLiveShareScreenRecordingPermission() ?? false
+            },
+            onJoinInviteRequested: { [weak self] invite in
+                self?.transitionFromHostPreparationToViewer(
+                    invite: invite,
+                    roleToken: roleToken
+                )
+            },
+            onJoinFriendRequested: { [weak self] friend in
+                self?.requestNativeFriendJoin(friend, roleToken: roleToken)
+            },
+            onSessionEnded: { [weak self] in
+                self?.liveShareDidEnd(roleToken: roleToken)
+            },
+            onMenuBarStatusChanged: { [weak self] status in
+                self?.updateLiveShareStatusIcon(status, roleToken: roleToken)
             }
-            isStartingLiveShare = true
-            defer { isStartingLiveShare = false }
-            guard !hasActiveLiveShareRole,
-                  recordingPresentationModel == nil,
-                  [.idle, .canceled, .failed, .preview].contains(recordingState.phase),
-                  !isPreparingCapture,
-                  !isPreparingForTermination else {
-                NSSound.beep()
-                return
-            }
-            let roleToken = UUID()
-            let coordinator = LiveShareCoordinator(
-                preferences: dependencies.liveSharePreferences,
-                nativeFriends: dependencies.nativeFriends,
-                serverEndpoint: dependencies.liveSharePreferences.serverEndpoint,
-                requestScreenRecordingPermission: { [weak self] in
-                    await self?.ensureLiveShareScreenRecordingPermission() ?? false
-                },
-                onJoinInviteRequested: { [weak self] invite in
-                    self?.transitionFromHostPreparationToViewer(
-                        invite: invite,
-                        roleToken: roleToken
-                    )
-                },
-                onJoinFriendRequested: { [weak self] friend in
-                    self?.requestNativeFriendJoin(friend, roleToken: roleToken)
-                },
-                onSessionEnded: { [weak self] in
-                    self?.liveShareDidEnd(roleToken: roleToken)
-                },
-                onMenuBarStatusChanged: { [weak self] status in
-                    self?.updateLiveShareStatusIcon(status, roleToken: roleToken)
-                }
-            )
-            liveShareCoordinator = coordinator
-            liveShareRoleToken = roleToken
-            installLiveSharePopover(model: coordinator.presentationModel)
-            updateLiveShareStatusIcon(.ready)
-            coordinator.start()
-            if let button = statusItem?.button {
-                popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
-                popover.contentViewController?.view.window?.makeKey()
-            }
+        )
+        liveShareCoordinator = coordinator
+        liveShareRoleToken = roleToken
+        installLiveSharePopover(model: coordinator.presentationModel)
+        updateLiveShareStatusIcon(.ready)
+        coordinator.start()
+
+        if popover.isShown {
+            popover.contentViewController?.view.window?.makeKey()
+        } else if let button = statusItem?.button {
+            popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+            popover.contentViewController?.view.window?.makeKey()
         }
     }
 

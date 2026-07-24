@@ -400,6 +400,23 @@ enum LiveShareCoordinatorPolicy {
         }
     }
 
+    /// Resolves a human-readable viewer label only from cryptographically
+    /// verified identity state. Route IDs remain the fallback for web viewers,
+    /// invite-only viewers, and contacts that are no longer trusted.
+    static func viewerDisplayName(
+        viewerID: String,
+        verifiedIdentity: ClipLiveShareIdentityPublicKey?,
+        friendRecords: [NativeFriendRecord]
+    ) -> String {
+        guard let verifiedIdentity,
+              let friend = friendRecords.first(where: {
+                  $0.identity == verifiedIdentity && $0.trustState == .trusted
+              }) else {
+            return viewerID
+        }
+        return friend.displayName
+    }
+
     static func permitsWindowShare(
         isAlreadyShared: Bool,
         hasFullscreenSource: Bool,

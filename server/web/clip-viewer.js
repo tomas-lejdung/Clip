@@ -108,7 +108,7 @@ window.__clipLiveShareAudioDiagnostics = Object.freeze({
   tracks: Object.freeze([]),
 });
 let showStats = false;
-let currentScale = "fit";
+let currentScale = "native";
 let accessCode = "";
 let pendingAuthChallenge = null;
 let audioTrack = null;

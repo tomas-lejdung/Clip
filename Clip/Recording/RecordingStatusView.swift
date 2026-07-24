@@ -2,10 +2,12 @@ import SwiftUI
 
 @MainActor
 struct RecordingStatusView: View {
+    static let contentSize = CGSize(width: 330, height: 235)
+
     @ObservedObject var model: RecordingPresentationModel
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
+        VStack(alignment: .leading, spacing: 12) {
             header
 
             VStack(spacing: 7) {
@@ -48,15 +50,16 @@ struct RecordingStatusView: View {
                 .background(.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 7))
             }
 
+            Divider()
+
             controls
         }
         .padding(14)
-        .frame(width: 310)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14))
-        .overlay {
-            RoundedRectangle(cornerRadius: 14)
-                .strokeBorder(.white.opacity(0.12))
-        }
+        .frame(
+            width: Self.contentSize.width,
+            height: Self.contentSize.height,
+            alignment: .topLeading
+        )
         .alert(
             String(localized: "Discard this recording?"),
             isPresented: cancelConfirmationBinding
@@ -75,28 +78,26 @@ struct RecordingStatusView: View {
     }
 
     private var header: some View {
-        HStack(spacing: 10) {
+        HStack(spacing: 8) {
             RecordingStateIndicator(phase: model.snapshot.phase)
 
-            VStack(alignment: .leading, spacing: 2) {
-                Text(stateTitle)
-                    .font(.headline)
-                    .accessibilityIdentifier("clip.recording.phase")
-
-                TimelineView(.periodic(from: .now, by: 0.1)) { _ in
-                    Text(model.elapsedText())
-                        .font(.system(.title3, design: .monospaced, weight: .semibold))
-                        .contentTransition(.numericText())
-                        .accessibilityLabel(
-                            String(
-                                localized: "Elapsed time: \(model.elapsedText())"
-                            )
-                        )
-                        .accessibilityIdentifier("clip.recording.elapsed")
-                }
-            }
+            Text(stateTitle)
+                .font(.headline)
+                .accessibilityIdentifier("clip.recording.phase")
 
             Spacer()
+
+            TimelineView(.periodic(from: .now, by: 0.1)) { _ in
+                Text(model.elapsedText())
+                    .font(.system(.title3, design: .monospaced, weight: .semibold))
+                    .contentTransition(.numericText())
+                    .accessibilityLabel(
+                        String(
+                            localized: "Elapsed time: \(model.elapsedText())"
+                        )
+                    )
+                    .accessibilityIdentifier("clip.recording.elapsed")
+            }
 
             if model.isPerformingAction || model.snapshot.phase == .finishing {
                 ProgressView()
@@ -107,7 +108,7 @@ struct RecordingStatusView: View {
     }
 
     private var controls: some View {
-        VStack(spacing: 8) {
+        VStack(spacing: 9) {
             HStack(spacing: 8) {
                 Button {
                     model.togglePauseResume()

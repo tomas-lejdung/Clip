@@ -1,6 +1,7 @@
 import AppKit
 import ClipCore
 import CoreGraphics
+import SwiftUI
 import XCTest
 @testable import Clip
 
@@ -121,6 +122,74 @@ final class MenuBarPopoverModelTests: XCTestCase {
 
         XCTAssertNil(cursorRegion.registeredCursor)
         XCTAssertNil(cursorRegion.hitTest(NSPoint(x: 20, y: 12)))
+    }
+
+    func testPopoverContentReplacementKeepsOneStableRootController() {
+        let container = PopoverContentContainerViewController()
+        container.loadView()
+        container.view.frame = NSRect(origin: .zero, size: MenuBarPopoverView.contentSize)
+        let stableRootView = container.view
+
+        let idle = NSViewController()
+        idle.view = NSView(frame: .zero)
+        container.replaceContent(with: idle, animated: false)
+
+        XCTAssertTrue(container.view === stableRootView)
+        XCTAssertTrue(container.currentContentViewController === idle)
+        XCTAssertTrue(idle.parent === container)
+        XCTAssertEqual(idle.view.frame, container.view.bounds)
+
+        let liveShare = NSViewController()
+        liveShare.view = NSView(frame: .zero)
+        container.view.frame.size = LiveSharePopoverView.contentSize
+        container.replaceContent(with: liveShare, animated: false)
+
+        XCTAssertTrue(container.view === stableRootView)
+        XCTAssertTrue(container.currentContentViewController === liveShare)
+        XCTAssertNil(idle.parent)
+        XCTAssertTrue(liveShare.parent === container)
+        XCTAssertTrue(liveShare.view.superview === container.view)
+        XCTAssertEqual(liveShare.view.frame, container.view.bounds)
+    }
+
+    func testIdleMenuContentSizeShowsTheWholeMenu() {
+        XCTAssertEqual(MenuBarPopoverView.contentSize.width, 330)
+        XCTAssertEqual(MenuBarPopoverView.contentSize.height, 620)
+
+        let model = MenuBarPopoverModel(
+            displays: [display(id: 1, name: "Studio Display", width: 5_120, height: 2_880)],
+            microphone: .init(),
+            systemAudio: .init(),
+            showClickHighlights: true,
+            recentRecordings: (0..<MenuBarPopoverModel.recentRecordingLimit).map { index in
+                MenuBarRecentRecordingRow(
+                    id: RecordingID(),
+                    filename: "clip-\(index)",
+                    byteCount: Int64(index + 1) * 1_000_000
+                )
+            },
+            isLastAreaAvailable: true,
+            isFullscreenAvailable: true
+        )
+        let controller = NSHostingController(
+            rootView: MenuBarPopoverView(
+                model: model,
+                actions: MenuBarActions(
+                    captureArea: {},
+                    lastArea: {},
+                    fullscreen: {},
+                    openHistory: {},
+                    openSettings: {},
+                    quit: {}
+                )
+            )
+        )
+        let fittingSize = controller.sizeThatFits(
+            in: NSSize(width: MenuBarPopoverView.contentSize.width, height: 10_000)
+        )
+
+        XCTAssertGreaterThan(fittingSize.height, 360)
+        XCTAssertLessThanOrEqual(fittingSize.height, MenuBarPopoverView.contentSize.height)
     }
 
     private func display(

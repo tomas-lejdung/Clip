@@ -1800,10 +1800,10 @@
       <!-- Main video area (Focus mode) -->
       <div id="main-video-container">
         <div class="pan-zoom-container" id="pan-zoom-container">
-          <div class="pan-zoom-content" id="pan-zoom-content">
+          <div class="pan-zoom-content native-mode" id="pan-zoom-content">
             <video
               id="main-video"
-              class="main-video scale-fit"
+              class="main-video scale-native"
               autoplay
               playsinline
               muted
@@ -1947,9 +1947,9 @@
         style="display: none"
       ></div>
       <div class="scale-selector">
-        <button class="scale-btn active" data-scale="fit">Fit</button>
+        <button class="scale-btn" data-scale="fit">Fit</button>
         <button class="scale-btn" data-scale="fill">Fill</button>
-        <button class="scale-btn" data-scale="native">Native</button>
+        <button class="scale-btn active" data-scale="native">Native</button>
       </div>
       <div class="control-divider"></div>
       <button class="control-btn" id="btn-stats" title="Stats (I)">

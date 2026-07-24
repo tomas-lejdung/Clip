@@ -840,6 +840,41 @@ struct LiveShareCoordinatorPolicyTests {
         #expect(LiveShareCoordinatorPolicy.viewerConnection(from: .closed) == .disconnected)
     }
 
+    @Test("viewer labels use only a verified, currently trusted friend's saved name")
+    func viewerDisplayNameTrustPolicy() {
+        let signer = NativeDeviceIdentitySigner()
+        let trusted = NativeFriendRecord(
+            identity: signer.publicKey,
+            displayName: "Alex",
+            deviceName: "Alex’s Mac",
+            endpoint: .localDevelopment,
+            rendezvousID: .random()
+        )
+        var blocked = trusted
+        blocked.trustState = .blocked
+
+        #expect(LiveShareCoordinatorPolicy.viewerDisplayName(
+            viewerID: "viewer-4F8A",
+            verifiedIdentity: signer.publicKey,
+            friendRecords: [trusted]
+        ) == "Alex")
+        #expect(LiveShareCoordinatorPolicy.viewerDisplayName(
+            viewerID: "viewer-4F8A",
+            verifiedIdentity: nil,
+            friendRecords: [trusted]
+        ) == "viewer-4F8A")
+        #expect(LiveShareCoordinatorPolicy.viewerDisplayName(
+            viewerID: "viewer-4F8A",
+            verifiedIdentity: signer.publicKey,
+            friendRecords: [blocked]
+        ) == "viewer-4F8A")
+        #expect(LiveShareCoordinatorPolicy.viewerDisplayName(
+            viewerID: "viewer-4F8A",
+            verifiedIdentity: NativeDeviceIdentitySigner().publicKey,
+            friendRecords: [trusted]
+        ) == "viewer-4F8A")
+    }
+
     @Test("menu-bar status distinguishes session health without exposing transient phases")
     func menuBarStatus() {
         #expect(LiveShareCoordinatorPolicy.menuBarStatus(for: .ready) == .ready)

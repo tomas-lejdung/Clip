@@ -5776,8 +5776,15 @@ final class LiveShareCoordinator {
         }
         let viewerSnapshots = peerHost?.viewerSnapshots ?? []
         let viewers = viewerSnapshots.map { viewer in
-            LiveShareViewerViewSnapshot(
+            let verifiedIdentity = nativeControlViewerIdentities[viewer.viewerID]
+                ?? nativeAdmittedViewerIdentities[viewer.viewerID]
+            return LiveShareViewerViewSnapshot(
                 id: viewer.viewerID,
+                displayName: LiveShareCoordinatorPolicy.viewerDisplayName(
+                    viewerID: viewer.viewerID,
+                    verifiedIdentity: verifiedIdentity,
+                    friendRecords: nativeFriends.book.records
+                ),
                 connection: LiveShareCoordinatorPolicy.viewerConnection(
                     from: viewer.connectionState,
                     route: viewer.route

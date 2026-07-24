@@ -230,6 +230,8 @@ struct MenuBarActions {
 }
 
 struct MenuBarPopoverView: View {
+    static let contentSize = CGSize(width: 330, height: 620)
+
     @StateObject private var model: MenuBarPopoverModel
     let actions: MenuBarActions
 
@@ -270,7 +272,7 @@ struct MenuBarPopoverView: View {
             footer
         }
         .padding(14)
-        .frame(width: 330)
+        .frame(width: Self.contentSize.width)
         .fixedSize(horizontal: false, vertical: true)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("clip.menuBarPopover")
@@ -356,10 +358,10 @@ struct MenuBarPopoverView: View {
                             .foregroundStyle(.secondary)
                     }
                     .contentShape(Rectangle())
+                    .padding(.vertical, 5)
+                    .modifier(MenuRowHoverEffect())
                 }
                 .buttonStyle(.plain)
-                .padding(.vertical, 5)
-                .modifier(MenuRowHoverEffect())
                 .accessibilityLabel("\(display.name), \(display.resolution)")
                 .accessibilityIdentifier("clip.menu.display.\(display.id)")
             }
@@ -463,10 +465,10 @@ struct MenuBarPopoverView: View {
                             .foregroundStyle(.secondary)
                     }
                     .contentShape(Rectangle())
+                    .padding(.vertical, 4)
+                    .modifier(MenuRowHoverEffect())
                 }
                 .buttonStyle(.plain)
-                .padding(.vertical, 4)
-                .modifier(MenuRowHoverEffect())
                 .accessibilityLabel("Open \(recording.filename), \(recording.formattedByteCount)")
                 .accessibilityIdentifier("clip.menu.recent.\(recording.id.description)")
             }
@@ -512,10 +514,10 @@ struct MenuBarPopoverView: View {
             Label(title, systemImage: systemImage)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .contentShape(Rectangle())
+                .padding(.vertical, 5)
+                .modifier(MenuRowHoverEffect())
         }
         .buttonStyle(.plain)
-        .padding(.vertical, 5)
-        .modifier(MenuRowHoverEffect())
         .accessibilityIdentifier(identifier)
     }
 

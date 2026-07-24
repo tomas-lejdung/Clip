@@ -152,7 +152,7 @@ final class DeterministicUIScenarioCoordinator {
 
         popover.behavior = .applicationDefined
         popover.animates = false
-        popover.contentSize = NSSize(width: 330, height: 620)
+        popover.contentSize = MenuBarPopoverView.contentSize
         popover.contentViewController = NSHostingController(
             rootView: wrapped(
                 MenuBarPopoverView(
@@ -748,6 +748,7 @@ enum DeterministicLiveShareDemo {
     private static let viewers = [
         LiveShareViewerViewSnapshot(
             id: "viewer-4F8A",
+            displayName: "Alex",
             connection: .peerToPeer,
             connectedDuration: 84
         ),
