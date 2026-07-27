@@ -137,6 +137,8 @@ struct NativeViewerWindowControllerTests {
         #expect(controller.window?.collectionBehavior.contains(.fullScreenPrimary) == true)
         #expect(controller.window?.tabbingMode == .disallowed)
         #expect(controller.content.isFlipped == false)
+        #expect(controller.scaleMode == .actualPixels)
+        #expect(controller.content.zoomPercentage == 100)
     }
 
     @Test("Native mode keeps a 100 percent surface and crops it inside a small viewport")
@@ -173,6 +175,50 @@ struct NativeViewerWindowControllerTests {
         #expect(video.frame.size == CGSize(width: 1_000, height: 500))
         #expect(video.frame.origin == CGPoint(x: -200, y: -100))
         #expect(content.zoomPercentage == 100)
+    }
+
+    @Test("Native cursor pan lands the rendered surface on Retina backing pixels")
+    func nativeCursorPanSnapsToRetinaBackingGrid() {
+        let backingScale: CGFloat = 2
+        let video = NSView()
+        let content = NativeViewerContentView(videoView: video, identityColor: .systemPink)
+        content.layer?.contentsScale = backingScale
+        let source = NativeViewerSourceSnapshot(
+            sourceInstanceID: "source-odd",
+            streamID: "video0",
+            applicationName: "Fixture",
+            windowName: "Odd Width",
+            pixelSize: CGSize(width: 2_310, height: 1_222),
+            sourcePointSize: CGSize(width: 2_311, height: 1_222),
+            isFocused: true,
+            isConnected: true,
+            stateRevision: 1,
+            mode: .manual
+        )
+        content.frame = CGRect(
+            x: 0,
+            y: 0,
+            width: 1_200 + NativeViewerContentView.horizontalChrome,
+            height: 700 + NativeViewerContentView.verticalChrome
+        )
+        content.update(
+            ownerName: "Friend",
+            source: source,
+            identityColor: .systemPink,
+            resolvedSourceLogicalSize: CGSize(width: 2_311, height: 1_222)
+        )
+        content.setScaleMode(.actualPixels)
+        content.setCursor(normalizedX: 0.371, normalizedY: 0.619)
+        content.layoutSubtreeIfNeeded()
+
+        #expect(video.frame.origin.x * backingScale
+            == (video.frame.origin.x * backingScale).rounded())
+        #expect(video.frame.origin.y * backingScale
+            == (video.frame.origin.y * backingScale).rounded())
+        #expect(video.frame.minX <= 0)
+        #expect(video.frame.minY <= 0)
+        #expect(video.frame.maxX >= content.videoViewportFrame.width)
+        #expect(video.frame.maxY >= content.videoViewportFrame.height)
     }
 
     @Test("Reset sizing clamps the complete viewer window into the visible screen")

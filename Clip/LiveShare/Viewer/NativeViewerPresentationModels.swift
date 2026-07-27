@@ -129,7 +129,7 @@ struct NativeViewerViewSnapshot: Equatable, Sendable {
         systemAudioAvailable: Bool = false,
         systemAudioEnabled: Bool = true,
         volume: Double = 1,
-        scaleMode: NativeViewerScaleMode = .automatic,
+        scaleMode: NativeViewerScaleMode = .actualPixels,
         friendship: NativeViewerFriendshipState = .unavailable,
         statistics: NativeViewerStatisticsSnapshot = .init()
     ) {

@@ -351,7 +351,7 @@ final class NativeLiveShareViewerCoordinator {
     private var hostSystemAudioEnabled = false
     private var systemAudioEnabled = true
     private var volume = 1.0
-    private var scaleMode = NativeViewerScaleMode.automatic
+    private var scaleMode = NativeViewerScaleMode.actualPixels
     private var latestStatistics = NativeViewerStatisticsSnapshot()
     private var priorStatistics: WebRTCInboundStatisticsSnapshot?
     private var isEnding = false

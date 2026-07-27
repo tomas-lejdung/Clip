@@ -221,6 +221,57 @@ extension NativeMediaResourceTests {
             }
             fixture.host.close()
         }
+
+        @Test("Odd decoded width stays on the Retina backing-pixel grid")
+        @MainActor
+        func oddDecodedWidthUsesExactRetinaScale() async throws {
+            let decodedSize = CGSize(width: 2_310, height: 1_222)
+            let logicalPresentationSize = CGSize(width: 2_311, height: 1_222)
+            let retinaBackingScale: CGFloat = 2
+            let expectedPixelsPerDecodedPixel: CGFloat = 2
+            let view = WebRTCRemoteVideoView(frame: CGRect(
+                origin: .zero,
+                size: logicalPresentationSize
+            ))
+            defer { view.teardown() }
+            view.layer?.contentsScale = retinaBackingScale
+
+            let metalView = try #require(view.subviews.first as? RTCMTLNSVideoView)
+            view.videoView(metalView, didChangeVideoSize: decodedSize)
+            for _ in 0 ..< 10 where view.decodedPixelSize != decodedSize {
+                await Task.yield()
+            }
+            view.layoutSubtreeIfNeeded()
+
+            // The host's 2,311-point width describes presentation, while the
+            // codec's 2,310-pixel width is the render truth after the required
+            // even crop. Preserve the logical wrapper but center an exact 2x
+            // decoded surface instead of fractionally stretching it to 4,622
+            // Retina backing pixels.
+            #expect(view.bounds.size == logicalPresentationSize)
+            #expect(metalView.frame == CGRect(
+                x: 0.5,
+                y: 0,
+                width: decodedSize.width,
+                height: decodedSize.height
+            ))
+            let renderedBackingSize = CGSize(
+                width: metalView.frame.width * retinaBackingScale,
+                height: metalView.frame.height * retinaBackingScale
+            )
+            #expect(renderedBackingSize == CGSize(
+                width: decodedSize.width * expectedPixelsPerDecodedPixel,
+                height: decodedSize.height * expectedPixelsPerDecodedPixel
+            ))
+            #expect(
+                metalView.frame.minX * retinaBackingScale
+                    == (metalView.frame.minX * retinaBackingScale).rounded()
+            )
+            #expect(
+                metalView.frame.minY * retinaBackingScale
+                    == (metalView.frame.minY * retinaBackingScale).rounded()
+            )
+        }
     }
 }
 
