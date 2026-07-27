@@ -1,4 +1,4 @@
-# Clip WebRTC M150 native-color artifact 2
+# Clip WebRTC M150 native-color artifact 3
 
 This dependency release contains Clip's macOS arm64 WebRTC M150 XCFramework.
 It is built from upstream commit
@@ -9,7 +9,7 @@ It is built from upstream commit
 
 - Asset: `WebRTC-150.0.0-clip-native-color-macos-arm64.xcframework.zip`
 - SwiftPM/archive SHA-256:
-  `a4d8b211049ac38074d9120e0f1eec87625118e29e835b9bea40f7dcab9abbe9`
+  `07807d9d8f246da5b6eebbb62cc1acfeb594b2974c62e47cb36bdd03f5256d5a`
 - Source patch SHA-256:
   `e58f6bc5f0dda361000081d6868ca1cf0a791a48576f92b850a1f5df6820cb6a`
 - Framework executable SHA-256:
@@ -20,5 +20,6 @@ It is built from upstream commit
   `5b08f62df6d3d7cf1191586b30386055596a1971d4d5fad8974e496096ff4e07`
 
 The generated license bundle contains WebRTC and all 23 linked third-party
-library notices. This is an application dependency release, not a Clip app
-release, and must not be marked as GitHub's latest release.
+library notices. The ZIP excludes macOS resource-fork metadata so SwiftPM
+resolves exactly one framework. This is an application dependency release, not
+a Clip app release, and must not be marked as GitHub's latest release.
