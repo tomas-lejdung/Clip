@@ -12,6 +12,7 @@
 		B00000000000000000000003 /* ApplicationCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = F00000000000000000000003 /* ApplicationCoordinator.swift */; };
 		A8D100000000000000000001 /* DeterministicUIScenarioCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = A8D200000000000000000001 /* DeterministicUIScenarioCoordinator.swift */; };
 		E7B100000000000000000001 /* UnattendedCaptureSmokeCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = E7F200000000000000000001 /* UnattendedCaptureSmokeCoordinator.swift */; };
+		E8B100000000000000000001 /* UnattendedCursorCaptureRegressionCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = E8F200000000000000000001 /* UnattendedCursorCaptureRegressionCoordinator.swift */; };
 		B00000000000000000000004 /* MenuBarPopoverView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F00000000000000000000004 /* MenuBarPopoverView.swift */; };
 		B00000000000000000000005 /* ServiceInterfaces.swift in Sources */ = {isa = PBXBuildFile; fileRef = F00000000000000000000005 /* ServiceInterfaces.swift */; };
 		B00000000000000000000006 /* LiveServices.swift in Sources */ = {isa = PBXBuildFile; fileRef = F00000000000000000000006 /* LiveServices.swift */; };
@@ -147,6 +148,8 @@
 		F00000000000000000000003 /* ApplicationCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ApplicationCoordinator.swift; sourceTree = "<group>"; };
 		A8D200000000000000000001 /* DeterministicUIScenarioCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeterministicUIScenarioCoordinator.swift; sourceTree = "<group>"; };
 		E7F200000000000000000001 /* UnattendedCaptureSmokeCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UnattendedCaptureSmokeCoordinator.swift; sourceTree = "<group>"; };
+		E8F200000000000000000001 /* UnattendedCursorCaptureRegressionCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UnattendedCursorCaptureRegressionCoordinator.swift; sourceTree = "<group>"; };
+		E9F100000000000000000001 /* README.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = README.md; sourceTree = "<group>"; };
 		F00000000000000000000004 /* MenuBarPopoverView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MenuBarPopoverView.swift; sourceTree = "<group>"; };
 		F00000000000000000000005 /* ServiceInterfaces.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServiceInterfaces.swift; sourceTree = "<group>"; };
 		F00000000000000000000006 /* LiveServices.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveServices.swift; sourceTree = "<group>"; };
@@ -312,6 +315,7 @@
 			isa = PBXGroup;
 			children = (
 				G00000000000000000000003 /* App */,
+				E9G100000000000000000001 /* Diagnostics */,
 				L2G100000000000000000001 /* LiveShare */,
 				G10000000000000000000001 /* Capture */,
 				G10000000000000000000002 /* Recording */,
@@ -337,9 +341,26 @@
 				F00000000000000000000003 /* ApplicationCoordinator.swift */,
 				U1F100000000000000000001 /* ApplicationUpdater.swift */,
 				A8D200000000000000000001 /* DeterministicUIScenarioCoordinator.swift */,
-				E7F200000000000000000001 /* UnattendedCaptureSmokeCoordinator.swift */,
 			);
 			path = App;
+			sourceTree = "<group>";
+		};
+		E9G100000000000000000001 /* Diagnostics */ = {
+			isa = PBXGroup;
+			children = (
+				E9F100000000000000000001 /* README.md */,
+				E9G100000000000000000002 /* UnattendedCapture */,
+			);
+			path = Diagnostics;
+			sourceTree = "<group>";
+		};
+		E9G100000000000000000002 /* UnattendedCapture */ = {
+			isa = PBXGroup;
+			children = (
+				E7F200000000000000000001 /* UnattendedCaptureSmokeCoordinator.swift */,
+				E8F200000000000000000001 /* UnattendedCursorCaptureRegressionCoordinator.swift */,
+			);
+			path = UnattendedCapture;
 			sourceTree = "<group>";
 		};
 		G00000000000000000000004 /* UI */ = {
@@ -835,6 +856,7 @@
 				B00000000000000000000003 /* ApplicationCoordinator.swift in Sources */,
 				A8D100000000000000000001 /* DeterministicUIScenarioCoordinator.swift in Sources */,
 				E7B100000000000000000001 /* UnattendedCaptureSmokeCoordinator.swift in Sources */,
+				E8B100000000000000000001 /* UnattendedCursorCaptureRegressionCoordinator.swift in Sources */,
 				B00000000000000000000004 /* MenuBarPopoverView.swift in Sources */,
 				B00000000000000000000005 /* ServiceInterfaces.swift in Sources */,
 				B00000000000000000000006 /* LiveServices.swift in Sources */,

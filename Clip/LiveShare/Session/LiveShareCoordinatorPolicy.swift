@@ -27,6 +27,7 @@ enum LiveShareCoordinatorPolicy {
         codec: LiveShareVideoCodec,
         colorMode: LiveShareColorMode = .compatibleRec709,
         showsCursor: Bool = true,
+        captureResolution: CaptureVideoResolution = .best,
         sourceRect: CGRect? = nil
     ) -> CaptureVideoConfiguration {
         CaptureVideoConfiguration(
@@ -36,7 +37,26 @@ enum LiveShareCoordinatorPolicy {
             showsCursor: showsCursor,
             showsClickHighlights: false,
             sourceRect: sourceRect,
-            pixelFormat: capturePixelFormat(codec: codec, colorMode: colorMode)
+            pixelFormat: capturePixelFormat(codec: codec, colorMode: colorMode),
+            captureResolution: captureResolution
+        )
+    }
+
+    /// Capture discovery supplies both point and pixel geometry. The shared
+    /// policy contains the full 1×/2× matrix and preserves `contentScale = 1`.
+    /// Live Share rebuilds the source when this ratio changes as a window moves
+    /// between displays.
+    static func windowCaptureResolution(
+        sourcePixelWidth: Int,
+        sourcePixelHeight: Int,
+        sourcePointWidth: Int,
+        sourcePointHeight: Int
+    ) -> CaptureVideoResolution {
+        CaptureVideoResolutionPolicy.nativeScale(
+            sourcePixelWidth: sourcePixelWidth,
+            sourcePixelHeight: sourcePixelHeight,
+            sourcePointWidth: sourcePointWidth,
+            sourcePointHeight: sourcePointHeight
         )
     }
 

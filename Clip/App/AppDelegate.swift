@@ -166,15 +166,56 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         arguments: ProcessInfo.processInfo.arguments,
         environment: ProcessInfo.processInfo.environment
     )
+    private let unattendedCursorCaptureRegressionLaunch =
+        UnattendedCursorCaptureRegressionLaunch.resolve(
+            arguments: ProcessInfo.processInfo.arguments,
+            environment: ProcessInfo.processInfo.environment
+        )
     private var coordinator: ApplicationCoordinator?
     private var deterministicUIScenarioCoordinator: DeterministicUIScenarioCoordinator?
     private var unattendedCaptureSmokeCoordinator: UnattendedCaptureSmokeCoordinator?
+    private var unattendedCursorCaptureRegressionCoordinator:
+        UnattendedCursorCaptureRegressionCoordinator?
     private var applicationUpdater: SparkleApplicationUpdater?
     private let terminationCoordinator = ApplicationTerminationCoordinator()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         guard !HostedUnitTestDetection.shouldSuppressNormalAppStartup() else {
             ClipLog.lifecycle.info("Production application startup suppressed for hosted unit tests")
+            return
+        }
+
+        if ControlledCaptureLaunchConflictPolicy.conflicts(
+            smoke: unattendedCaptureSmokeLaunch,
+            cursorRegression: unattendedCursorCaptureRegressionLaunch
+        ) {
+            finishUnattendedCursorCaptureRegression(
+                invalidCursorCaptureRegressionReport(
+                    failure: "Only one controlled capture mode may run at a time."
+                )
+            )
+            return
+        }
+
+        switch unattendedCursorCaptureRegressionLaunch {
+        case .none:
+            break
+        case .invalid:
+            finishUnattendedCursorCaptureRegression(
+                invalidCursorCaptureRegressionReport(
+                    failure: "The unattended cursor regression flags or environment guard were invalid."
+                )
+            )
+            return
+        case let .run(request):
+            let coordinator = UnattendedCursorCaptureRegressionCoordinator(
+                request: request,
+                completion: { [weak self] report in
+                    self?.finishUnattendedCursorCaptureRegression(report)
+                }
+            )
+            unattendedCursorCaptureRegressionCoordinator = coordinator
+            coordinator.start()
             return
         }
 
@@ -243,6 +284,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        if let unattendedCursorCaptureRegressionCoordinator {
+            unattendedCursorCaptureRegressionCoordinator.stop()
+            self.unattendedCursorCaptureRegressionCoordinator = nil
+            return .terminateNow
+        }
         if let unattendedCaptureSmokeCoordinator {
             unattendedCaptureSmokeCoordinator.stop()
             self.unattendedCaptureSmokeCoordinator = nil
@@ -270,6 +316,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         terminationCoordinator.cancel()
+        unattendedCursorCaptureRegressionCoordinator?.stop()
+        unattendedCursorCaptureRegressionCoordinator = nil
         unattendedCaptureSmokeCoordinator?.stop()
         unattendedCaptureSmokeCoordinator = nil
         deterministicUIScenarioCoordinator?.stop()
@@ -289,6 +337,43 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         unattendedCaptureSmokeCoordinator = nil
         NSApp.terminate(nil)
+    }
+
+    private func finishUnattendedCursorCaptureRegression(
+        _ report: UnattendedCursorCaptureRegressionReport
+    ) {
+        do {
+            FileHandle.standardOutput.write(try report.encoded())
+            try? FileHandle.standardOutput.synchronize()
+        } catch {
+            let message = "Clip cursor regression could not encode its report: \(error)\n"
+            FileHandle.standardError.write(Data(message.utf8))
+        }
+        unattendedCursorCaptureRegressionCoordinator = nil
+        NSApp.terminate(nil)
+    }
+
+    private func invalidCursorCaptureRegressionReport(
+        failure: String
+    ) -> UnattendedCursorCaptureRegressionReport {
+        UnattendedCursorCaptureRegressionReport(
+            protocolVersion: 1,
+            status: "failed",
+            scope: "none; launch guard rejected the request",
+            screenPermissionWasPreauthorized: false,
+            selectedDisplay: nil,
+            activeDisplays: [],
+            hasMixedScaleTopology: false,
+            originalCursorPosition: nil,
+            restoredCursorPosition: nil,
+            cursorRestoreDistance: nil,
+            artifactDirectoryPath: nil,
+            artifactFileNames: [],
+            observations: [],
+            phaseSummaries: [],
+            comparison: nil,
+            failure: failure
+        )
     }
 
     private func presentStartupFailure(_ error: any Error) {

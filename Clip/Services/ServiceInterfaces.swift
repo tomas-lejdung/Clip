@@ -1,3 +1,4 @@
+import ClipCapture
 import ClipCore
 import ClipMedia
 import CoreGraphics
@@ -10,6 +11,7 @@ struct PreparedCaptureTarget: Equatable, Sendable {
     let sourceRect: CGRect?
     let outputWidth: Int
     let outputHeight: Int
+    let captureResolution: CaptureVideoResolution
     /// When non-nil, native capture includes only this application's windows.
     let includedApplicationBundleIdentifier: String?
 
@@ -19,6 +21,7 @@ struct PreparedCaptureTarget: Equatable, Sendable {
         sourceRect: CGRect?,
         outputWidth: Int,
         outputHeight: Int,
+        captureResolution: CaptureVideoResolution = .best,
         includedApplicationBundleIdentifier: String? = nil
     ) {
         self.domainTarget = domainTarget
@@ -26,6 +29,7 @@ struct PreparedCaptureTarget: Equatable, Sendable {
         self.sourceRect = sourceRect
         self.outputWidth = outputWidth
         self.outputHeight = outputHeight
+        self.captureResolution = captureResolution
         self.includedApplicationBundleIdentifier = includedApplicationBundleIdentifier
     }
 }

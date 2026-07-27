@@ -360,6 +360,16 @@ struct ScreenRecorderContentFilterTests {
         #expect(configuration.excludesCurrentProcessAudio)
     }
 
+    @Test("Recording request carries its source-aware capture resolution")
+    func sourceAwareCaptureResolution() {
+        var selected = request(included: "com.openai.codex")
+        selected.captureResolution = .nominal
+
+        let configuration = ScreenStreamConfigurationFactory.make(for: selected)
+
+        #expect(configuration.captureResolution == .nominal)
+    }
+
     @Test("Synthetic self-capture can include only the current process's test audio")
     func syntheticSelfAudioConfiguration() {
         var selected = request(included: "com.tomaslejdung.clip")

@@ -235,6 +235,7 @@ final class NativeCaptureService: CaptureServicing {
             sourceRect: preparedTarget.sourceRect,
             excludedBundleIdentifier: ApplicationDirectories.bundleIdentifier,
             includedApplicationBundleIdentifier: preparedTarget.includedApplicationBundleIdentifier,
+            captureResolution: preparedTarget.captureResolution,
             outputURL: outputURL,
             configuration: configuration
         )

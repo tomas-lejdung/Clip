@@ -40,6 +40,18 @@ public enum CaptureVideoPixelFormat: Equatable, Sendable {
     case rec709FullRange
 }
 
+/// The resolution ScreenCaptureKit uses when rasterizing independent windows.
+public enum CaptureVideoResolution: Equatable, Sendable {
+    /// Let ScreenCaptureKit choose a resolution.
+    case automatic
+
+    /// Rasterize at the highest active display scale.
+    case best
+
+    /// Rasterize at one pixel per source point.
+    case nominal
+}
+
 public struct CaptureVideoConfiguration: Equatable, Sendable {
     public var width: Int
     public var height: Int
@@ -48,6 +60,8 @@ public struct CaptureVideoConfiguration: Equatable, Sendable {
     public var showsClickHighlights: Bool
     public var sourceRect: CGRect?
     public var pixelFormat: CaptureVideoPixelFormat
+    public var scalesToFit: Bool
+    public var captureResolution: CaptureVideoResolution
 
     public init(
         width: Int,
@@ -56,7 +70,9 @@ public struct CaptureVideoConfiguration: Equatable, Sendable {
         showsCursor: Bool = true,
         showsClickHighlights: Bool = false,
         sourceRect: CGRect? = nil,
-        pixelFormat: CaptureVideoPixelFormat = .bgra
+        pixelFormat: CaptureVideoPixelFormat = .bgra,
+        scalesToFit: Bool = true,
+        captureResolution: CaptureVideoResolution = .best
     ) {
         self.width = max(1, width)
         self.height = max(1, height)
@@ -65,6 +81,8 @@ public struct CaptureVideoConfiguration: Equatable, Sendable {
         self.showsClickHighlights = showsClickHighlights
         self.sourceRect = sourceRect
         self.pixelFormat = pixelFormat
+        self.scalesToFit = scalesToFit
+        self.captureResolution = captureResolution
     }
 }
 

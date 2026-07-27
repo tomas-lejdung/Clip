@@ -1,4 +1,5 @@
 import AppKit
+import ClipCapture
 import ClipCore
 import ClipMedia
 import CoreGraphics
@@ -36,6 +37,7 @@ struct CaptureSelectionAdapterTests {
         #expect(prepared.sourceRect == CGRect(x: 100, y: 200, width: 400, height: 200))
         #expect(prepared.outputWidth == 800)
         #expect(prepared.outputHeight == 400)
+        #expect(prepared.captureResolution == .best)
         guard case let .region(selection) = prepared.domainTarget else {
             Issue.record("Expected a region target")
             return
@@ -183,6 +185,7 @@ struct CaptureSelectionAdapterTests {
         #expect(prepared.sourceRect == nil)
         #expect(prepared.outputWidth == 3_024)
         #expect(prepared.outputHeight == 1_964)
+        #expect(prepared.captureResolution == .best)
         guard case let .fullscreen(displayID) = prepared.domainTarget else {
             Issue.record("Expected a fullscreen target")
             return
@@ -201,6 +204,28 @@ struct CaptureSelectionAdapterTests {
 
         #expect(prepared.outputWidth == 2_000)
         #expect(prepared.outputHeight == 1_000)
+    }
+
+    @Test("Capture resolution follows each display's native backing scale")
+    func selectsNativeCaptureResolution() throws {
+        let external = makeDisplay(
+            pointSize: CGSize(width: 1_920, height: 1_080),
+            pixelSize: CGSize(width: 1_920, height: 1_080)
+        )
+        let retina = makeDisplay(
+            pointSize: CGSize(width: 1_512, height: 982),
+            pixelSize: CGSize(width: 3_024, height: 1_964)
+        )
+
+        let externalTarget = try CaptureSelectionAdapter.preparedTarget(
+            from: .fullscreen(external)
+        )
+        let retinaTarget = try CaptureSelectionAdapter.preparedTarget(
+            from: .fullscreen(retina)
+        )
+
+        #expect(externalTarget.captureResolution == .nominal)
+        #expect(retinaTarget.captureResolution == .best)
     }
 
     @Test("Adapter rejects empty display bounds and non-positive output pixels")
@@ -295,6 +320,7 @@ struct CaptureSelectionAdapterTests {
         #expect(prepared.sourceRect == selection.sourceRectangleInDisplayPoints)
         #expect(prepared.outputWidth == 1_000)
         #expect(prepared.outputHeight == 800)
+        #expect(prepared.captureResolution == .best)
         #expect(prepared.includedApplicationBundleIdentifier == "com.apple.Safari")
         guard case let .application(target) = prepared.domainTarget else {
             Issue.record("Expected an application target")

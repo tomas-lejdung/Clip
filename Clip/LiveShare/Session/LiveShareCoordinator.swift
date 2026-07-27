@@ -3972,6 +3972,7 @@ final class LiveShareCoordinator {
         let appName: String
         let sourcePointWidth: Int
         let sourcePointHeight: Int
+        let captureResolution: CaptureVideoResolution
 
         switch source {
         case let .window(windowSource):
@@ -3982,6 +3983,13 @@ final class LiveShareCoordinator {
             height = window.pixelHeight
             sourcePointWidth = window.capturePointWidth
             sourcePointHeight = window.capturePointHeight
+            captureResolution = LiveShareCoordinatorPolicy
+                .windowCaptureResolution(
+                    sourcePixelWidth: width,
+                    sourcePixelHeight: height,
+                    sourcePointWidth: sourcePointWidth,
+                    sourcePointHeight: sourcePointHeight
+                )
             target = .window(id: window.id)
             windowName = windowSource.windowName
             appName = windowSource.appName
@@ -3995,6 +4003,7 @@ final class LiveShareCoordinator {
             height = display.pixelHeight
             sourcePointWidth = max(1, Int(display.frame.width.rounded()))
             sourcePointHeight = max(1, Int(display.frame.height.rounded()))
+            captureResolution = .best
             target = .display(
                 id: display.id,
                 excludedBundleIdentifier: ApplicationDirectories.bundleIdentifier
@@ -4044,7 +4053,8 @@ final class LiveShareCoordinator {
                 framesPerSecond: settings.frameRate.rawValue,
                 codec: settings.videoCodec,
                 colorMode: settings.colorMode,
-                showsCursor: slot.isFocused
+                showsCursor: slot.isFocused,
+                captureResolution: captureResolution
             ),
             stream: stream
         )
@@ -4550,6 +4560,7 @@ final class LiveShareCoordinator {
                 codec: codec,
                 colorMode: settings.colorMode,
                 showsCursor: descriptor.video.showsCursor,
+                captureResolution: descriptor.video.captureResolution,
                 sourceRect: descriptor.video.sourceRect
             ),
             stream: try! ClipLiveShareStreamDescriptor(
@@ -5022,7 +5033,11 @@ final class LiveShareCoordinator {
                 )?.bundleURL?.path
                 guard let descriptor = captureDescriptors[source.id],
                       descriptor.sourcePixelWidth != window.pixelWidth
-                        || descriptor.sourcePixelHeight != window.pixelHeight else {
+                        || descriptor.sourcePixelHeight != window.pixelHeight
+                        || descriptor.stream.sourcePointWidth
+                            != window.capturePointWidth
+                        || descriptor.stream.sourcePointHeight
+                            != window.capturePointHeight else {
                     continue
                 }
                 await restartSourceForGeometryChange(

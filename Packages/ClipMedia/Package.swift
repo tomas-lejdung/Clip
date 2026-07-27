@@ -14,8 +14,16 @@ let package = Package(
             targets: ["ClipMediaPerformanceBenchmark"]
         ),
     ],
+    dependencies: [
+        .package(path: "../ClipCapture"),
+    ],
     targets: [
-        .target(name: "ClipMedia"),
+        .target(
+            name: "ClipMedia",
+            dependencies: [
+                .product(name: "ClipCapture", package: "ClipCapture"),
+            ]
+        ),
         .executableTarget(
             name: "ClipMediaPerformanceBenchmark",
             dependencies: ["ClipMedia"],

@@ -1,4 +1,5 @@
 import AppKit
+import ClipCapture
 import ClipCore
 import ClipMedia
 import Foundation
@@ -380,6 +381,7 @@ struct LivePlatformServicesTests {
 
         #expect(recorder.lastRequest?.configuration.videoQuality == 0.73)
         #expect(recorder.lastRequest?.configuration.showsClickHighlights == true)
+        #expect(recorder.lastRequest?.captureResolution == .best)
         await service.cancel()
     }
 

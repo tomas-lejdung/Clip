@@ -1,6 +1,5 @@
 import AppKit
 import ClipLiveShare
-import MetalKit
 @preconcurrency import WebRTC
 
 enum WebRTCRemoteVideoGeometry {
@@ -134,7 +133,6 @@ public final class WebRTCRemoteVideoView: NSView, RTCVideoViewDelegate {
 
     public override func viewDidChangeBackingProperties() {
         super.viewDidChangeBackingProperties()
-        configureVideoSampling()
         needsLayout = true
     }
 
@@ -195,7 +193,6 @@ public final class WebRTCRemoteVideoView: NSView, RTCVideoViewDelegate {
         layer?.backgroundColor = NSColor.black.cgColor
         videoView.delegate = self
         addSubview(videoView)
-        configureVideoSampling()
         layoutVideoView()
     }
 
@@ -208,7 +205,6 @@ public final class WebRTCRemoteVideoView: NSView, RTCVideoViewDelegate {
     }
 
     private func layoutVideoView() {
-        configureVideoSampling()
         guard bounds.width > 0, bounds.height > 0 else {
             videoView.frame = .zero
             return
@@ -222,33 +218,6 @@ public final class WebRTCRemoteVideoView: NSView, RTCVideoViewDelegate {
             in: bounds,
             backingScale: effectiveBackingScale
         )
-    }
-
-    /// WebRTC normally resizes its Metal drawable with the AppKit view and
-    /// linearly resamples the I420 textures inside its shader. Keeping that
-    /// drawable at the decoded frame size moves presentation scaling to Core
-    /// Animation: magnification can remain pixel-sharp while minification
-    /// continues to use a filtered RGB result.
-    private func configureVideoSampling() {
-        configureVideoSampling(in: videoView)
-    }
-
-    private func configureVideoSampling(in view: NSView) {
-        view.layer?.magnificationFilter = .nearest
-        view.layer?.minificationFilter = .linear
-        if let metalView = view as? MTKView,
-           decodedPixelSize.width > 0,
-           decodedPixelSize.height > 0 {
-            if metalView.autoResizeDrawable {
-                metalView.autoResizeDrawable = false
-            }
-            if metalView.drawableSize != decodedPixelSize {
-                metalView.drawableSize = decodedPixelSize
-            }
-        }
-        for subview in view.subviews {
-            configureVideoSampling(in: subview)
-        }
     }
 
     private var effectiveBackingScale: CGFloat {

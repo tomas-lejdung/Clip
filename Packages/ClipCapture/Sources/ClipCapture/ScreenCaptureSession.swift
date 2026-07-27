@@ -182,11 +182,18 @@ public final class ScreenCaptureSession: NSObject, @unchecked Sendable {
             configuration.colorMatrix = CGDisplayStream.yCbCrMatrix_ITU_R_709_2
             configuration.shouldBeOpaque = true
         }
-        configuration.captureResolution = .best
+        configuration.captureResolution = switch video.captureResolution {
+        case .automatic:
+            .automatic
+        case .best:
+            .best
+        case .nominal:
+            .nominal
+        }
         // Live Share may intentionally request an aspect-fitted H.264 frame
         // below the native 5K/6K source size. Equal source/output dimensions
         // (the VP8 path) remain exact and do not incur scaling.
-        configuration.scalesToFit = true
+        configuration.scalesToFit = video.scalesToFit
         configuration.preservesAspectRatio = true
         configuration.showsCursor = video.showsCursor
         configuration.showMouseClicks = video.showsClickHighlights

@@ -1,3 +1,4 @@
+import ClipCapture
 import ClipCore
 import Foundation
 
@@ -42,7 +43,13 @@ enum CaptureSelectionAdapter {
                 displayID: display.displayID,
                 sourceRect: nil,
                 outputWidth: outputWidth,
-                outputHeight: outputHeight
+                outputHeight: outputHeight,
+                captureResolution: nativeResolution(
+                    pixelWidth: nominalWidth,
+                    pixelHeight: nominalHeight,
+                    pointWidth: display.localBounds.width,
+                    pointHeight: display.localBounds.height
+                )
             )
         }
     }
@@ -96,6 +103,12 @@ enum CaptureSelectionAdapter {
             sourceRect: pixelGeometry.sourceRectangle,
             outputWidth: pixelGeometry.pixelWidth,
             outputHeight: pixelGeometry.pixelHeight,
+            captureResolution: nativeResolution(
+                pixelWidth: pixelGeometry.pixelWidth,
+                pixelHeight: pixelGeometry.pixelHeight,
+                pointWidth: pixelGeometry.sourceRectangle.width,
+                pointHeight: pixelGeometry.sourceRectangle.height
+            ),
             includedApplicationBundleIdentifier: target.bundleIdentifier
         )
     }
@@ -133,7 +146,27 @@ enum CaptureSelectionAdapter {
             displayID: display.displayID,
             sourceRect: sourceRect,
             outputWidth: pixelGeometry.pixelWidth,
-            outputHeight: pixelGeometry.pixelHeight
+            outputHeight: pixelGeometry.pixelHeight,
+            captureResolution: nativeResolution(
+                pixelWidth: pixelGeometry.pixelWidth,
+                pixelHeight: pixelGeometry.pixelHeight,
+                pointWidth: sourceRect.width,
+                pointHeight: sourceRect.height
+            )
+        )
+    }
+
+    private static func nativeResolution(
+        pixelWidth: Int,
+        pixelHeight: Int,
+        pointWidth: CGFloat,
+        pointHeight: CGFloat
+    ) -> CaptureVideoResolution {
+        CaptureVideoResolutionPolicy.nativeScale(
+            sourcePixelWidth: pixelWidth,
+            sourcePixelHeight: pixelHeight,
+            sourcePointWidth: max(1, Int(pointWidth.rounded())),
+            sourcePointHeight: max(1, Int(pointHeight.rounded()))
         )
     }
 }

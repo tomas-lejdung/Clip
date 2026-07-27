@@ -1,3 +1,4 @@
+// App-target diagnostic entry point; see ../README.md.
 @preconcurrency import AVFoundation
 import AppKit
 import ClipMedia

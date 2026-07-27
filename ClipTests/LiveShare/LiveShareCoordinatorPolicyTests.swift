@@ -34,6 +34,28 @@ struct LiveShareCoordinatorPolicyTests {
         #expect(h264.pixelFormat == .rec709BGRA)
     }
 
+    @Test("window capture resolution preserves each display's native scale")
+    func windowCaptureResolution() {
+        #expect(LiveShareCoordinatorPolicy.windowCaptureResolution(
+            sourcePixelWidth: 1_159,
+            sourcePixelHeight: 668,
+            sourcePointWidth: 1_159,
+            sourcePointHeight: 668
+        ) == .nominal)
+        #expect(LiveShareCoordinatorPolicy.windowCaptureResolution(
+            sourcePixelWidth: 2_318,
+            sourcePixelHeight: 1_336,
+            sourcePointWidth: 1_159,
+            sourcePointHeight: 668
+        ) == .best)
+        #expect(LiveShareCoordinatorPolicy.windowCaptureResolution(
+            sourcePixelWidth: 2_317,
+            sourcePixelHeight: 1_335,
+            sourcePointWidth: 1_159,
+            sourcePointHeight: 668
+        ) == .best)
+    }
+
     @Test("color mode and codec select the intended capture pixel format")
     func colorModeCaptureFormats() {
         for codec in [LiveShareVideoCodec.vp8, .vp9, .av1] {

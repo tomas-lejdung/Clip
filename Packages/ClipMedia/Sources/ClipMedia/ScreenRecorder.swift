@@ -1,4 +1,5 @@
 @preconcurrency import ScreenCaptureKit
+import ClipCapture
 import CoreGraphics
 import CoreMedia
 import CoreVideo
@@ -21,6 +22,7 @@ public struct ScreenRecordingRequest: Sendable {
     /// synthetic real-capture smoke lane opts out so an app-owned test tone can
     /// exercise ScreenCaptureKit audio delivery without opening another app.
     public var excludesCurrentProcessAudio: Bool
+    public var captureResolution: CaptureVideoResolution
     public var outputURL: URL
     public var configuration: RecordingConfiguration
 
@@ -32,6 +34,7 @@ public struct ScreenRecordingRequest: Sendable {
         includedApplicationBundleIdentifier: String? = nil,
         includedWindowID: CGWindowID? = nil,
         excludesCurrentProcessAudio: Bool = true,
+        captureResolution: CaptureVideoResolution = .best,
         outputURL: URL,
         configuration: RecordingConfiguration
     ) {
@@ -42,6 +45,7 @@ public struct ScreenRecordingRequest: Sendable {
         self.includedApplicationBundleIdentifier = includedApplicationBundleIdentifier
         self.includedWindowID = includedWindowID
         self.excludesCurrentProcessAudio = excludesCurrentProcessAudio
+        self.captureResolution = captureResolution
         self.outputURL = outputURL
         self.configuration = configuration
     }
@@ -62,11 +66,16 @@ enum ScreenStreamConfigurationFactory {
         streamConfiguration.queueDepth = 5
         streamConfiguration.pixelFormat = kCVPixelFormatType_32BGRA
 
-        // `automatic` can choose the nominal one-point-per-pixel backing for
-        // window/application filters and then upscale it to width/height. That
-        // permanently softens interface text before any export preset runs.
-        // Best asks WindowServer for the native backing resolution instead.
-        streamConfiguration.captureResolution = .best
+        // The request is resolved from its source point/pixel ratio. See
+        // `CaptureVideoResolutionPolicy` for the measured 1×/2× matrix.
+        streamConfiguration.captureResolution = switch request.captureResolution {
+        case .automatic:
+            .automatic
+        case .best:
+            .best
+        case .nominal:
+            .nominal
+        }
         streamConfiguration.scalesToFit = false
         streamConfiguration.preservesAspectRatio = true
 
