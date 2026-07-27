@@ -1,6 +1,13 @@
 --- a/sdk/objc/native/src/objc_video_track_source.mm
 +++ b/sdk/objc/native/src/objc_video_track_source.mm
-@@ -14,6 +14,7 @@
+@@ -10,10 +10,14 @@
+ 
+ #include "sdk/objc/native/src/objc_video_track_source.h"
+ 
++#import <CoreGraphics/CoreGraphics.h>
++#import <CoreVideo/CoreVideo.h>
++
+ #import "base/RTCVideoFrame.h"
  #import "base/RTCVideoFrameBuffer.h"
  #import "components/video_frame_buffer/RTCCVPixelBuffer.h"
  
@@ -8,7 +15,149 @@
  #include "api/video/i420_buffer.h"
  #include "sdk/objc/native/src/objc_frame_buffer.h"
  
-@@ -132,11 +133,36 @@
+@@ -34,6 +38,141 @@ - (void)capturer:(RTC_OBJC_TYPE(RTCVideoCapturer) *)capturer
+ 
+ namespace webrtc {
+ 
++namespace {
++
++int StringAttachmentCodePoint(
++    CVPixelBufferRef pixel_buffer,
++    CFStringRef key,
++    int (*code_point_for_string)(CFStringRef)) {
++  CFTypeRef value = CVBufferCopyAttachment(pixel_buffer, key, nullptr);
++  if (value == nullptr) {
++    return 2;
++  }
++  int code_point = 2;
++  if (CFGetTypeID(value) == CFStringGetTypeID()) {
++    code_point = code_point_for_string(
++        reinterpret_cast<CFStringRef>(value));
++  }
++  CFRelease(value);
++  return code_point;
++}
++
++bool ApplyAttachedPrimaries(CVPixelBufferRef pixel_buffer,
++                            ColorSpace* color_space) {
++  const int code_point = StringAttachmentCodePoint(
++      pixel_buffer,
++      kCVImageBufferColorPrimariesKey,
++      CVColorPrimariesGetIntegerCodePointForString);
++  return code_point != 2 &&
++         color_space->set_primaries_from_uint8(
++             static_cast<uint8_t>(code_point));
++}
++
++bool ApplyAttachedTransfer(CVPixelBufferRef pixel_buffer,
++                           ColorSpace* color_space) {
++  const int code_point = StringAttachmentCodePoint(
++      pixel_buffer,
++      kCVImageBufferTransferFunctionKey,
++      CVTransferFunctionGetIntegerCodePointForString);
++  return code_point != 2 &&
++         color_space->set_transfer_from_uint8(
++             static_cast<uint8_t>(code_point));
++}
++
++bool ApplyAttachedMatrix(CVPixelBufferRef pixel_buffer,
++                         ColorSpace* color_space) {
++  const int code_point = StringAttachmentCodePoint(
++      pixel_buffer,
++      kCVImageBufferYCbCrMatrixKey,
++      CVYCbCrMatrixGetIntegerCodePointForString);
++  return code_point != 2 &&
++         color_space->set_matrix_from_uint8(static_cast<uint8_t>(code_point));
++}
++
++void ApplyNamedRGBColorSpace(CVPixelBufferRef pixel_buffer,
++                             bool needs_primaries,
++                             bool needs_transfer,
++                             ColorSpace* color_space) {
++  CGColorSpaceRef rgb_color_space = CVImageBufferGetColorSpace(pixel_buffer);
++  if (rgb_color_space == nullptr) {
++    return;
++  }
++  CFStringRef name = CGColorSpaceGetName(rgb_color_space);
++  if (name == nullptr) {
++    return;
++  }
++
++  uint8_t primaries = 0;
++  uint8_t transfer = 0;
++  if (CFEqual(name, kCGColorSpaceDisplayP3) ||
++      CFEqual(name, kCGColorSpaceExtendedDisplayP3)) {
++    primaries = static_cast<uint8_t>(ColorSpace::PrimaryID::kSMPTEST432);
++    transfer = static_cast<uint8_t>(ColorSpace::TransferID::kIEC61966_2_1);
++  } else if (CFEqual(name, kCGColorSpaceSRGB) ||
++             CFEqual(name, kCGColorSpaceExtendedSRGB)) {
++    primaries = static_cast<uint8_t>(ColorSpace::PrimaryID::kBT709);
++    transfer = static_cast<uint8_t>(ColorSpace::TransferID::kIEC61966_2_1);
++  } else if (CFEqual(name, kCGColorSpaceITUR_709)) {
++    primaries = static_cast<uint8_t>(ColorSpace::PrimaryID::kBT709);
++    transfer = static_cast<uint8_t>(ColorSpace::TransferID::kBT709);
++  } else {
++    return;
++  }
++  if (needs_primaries) {
++    color_space->set_primaries_from_uint8(primaries);
++  }
++  if (needs_transfer) {
++    color_space->set_transfer_from_uint8(transfer);
++  }
++}
++
++std::optional<ColorSpace> ColorSpaceForPixelBuffer(
++    CVPixelBufferRef pixel_buffer) {
++  const OSType pixel_format = CVPixelBufferGetPixelFormatType(pixel_buffer);
++  ColorSpace color_space;
++  if (pixel_format == kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange ||
++      pixel_format == kCVPixelFormatType_420YpCbCr8BiPlanarFullRange) {
++    color_space = ColorSpace(
++        ColorSpace::PrimaryID::kBT709,
++        ColorSpace::TransferID::kBT709,
++        ColorSpace::MatrixID::kBT709,
++        pixel_format == kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
++            ? ColorSpace::RangeID::kLimited
++            : ColorSpace::RangeID::kFull);
++    ApplyAttachedPrimaries(pixel_buffer, &color_space);
++    ApplyAttachedTransfer(pixel_buffer, &color_space);
++    ApplyAttachedMatrix(pixel_buffer, &color_space);
++    return color_space;
++  }
++  if (pixel_format == kCVPixelFormatType_32BGRA ||
++      pixel_format == kCVPixelFormatType_32ARGB) {
++    // RTCCVPixelBuffer::toI420 converts packed RGB with libyuv's
++    // ARGBToI420/BGRAToI420 paths. Those paths always produce BT.601
++    // limited-range I420; the CoreVideo attachments continue to describe the
++    // RGB values' actual primaries and transfer function (for example P3 and
++    // sRGB).
++    color_space =
++        ColorSpace(ColorSpace::PrimaryID::kBT709,
++                   ColorSpace::TransferID::kIEC61966_2_1,
++                   ColorSpace::MatrixID::kSMPTE170M,
++                   ColorSpace::RangeID::kLimited);
++    const bool has_attached_primaries =
++        ApplyAttachedPrimaries(pixel_buffer, &color_space);
++    const bool has_attached_transfer =
++        ApplyAttachedTransfer(pixel_buffer, &color_space);
++    if (!has_attached_primaries || !has_attached_transfer) {
++      ApplyNamedRGBColorSpace(pixel_buffer,
++                              !has_attached_primaries,
++                              !has_attached_transfer,
++                              &color_space);
++    }
++    return color_space;
++  }
++  return std::nullopt;
++}
++
++}  // namespace
++
+ ObjCVideoTrackSource::ObjCVideoTrackSource(const Environment &env,
+                                            bool is_screencast)
+     : AdaptedVideoTrackSource(/* required resolution alignment */ 2),
+@@ -132,11 +271,22 @@ - (void)capturer:(RTC_OBJC_TYPE(RTCVideoCapturer) *)capturer
      rotation = kVideoRotation_0;
    }
  
@@ -22,21 +171,7 @@
 +          isKindOfClass:[RTC_OBJC_TYPE(RTCCVPixelBuffer) class]]) {
 +    RTC_OBJC_TYPE(RTCCVPixelBuffer) *rtc_pixel_buffer =
 +        (RTC_OBJC_TYPE(RTCCVPixelBuffer) *)frame.buffer;
-+    const OSType pixel_format =
-+        CVPixelBufferGetPixelFormatType(rtc_pixel_buffer.pixelBuffer);
-+    if (pixel_format ==
-+        kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange) {
-+      color_space.emplace(ColorSpace::PrimaryID::kBT709,
-+                          ColorSpace::TransferID::kBT709,
-+                          ColorSpace::MatrixID::kBT709,
-+                          ColorSpace::RangeID::kLimited);
-+    } else if (pixel_format ==
-+               kCVPixelFormatType_420YpCbCr8BiPlanarFullRange) {
-+      color_space.emplace(ColorSpace::PrimaryID::kBT709,
-+                          ColorSpace::TransferID::kBT709,
-+                          ColorSpace::MatrixID::kBT709,
-+                          ColorSpace::RangeID::kFull);
-+    }
++    color_space = ColorSpaceForPixelBuffer(rtc_pixel_buffer.pixelBuffer);
 +  }
 +
 +  VideoFrame::Builder builder;
@@ -229,19 +364,30 @@
  
 --- a/sdk/objc/components/renderer/metal/RTCMTLI420Renderer.mm
 +++ b/sdk/objc/components/renderer/metal/RTCMTLI420Renderer.mm
-@@ -33,6 +33,11 @@ static NSString *const shaderSource = MTL_STRINGIFY(
+@@ -33,6 +33,22 @@ static NSString *const shaderSource = MTL_STRINGIFY(
        float2 texcoord;
      } Varyings;
  
 +    typedef struct {
 +      float4 luma;
 +      float4 chroma;
++      float4 transfer;
 +    } ColorConversion;
++
++    float bt709ToSRGB(float encoded) {
++      encoded = clamp(encoded, 0.0f, 1.0f);
++      float linear = encoded < 0.081f
++          ? encoded / 4.5f
++          : pow((encoded + 0.099f) / 1.099f, 1.0f / 0.45f);
++      return linear <= 0.0031308f
++          ? linear * 12.92f
++          : 1.055f * pow(linear, 1.0f / 2.4f) - 0.055f;
++    }
 +
      vertex Varyings vertexPassthrough(constant Vertex * verticies [[buffer(0)]],
                                        unsigned int vid [[vertex_id]]) {
        Varyings out;
-@@ -47,7 +52,8 @@ fragment half4 fragmentColorConversion(
+@@ -47,7 +63,8 @@ fragment half4 fragmentColorConversion(
          Varyings in [[stage_in]],
          texture2d<float, access::sample> textureY [[texture(0)]],
          texture2d<float, access::sample> textureU [[texture(1)]],
@@ -251,7 +397,7 @@
        constexpr sampler s(address::clamp_to_edge, filter::linear);
        float y;
        float u;
-@@ -55,26 +61,32 @@ fragment half4 fragmentColorConversion(
+@@ -55,26 +72,38 @@ fragment half4 fragmentColorConversion(
        float r;
        float g;
        float b;
@@ -271,6 +417,11 @@
 +      r = y + conversion.luma.z * v;
 +      g = y + conversion.luma.w * u + conversion.chroma.x * v;
 +      b = y + conversion.chroma.y * u;
++      if (conversion.transfer.x > 0.5f) {
++        r = bt709ToSRGB(r);
++        g = bt709ToSRGB(g);
++        b = bt709ToSRGB(b);
++      }
  
        float4 out = float4(r, g, b, 1.0);
  
@@ -280,6 +431,7 @@
 +typedef struct RTCI420ColorConversion {
 +  simd_float4 luma;
 +  simd_float4 chroma;
++  simd_float4 transfer;
 +} RTCI420ColorConversion;
 +
  @implementation RTC_OBJC_TYPE (RTCMTLI420Renderer) {
@@ -291,7 +443,7 @@
  
    MTLTextureDescriptor *_descriptor;
    MTLTextureDescriptor *_chromaDescriptor;
-@@ -116,6 +128,45 @@ - (BOOL)setupTexturesForFrame:(nonnull RTC_OBJC_TYPE(RTCVideoFrame) *)frame {
+@@ -116,6 +145,77 @@ - (BOOL)setupTexturesForFrame:(nonnull RTC_OBJC_TYPE(RTCVideoFrame) *)frame {
      return NO;
    }
  
@@ -305,6 +457,13 @@
 +  }
 +  RTCI420ColorConversion *conversion =
 +      (RTCI420ColorConversion *)_colorConversionBuffer.contents;
++  conversion->transfer = (simd_float4){0.0f, 0.0f, 0.0f, 0.0f};
++  if (frame.hasColorSpace && frame.colorSpace.primaries == 12 &&
++      frame.colorSpace.transfer == 1) {
++    // Display P3 uses the sRGB transfer function. Convert a P3 frame carrying
++    // BT.709 nonlinear values before marking the Metal drawable as Display P3.
++    conversion->transfer.x = 1.0f;
++  }
 +  if (frame.hasColorSpace && frame.colorSpace.matrix == 1 &&
 +      frame.colorSpace.range == 1) {
 +    // Rec.709 video range: expand 16-235 luma and 16-240 chroma.
@@ -325,6 +484,31 @@
 +                                       1.8556f,
 +                                       128.0f / 255.0f,
 +                                       0.0f};
++  } else if (frame.hasColorSpace &&
++             (frame.colorSpace.matrix == 5 ||
++              frame.colorSpace.matrix == 6) &&
++             frame.colorSpace.range == 1) {
++    // BT.601/SMPTE 170M video range. This is also the physical I420
++    // representation produced by libyuv from packed RGB screen frames.
++    conversion->luma = (simd_float4){-16.0f / 255.0f,
++                                     255.0f / 219.0f,
++                                     1.596027f,
++                                     -0.391762f};
++    conversion->chroma = (simd_float4){-0.812968f,
++                                       2.017232f,
++                                       128.0f / 255.0f,
++                                       0.0f};
++  } else if (frame.hasColorSpace &&
++             (frame.colorSpace.matrix == 5 ||
++              frame.colorSpace.matrix == 6) &&
++             frame.colorSpace.range == 2) {
++    // BT.601/SMPTE 170M full range.
++    conversion->luma =
++        (simd_float4){0.0f, 1.0f, 1.402f, -0.344136f};
++    conversion->chroma = (simd_float4){-0.714136f,
++                                       1.772f,
++                                       128.0f / 255.0f,
++                                       0.0f};
 +  } else {
 +    // Preserve WebRTC's legacy full-range BT.601-like conversion when color
 +    // metadata is absent or describes a matrix this renderer does not handle.
@@ -337,7 +521,7 @@
    // Chroma size must be >= 1 as per the Apple documentation, so skip ?x1
    // and 1x? frames.
    // See: https://bugs.chromium.org/p/webrtc/issues/detail?id=14892
-@@ -175,6 +226,9 @@ - (void)uploadTexturesToRenderEncoder:
+@@ -175,6 +275,9 @@ - (void)uploadTexturesToRenderEncoder:
    [renderEncoder setFragmentTexture:_yTexture atIndex:0];
    [renderEncoder setFragmentTexture:_uTexture atIndex:1];
    [renderEncoder setFragmentTexture:_vTexture atIndex:2];
@@ -347,43 +531,121 @@
  }
  
  @end
+--- a/video/frame_encode_metadata_writer.cc
++++ b/video/frame_encode_metadata_writer.cc
+@@ -337,7 +337,18 @@ FrameEncodeMetadataWriter::ExtractEncodeStartTimeAndFillMetadata(
+           metadata_list->front().timestamp_us / 1000;
+       encoded_image->ntp_time_ms_ = metadata_list->front().ntp_time_ms;
+       encoded_image->rotation_ = metadata_list->front().rotation;
+-      encoded_image->SetColorSpace(metadata_list->front().color_space);
++      if (codec_settings_.codecType == kVideoCodecH264) {
++        // Clip's VideoToolbox H.264 path always converts to and signals
++        // Rec.709 video range. Do not let the packed-RGB capture metadata
++        // overwrite the matching H.264 VUI with its pre-encode color space.
++        encoded_image->SetColorSpace(ColorSpace(
++            ColorSpace::PrimaryID::kBT709,
++            ColorSpace::TransferID::kBT709,
++            ColorSpace::MatrixID::kBT709,
++            ColorSpace::RangeID::kLimited));
++      } else {
++        encoded_image->SetColorSpace(metadata_list->front().color_space);
++      }
+       // Key frames should never be considered as steady state refresh frames.
+       encoded_image->SetIsSteadyStateRefreshFrame(
+           metadata_list->front().is_steady_state_refresh_frame &&
 --- a/sdk/objc/components/renderer/metal/RTCMTLNSVideoView.m
 +++ b/sdk/objc/components/renderer/metal/RTCMTLNSVideoView.m
-@@ -21,6 +21,7 @@ @interface RTC_OBJC_TYPE (RTCMTLNSVideoView)
+@@ -17,10 +17,26 @@
+ 
+ #import "RTCMTLI420Renderer.h"
+ 
++typedef NS_ENUM(NSInteger, RTCMTLOutputColorSpaceKind) {
++  RTCMTLOutputColorSpaceUnmanaged = 0,
++  RTCMTLOutputColorSpaceRec709 = 1,
++  RTCMTLOutputColorSpaceDisplayP3 = 2,
++  RTCMTLOutputColorSpaceSRGB = 3,
++  RTCMTLOutputColorSpaceDisplayP3FromBT709 = 4,
++};
++
++typedef NS_ENUM(NSInteger, RTCMTLOutputTransferConversionKind) {
++  RTCMTLOutputTransferConversionNone = 0,
++  RTCMTLOutputTransferConversionBT709ToSRGB = 1,
++};
++
+ @interface RTC_OBJC_TYPE (RTCMTLNSVideoView)
  ()<MTKViewDelegate> @property(nonatomic) id<RTCMTLRenderer> renderer;
  @property(nonatomic, strong) MTKView *metalView;
  @property(atomic, strong) RTC_OBJC_TYPE(RTCVideoFrame) * videoFrame;
-+@property(atomic) BOOL rendersRec709;
++@property(atomic) RTCMTLOutputColorSpaceKind outputColorSpaceKind;
++@property(atomic)
++    RTCMTLOutputTransferConversionKind outputTransferConversionKind;
  @end
  
  @implementation RTC_OBJC_TYPE (RTCMTLNSVideoView) {
-@@ -31,6 +32,7 @@ @implementation RTC_OBJC_TYPE (RTCMTLNSVideoView) {
+@@ -31,6 +47,8 @@ @implementation RTC_OBJC_TYPE (RTCMTLNSVideoView) {
  @synthesize renderer = _renderer;
  @synthesize metalView = _metalView;
  @synthesize videoFrame = _videoFrame;
-+@synthesize rendersRec709 = _rendersRec709;
++@synthesize outputColorSpaceKind = _outputColorSpaceKind;
++@synthesize outputTransferConversionKind = _outputTransferConversionKind;
  
  - (instancetype)initWithFrame:(CGRect)frameRect {
    self = [super initWithFrame:frameRect];
-@@ -118,6 +120,27 @@ - (void)renderFrame:(nullable RTC_OBJC_TYPE(RTCVideoFrame) *)frame {
+@@ -118,6 +136,63 @@ - (void)renderFrame:(nullable RTC_OBJC_TYPE(RTCVideoFrame) *)frame {
      return;
    }
    self.videoFrame = [frame newI420VideoFrame];
-+  const BOOL renders_rec709 =
-+      self.videoFrame.hasColorSpace &&
-+      self.videoFrame.colorSpace.primaries == 1;
-+  if (renders_rec709 != self.rendersRec709) {
-+    self.rendersRec709 = renders_rec709;
++  RTCMTLOutputColorSpaceKind output_color_space =
++      RTCMTLOutputColorSpaceUnmanaged;
++  RTCMTLOutputTransferConversionKind transfer_conversion =
++      RTCMTLOutputTransferConversionNone;
++  if (self.videoFrame.hasColorSpace) {
++    if (self.videoFrame.colorSpace.primaries == 12 &&
++        self.videoFrame.colorSpace.transfer == 13) {
++      // CICP primary 12 is Display P3 (SMPTE ST 432-1, D65), whose normal
++      // nonlinear transfer is IEC 61966-2-1.
++      output_color_space = RTCMTLOutputColorSpaceDisplayP3;
++    } else if (self.videoFrame.colorSpace.primaries == 12 &&
++               self.videoFrame.colorSpace.transfer == 1) {
++      output_color_space = RTCMTLOutputColorSpaceDisplayP3FromBT709;
++      transfer_conversion = RTCMTLOutputTransferConversionBT709ToSRGB;
++    } else if (self.videoFrame.colorSpace.primaries == 1 &&
++               self.videoFrame.colorSpace.transfer == 13) {
++      // BT.709 primaries with IEC 61966-2-1 transfer describe sRGB.
++      output_color_space = RTCMTLOutputColorSpaceSRGB;
++    } else if (self.videoFrame.colorSpace.primaries == 1 &&
++               self.videoFrame.colorSpace.transfer == 1) {
++      output_color_space = RTCMTLOutputColorSpaceRec709;
++    }
++  }
++  self.outputTransferConversionKind = transfer_conversion;
++  if (output_color_space != self.outputColorSpaceKind) {
++    self.outputColorSpaceKind = output_color_space;
 +    dispatch_async(dispatch_get_main_queue(), ^{
-+      if (renders_rec709 != self.rendersRec709) {
++      if (output_color_space != self.outputColorSpaceKind) {
 +        return;
 +      }
 +      if (@available(macOS 10.12, *)) {
-+        if (renders_rec709) {
++        CFStringRef color_space_name = NULL;
++        if (output_color_space == RTCMTLOutputColorSpaceRec709) {
++          color_space_name = kCGColorSpaceITUR_709;
++        } else if (output_color_space ==
++                       RTCMTLOutputColorSpaceDisplayP3 ||
++                   output_color_space ==
++                       RTCMTLOutputColorSpaceDisplayP3FromBT709) {
++          color_space_name = kCGColorSpaceDisplayP3;
++        } else if (output_color_space == RTCMTLOutputColorSpaceSRGB) {
++          color_space_name = kCGColorSpaceSRGB;
++        }
++        if (color_space_name != NULL) {
 +          CGColorSpaceRef color_space =
-+              CGColorSpaceCreateWithName(kCGColorSpaceITUR_709);
-+          self.metalView.colorspace = color_space;
-+          CGColorSpaceRelease(color_space);
++              CGColorSpaceCreateWithName(color_space_name);
++          if (color_space != NULL) {
++            self.metalView.colorspace = color_space;
++            CGColorSpaceRelease(color_space);
++          } else {
++            self.metalView.colorspace = nil;
++          }
 +        } else {
 +          self.metalView.colorspace = nil;
 +        }

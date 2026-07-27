@@ -41,7 +41,9 @@ swift test --package-path "$ROOT/Packages/ClipCore"
 swift test --package-path "$ROOT/Packages/ClipMedia"
 swift test --package-path "$ROOT/Packages/ClipCapture"
 swift test --package-path "$ROOT/Packages/ClipLiveShare"
-swift test --package-path "$ROOT/Packages/ClipLiveShareWebRTC"
+swift test \
+  --package-path "$ROOT/Packages/ClipLiveShareWebRTC" \
+  --manifest-cache none
 
 # Resolve object globs only after SwiftPM has created a clean package build.
 # Expanding them at script startup leaves literal `*.o` arguments whenever the

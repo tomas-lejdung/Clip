@@ -367,8 +367,10 @@ extension LiveShareColorMode {
             String(localized: "SDR · H.264 uses its standard range")
         case .fullRangeRec709:
             String(localized: "SDR · 8-bit · full range")
+        case .nativeDisplay where codec == .h264:
+            String(localized: "Display input · H.264 outputs Rec.709")
         case .nativeDisplay:
-            String(localized: "Display-dependent · experimental")
+            String(localized: "Source display color · 8-bit SDR")
         }
     }
 }

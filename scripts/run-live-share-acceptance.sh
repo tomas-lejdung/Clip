@@ -130,7 +130,9 @@ echo "Running native protocol, crypto, state, signaling, and WebRTC tests..."
 swift test --package-path "$CORE_PACKAGE"
 CLIP_RUN_NATIVE_WEBKIT_ACCEPTANCE=1 \
 CLIP_LIVE_SHARE_ACCEPTANCE_ENDPOINT="http://127.0.0.1:$PORT" \
-  swift test --package-path "$WEBRTC_PACKAGE"
+  swift test \
+    --package-path "$WEBRTC_PACKAGE" \
+    --manifest-cache none
 
 echo "Clip Live Share local acceptance passed."
 echo "Covered: in-memory room ownership, native rendezvous discovery/routing, fresh signed-room friendship admission/removal, encrypted signaling, simultaneous four-stream native protocol peers, control after signaling handoff, browser crypto/viewer assets, and decoded stereo Opus waveform quality through the embedded WebKit viewer."

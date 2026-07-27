@@ -1,6 +1,6 @@
 # Clip Live Share architecture
 
-Last updated: 2026-07-20
+Last updated: 2026-07-27
 
 Wire contract: [Clip Live Share Protocol v1](clip-live-share-protocol-v1.md)
 
@@ -321,12 +321,22 @@ XCFramework as a dedicated, immutable GitHub Release dependency behind
 `Packages/ClipLiveShareWebRTC`. Other Swift targets do not import its
 Objective-C concurrency surface directly.
 
-Clip maintains a source patch against WebRTC M150 for Rec.709 fidelity. It
-maps captured `420v`/`420f` frames to limited/full Rec.709, writes AV1 CICP,
-preserves decoded color metadata across the Objective-C bridge, and selects
-the matching conversion in the macOS Metal renderer. The ignored local binary
-override is for development validation only; release packaging rejects it and
-resolves the exact public checksummed dependency into an isolated cache.
+Clip maintains a source patch against WebRTC M150 for color fidelity. It maps
+captured `420v`/`420f` frames to their attached primaries, transfer, matrix,
+and limited/full range. For display-native BGRA, it preserves standard sRGB,
+Display P3, or Rec.709 primaries and transfer while explicitly describing
+libyuv's physical conversion as BT.601 limited-range I420. It writes AV1 CICP,
+preserves decoded color metadata across the Objective-C bridge, selects the
+matching BT.601 or Rec.709 conversion in the macOS Metal renderer, converts a
+Display P3 frame carrying BT.709 nonlinear values to the standard sRGB
+transfer, and marks the rendered output as sRGB, Display P3, or ITU-R BT.709
+for Core Animation. Unrecognized display profiles fall back to sRGB at the
+sender rather than emitting ambiguous metadata.
+Clip's custom hardware H.264 encoder remains intentionally normalized to
+Rec.709 and signals that conversion in its own bitstream.
+The ignored local binary override is for development validation only; release
+packaging rejects it and resolves the exact public checksummed dependency into
+an isolated cache.
 
 Release packaging verifies the exact artifact pin and checksum, normalized
 framework payload, architectures, license notice, sandbox/Hardened Runtime

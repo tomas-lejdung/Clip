@@ -15,5 +15,10 @@ Install a local build with:
 ./scripts/use-local-webrtc.sh /path/to/WebRTC.xcframework
 ```
 
+SwiftPM caches evaluated manifests independently of files beside them. Direct
+`swift build` and `swift test` commands must therefore include
+`--manifest-cache none` after installing or removing the override. Clip's
+scripts already do this for this package.
+
 `package-dmg.sh` rejects this override and always resolves the reviewed remote
 artifact from a fresh dependency cache before producing a public DMG.

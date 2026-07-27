@@ -26,7 +26,9 @@ export SWIFTPM_MODULECACHE_OVERRIDE="$MODULE_CACHE"
 
 swift build --package-path "$ROOT/Packages/ClipCore" >/dev/null
 swift build --package-path "$ROOT/Packages/ClipMedia" >/dev/null
-swift build --package-path "$ROOT/Packages/ClipLiveShareWebRTC" >/dev/null
+swift build \
+  --package-path "$ROOT/Packages/ClipLiveShareWebRTC" \
+  --manifest-cache none >/dev/null
 
 WEBRTC_SEARCH_ROOT="$ROOT/Packages/ClipLiveShareWebRTC/.build/artifacts"
 if [[ -d "$ROOT/Packages/ClipLiveShareWebRTC/Vendor/WebRTC.xcframework" ]]; then

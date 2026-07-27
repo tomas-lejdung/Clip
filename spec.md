@@ -251,14 +251,20 @@ under-limit odd dimension is cropped by at most one final row or column at the
 encoder boundary. By default, Live Share normalizes capture to opaque SDR
 Rec.709: software VP8, VP9, and AV1 receive video-range NV12 while the native
 VideoToolbox H.264 path retains BGRA input tagged as Rec.709. The host may
-instead select full-range Rec.709 or experimental display-native capture as
+instead select full-range Rec.709 or display-native capture as
 described below. Clip does not perform a manual BGRA copy or synthetic
-timestamp rewrite. Clip's patched WebRTC M150 bridge carries NV12 Rec.709
-matrix/range metadata onto native frames. AV1 writes matching CICP into its
-sequence header, and the native viewer preserves the decoded metadata through
-its Objective-C frame bridge and uses the corresponding Rec.709 Metal
-conversion. Compatible Rec.709 therefore has the same color interpretation in
-browser and native AV1 viewers as the H.264 reference path.
+timestamp rewrite. Clip's patched WebRTC M150 bridge carries the input
+primaries, transfer, matrix, and range onto native frames. Display-native BGRA
+keeps standard sRGB, Display P3, or Rec.709 primaries and transfer while
+describing the software codecs' libyuv packed-RGB conversion as BT.601
+limited-range I420. AV1 writes matching CICP into its sequence header, and the
+native viewer preserves decoded metadata through its Objective-C frame bridge,
+applies the matching BT.601 or Rec.709 Metal conversion, and identifies its
+sRGB, Display P3, or ITU-R BT.709 output to Core Animation. Clip's custom
+hardware H.264 encoder remains intentionally normalized to Rec.709 and signals
+that conversion in its own bitstream. Clip's native viewer explicitly applies
+this contract. The browser receives the same codec signaling, but its final
+display conversion remains browser- and platform-dependent.
 Capture-to-WebRTC pressure is bounded and observable; Live Share favors the
 latest frame to prevent latency growth and must report sustained overload
 rather than accumulating an unbounded queue.
@@ -328,13 +334,16 @@ The host can change Live Share color handling independently from codec and
 quality. **Compatible Rec.709** is the default 8-bit SDR video-range mode.
 **Full-range Rec.709** uses 8-bit SDR full-range YCbCr with VP8, VP9, and AV1;
 the native H.264 path continues to use its standard Rec.709 conversion.
-**Native Display** restores display-dependent ScreenCaptureKit color and is
-marked experimental because wide-gamut metadata is not reliably preserved by
-every encoder and viewer. Changing the mode updates active captures in place
-without replacing the room or peer connection. These modes do not select
-4:2:0 versus 4:2:2 or enable 10-bit encoding. AV1 color controls are changed
-only when the source color description changes; that transition forces one
-keyframe rather than reconfiguring libaom on every captured frame.
+**Native Display** restores display-dependent ScreenCaptureKit color for VP8,
+VP9, and AV1. Standard sRGB, Display P3, and Rec.709 descriptions are
+preserved through those software codecs and Clip's native viewer; an
+unrecognized input display profile falls back to sRGB at the sender. H.264
+continues to output its standard Rec.709 conversion. Changing the mode updates
+active captures in place without replacing the room or peer connection. These
+modes do not select 4:2:0 versus 4:2:2 or enable 10-bit encoding. AV1 color
+controls are changed only when the source color description changes; that
+transition forces one keyframe rather than reconfiguring libaom on every
+captured frame.
 
 Each codec has separately persisted advanced stream controls, available both
 as session defaults in Settings and beside the active codec selector. Changes
