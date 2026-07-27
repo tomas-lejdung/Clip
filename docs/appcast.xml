@@ -3,41 +3,43 @@
     <channel>
         <title>Clip</title>
         <item>
-            <title>1.3.8</title>
-            <pubDate>Fri, 24 Jul 2026 16:43:59 +0200</pubDate>
-            <sparkle:version>13</sparkle:version>
-            <sparkle:shortVersionString>1.3.8</sparkle:shortVersionString>
+            <title>1.3.9</title>
+            <pubDate>Mon, 27 Jul 2026 18:55:54 +0200</pubDate>
+            <sparkle:version>14</sparkle:version>
+            <sparkle:shortVersionString>1.3.9</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
             <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
-            <description sparkle:format="markdown"><![CDATA[# Clip 1.3.8
+            <description sparkle:format="markdown"><![CDATA[# Clip 1.3.9
 
-Clip 1.3.8 makes the menu bar experience faster, more reliable, and more
-consistent across recording and Live Share.
+Clip 1.3.9 brings Live Share much closer to source-display quality in both the
+web and app viewers.
 
-## Menu bar
+## Live Share quality
 
-- Switch between Clip's normal, recording, Live Share, and viewer screens
-  inside one stable popover, avoiding delayed focus and first-click misses.
-- Expand each menu row's real click target so capture, display, and recent
-  recording actions respond reliably.
-- Keep the normal menu fully visible after returning from Live Share.
-- Replace the nested recording card with a compact, flat recording status
-  layout that belongs directly to the popover.
+- Preserve the captured pixel dimensions through WebRTC instead of introducing
+  point-versus-pixel scaling that softened text and UI edges.
+- Render app-to-app shares at exact backing-pixel scale when they fit, with
+  crisp integral scaling when the viewer window is resized.
+- Seed new peer connections from the selected quality bandwidth so screen
+  content stays sharper during scrolling and other high-motion updates.
+- Expand stream diagnostics with source, capture, manifest, encoded-dimension,
+  bitrate, QP, encode-time, and send-queue details.
 
-## Live Share
+## Color
 
-- Make Native the default Web Viewer scale mode.
-- Show a trusted friend's saved name in the viewer list after their identity
-  has been cryptographically verified.
-- Simplify the pre-share joining guidance and remove implementation-specific
-  wording from the Friends section.
+- Carry Native Display color metadata through Clip's reviewed WebRTC build and
+  apply it in the native Metal viewer.
+- Keep compatible Rec.709 fallbacks for streams or displays that do not provide
+  usable native color metadata.
+- Update the web viewer protocol so browser and app viewers use the same source
+  geometry and color contract.
 
 ## Requirements
 
 Clip requires macOS 15 or later on Apple silicon. This build uses the same
 stable Apple Development identity as previous updater releases.
 ]]></description>
-            <enclosure url="https://github.com/tomas-lejdung/Clip/releases/download/v1.3.8/Clip-1.3.8.dmg" length="12062595" type="application/octet-stream" sparkle:edSignature="hGLOKp0uyX0EpewYErtDpjpIbBCwVuII6M52ne0uVrZpS1A1qziEkU3z972K0uIFiWDU6zVND7+gmr38D1hVBQ=="/>
+            <enclosure url="https://github.com/tomas-lejdung/Clip/releases/download/v1.3.9/Clip-1.3.9.dmg" length="12206659" type="application/octet-stream" sparkle:edSignature="F/qfB2bMyW+PKQHgaY9QNYHn9yUxWyraTjIhd1j1Lk3YV7uR9ztcTTXXOFzsDM121q1uuMaRMg2EwhfmrCI6CQ=="/>
         </item>
     </channel>
 </rss>
