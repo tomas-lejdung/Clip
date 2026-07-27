@@ -70,6 +70,7 @@ final class NativeViewerWindowCoordinator {
     private let surfaceFactory: SurfaceFactory
     private var registry: NativeViewerWindowRegistry
     private var entries: [NativeViewerWindowID: Entry] = [:]
+    private var scaleMode = NativeViewerScaleMode.actualPixels
 
     init(
         sessionID: String,
@@ -134,6 +135,7 @@ final class NativeViewerWindowCoordinator {
     }
 
     func setScaleMode(_ mode: NativeViewerScaleMode) {
+        scaleMode = mode
         for entry in entries.values {
             entry.controller.setScaleMode(mode)
         }
@@ -226,6 +228,7 @@ final class NativeViewerWindowCoordinator {
             identityColor: identityColor,
             videoView: surface.view
         )
+        controller.setScaleMode(scaleMode)
         surface.onDecodedPixelSizeChange = { [weak controller] size in
             controller?.decodedPixelSizeDidChange(size)
         }

@@ -1324,16 +1324,18 @@ private struct LiveShareStreamStatisticsRow: View {
                 }
                 Spacer()
             }
-            Text(
-                "\(stream.width) × \(stream.height) · "
-                    + "\(stream.deliveredFramesPerSecond.formatted(.number.precision(.fractionLength(0...1)))) FPS"
-                    + (stream.codec.map { " · \($0)" } ?? "")
-            )
-            .font(.caption2.monospacedDigit())
-            .foregroundStyle(.secondary)
+            Text(verbatim: sourceGeometrySummary)
+                .font(.caption2.monospacedDigit())
+                .foregroundStyle(.secondary)
+            Text(verbatim: pipelineGeometrySummary)
+                .font(.caption2.monospacedDigit())
+                .foregroundStyle(.secondary)
+            Text(verbatim: encoderSummary)
+                .font(.caption2.monospacedDigit())
+                .foregroundStyle(.secondary)
             Text(verbatim: bitrateSummary)
-            .font(.caption2.monospacedDigit())
-            .foregroundStyle(.secondary)
+                .font(.caption2.monospacedDigit())
+                .foregroundStyle(.secondary)
             if let latencySummary {
                 Text(verbatim: latencySummary)
                     .font(.caption2.monospacedDigit())
@@ -1341,8 +1343,8 @@ private struct LiveShareStreamStatisticsRow: View {
             }
             if stream.captureBackpressureDrops > 0 || stream.encoderDroppedFrames > 0 {
                 Text(verbatim: dropSummary)
-                .font(.caption2.monospacedDigit())
-                .foregroundStyle(.secondary)
+                    .font(.caption2.monospacedDigit())
+                    .foregroundStyle(.secondary)
             }
             if let limitationSummary {
                 Text(verbatim: limitationSummary)
@@ -1355,6 +1357,58 @@ private struct LiveShareStreamStatisticsRow: View {
         .accessibilityElement(children: .combine)
     }
 
+    private var sourceGeometrySummary: String {
+        var values: [String] = []
+        if let width = stream.sourcePointWidth,
+           let height = stream.sourcePointHeight {
+            values.append("Source \(width) × \(height) pt")
+        }
+        values.append(
+            "\(stream.sourcePixelWidth) × \(stream.sourcePixelHeight) px"
+        )
+        return values.joined(separator: " · ")
+    }
+
+    private var pipelineGeometrySummary: String {
+        var capture = "Capture \(stream.captureWidth) × \(stream.captureHeight)"
+        if let pixelFormat = stream.capturePixelFormat {
+            capture += " \(pixelFormat)"
+        }
+        var values = [
+            capture,
+            "Manifest \(stream.width) × \(stream.height)",
+        ]
+        if stream.hasMixedEncodedFrameDimensions {
+            values.append("Encoded mixed")
+        } else if let width = stream.encodedFrameWidth,
+                  let height = stream.encodedFrameHeight {
+            values.append("Encoded \(width) × \(height)")
+        } else {
+            values.append("Encoded unavailable")
+        }
+        return values.joined(separator: " · ")
+    }
+
+    private var encoderSummary: String {
+        var values = [
+            "\(stream.deliveredFramesPerSecond.formatted(.number.precision(.fractionLength(0...1)))) FPS",
+        ]
+        if let codec = stream.codec {
+            values.append(codec)
+        }
+        if let quantizer = stream.averageQuantizer {
+            values.append(
+                "QP \(quantizer.formatted(.number.precision(.fractionLength(0...1))))"
+            )
+        }
+        if stream.qualityLimitationResolutionChanges > 0 {
+            values.append(
+                "\(stream.qualityLimitationResolutionChanges) resolution changes"
+            )
+        }
+        return values.joined(separator: " · ")
+    }
+
     private var bitrateSummary: String {
         var values = [
             "\(LiveShareFormatting.bitrate(stream.bitsPerSecond)) actual",
@@ -1362,9 +1416,14 @@ private struct LiveShareStreamStatisticsRow: View {
         if let target = stream.targetBitsPerSecond {
             values.append("\(LiveShareFormatting.bitrate(target)) target")
         }
+        if let floor = stream.configuredBitrateFloor {
+            values.append("\(LiveShareFormatting.bitrate(floor)) min")
+        } else {
+            values.append("automatic min")
+        }
         if stream.configuredBitrateCeiling > 0 {
             values.append(
-                "\(LiveShareFormatting.bitrate(stream.configuredBitrateCeiling)) ceiling"
+                "\(LiveShareFormatting.bitrate(stream.configuredBitrateCeiling)) max"
             )
         }
         values.append("\(LiveShareFormatting.bytes(stream.bytesSent)) sent")

@@ -269,7 +269,7 @@ final class NativeViewerContentView: NSView {
     private var sourcePixelSize: CGSize?
     private var sourceLogicalSize: CGSize?
     private var sourceStreamID: String?
-    private var scaleMode = NativeViewerScaleMode.automatic
+    private var scaleMode = NativeViewerScaleMode.actualPixels
     private var isPresentationActive = true
     private var currentNativeOrigin: CGPoint?
     private var targetNativeOrigin: CGPoint?
@@ -499,27 +499,45 @@ final class NativeViewerContentView: NSView {
                viewportSize: videoViewport.bounds.size,
                normalizedCursor: panAnchorPosition
            ) {
-            let key = PanGeometryKey(
-                sourceSize: sourceLogicalSize,
+            let alignedSize = NativeViewerPanPolicy.backingAlignedFrame(
+                CGRect(origin: .zero, size: geometry.contentFrame.size),
+                backingScale: effectiveBackingScale
+            ).size
+            let alignedOrigin = NativeViewerPanPolicy.snappedContentOrigin(
+                geometry.contentFrame.origin,
+                backingScale: effectiveBackingScale,
+                sourceLogicalSize: alignedSize,
                 viewportSize: videoViewport.bounds.size
             )
-            targetNativeOrigin = geometry.contentFrame.origin
+            let key = PanGeometryKey(
+                sourceSize: alignedSize,
+                viewportSize: videoViewport.bounds.size
+            )
+            targetNativeOrigin = alignedOrigin
             if panGeometryKey != key || currentNativeOrigin == nil {
                 panGeometryKey = key
-                currentNativeOrigin = geometry.contentFrame.origin
+                currentNativeOrigin = alignedOrigin
             }
             videoView.frame = CGRect(
-                origin: currentNativeOrigin ?? geometry.contentFrame.origin,
-                size: geometry.contentFrame.size
+                origin: NativeViewerPanPolicy.snappedContentOrigin(
+                    currentNativeOrigin ?? alignedOrigin,
+                    backingScale: effectiveBackingScale,
+                    sourceLogicalSize: alignedSize,
+                    viewportSize: videoViewport.bounds.size
+                ),
+                size: alignedSize
             )
         } else {
             stopPanAnimation()
             currentNativeOrigin = nil
             targetNativeOrigin = nil
             panGeometryKey = nil
-            videoView.frame = Self.aspectFitContentRect(
-                sourcePixelSize: sourceLogicalSize ?? sourcePixelSize,
-                videoFrame: videoViewport.bounds
+            videoView.frame = NativeViewerPanPolicy.backingAlignedFrame(
+                Self.aspectFitContentRect(
+                    sourcePixelSize: sourceLogicalSize ?? sourcePixelSize,
+                    videoFrame: videoViewport.bounds
+                ),
+                backingScale: effectiveBackingScale
             )
         }
         updateZoomIndicator()
@@ -538,16 +556,26 @@ final class NativeViewerContentView: NSView {
             stopPanAnimation()
             return
         }
-        targetNativeOrigin = geometry.contentFrame.origin
+        let alignedSize = NativeViewerPanPolicy.backingAlignedFrame(
+            CGRect(origin: .zero, size: geometry.contentFrame.size),
+            backingScale: effectiveBackingScale
+        ).size
+        let alignedOrigin = NativeViewerPanPolicy.snappedContentOrigin(
+            geometry.contentFrame.origin,
+            backingScale: effectiveBackingScale,
+            sourceLogicalSize: alignedSize,
+            viewportSize: videoViewport.bounds.size
+        )
+        targetNativeOrigin = alignedOrigin
         if currentNativeOrigin == nil {
-            currentNativeOrigin = geometry.contentFrame.origin
+            currentNativeOrigin = alignedOrigin
             applyCurrentNativeFrame()
             return
         }
         if let currentNativeOrigin,
-           abs(geometry.contentFrame.origin.x - currentNativeOrigin.x) < 0.35,
-           abs(geometry.contentFrame.origin.y - currentNativeOrigin.y) < 0.35 {
-            self.currentNativeOrigin = geometry.contentFrame.origin
+           abs(alignedOrigin.x - currentNativeOrigin.x) < 0.35,
+           abs(alignedOrigin.y - currentNativeOrigin.y) < 0.35 {
+            self.currentNativeOrigin = alignedOrigin
             applyCurrentNativeFrame()
             stopPanAnimation()
             return
@@ -595,8 +623,34 @@ final class NativeViewerContentView: NSView {
 
     private func applyCurrentNativeFrame() {
         guard let currentNativeOrigin, let sourceLogicalSize else { return }
-        videoView.frame = CGRect(origin: currentNativeOrigin, size: sourceLogicalSize)
+        let alignedSize = NativeViewerPanPolicy.backingAlignedFrame(
+            CGRect(origin: .zero, size: sourceLogicalSize),
+            backingScale: effectiveBackingScale
+        ).size
+        videoView.frame = CGRect(
+            origin: NativeViewerPanPolicy.snappedContentOrigin(
+                currentNativeOrigin,
+                backingScale: effectiveBackingScale,
+                sourceLogicalSize: alignedSize,
+                viewportSize: videoViewport.bounds.size
+            ),
+            size: alignedSize
+        )
         layoutCursor()
+    }
+
+    private var effectiveBackingScale: CGFloat {
+        if let scale = window?.backingScaleFactor,
+           scale.isFinite,
+           scale > 0 {
+            return scale
+        }
+        if let scale = layer?.contentsScale,
+           scale.isFinite,
+           scale > 0 {
+            return scale
+        }
+        return 1
     }
 
     private func stopPanAnimation() {
@@ -666,7 +720,7 @@ final class NativeViewerWindowController: NSWindowController, NSWindowDelegate {
 
     var onCloseRequested: ((NativeViewerWindowController) -> NativeViewerWindowCloseDisposition)?
 
-    private(set) var scaleMode = NativeViewerScaleMode.automatic
+    private(set) var scaleMode = NativeViewerScaleMode.actualPixels
     private var source: NativeViewerSourceSnapshot
     private var dimensionStabilizer = NativeViewerDimensionStabilizer()
     private var isApplyingPolicySize = false

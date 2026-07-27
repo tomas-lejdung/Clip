@@ -24,6 +24,8 @@ import {
   parseViewerFragment,
   PeerGenerationGuard,
   presentationSize,
+  qualityDiagnosticsSnapshot,
+  formatQualityDiagnostics,
   validateCapabilities,
   utf8Length,
   websocketURL,
@@ -107,6 +109,7 @@ window.__clipLiveShareAudioDiagnostics = Object.freeze({
   updatedAt: null,
   tracks: Object.freeze([]),
 });
+window.__clipLiveShareQualityDiagnostics = null;
 let showStats = false;
 let currentScale = "native";
 let accessCode = "";
@@ -1202,6 +1205,46 @@ passwordForm.addEventListener("submit", async (e) => {
   }
 });
 
+function focusedDiagnosticsVideo() {
+  if (viewerFocusedIndex === null) return mainVideo;
+  if (currentLayout === "grid") {
+    return gridCells[viewerFocusedIndex]?.video ?? mainVideo;
+  }
+  if (currentLayout === "row") {
+    return rowCells[viewerFocusedIndex]?.video ?? mainVideo;
+  }
+  return mainVideo;
+}
+
+function updateFocusedQualityDiagnostics() {
+  const focusedStream =
+    viewerFocusedIndex === null ? null : streams[viewerFocusedIndex];
+  const video = focusedDiagnosticsVideo();
+  const snapshot = qualityDiagnosticsSnapshot({
+    manifest: focusedStream?.info,
+    video,
+    renderedRect: video?.getBoundingClientRect?.() ?? null,
+    devicePixelRatio: window.devicePixelRatio,
+    scale: currentScale,
+    layout: currentLayout,
+  });
+  const formatted = formatQualityDiagnostics(snapshot);
+
+  document.getElementById("stats-manifest-dimensions").textContent =
+    formatted.manifestEncoded;
+  document.getElementById("stats-host-logical-dimensions").textContent =
+    formatted.hostLogical;
+  document.getElementById("stats-decoded-dimensions").textContent =
+    formatted.decoded;
+  document.getElementById("stats-css-rendered-dimensions").textContent =
+    formatted.cssRendered;
+  document.getElementById("stats-device-pixel-ratio").textContent =
+    formatted.devicePixelRatio;
+  document.getElementById("stats-view-mode").textContent = formatted.view;
+
+  window.__clipLiveShareQualityDiagnostics = snapshot;
+}
+
 // WebRTC Stats collection
 function startStatsCollection() {
   if (statsInterval) clearInterval(statsInterval);
@@ -1218,6 +1261,7 @@ function startStatsCollection() {
     if (!pc || pollInFlight) return;
     const statsPeer = pc;
     pollInFlight = true;
+    updateFocusedQualityDiagnostics();
 
     try {
       const stats = await statsPeer.getStats();

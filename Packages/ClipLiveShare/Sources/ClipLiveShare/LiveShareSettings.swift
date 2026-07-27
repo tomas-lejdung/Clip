@@ -83,8 +83,9 @@ public enum LiveShareColorMode: String, Codable, CaseIterable, Equatable, Hashab
     /// Rec.709 with full-range YCbCr for screen content and UI contrast.
     case fullRangeRec709
 
-    /// Preserve ScreenCaptureKit's display-native color conversion. Encoded
-    /// color signalling is viewer-dependent, so this remains experimental.
+    /// Preserve ScreenCaptureKit's display-native SDR color description for
+    /// the software WebRTC codecs. Clip's hardware H.264 path deliberately
+    /// normalizes its output to Rec.709.
     case nativeDisplay
 
     public var id: String { rawValue }

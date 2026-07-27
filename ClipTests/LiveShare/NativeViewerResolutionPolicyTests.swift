@@ -293,6 +293,37 @@ struct NativeViewerPanPolicyTests {
         #expect(origin == CGPoint(x: 0, y: -300))
     }
 
+    @Test("Retina pan origins snap to backing pixels without exposing empty space")
+    func retinaPanOriginStaysOnBackingGrid() {
+        let backingScale: CGFloat = 2
+        let sourceSize = CGSize(width: 2_311, height: 1_222)
+        let viewportSize = CGSize(width: 1_200, height: 700)
+        let proposedOrigin = CGPoint(x: -207.01, y: -115.582)
+
+        let origin = NativeViewerPanPolicy.snappedContentOrigin(
+            proposedOrigin,
+            backingScale: backingScale,
+            sourceLogicalSize: sourceSize,
+            viewportSize: viewportSize
+        )
+
+        #expect(origin == CGPoint(x: -207, y: -115.5))
+        #expect(origin.x * backingScale == (origin.x * backingScale).rounded())
+        #expect(origin.y * backingScale == (origin.y * backingScale).rounded())
+        #expect(origin.x <= 0)
+        #expect(origin.y <= 0)
+        #expect(origin.x >= viewportSize.width - sourceSize.width)
+        #expect(origin.y >= viewportSize.height - sourceSize.height)
+
+        let lowerEdge = NativeViewerPanPolicy.snappedContentOrigin(
+            CGPoint(x: -1_111.24, y: -522.24),
+            backingScale: backingScale,
+            sourceLogicalSize: sourceSize,
+            viewportSize: viewportSize
+        )
+        #expect(lowerEdge == CGPoint(x: -1_111, y: -522))
+    }
+
     @Test("Out-of-range cursor values clamp and absent cursor recenters")
     func normalizesCursorInput() throws {
         let clamped = try #require(NativeViewerPanPolicy.geometry(

@@ -18,6 +18,8 @@ import {
   parseViewerFragment,
   PeerGenerationGuard,
   presentationSize,
+  qualityDiagnosticsSnapshot,
+  formatQualityDiagnostics,
   signalingAAD,
   validateCapabilities,
 } from "./clip-protocol.js";
@@ -541,4 +543,63 @@ test("manifest source point geometry is paired, bounded and backward compatible"
       ClipProtocolError,
     );
   }
+});
+
+test("quality diagnostics preserve every independent presentation dimension", () => {
+  const snapshot = qualityDiagnosticsSnapshot({
+    manifest: {
+      width: 2_762,
+      height: 1_200,
+      sourcePointWidth: 1_381,
+      sourcePointHeight: 600,
+    },
+    video: {
+      videoWidth: 1_280,
+      videoHeight: 556,
+    },
+    renderedRect: {
+      width: 1_024.5,
+      height: 444.8,
+    },
+    devicePixelRatio: 1.25,
+    scale: "native",
+    layout: "focus",
+  });
+
+  assert.deepEqual(snapshot, {
+    manifestEncoded: { width: 2_762, height: 1_200 },
+    hostLogical: { width: 1_381, height: 600 },
+    decoded: { width: 1_280, height: 556 },
+    cssRendered: { width: 1_024.5, height: 444.8 },
+    devicePixelRatio: 1.25,
+    scale: "native",
+    layout: "focus",
+  });
+  assert.deepEqual(formatQualityDiagnostics(snapshot), {
+    manifestEncoded: "2762 × 1200",
+    hostLogical: "1381 × 600",
+    decoded: "1280 × 556",
+    cssRendered: "1024.5 × 444.8",
+    devicePixelRatio: "1.25×",
+    view: "Native · Focus",
+  });
+});
+
+test("quality diagnostics do not disguise missing dimensions with fallbacks", () => {
+  const snapshot = qualityDiagnosticsSnapshot({
+    manifest: { width: 1_920, height: 1_080 },
+    video: { videoWidth: 0, videoHeight: Number.NaN },
+    renderedRect: { width: 0, height: -1 },
+    devicePixelRatio: 0,
+    scale: "",
+  });
+
+  assert.deepEqual(formatQualityDiagnostics(snapshot), {
+    manifestEncoded: "1920 × 1080",
+    hostLogical: "--",
+    decoded: "--",
+    cssRendered: "--",
+    devicePixelRatio: "--",
+    view: "Unknown · Unknown",
+  });
 });

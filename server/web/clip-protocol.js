@@ -567,3 +567,87 @@ export function presentationSize(info, video = null) {
     height: Number.isFinite(height) && height > 0 ? height : 0,
   };
 }
+
+function diagnosticDimension(value) {
+  return typeof value === "number" && Number.isFinite(value) && value > 0
+    ? value
+    : null;
+}
+
+function diagnosticMode(value) {
+  return typeof value === "string" && value.trim().length > 0
+    ? value.trim()
+    : "unknown";
+}
+
+// Captures the independent sizes involved in browser presentation without
+// deriving one from another. Keeping the raw values separate makes scaling or
+// adaptation visible instead of accidentally hiding it behind a fallback.
+export function qualityDiagnosticsSnapshot({
+  manifest = null,
+  video = null,
+  renderedRect = null,
+  devicePixelRatio = null,
+  scale = null,
+  layout = null,
+} = {}) {
+  return Object.freeze({
+    manifestEncoded: Object.freeze({
+      width: diagnosticDimension(manifest?.width),
+      height: diagnosticDimension(manifest?.height),
+    }),
+    hostLogical: Object.freeze({
+      width: diagnosticDimension(manifest?.sourcePointWidth),
+      height: diagnosticDimension(manifest?.sourcePointHeight),
+    }),
+    decoded: Object.freeze({
+      width: diagnosticDimension(video?.videoWidth),
+      height: diagnosticDimension(video?.videoHeight),
+    }),
+    cssRendered: Object.freeze({
+      width: diagnosticDimension(renderedRect?.width),
+      height: diagnosticDimension(renderedRect?.height),
+    }),
+    devicePixelRatio: diagnosticDimension(devicePixelRatio),
+    scale: diagnosticMode(scale),
+    layout: diagnosticMode(layout),
+  });
+}
+
+function formattedDiagnosticNumber(value, fractionDigits = 1) {
+  if (value === null) return null;
+  if (Number.isInteger(value)) return String(value);
+  return value
+    .toFixed(fractionDigits)
+    .replace(/0+$/u, "")
+    .replace(/\.$/u, "");
+}
+
+function formattedDiagnosticDimensions(dimensions) {
+  const width = formattedDiagnosticNumber(dimensions?.width ?? null);
+  const height = formattedDiagnosticNumber(dimensions?.height ?? null);
+  return width === null || height === null ? "--" : `${width} × ${height}`;
+}
+
+function formattedDiagnosticMode(value) {
+  return value === "unknown"
+    ? "Unknown"
+    : value.charAt(0).toUpperCase() + value.slice(1);
+}
+
+export function formatQualityDiagnostics(snapshot) {
+  const ratio = formattedDiagnosticNumber(
+    snapshot?.devicePixelRatio ?? null,
+    2,
+  );
+  return Object.freeze({
+    manifestEncoded: formattedDiagnosticDimensions(
+      snapshot?.manifestEncoded,
+    ),
+    hostLogical: formattedDiagnosticDimensions(snapshot?.hostLogical),
+    decoded: formattedDiagnosticDimensions(snapshot?.decoded),
+    cssRendered: formattedDiagnosticDimensions(snapshot?.cssRendered),
+    devicePixelRatio: ratio === null ? "--" : `${ratio}×`,
+    view: `${formattedDiagnosticMode(snapshot?.scale ?? "unknown")} · ${formattedDiagnosticMode(snapshot?.layout ?? "unknown")}`,
+  });
+}

@@ -2,6 +2,7 @@ import ClipCapture
 import ClipLiveShare
 import ClipLiveShareWebRTCAudioBridge
 import Foundation
+import OSLog
 @preconcurrency import WebRTC
 
 /// Clip's native WebRTC host.
@@ -12,6 +13,10 @@ import Foundation
 public final class WebRTCPeerHost: LiveShareVideoSlotHosting, @unchecked Sendable {
     public typealias EventHandler = @Sendable (WebRTCPeerHostEvent) -> Void
     private static let idleFrameReplayIntervalNanoseconds: UInt64 = 2_000_000_000
+    private static let logger = Logger(
+        subsystem: "ClipLiveShareWebRTC",
+        category: "Peer bandwidth"
+    )
 
     private final class Slot: @unchecked Sendable {
         let index: Int
@@ -69,6 +74,11 @@ public final class WebRTCPeerHost: LiveShareVideoSlotHosting, @unchecked Sendabl
         var didReportLocalICECandidateLimit = false
         var awaitsDurableControlDrain = false
         var latestFrameSeedGeneration: UInt64 = 0
+        var bandwidthApplicationState =
+            WebRTCPeerBandwidthApplicationState()
+        var bandwidthSeedPending = false
+        var sourceFreeBandwidthResetState =
+            WebRTCPeerSourceFreeBandwidthResetState()
 
         init(
             viewerID: String,
@@ -312,6 +322,20 @@ public final class WebRTCPeerHost: LiveShareVideoSlotHosting, @unchecked Sendabl
         onQueue { senderPoliciesBySlot[slot] ?? activeSenderPolicy }
     }
 
+    func peerBandwidthApplicationState(
+        for viewerID: String
+    ) -> WebRTCPeerBandwidthApplicationState? {
+        onQueue { peers[viewerID]?.bandwidthApplicationState }
+    }
+
+    func isPeerSourceFreeBandwidthResetPending(
+        for viewerID: String
+    ) -> Bool? {
+        onQueue {
+            peers[viewerID]?.sourceFreeBandwidthResetState.isPending
+        }
+    }
+
     public var slotSnapshots: [WebRTCStreamSlotSnapshot] {
         onQueue { slots.map(\.snapshot) }
     }
@@ -356,12 +380,32 @@ public final class WebRTCPeerHost: LiveShareVideoSlotHosting, @unchecked Sendabl
     public func updateSenderPolicy(_ policy: WebRTCSenderPolicy) {
         onQueue {
             guard !isClosed else { return }
+            let previousEnvelope = peerBandwidthEnvelope()
             activeSenderPolicy = policy
             senderPoliciesBySlot.removeAll()
             for context in peers.values {
                 for (slot, sender) in context.sendersBySlot {
                     applySenderPolicy(to: sender, slot: slot)
                 }
+            }
+            let nextEnvelope = peerBandwidthEnvelope()
+            let raisesQualityBudget = activeVideoEncodingMode == .quality
+                && Self.raisesBandwidthBudget(
+                    from: previousEnvelope,
+                    to: nextEnvelope
+                )
+            let lowersBudget = Self.lowersBandwidthBudget(
+                from: previousEnvelope,
+                to: nextEnvelope
+            )
+            for context in peers.values {
+                if lowersBudget {
+                    context.bandwidthSeedPending = false
+                }
+                applyPeerBandwidthPolicy(
+                    to: context,
+                    seedCurrentEstimate: raisesQualityBudget
+                )
             }
         }
     }
@@ -375,6 +419,7 @@ public final class WebRTCPeerHost: LiveShareVideoSlotHosting, @unchecked Sendabl
     ) {
         onQueue {
             guard !isClosed else { return }
+            let previousEnvelope = peerBandwidthEnvelope()
             activeSenderPolicy = fallback
             senderPoliciesBySlot = policiesBySlot.filter {
                 slots.indices.contains($0.key)
@@ -383,6 +428,25 @@ public final class WebRTCPeerHost: LiveShareVideoSlotHosting, @unchecked Sendabl
                 for (slot, sender) in context.sendersBySlot {
                     applySenderPolicy(to: sender, slot: slot)
                 }
+            }
+            let nextEnvelope = peerBandwidthEnvelope()
+            let raisesQualityBudget = activeVideoEncodingMode == .quality
+                && Self.raisesBandwidthBudget(
+                    from: previousEnvelope,
+                    to: nextEnvelope
+                )
+            let lowersBudget = Self.lowersBandwidthBudget(
+                from: previousEnvelope,
+                to: nextEnvelope
+            )
+            for context in peers.values {
+                if lowersBudget {
+                    context.bandwidthSeedPending = false
+                }
+                applyPeerBandwidthPolicy(
+                    to: context,
+                    seedCurrentEstimate: raisesQualityBudget
+                )
             }
         }
     }
@@ -393,8 +457,16 @@ public final class WebRTCPeerHost: LiveShareVideoSlotHosting, @unchecked Sendabl
     public func updateVideoEncodingMode(_ mode: LiveShareEncodingMode) {
         onQueue {
             guard !isClosed else { return }
+            let entersQuality = activeVideoEncodingMode != .quality
+                && mode == .quality
             activeVideoEncodingMode = mode
             h264EncoderFactory.updateMode(WebRTCH264EncodingMode(mode))
+            for context in peers.values {
+                applyPeerBandwidthPolicy(
+                    to: context,
+                    seedCurrentEstimate: entersQuality
+                )
+            }
         }
     }
 
@@ -811,10 +883,16 @@ public final class WebRTCPeerHost: LiveShareVideoSlotHosting, @unchecked Sendabl
             guard target.metadata == nil else {
                 throw WebRTCPeerHostError.slotAlreadyActive(slot)
             }
+            let activatesFirstVideo = slots.allSatisfy {
+                $0.metadata == nil
+            }
             target.frameSource.clearLatestFrame()
             target.metadata = metadata
             target.captureGeometry = captureGeometry
             target.track.isEnabled = true
+            if activatesFirstVideo {
+                applyPeerBandwidthPolicyAfterFirstVideoActivation()
+            }
         }
     }
 
@@ -879,6 +957,9 @@ public final class WebRTCPeerHost: LiveShareVideoSlotHosting, @unchecked Sendabl
                     actual: metadata.mediaTrackID.rawValue
                 )
             }
+            let activatesFirstVideo = slots.allSatisfy {
+                $0.metadata == nil
+            }
             target.frameSource.clearLatestFrame()
             target.metadata = metadata
             target.captureGeometry = WebRTCVideoCaptureGeometry(
@@ -886,6 +967,9 @@ public final class WebRTCPeerHost: LiveShareVideoSlotHosting, @unchecked Sendabl
                 height: metadata.height
             )
             target.track.isEnabled = true
+            if activatesFirstVideo {
+                applyPeerBandwidthPolicyAfterFirstVideoActivation()
+            }
             return target.index
         }
     }
@@ -897,6 +981,18 @@ public final class WebRTCPeerHost: LiveShareVideoSlotHosting, @unchecked Sendabl
             slots[slot].captureGeometry = nil
             slots[slot].track.isEnabled = false
             slots[slot].frameSource.clearLatestFrame()
+            if slots.allSatisfy({ $0.metadata == nil }) {
+                // Source-aware fractions belong to the previous active set.
+                // The next first source must begin from the full fallback
+                // budget until the coordinator supplies a fresh allocation.
+                senderPoliciesBySlot.removeAll()
+                for context in peers.values {
+                    for (senderSlot, sender) in context.sendersBySlot {
+                        applySenderPolicy(to: sender, slot: senderSlot)
+                    }
+                    clearPeerBandwidthPolicyAfterLastVideo(for: context)
+                }
+            }
         }
     }
 
@@ -1336,6 +1432,172 @@ public final class WebRTCPeerHost: LiveShareVideoSlotHosting, @unchecked Sendabl
             Self.applyVideoSenderPolicy(policy, to: encoding)
         }
         sender.parameters = parameters
+    }
+
+    private func peerBandwidthEnvelope() -> WebRTCPeerBandwidthEnvelope? {
+        let activeVideoPolicies: [WebRTCSenderPolicy] = slots.compactMap {
+            slot -> WebRTCSenderPolicy? in
+            guard slot.metadata != nil else { return nil }
+            return senderPoliciesBySlot[slot.index] ?? activeSenderPolicy
+        }
+        return makePeerBandwidthEnvelope(
+            activeVideoPolicies: activeVideoPolicies
+        )
+    }
+
+    private func makePeerBandwidthEnvelope(
+        activeVideoPolicies: [WebRTCSenderPolicy]
+    ) -> WebRTCPeerBandwidthEnvelope? {
+        return WebRTCPeerBandwidthEnvelope.make(
+            activeVideoPolicies: activeVideoPolicies,
+            // The chosen quality preset is the deliberate starting budget for
+            // this experiment. The envelope clamps it to the aggregate cap.
+            preferredInitialVideoBitrateBps: Int.max,
+            auxiliaryBitrateBps:
+                WebRTCOpusMusicSDP.maximumAverageBitrateBps
+        )
+    }
+
+    private static func raisesBandwidthBudget(
+        from previous: WebRTCPeerBandwidthEnvelope?,
+        to next: WebRTCPeerBandwidthEnvelope?
+    ) -> Bool {
+        guard let next else { return false }
+        return next.maximumBitrateBps
+            > (previous?.maximumBitrateBps ?? 0)
+    }
+
+    private static func lowersBandwidthBudget(
+        from previous: WebRTCPeerBandwidthEnvelope?,
+        to next: WebRTCPeerBandwidthEnvelope?
+    ) -> Bool {
+        guard let previous, let next else { return false }
+        return next.maximumBitrateBps < previous.maximumBitrateBps
+    }
+
+    private func applyPeerBandwidthPolicy(
+        to context: PeerContext,
+        seedCurrentEstimate: Bool
+    ) {
+        guard !isClosed,
+              !context.isClosing,
+              peers[context.viewerID] === context else {
+            return
+        }
+        guard let envelope = peerBandwidthEnvelope() else {
+            if context.sourceFreeBandwidthResetState.isPending {
+                applyPendingSourceFreeBandwidthReset(to: context)
+                return
+            }
+            context.bandwidthApplicationState =
+                WebRTCPeerBandwidthApplicationState()
+            context.bandwidthSeedPending = false
+            return
+        }
+        if activeVideoEncodingMode == .quality {
+            if seedCurrentEstimate
+                || !context.bandwidthApplicationState
+                    .hasSeededCurrentEstimate {
+                context.bandwidthSeedPending = true
+            }
+        } else {
+            context.bandwidthSeedPending = false
+        }
+        guard context.connectionState == .connected else { return }
+
+        let shouldSeed = activeVideoEncodingMode == .quality
+            && context.bandwidthSeedPending
+        guard let transition = context.bandwidthApplicationState.transition(
+            to: envelope,
+            seedCurrentEstimate: shouldSeed
+        ) else {
+            return
+        }
+
+        let update = transition.update
+        let accepted = context.connection.setBweMinBitrateBps(
+            update.minimumBitrateBps.map(NSNumber.init),
+            currentBitrateBps: update.currentBitrateBps.map(NSNumber.init),
+            maxBitrateBps: update.maximumBitrateBps.map(NSNumber.init)
+        )
+        if accepted {
+            context.bandwidthApplicationState.commit(transition)
+            if update.currentBitrateBps != nil {
+                context.bandwidthSeedPending = false
+            }
+        } else {
+            Self.logger.error(
+                """
+                WebRTC rejected peer bandwidth update \
+                (min: \(update.minimumBitrateBps ?? -1, privacy: .public), \
+                current: \(update.currentBitrateBps ?? -1, privacy: .public), \
+                max: \(update.maximumBitrateBps ?? -1, privacy: .public)).
+                """
+            )
+        }
+    }
+
+    private func applyPeerBandwidthPolicyAfterFirstVideoActivation() {
+        // A focus/policy update can arrive after the previous last source was
+        // removed. Never let those now-stale per-slot fractions determine the
+        // next session's first-source sender or peer-wide BWE seed.
+        senderPoliciesBySlot.removeAll()
+        for context in peers.values {
+            for (slot, sender) in context.sendersBySlot {
+                applySenderPolicy(to: sender, slot: slot)
+            }
+            let resetWasPending =
+                context.sourceFreeBandwidthResetState.isPending
+            context.sourceFreeBandwidthResetState.cancel()
+            applyPeerBandwidthPolicy(
+                to: context,
+                seedCurrentEstimate: resetWasPending
+            )
+        }
+    }
+
+    private func clearPeerBandwidthPolicyAfterLastVideo(
+        for context: PeerContext
+    ) {
+        guard !isClosed,
+              !context.isClosing,
+              peers[context.viewerID] === context else {
+            return
+        }
+        context.sourceFreeBandwidthResetState.request()
+        applyPendingSourceFreeBandwidthReset(to: context)
+    }
+
+    private func applyPendingSourceFreeBandwidthReset(
+        to context: PeerContext
+    ) {
+        guard !isClosed,
+              !context.isClosing,
+              peers[context.viewerID] === context,
+              context.sourceFreeBandwidthResetState.isPending,
+              slots.allSatisfy({ $0.metadata == nil }),
+              context.connectionState == .connected else {
+            return
+        }
+        let accepted = context.connection.setBweMinBitrateBps(
+            NSNumber(value: 0),
+            currentBitrateBps: nil,
+            maxBitrateBps: NSNumber(
+                value: WebRTCOpusMusicSDP.maximumAverageBitrateBps
+            )
+        )
+        context.sourceFreeBandwidthResetState.acknowledge(
+            accepted: accepted
+        )
+        guard accepted else {
+            Self.logger.error(
+                "WebRTC rejected the source-free bandwidth reset."
+            )
+            return
+        }
+        context.bandwidthApplicationState =
+            WebRTCPeerBandwidthApplicationState()
+        context.bandwidthSeedPending = false
     }
 
     static func rtcDegradationPreference(
@@ -1782,6 +2044,13 @@ public final class WebRTCPeerHost: LiveShareVideoSlotHosting, @unchecked Sendabl
                 context.connectionState = state
                 emit(.connectionStateChanged(viewerID: viewerID, state: state))
                 if state == .connected, previousState != .connected {
+                    applyPendingSourceFreeBandwidthReset(to: context)
+                    if !context.sourceFreeBandwidthResetState.isPending {
+                        applyPeerBandwidthPolicy(
+                            to: context,
+                            seedCurrentEstimate: false
+                        )
+                    }
                     scheduleLatestFrameSeed(for: context)
                 }
                 if state == .failed || state == .closed {

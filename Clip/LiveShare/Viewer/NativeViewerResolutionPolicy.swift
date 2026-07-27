@@ -189,6 +189,49 @@ enum NativeViewerPanPolicy {
         )
     }
 
+    /// Snaps a native-size surface to physical destination pixels after
+    /// clamping it to the viewport. Cursor-follow interpolation can otherwise
+    /// leave the complete Metal surface between pixels and temporarily soften
+    /// every one-pixel edge.
+    static func snappedContentOrigin(
+        _ proposedOrigin: CGPoint,
+        backingScale: CGFloat,
+        sourceLogicalSize: CGSize,
+        viewportSize: CGSize
+    ) -> CGPoint {
+        let clamped = clampedContentOrigin(
+            proposedOrigin,
+            sourceLogicalSize: sourceLogicalSize,
+            viewportSize: viewportSize
+        )
+        guard backingScale.isFinite, backingScale > 0 else { return clamped }
+        let snapped = CGPoint(
+            x: (clamped.x * backingScale).rounded() / backingScale,
+            y: (clamped.y * backingScale).rounded() / backingScale
+        )
+        // A far-edge clamp can itself be fractional when source metadata is
+        // malformed or from an older host. Re-clamp so alignment never reveals
+        // empty space outside the shared surface.
+        return clampedContentOrigin(
+            snapped,
+            sourceLogicalSize: sourceLogicalSize,
+            viewportSize: viewportSize
+        )
+    }
+
+    static func backingAlignedFrame(
+        _ frame: CGRect,
+        backingScale: CGFloat
+    ) -> CGRect {
+        guard backingScale.isFinite, backingScale > 0 else { return frame }
+        return CGRect(
+            x: (frame.origin.x * backingScale).rounded() / backingScale,
+            y: (frame.origin.y * backingScale).rounded() / backingScale,
+            width: (frame.width * backingScale).rounded() / backingScale,
+            height: (frame.height * backingScale).rounded() / backingScale
+        )
+    }
+
     /// Returns a presentation percentage relative to the source Mac's logical
     /// size. Native mode is therefore 100% on both Retina and non-Retina Macs.
     static func zoomPercentage(

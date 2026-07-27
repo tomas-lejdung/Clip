@@ -2,6 +2,94 @@ import AppKit
 import ClipLiveShare
 @preconcurrency import WebRTC
 
+enum WebRTCRemoteVideoGeometry {
+    /// Aspect-fits decoded pixels into an AppKit point-space container without
+    /// introducing a fractional near-native stretch.
+    ///
+    /// Screen encoders can crop an odd source edge (for example 2,311 pixels to
+    /// 2,310 for 4:2:0). The remaining dimension still supplies an exact 1x/2x
+    /// scale. Working in destination backing pixels preserves that scale and
+    /// leaves the cropped edge as a tiny gutter instead of linearly resampling
+    /// every source pixel to fill the pre-crop logical bounds.
+    static func contentFrame(
+        decodedPixelSize: CGSize,
+        in bounds: CGRect,
+        backingScale: CGFloat
+    ) -> CGRect {
+        guard isValid(decodedPixelSize),
+              isValid(bounds.size),
+              backingScale.isFinite,
+              backingScale > 0 else {
+            return bounds
+        }
+
+        // Align the available edges before choosing a scale. Native AppKit
+        // frames may contain half-points on Retina, which are whole backing
+        // pixels and must not be rounded away in point space.
+        let minimumX = (bounds.minX * backingScale).rounded()
+        let minimumY = (bounds.minY * backingScale).rounded()
+        let maximumX = (bounds.maxX * backingScale).rounded()
+        let maximumY = (bounds.maxY * backingScale).rounded()
+        let availableWidth = max(1, maximumX - minimumX)
+        let availableHeight = max(1, maximumY - minimumY)
+
+        let rawScale = min(
+            availableWidth / decodedPixelSize.width,
+            availableHeight / decodedPixelSize.height
+        )
+        let scale = nativeScaleIfWithinOneBackingPixel(
+            rawScale,
+            decodedPixelSize: decodedPixelSize,
+            availableSize: CGSize(width: availableWidth, height: availableHeight),
+            backingScale: backingScale
+        )
+        let renderedWidth = min(
+            availableWidth,
+            max(1, (decodedPixelSize.width * scale).rounded())
+        )
+        let renderedHeight = min(
+            availableHeight,
+            max(1, (decodedPixelSize.height * scale).rounded())
+        )
+        let originX = minimumX + floor((availableWidth - renderedWidth) / 2)
+        let originY = minimumY + floor((availableHeight - renderedHeight) / 2)
+
+        return CGRect(
+            x: originX / backingScale,
+            y: originY / backingScale,
+            width: renderedWidth / backingScale,
+            height: renderedHeight / backingScale
+        )
+    }
+
+    private static func nativeScaleIfWithinOneBackingPixel(
+        _ rawScale: CGFloat,
+        decodedPixelSize: CGSize,
+        availableSize: CGSize,
+        backingScale: CGFloat
+    ) -> CGFloat {
+        guard rawScale >= 1 else { return rawScale }
+        let integralScale = floor(rawScale)
+        guard integralScale >= 1 else { return rawScale }
+        let horizontalRemainder = availableSize.width
+            - decodedPixelSize.width * integralScale
+        let verticalRemainder = availableSize.height
+            - decodedPixelSize.height * integralScale
+        let tolerance = backingScale
+        guard horizontalRemainder >= 0,
+              verticalRemainder >= 0,
+              min(horizontalRemainder, verticalRemainder) <= tolerance else {
+            return rawScale
+        }
+        return integralScale
+    }
+
+    private static func isValid(_ size: CGSize) -> Bool {
+        size.width.isFinite && size.height.isFinite
+            && size.width > 0 && size.height > 0
+    }
+}
+
 /// A production AppKit render surface for one remote Clip stream.
 ///
 /// The native WebRTC track stays private to this package. The view renders it
@@ -42,6 +130,11 @@ public final class WebRTCRemoteVideoView: NSView, RTCVideoViewDelegate {
     public override func layout() {
         super.layout()
         layoutVideoView()
+    }
+
+    public override func viewDidChangeBackingProperties() {
+        super.viewDidChangeBackingProperties()
+        needsLayout = true
     }
 
     /// Reuses this surface for a current remote logical stream.
@@ -121,19 +214,24 @@ public final class WebRTCRemoteVideoView: NSView, RTCVideoViewDelegate {
             videoView.frame = bounds
             return
         }
-        let scale = min(
-            bounds.width / decodedPixelSize.width,
-            bounds.height / decodedPixelSize.height
+        videoView.frame = WebRTCRemoteVideoGeometry.contentFrame(
+            decodedPixelSize: decodedPixelSize,
+            in: bounds,
+            backingScale: effectiveBackingScale
         )
-        let size = CGSize(
-            width: decodedPixelSize.width * scale,
-            height: decodedPixelSize.height * scale
-        )
-        videoView.frame = CGRect(
-            x: bounds.midX - size.width / 2,
-            y: bounds.midY - size.height / 2,
-            width: size.width,
-            height: size.height
-        ).integral
+    }
+
+    private var effectiveBackingScale: CGFloat {
+        if let scale = window?.backingScaleFactor,
+           scale.isFinite,
+           scale > 0 {
+            return scale
+        }
+        if let scale = layer?.contentsScale,
+           scale.isFinite,
+           scale > 0 {
+            return scale
+        }
+        return 1
     }
 }
