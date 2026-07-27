@@ -1,5 +1,6 @@
 import AppKit
 import ClipLiveShare
+import MetalKit
 @preconcurrency import WebRTC
 
 enum WebRTCRemoteVideoGeometry {
@@ -37,20 +38,13 @@ enum WebRTCRemoteVideoGeometry {
             availableWidth / decodedPixelSize.width,
             availableHeight / decodedPixelSize.height
         )
-        let scale = nativeScaleIfWithinOneBackingPixel(
+        let scale = nativeScaleIfWithinOneSourcePixel(
             rawScale,
             decodedPixelSize: decodedPixelSize,
-            availableSize: CGSize(width: availableWidth, height: availableHeight),
-            backingScale: backingScale
+            availableSize: CGSize(width: availableWidth, height: availableHeight)
         )
-        let renderedWidth = min(
-            availableWidth,
-            max(1, (decodedPixelSize.width * scale).rounded())
-        )
-        let renderedHeight = min(
-            availableHeight,
-            max(1, (decodedPixelSize.height * scale).rounded())
-        )
+        let renderedWidth = max(1, (decodedPixelSize.width * scale).rounded())
+        let renderedHeight = max(1, (decodedPixelSize.height * scale).rounded())
         let originX = minimumX + floor((availableWidth - renderedWidth) / 2)
         let originY = minimumY + floor((availableHeight - renderedHeight) / 2)
 
@@ -62,23 +56,29 @@ enum WebRTCRemoteVideoGeometry {
         )
     }
 
-    private static func nativeScaleIfWithinOneBackingPixel(
+    private static func nativeScaleIfWithinOneSourcePixel(
         _ rawScale: CGFloat,
         decodedPixelSize: CGSize,
-        availableSize: CGSize,
-        backingScale: CGFloat
+        availableSize: CGSize
     ) -> CGFloat {
         guard rawScale >= 1 else { return rawScale }
-        let integralScale = floor(rawScale)
+        let integralScale = rawScale.rounded()
         guard integralScale >= 1 else { return rawScale }
         let horizontalRemainder = availableSize.width
             - decodedPixelSize.width * integralScale
         let verticalRemainder = availableSize.height
             - decodedPixelSize.height * integralScale
-        let tolerance = backingScale
-        guard horizontalRemainder >= 0,
-              verticalRemainder >= 0,
-              min(horizontalRemainder, verticalRemainder) <= tolerance else {
+        // An encoder may remove one odd source-pixel edge. At an integral
+        // destination scale that becomes `integralScale` backing pixels.
+        // Preserve the exact scale and center the tiny gutter/overflow rather
+        // than fractionally resampling every decoded pixel.
+        let tolerance = integralScale
+        guard horizontalRemainder >= -tolerance,
+              verticalRemainder >= -tolerance,
+              min(
+                  abs(horizontalRemainder),
+                  abs(verticalRemainder)
+              ) <= tolerance else {
             return rawScale
         }
         return integralScale
@@ -134,6 +134,7 @@ public final class WebRTCRemoteVideoView: NSView, RTCVideoViewDelegate {
 
     public override func viewDidChangeBackingProperties() {
         super.viewDidChangeBackingProperties()
+        configureVideoSampling()
         needsLayout = true
     }
 
@@ -194,6 +195,7 @@ public final class WebRTCRemoteVideoView: NSView, RTCVideoViewDelegate {
         layer?.backgroundColor = NSColor.black.cgColor
         videoView.delegate = self
         addSubview(videoView)
+        configureVideoSampling()
         layoutVideoView()
     }
 
@@ -206,6 +208,7 @@ public final class WebRTCRemoteVideoView: NSView, RTCVideoViewDelegate {
     }
 
     private func layoutVideoView() {
+        configureVideoSampling()
         guard bounds.width > 0, bounds.height > 0 else {
             videoView.frame = .zero
             return
@@ -219,6 +222,33 @@ public final class WebRTCRemoteVideoView: NSView, RTCVideoViewDelegate {
             in: bounds,
             backingScale: effectiveBackingScale
         )
+    }
+
+    /// WebRTC normally resizes its Metal drawable with the AppKit view and
+    /// linearly resamples the I420 textures inside its shader. Keeping that
+    /// drawable at the decoded frame size moves presentation scaling to Core
+    /// Animation: magnification can remain pixel-sharp while minification
+    /// continues to use a filtered RGB result.
+    private func configureVideoSampling() {
+        configureVideoSampling(in: videoView)
+    }
+
+    private func configureVideoSampling(in view: NSView) {
+        view.layer?.magnificationFilter = .nearest
+        view.layer?.minificationFilter = .linear
+        if let metalView = view as? MTKView,
+           decodedPixelSize.width > 0,
+           decodedPixelSize.height > 0 {
+            if metalView.autoResizeDrawable {
+                metalView.autoResizeDrawable = false
+            }
+            if metalView.drawableSize != decodedPixelSize {
+                metalView.drawableSize = decodedPixelSize
+            }
+        }
+        for subview in view.subviews {
+            configureVideoSampling(in: subview)
+        }
     }
 
     private var effectiveBackingScale: CGFloat {

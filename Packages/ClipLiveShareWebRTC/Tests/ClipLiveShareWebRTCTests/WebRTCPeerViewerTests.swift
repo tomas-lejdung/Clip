@@ -1,6 +1,7 @@
 import AppKit
 import ClipLiveShare
 import Foundation
+import MetalKit
 import Testing
 @preconcurrency import WebRTC
 @testable import ClipLiveShareWebRTC
@@ -237,6 +238,9 @@ extension NativeMediaResourceTests {
             view.layer?.contentsScale = retinaBackingScale
 
             let metalView = try #require(view.subviews.first as? RTCMTLNSVideoView)
+            let drawableView = try #require(
+                metalView.subviews.first as? MTKView
+            )
             view.videoView(metalView, didChangeVideoSize: decodedSize)
             for _ in 0 ..< 10 where view.decodedPixelSize != decodedSize {
                 await Task.yield()
@@ -271,6 +275,64 @@ extension NativeMediaResourceTests {
                 metalView.frame.minY * retinaBackingScale
                     == (metalView.frame.minY * retinaBackingScale).rounded()
             )
+            #expect(!drawableView.autoResizeDrawable)
+            #expect(drawableView.layer?.magnificationFilter == .nearest)
+            #expect(drawableView.layer?.minificationFilter == .linear)
+        }
+
+        @Test("Near-integral magnification clips an edge instead of resampling")
+        @MainActor
+        func nearIntegralMagnificationStaysExact() {
+            let frame = WebRTCRemoteVideoGeometry.contentFrame(
+                decodedPixelSize: CGSize(width: 640, height: 360),
+                in: CGRect(x: 0, y: 0, width: 1_278, height: 720),
+                backingScale: 1
+            )
+
+            // The viewport is two pixels narrower than an exact 2x surface.
+            // Keep every source pixel at 2x and clip one pixel from each edge.
+            #expect(frame == CGRect(
+                x: -1,
+                y: 0,
+                width: 1_280,
+                height: 720
+            ))
+        }
+
+        @Test("Renderer keeps its decoded drawable while the view magnifies")
+        @MainActor
+        func decodedDrawableDoesNotResizeWithPresentation() async throws {
+            let decodedSize = CGSize(width: 1_158, height: 668)
+            let view = WebRTCRemoteVideoView(frame: CGRect(
+                x: 0,
+                y: 0,
+                width: 1_158,
+                height: 668
+            ))
+            defer { view.teardown() }
+            view.layer?.contentsScale = 2
+
+            let renderer = try #require(
+                view.subviews.first as? RTCMTLNSVideoView
+            )
+            let drawableView = try #require(
+                renderer.subviews.first as? MTKView
+            )
+            view.videoView(renderer, didChangeVideoSize: decodedSize)
+            for _ in 0 ..< 10 where view.decodedPixelSize != decodedSize {
+                await Task.yield()
+            }
+
+            // Exercise an arbitrary enlargement too: all magnification is
+            // delegated to Core Animation's nearest-neighbour filter.
+            view.frame.size = CGSize(width: 1_447.5, height: 835)
+            view.layoutSubtreeIfNeeded()
+            renderer.layoutSubtreeIfNeeded()
+
+            #expect(!drawableView.autoResizeDrawable)
+            #expect(drawableView.drawableSize == decodedSize)
+            #expect(drawableView.layer?.magnificationFilter == .nearest)
+            #expect(drawableView.layer?.minificationFilter == .linear)
         }
     }
 }
