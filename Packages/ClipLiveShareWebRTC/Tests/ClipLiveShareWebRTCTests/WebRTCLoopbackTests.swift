@@ -577,6 +577,121 @@ struct WebRTCLoopbackTests {
         }
     }
 
+    @Test("Tagged Rec.709 video-range input keeps its metadata and RGB levels")
+    func taggedRec709ColorContract() async throws {
+        let decoded = try #require(await decodeRec709ColorFixture(using: .vp8))
+        let error = meanRGBError(
+            decoded.rgb(.video),
+            rec709Bars.map(\.rgb)
+        )
+
+        #expect(decoded.exposesColorSpaceAPI)
+        #expect(decoded.colorSpace == .rec709Limited, Comment(rawValue:
+            "Tagged 420v metadata was \(String(describing: decoded.colorSpace)); "
+                + decoded.summary
+        ))
+        #expect(error <= 4, Comment(rawValue:
+            "Tagged Rec.709 mean RGB patch error was \(error) levels; "
+                + decoded.summary
+        ))
+    }
+
+    @Test("Native Display BGRA preserves gamut, transfer, and BT.601 samples")
+    func nativeDisplayBGRAColorContract() async throws {
+        for profile in NativeBGRAColorProfile.allCases {
+            let decoded = try #require(
+                await decodeNativeBGRAColorFixture(profile: profile)
+            )
+            let expected = profile.expectedDecodedColorSpace
+            let rgbError = meanRGBError(
+                decoded.rgbBT601(.video),
+                rec709Bars.map(\.rgb)
+            )
+            let blackLuma = decoded.yuv[0].x
+            let whiteLuma = decoded.yuv[rec709Bars.count - 1].x
+
+            #expect(decoded.exposesColorSpaceAPI)
+            #expect(decoded.colorSpace == expected, Comment(rawValue:
+                "\(profile) decoded metadata was "
+                    + "\(String(describing: decoded.colorSpace)); "
+                    + "expected \(expected)"
+            ))
+            #expect(abs(blackLuma - 16) <= 4, Comment(rawValue:
+                "\(profile) black luma was \(blackLuma), expected video black 16"
+            ))
+            #expect(abs(whiteLuma - 235) <= 4, Comment(rawValue:
+                "\(profile) white luma was \(whiteLuma), expected video white 235"
+            ))
+            #expect(rgbError <= 6, Comment(rawValue:
+                "\(profile) BT.601 limited RGB error was \(rgbError) levels; "
+                    + decoded.summary
+            ))
+        }
+    }
+
+    @Test(
+        "Display P3 BGRA round-trips through optional software codecs",
+        arguments: [WebRTCVideoCodec.vp9, .av1]
+    )
+    func displayP3BGRASoftwareCodecRoundTrip(
+        codec: WebRTCVideoCodec
+    ) async throws {
+        let isSupported = switch codec {
+        case .vp9:
+            RTCVideoEncoderVP9.isSupported()
+        case .av1:
+            RTCVideoEncoderAV1.isSupported()
+        default:
+            false
+        }
+        try #require(
+            isSupported,
+            Comment(rawValue:
+                "The reviewed WebRTC artifact must include \(codec.rtcName)"
+            )
+        )
+
+        let profile = NativeBGRAColorProfile.displayP3SRGB
+        let decoded = try #require(await decodeNativeBGRAColorFixture(
+            profile: profile,
+            codec: codec
+        ))
+        let rgbError = meanRGBError(
+            decoded.rgbBT601(.video),
+            rec709Bars.map(\.rgb)
+        )
+
+        #expect(decoded.colorSpace == profile.expectedDecodedColorSpace, Comment(rawValue:
+            "\(codec.rtcName) Display P3 metadata was "
+                + "\(String(describing: decoded.colorSpace))"
+        ))
+        #expect(rgbError <= 6, Comment(rawValue:
+            "\(codec.rtcName) Display P3 RGB error was \(rgbError) levels; "
+                + decoded.summary
+        ))
+    }
+
+    @Test("H264 normalizes Native Display P3 input to its Rec.709 bitstream")
+    func h264NativeDisplayColorNormalization() async throws {
+        let decoded = try #require(await decodeNativeBGRAColorFixture(
+            profile: .displayP3SRGB,
+            codec: .h264
+        ))
+        let rgbError = meanRGBError(
+            decoded.rgb(.full),
+            rec709Bars.map(\.rgb)
+        )
+
+        #expect(decoded.colorSpace == .rec709Full, Comment(rawValue:
+            "H264 Native Display metadata was "
+                + "\(String(describing: decoded.colorSpace)); expected Rec.709 full"
+        ))
+        #expect(rgbError <= 6, Comment(rawValue:
+            "H264 Native Display Rec.709 RGB error was \(rgbError) levels; "
+                + decoded.summary
+        ))
+    }
+
     @Test(
         "VP9 and AV1 fall back to VP8 for a VP8-only viewer",
         arguments: [WebRTCVideoCodec.vp9, .av1]
@@ -821,7 +936,9 @@ struct WebRTCLoopbackTests {
         #expect(answer.sdp.localizedCaseInsensitiveContains(
             " \(expectedCodecName)/90000"
         ))
-        if expectedCodecName == WebRTCVideoCodec.vp8.rtcName {
+        if expectedCodecName == WebRTCVideoCodec.vp8.rtcName,
+           preferredCodec != .vp8
+        {
             #expect(!answer.sdp.localizedCaseInsensitiveContains(
                 " \(preferredCodec.rtcName)/90000"
             ))
@@ -880,6 +997,25 @@ struct WebRTCLoopbackTests {
         }
     }
 
+    private func decodeNativeBGRAColorFixture(
+        profile: NativeBGRAColorProfile,
+        codec: WebRTCVideoCodec = .vp8
+    ) async throws -> DecodedColorBars? {
+        try await assertCodecFrameLoopback(
+            preferredCodec: codec,
+            decoderFactory: RTCDefaultVideoDecoderFactory(),
+            expectedCodecName: codec.rtcName,
+            capturesDecodedVideoFrame: true
+        ) { index in
+            try makeNativeBGRAColorFixtureFrame(
+                index: index,
+                width: 320,
+                height: 180,
+                profile: profile
+            )
+        }
+    }
+
     @Test("native Retina-sized windows encode and render at source resolution")
     func nativeResolutionLoopback() async throws {
         for size in [
@@ -914,7 +1050,7 @@ struct WebRTCLoopbackTests {
                     maximumFramesPerSecond: 30,
                     maintainsResolution: true
                 ),
-                resourceLimits: .init(answerTimeout: 0.05)
+                resourceLimits: .init(answerTimeout: 5)
             ),
             eventQueue: bridge.eventQueue,
             eventHandler: { event in bridge.receive(hostEvent: event) }
@@ -1133,7 +1269,7 @@ struct WebRTCLoopbackTests {
                     maximumFramesPerSecond: 30,
                     maintainsResolution: true
                 ),
-                resourceLimits: .init(answerTimeout: 0.05)
+                resourceLimits: .init(answerTimeout: 5)
             ),
             eventQueue: bridge.eventQueue,
             eventHandler: { event in bridge.receive(hostEvent: event) }
@@ -1654,6 +1790,49 @@ private struct Rec709Bar: Sendable {
     let yuv: SIMD3<UInt8>
 }
 
+private enum NativeBGRAColorProfile: String, CaseIterable, Sendable {
+    case displayP3SRGB
+    case displayP3Rec709
+    case sRGB
+    case rec709
+    case untagged
+
+    var primariesAttachment: CFString? {
+        switch self {
+        case .displayP3SRGB, .displayP3Rec709:
+            kCVImageBufferColorPrimaries_P3_D65
+        case .sRGB, .rec709:
+            kCVImageBufferColorPrimaries_ITU_R_709_2
+        case .untagged:
+            nil
+        }
+    }
+
+    var transferAttachment: CFString? {
+        switch self {
+        case .displayP3SRGB, .sRGB:
+            kCVImageBufferTransferFunction_sRGB
+        case .displayP3Rec709, .rec709:
+            kCVImageBufferTransferFunction_ITU_R_709_2
+        case .untagged:
+            nil
+        }
+    }
+
+    var expectedDecodedColorSpace: DecodedColorSpace {
+        switch self {
+        case .displayP3SRGB:
+            .bt601Limited(primaries: 12, transfer: 13)
+        case .displayP3Rec709:
+            .bt601Limited(primaries: 12, transfer: 1)
+        case .sRGB, .untagged:
+            .bt601Limited(primaries: 1, transfer: 13)
+        case .rec709:
+            .bt601Limited(primaries: 1, transfer: 1)
+        }
+    }
+}
+
 private let rec709Bars = [
     Rec709Bar(rgb: .init(0, 0, 0), yuv: .init(16, 128, 128)),
     Rec709Bar(rgb: .init(255, 0, 0), yuv: .init(63, 102, 240)),
@@ -1706,6 +1885,20 @@ private struct DecodedColorBars: Sendable {
         }
     }
 
+    func rgbBT601(_ range: SignalRange) -> [SIMD3<Double>] {
+        yuv.map { sample in
+            let y = range == .video ? (sample.x - 16) * 255 / 219 : sample.x
+            let scale = range == .video ? 255.0 / 224 : 1
+            let cb = (sample.y - 128) * scale
+            let cr = (sample.z - 128) * scale
+            return SIMD3(
+                Self.clamp(y + 1.402 * cr),
+                Self.clamp(y - 0.344136 * cb - 0.714136 * cr),
+                Self.clamp(y + 1.772 * cb)
+            )
+        }
+    }
+
     var summary: String {
         yuv.map {
             String(format: "(%.1f,%.1f,%.1f)", $0.x, $0.y, $0.z)
@@ -1742,6 +1935,13 @@ private struct DecodedColorSpace: Equatable, Sendable {
     var range: Int32
 
     static let rec709Limited = Self(primaries: 1, transfer: 1, matrix: 1, range: 1)
+    static let rec709Full = Self(primaries: 1, transfer: 1, matrix: 1, range: 2)
+    static func bt601Limited(
+        primaries: Int32,
+        transfer: Int32
+    ) -> Self {
+        Self(primaries: primaries, transfer: transfer, matrix: 6, range: 1)
+    }
 
     private init(primaries: Int32, transfer: Int32, matrix: Int32, range: Int32) {
         self.primaries = primaries
@@ -1935,6 +2135,57 @@ private func makeRec709ColorFixtureFrame(
                         base[y * stride + x * 2 + 1] = color.z
                     }
                 }
+            }
+        }
+    }
+}
+
+private func makeNativeBGRAColorFixtureFrame(
+    index: Int,
+    width: Int,
+    height: Int,
+    profile: NativeBGRAColorProfile
+) throws -> BorrowedCaptureVideoFrame {
+    try makeFixtureFrame(
+        index: index,
+        width: width,
+        height: height,
+        pixelFormat: kCVPixelFormatType_32BGRA
+    ) { buffer in
+        if let primaries = profile.primariesAttachment {
+            CVBufferSetAttachment(
+                buffer,
+                kCVImageBufferColorPrimariesKey,
+                primaries,
+                .shouldPropagate
+            )
+        }
+        if let transfer = profile.transferAttachment {
+            CVBufferSetAttachment(
+                buffer,
+                kCVImageBufferTransferFunctionKey,
+                transfer,
+                .shouldPropagate
+            )
+        }
+
+        guard let base = CVPixelBufferGetBaseAddress(buffer) else {
+            throw WebRTCPeerHostError.localDescriptionCreationFailed(
+                "Native Display BGRA fixture"
+            )
+        }
+        let bytes = base.assumingMemoryBound(to: UInt8.self)
+        let stride = CVPixelBufferGetBytesPerRow(buffer)
+        for y in 0 ..< height {
+            for x in 0 ..< width {
+                let color = rec709Bars[
+                    min(rec709Bars.count - 1, x * rec709Bars.count / width)
+                ].rgb
+                let offset = y * stride + x * 4
+                bytes[offset] = UInt8(color.z)
+                bytes[offset + 1] = UInt8(color.y)
+                bytes[offset + 2] = UInt8(color.x)
+                bytes[offset + 3] = 255
             }
         }
     }

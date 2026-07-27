@@ -55,8 +55,8 @@ if usesLocalWebRTC {
     packageTargets.insert(
         .binaryTarget(
             name: webRTCTargetName,
-            url: "https://github.com/tomas-lejdung/Clip/releases/download/webrtc-m150-clip-rec709-1/WebRTC-150.0.0-clip-native-color-macos-arm64.xcframework.zip",
-            checksum: "da95cddeff04e1483cad83c17c0ed21a95d2ece8ea1b12f2aa3ab14382f7a2d3"
+            url: "https://github.com/tomas-lejdung/Clip/releases/download/webrtc-m150-clip-native-color-2/WebRTC-150.0.0-clip-native-color-macos-arm64.xcframework.zip",
+            checksum: "a4d8b211049ac38074d9120e0f1eec87625118e29e835b9bea40f7dcab9abbe9"
         ),
         at: 0
     )

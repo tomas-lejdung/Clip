@@ -38,6 +38,9 @@ Installed local WebRTC validation artifact:
   destination: $DESTINATION
   source executable SHA-256: $EXECUTABLE_SHA256
 
-SwiftPM will now prefer this ignored binary. Remove the destination directory
-to return to the pinned release artifact.
+SwiftPM will now prefer this ignored binary. Clip's scripts disable the
+manifest cache for this package so an earlier remote-artifact decision cannot
+hide the override. For direct SwiftPM commands, also pass
+--manifest-cache none. Remove the destination directory to return to the pinned
+release artifact.
 EOF

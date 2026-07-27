@@ -9,14 +9,32 @@ unspecified.
 `0001-clip-rec709-color-signaling.patch` makes the existing Clip capture,
 bitstream, and native rendering contract explicit:
 
-- `420v` is Rec.709 limited range.
-- `420f` is Rec.709 full range.
-- other formats remain untagged, preserving WebRTC's existing behavior.
+- `420v` is video range and `420f` is full range. Their CoreVideo primaries,
+  transfer, and matrix attachments are converted to the corresponding CICP
+  values, with Rec.709 as the fallback when redundant attachments are absent.
+- Packed BGRA/ARGB preserves its CoreVideo primaries and transfer function,
+  including sRGB and Display P3. If those string attachments are absent, the
+  patch recognizes the image buffer's named sRGB, Display P3, or ITU-R BT.709
+  `CGColorSpace`; unknown RGB defaults to sRGB. WebRTC converts these buffers
+  through libyuv's `ARGBToI420`/`BGRAToI420`, so their physical I420 matrix
+  and range are always described as BT.601/SMPTE 170M limited range.
+- Other formats remain untagged, preserving WebRTC's existing behavior.
 - AV1 writes the native frame's CICP values into its sequence header as well
   as WebRTC's negotiated color-space RTP extension.
 - decoded color metadata crosses the C++/Objective-C frame bridge.
-- the macOS Metal renderer selects Rec.709 video- or full-range conversion
-  instead of treating every I420 frame as legacy full-range BT.601.
+- the macOS Metal renderer independently selects BT.601 or Rec.709 video/full
+  range conversion. A Display P3 frame carrying a BT.709 transfer is converted
+  from BT.709 nonlinear RGB to sRGB nonlinear RGB before the output is marked
+  Display P3; native P3/sRGB frames remain direct. Metal output is then marked
+  as sRGB, Display P3, or ITU-R BT.709 for Core Animation's final display
+  conversion.
+
+Clip's custom VideoToolbox H.264 encoder remains intentionally normalized to
+Rec.709 video range. WebRTC's metadata writer normally copies the input
+`VideoFrame` color space onto the encoded image and may rewrite the H.264 SPS
+from it. The patch replaces that copied value with explicit Rec.709
+primaries/transfer/matrix and limited range for H.264 before the SPS rewrite,
+keeping RTP metadata and VideoToolbox's Rec.709 VUI consistent.
 
 Apply the patch from the WebRTC source root before building the framework:
 

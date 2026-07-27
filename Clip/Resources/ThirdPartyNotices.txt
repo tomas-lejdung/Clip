@@ -142,8 +142,8 @@ POSSIBILITY OF SUCH DAMAGE.
 Clip WebRTC M150 binary
 Source: https://webrtc.googlesource.com/src, version 150.0.0
 Source commit: 1f975dfd761af6e5d76d28333191973b258d82a8
-Clip binary artifact: https://github.com/tomas-lejdung/Clip/releases/download/webrtc-m150-clip-rec709-1/WebRTC-150.0.0-clip-native-color-macos-arm64.xcframework.zip
-Clip patch SHA-256: 167fe7e336ce93e274aafa9a810aee938a03ae0109c3e8dc0301103438743778
+Clip binary artifact: https://github.com/tomas-lejdung/Clip/releases/download/webrtc-m150-clip-native-color-2/WebRTC-150.0.0-clip-native-color-macos-arm64.xcframework.zip
+Clip patch SHA-256: e58f6bc5f0dda361000081d6868ca1cf0a791a48576f92b850a1f5df6820cb6a
 
 The complete WebRTC and bundled third-party license text generated from this
 source revision is distributed alongside this file as

@@ -30,6 +30,9 @@
     "%@ has no visible windows on the original display." : {
 
     },
+    "%@ proved its saved Clip identity." : {
+
+    },
     "%@ will be permanently deleted." : {
 
     },
@@ -84,6 +87,15 @@
     "%lld of 4 windows" : {
 
     },
+    "%lld packets" : {
+
+    },
+    "%lld s" : {
+
+    },
+    "%lld%%" : {
+
+    },
     "1 day" : {
 
     },
@@ -105,10 +117,19 @@
     "5 seconds" : {
 
     },
+    "50% · 2×" : {
+
+    },
     "60 FPS" : {
 
     },
+    "67% · 1.5×" : {
+
+    },
     "7 days" : {
+
+    },
+    "80% · 1.25×" : {
 
     },
     "A recording is already in progress." : {
@@ -123,10 +144,43 @@
     "Access Code" : {
 
     },
+    "Access code" : {
+
+    },
+    "Access code required" : {
+
+    },
+    "Actual" : {
+
+    },
+    "Add %@ as a friend?" : {
+
+    },
+    "Add Friend" : {
+
+    },
     "Add Window" : {
 
     },
+    "Add as Friend" : {
+
+    },
+    "Advanced %@" : {
+
+    },
+    "Advanced %@ Settings" : {
+
+    },
+    "Advanced…" : {
+
+    },
     "All visible windows on this display" : {
+
+    },
+    "Allow" : {
+
+    },
+    "Allow %@ to view this Live Share?" : {
 
     },
     "Allow Screen Recording" : {
@@ -141,19 +195,55 @@
     "Allowed" : {
 
     },
-    "Verified by this Mac; the server never receives the code." : {
+    "Applied changes affect the current stream immediately." : {
 
     },
     "Apply" : {
 
     },
+    "Audio" : {
+
+    },
     "Audio is optional" : {
+
+    },
+    "Auto" : {
+
+    },
+    "Auto uses Clip and WebRTC defaults. Lower maximum QP preserves more detail but can increase frame drops or latency when bandwidth is constrained." : {
+
+    },
+    "Auto uses WebRTC's codec defaults. Sender controls still apply without replacing the built-in encoder." : {
+
+    },
+    "Auto · 2 s" : {
+
+    },
+    "Auto · 98%" : {
+
+    },
+    "Auto · Follow Mode" : {
+
+    },
+    "Auto · Native" : {
 
     },
     "Auto-share Focused Windows" : {
 
     },
+    "Auto-share focused windows" : {
+
+    },
     "Back" : {
+
+    },
+    "Balanced" : {
+
+    },
+    "Block" : {
+
+    },
+    "Blocked" : {
 
     },
     "Calculating storage usage…" : {
@@ -267,6 +357,9 @@
     "Clip could not prepare a recoverable recording file. Check available storage and try again." : {
 
     },
+    "Clip could not reach this Live Share server." : {
+
+    },
     "Clip could not show its Dock icon. Try again." : {
 
     },
@@ -277,6 +370,9 @@
 
     },
     "Clip could not verify this managed export." : {
+
+    },
+    "Clip couldn’t access this Mac’s secure Live Share identity. Try again." : {
 
     },
     "Clip couldn’t add the shared MP4 to Exports. The file is still available." : {
@@ -292,6 +388,9 @@
 
     },
     "Clip countdown" : {
+
+    },
+    "Clip discovers the viewer, encrypted signaling, and ICE configuration from this server root. Changes apply to the next Live Share session." : {
 
     },
     "Clip is dropping many capture frames. Lower the frame rate or quality." : {
@@ -333,7 +432,22 @@
     "Codec" : {
 
     },
+    "Codec controls" : {
+
+    },
+    "Color" : {
+
+    },
+    "Color behavior" : {
+
+    },
     "Compact" : {
+
+    },
+    "Compatible Rec.709" : {
+
+    },
+    "Congestion Behavior" : {
 
     },
     "Connected" : {
@@ -348,6 +462,9 @@
     "Connecting…" : {
 
     },
+    "Connection" : {
+
+    },
     "Continue" : {
 
     },
@@ -357,10 +474,7 @@
     "Copy" : {
 
     },
-    "Copy Code" : {
-
-    },
-    "Copy Link" : {
+    "Copy Invite" : {
 
     },
     "Couldn’t create a share link. Try again." : {
@@ -384,7 +498,13 @@
     "Current usage" : {
 
     },
+    "Custom" : {
+
+    },
     "Customize Shortcuts in Settings…" : {
+
+    },
+    "Decline" : {
 
     },
     "Default Save As folder" : {
@@ -397,6 +517,9 @@
 
     },
     "Default preset" : {
+
+    },
+    "Default stream" : {
 
     },
     "Delete" : {
@@ -438,6 +561,12 @@
     "Deterministic UI scenarios are available only in isolated UI-test launches." : {
 
     },
+    "Device" : {
+
+    },
+    "Disable Adaptation" : {
+
+    },
     "Discard Recording" : {
 
     },
@@ -451,6 +580,9 @@
 
     },
     "Display" : {
+
+    },
+    "Display input · H.264 outputs Rec.709" : {
 
     },
     "Done" : {
@@ -492,6 +624,9 @@
     "Enter a filename format, such as clip-YYYYMMDD-HHmmss." : {
 
     },
+    "Enter a valid Live Share server address." : {
+
+    },
     "Enter a valid MP4 filename without folders or control characters." : {
 
     },
@@ -522,6 +657,9 @@
     "Files created by Copy or drag will appear here while Clip keeps them available." : {
 
     },
+    "Fingerprint" : {
+
+    },
     "Finish" : {
 
     },
@@ -531,7 +669,16 @@
     "Finished recordings will appear here until the configured cleanup date." : {
 
     },
+    "Finishing setup" : {
+
+    },
     "Finishing…" : {
+
+    },
+    "Fit" : {
+
+    },
+    "Fit to Window" : {
 
     },
     "Focused" : {
@@ -543,7 +690,31 @@
     "Frame rate" : {
 
     },
+    "Friend request declined" : {
+
+    },
+    "Friend request sent" : {
+
+    },
+    "Friends" : {
+
+    },
+    "Friends could not be loaded." : {
+
+    },
+    "Friends could not be saved." : {
+
+    },
+    "Friends use this fingerprint to verify this Mac. Reset it only if you want this device to become a new identity." : {
+
+    },
+    "Friends you add will appear here." : {
+
+    },
     "From %@" : {
+
+    },
+    "Full-range Rec.709" : {
 
     },
     "Fullscreen" : {
@@ -552,7 +723,13 @@
     "Fullscreen selected" : {
 
     },
+    "Future native Live Shares will still ask before this friend can view." : {
+
+    },
     "General" : {
+
+    },
+    "Getting ready" : {
 
     },
     "Global shortcuts" : {
@@ -579,7 +756,25 @@
     "Insane" : {
 
     },
+    "Invite" : {
+
+    },
+    "Join" : {
+
+    },
+    "Join Share" : {
+
+    },
+    "Join a Share" : {
+
+    },
+    "Join an Invite" : {
+
+    },
     "Keep Recording" : {
+
+    },
+    "Keep Viewing" : {
 
     },
     "Keep original recording after export" : {
@@ -588,10 +783,22 @@
     "Keep recordings" : {
 
     },
+    "Keyframe Interval" : {
+
+    },
+    "L1T%lld" : {
+
+    },
     "Last Area" : {
 
     },
     "Launch Clip at login" : {
+
+    },
+    "Leave" : {
+
+    },
+    "Leave this Live Share?" : {
 
     },
     "Live" : {
@@ -600,7 +807,16 @@
     "Live Share" : {
 
     },
+    "Live Share Viewer" : {
+
+    },
     "Live Share couldn’t complete this action. Try again." : {
+
+    },
+    "Live Share defaults could not be loaded or repaired." : {
+
+    },
+    "Live Share defaults could not be saved." : {
 
     },
     "Live Share overlays" : {
@@ -609,7 +825,19 @@
     "Live · %@" : {
 
     },
+    "Loading this device fingerprint" : {
+
+    },
+    "Local name" : {
+
+    },
+    "Lost" : {
+
+    },
     "Low" : {
+
+    },
+    "Mac" : {
 
     },
     "Main Display" : {
@@ -628,6 +856,9 @@
 
     },
     "Max" : {
+
+    },
+    "Maximum QP" : {
 
     },
     "Medium" : {
@@ -657,7 +888,25 @@
     "Move share control to the other side" : {
 
     },
+    "Names are local to this Mac. Blocking keeps the Friend saved but prevents trusted connections; removing deletes the local record." : {
+
+    },
+    "Native 100%" : {
+
+    },
+    "Native Display" : {
+
+    },
+    "Native · 1×" : {
+
+    },
+    "New Room" : {
+
+    },
     "No Exports" : {
+
+    },
+    "No Friends yet. Add one from the Live Share popover." : {
 
     },
     "No Recordings" : {
@@ -684,6 +933,9 @@
     "Off" : {
 
     },
+    "Offline" : {
+
+    },
     "On" : {
 
     },
@@ -701,6 +953,12 @@
       }
     },
     "Open System Settings" : {
+
+    },
+    "Paste a complete Clip invite" : {
+
+    },
+    "Paste an invite from another Clip user to view their share." : {
 
     },
     "Pause" : {
@@ -733,7 +991,16 @@
     "Play" : {
 
     },
+    "Play shared audio" : {
+
+    },
     "Playback is muted and shared files contain no audio." : {
+
+    },
+    "Preserve Frame Rate" : {
+
+    },
+    "Preserve Resolution" : {
 
     },
     "Preview" : {
@@ -743,6 +1010,9 @@
 
     },
     "Prioritize Focused Window" : {
+
+    },
+    "Prioritize focused window" : {
 
     },
     "Quality" : {
@@ -755,6 +1025,9 @@
 
     },
     "Quit Clip" : {
+
+    },
+    "Rate" : {
 
     },
     "Ready to record" : {
@@ -833,6 +1106,9 @@
     "Remember the last area" : {
 
     },
+    "Remove" : {
+
+    },
     "Remove after export or share" : {
 
     },
@@ -854,10 +1130,43 @@
     "Request Screen Recording Access" : {
 
     },
+    "Requested Bitrate Floor" : {
+
+    },
+    "Require an access code" : {
+
+    },
+    "Reset" : {
+
+    },
+    "Reset Identity" : {
+
+    },
+    "Reset Identity…" : {
+
+    },
+    "Reset Live Share Identity?" : {
+
+    },
     "Reset Quality Defaults" : {
 
     },
+    "Reset Server Address" : {
+
+    },
     "Reset Trim" : {
+
+    },
+    "Reset Window to Actual Size" : {
+
+    },
+    "Resetting Live Share identity" : {
+
+    },
+    "Resolution Scale" : {
+
+    },
+    "Restore All Live Share Defaults" : {
 
     },
     "Restore Default Shortcuts" : {
@@ -901,6 +1210,15 @@
     "Reveal in Finder" : {
 
     },
+    "SDR · 8-bit · full range" : {
+
+    },
+    "SDR · 8-bit · video range" : {
+
+    },
+    "SDR · H.264 uses its standard range" : {
+
+    },
     "Save As…" : {
 
     },
@@ -937,6 +1255,15 @@
     "Selected Area" : {
 
     },
+    "Server" : {
+
+    },
+    "Server address" : {
+
+    },
+    "Server is reachable." : {
+
+    },
     "Settings" : {
 
     },
@@ -956,16 +1283,31 @@
     "Share Focused Window" : {
 
     },
-    "Share Link" : {
+    "Share ended" : {
 
     },
     "Share link temporarily unavailable. Existing viewers stay connected." : {
+
+    },
+    "Share system audio" : {
+
+    },
+    "Shared Window" : {
+
+    },
+    "Shared Windows" : {
 
     },
     "Shares app audio, or system audio in Fullscreen." : {
 
     },
     "Shares only the currently focused window." : {
+
+    },
+    "Sharing behavior" : {
+
+    },
+    "Show All" : {
 
     },
     "Show Clip in the Dock" : {
@@ -980,6 +1322,9 @@
     "Silent countdown" : {
 
     },
+    "Size" : {
+
+    },
     "Smallest" : {
 
     },
@@ -987,6 +1332,9 @@
 
     },
     "Source deleted" : {
+
+    },
+    "Source display color · 8-bit SDR" : {
 
     },
     "Source live" : {
@@ -999,6 +1347,9 @@
 
     },
     "Space" : {
+
+    },
+    "Start Sharing" : {
 
     },
     "Start Using Clip" : {
@@ -1071,6 +1422,15 @@
     "System audio became unavailable. Video recording continues without system audio." : {
 
     },
+    "Temporal Layers" : {
+
+    },
+    "Test Connection" : {
+
+    },
+    "Testing…" : {
+
+    },
     "The .mp4 extension is added automatically" : {
 
     },
@@ -1081,6 +1441,15 @@
 
     },
     "The Live Share connection was lost. Try again." : {
+
+    },
+    "The Live Share server address could not be loaded or reset." : {
+
+    },
+    "The Live Share server address could not be saved." : {
+
+    },
+    "The Live Share server returned an invalid response." : {
 
     },
     "The captured video will be permanently discarded." : {
@@ -1119,6 +1488,9 @@
     "The original display (%@) is no longer available." : {
 
     },
+    "The peer connection closed." : {
+
+    },
     "The recording did not contain any video frames." : {
 
     },
@@ -1132,6 +1504,9 @@
 
     },
     "The same global shortcut is assigned to %@. Choose a different shortcut for each action." : {
+
+    },
+    "The saved friend's server did not provide a valid WebRTC configuration." : {
 
     },
     "The screen capture stream ended unexpectedly." : {
@@ -1149,10 +1524,31 @@
     "The selected recording is no longer available." : {
 
     },
+    "The server does not expose Clip Live Share capabilities (HTTP %lld)." : {
+
+    },
+    "The server does not support Clip Live Share Protocol v1." : {
+
+    },
     "The video encoder couldn’t start." : {
 
     },
     "There is no recording in progress." : {
+
+    },
+    "These are defaults for new sessions. Controls in the Live Share popover can still change the active session." : {
+
+    },
+    "This Device" : {
+
+    },
+    "This Mac’s secure Live Share identity is damaged and could not be loaded." : {
+
+    },
+    "This device fingerprint" : {
+
+    },
+    "This device will receive a new fingerprint and all local Friends will be removed. Existing Friends will no longer recognize it." : {
 
     },
     "This export is currently in use. Try again when sharing finishes." : {
@@ -1170,6 +1566,9 @@
     "This removes the managed recording from Clip History. Files previously saved or shared are not deleted." : {
 
     },
+    "This share requires the code provided by the host." : {
+
+    },
     "Tokens: YYYY year, MM month, DD day, HH hour, mm minute, and ss second. They are case-sensitive; .mp4 is added automatically." : {
 
     },
@@ -1177,6 +1576,9 @@
 
     },
     "Trim start" : {
+
+    },
+    "Try Again" : {
 
     },
     "Try Another Shortcut" : {
@@ -1194,13 +1596,25 @@
     "Unavailable" : {
 
     },
+    "Unblock" : {
+
+    },
+    "Unknown" : {
+
+    },
     "Untitled Window" : {
 
     },
     "Uptime %@" : {
 
     },
+    "Verified by this Mac; the server never receives the code." : {
+
+    },
     "Very High" : {
+
+    },
+    "Video" : {
 
     },
     "Video continues without microphone audio." : {
@@ -1212,7 +1626,19 @@
     "Video timeline" : {
 
     },
+    "VideoToolbox Quality" : {
+
+    },
     "Viewers" : {
+
+    },
+    "Viewing live share" : {
+
+    },
+    "Waiting for %@ to share a window…" : {
+
+    },
+    "Waiting for host approval…" : {
 
     },
     "Waiting for the first video frame…" : {
@@ -1227,16 +1653,28 @@
     "Working" : {
 
     },
+    "You are closing the final visible shared window." : {
+
+    },
     "You can continue now and grant access when you make the first recording." : {
 
     },
     "clip-YYYYMMDD-HHmmss.mp4" : {
 
     },
+    "https://example.com" : {
+
+    },
     "macOS must allow this exact Clip build. If Clip already appears enabled, turn it off and on again, or remove it and re-add /Applications/Clip.app. Then quit and reopen Clip." : {
 
     },
     "macOS requires Screen & System Audio Recording access before Clip can record the area or display you choose. Clip excludes its own windows and keeps recordings local." : {
+
+    },
+    "the host" : {
+
+    },
+    "·" : {
 
     },
     "✓ Video copied" : {
