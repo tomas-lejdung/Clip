@@ -3,43 +3,34 @@
     <channel>
         <title>Clip</title>
         <item>
-            <title>1.3.9</title>
-            <pubDate>Mon, 27 Jul 2026 18:55:54 +0200</pubDate>
-            <sparkle:version>14</sparkle:version>
-            <sparkle:shortVersionString>1.3.9</sparkle:shortVersionString>
+            <title>1.3.10</title>
+            <pubDate>Mon, 27 Jul 2026 19:55:17 +0200</pubDate>
+            <sparkle:version>15</sparkle:version>
+            <sparkle:shortVersionString>1.3.10</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
             <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
-            <description sparkle:format="markdown"><![CDATA[# Clip 1.3.9
+            <description sparkle:format="markdown"><![CDATA[# Clip 1.3.10
 
-Clip 1.3.9 brings Live Share much closer to source-display quality in both the
-web and app viewers.
+Clip 1.3.10 makes app-to-app Live Share sharper when a window from a standard
+1× display is viewed on a Retina Mac.
 
-## Live Share quality
+## Native viewer
 
-- Preserve the captured pixel dimensions through WebRTC instead of introducing
-  point-versus-pixel scaling that softened text and UI edges.
-- Render app-to-app shares at exact backing-pixel scale when they fit, with
-  crisp integral scaling when the viewer window is resized.
-- Seed new peer connections from the selected quality bandwidth so screen
-  content stays sharper during scrolling and other high-motion updates.
-- Expand stream diagnostics with source, capture, manifest, encoded-dimension,
-  bitrate, QP, encode-time, and send-queue details.
-
-## Color
-
-- Carry Native Display color metadata through Clip's reviewed WebRTC build and
-  apply it in the native Metal viewer.
-- Keep compatible Rec.709 fallbacks for streams or displays that do not provide
-  usable native color metadata.
-- Update the web viewer protocol so browser and app viewers use the same source
-  geometry and color contract.
+- Keep WebRTC's Metal drawable at the decoded video resolution so presentation
+  scaling no longer blurs the source inside the video shader.
+- Use nearest-neighbour sampling whenever shared content is enlarged, including
+  standard-display shares shown at their native logical size on Retina.
+- Continue using filtered scaling when Retina content is reduced for a smaller
+  window or standard-density display.
+- Snap tiny odd-dimension encoder differences to the intended integer scale
+  instead of stretching every source pixel fractionally.
 
 ## Requirements
 
 Clip requires macOS 15 or later on Apple silicon. This build uses the same
 stable Apple Development identity as previous updater releases.
 ]]></description>
-            <enclosure url="https://github.com/tomas-lejdung/Clip/releases/download/v1.3.9/Clip-1.3.9.dmg" length="12206659" type="application/octet-stream" sparkle:edSignature="F/qfB2bMyW+PKQHgaY9QNYHn9yUxWyraTjIhd1j1Lk3YV7uR9ztcTTXXOFzsDM121q1uuMaRMg2EwhfmrCI6CQ=="/>
+            <enclosure url="https://github.com/tomas-lejdung/Clip/releases/download/v1.3.10/Clip-1.3.10.dmg" length="12207471" type="application/octet-stream" sparkle:edSignature="0ullJzYIE0GoHz66SU+FVD/6+5YuqA81F27oRfZvW5Fw1dz8r+F8HI2pA4c+ATT4esU0u3IvSyMWkDBnzNRoAQ=="/>
         </item>
     </channel>
 </rss>
