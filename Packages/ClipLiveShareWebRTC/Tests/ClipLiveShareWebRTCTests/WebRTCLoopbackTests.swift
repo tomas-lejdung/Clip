@@ -382,14 +382,15 @@ struct WebRTCLoopbackTests {
     @Test("VP8 screensharing encoder delivers captured pixel buffers")
     func vp8FrameLoopback() async throws {
         let bridge = LoopbackBridge()
+        let fullSenderPolicy = WebRTCSenderPolicy(
+            maximumBitrateBps: 2_000_000,
+            maximumFramesPerSecond: 30,
+            maintainsResolution: true
+        )
         let host = try WebRTCPeerHost(
             configuration: .init(
                 iceServers: [],
-                senderPolicy: .init(
-                    maximumBitrateBps: 2_000_000,
-                    maximumFramesPerSecond: 30,
-                    maintainsResolution: true
-                ),
+                senderPolicy: fullSenderPolicy,
                 resourceLimits: .init(answerTimeout: 5),
                 videoCodec: .vp8
             ),
@@ -400,6 +401,23 @@ struct WebRTCLoopbackTests {
         defer { host.close() }
 
         let offer = try await host.createOffer(for: "loopback-viewer")
+        let firstMetadata = ClipLiveShareWebRTCTestFixtures.streamDescriptor(
+            for: host.slotSnapshots[0],
+            windowName: "VP8 fixture",
+            appName: "Clip tests",
+            width: 320,
+            height: 180
+        )
+        // A source can stop while ICE is still disconnected. Its source-free
+        // BWE reset must remain pending and be retried once the peer connects.
+        try host.activateSlot(0, metadata: firstMetadata)
+        host.deactivateSlot(0)
+        #expect(
+            host.isPeerSourceFreeBandwidthResetPending(
+                for: "loopback-viewer"
+            ) == true
+        )
+
         let receiver = try LoopbackReceiver(bridge: bridge)
         defer { receiver.close() }
         bridge.receiver = receiver.connection
@@ -410,14 +428,85 @@ struct WebRTCLoopbackTests {
         #expect(await waitUntil(timeout: .seconds(5)) {
             bridge.isConnectedAndControlOpen
         })
+        #expect(
+            host.isPeerSourceFreeBandwidthResetPending(
+                for: "loopback-viewer"
+            ) == false
+        )
 
-        try host.activateSlot(0, metadata: ClipLiveShareWebRTCTestFixtures.streamDescriptor(
-            for: host.slotSnapshots[0],
-            windowName: "VP8 fixture",
-            appName: "Clip tests",
-            width: 320,
-            height: 180
-        ))
+        try host.activateSlot(0, metadata: firstMetadata)
+        let bandwidthState = try #require(
+            host.peerBandwidthApplicationState(for: "loopback-viewer")
+        )
+        #expect(bandwidthState.hasSeededCurrentEstimate)
+        #expect(
+            bandwidthState.lastAppliedEnvelope?.maximumBitrateBps
+                == 2_128_000
+        )
+
+        // Source-aware fractions must not survive a complete stop. Otherwise
+        // the next first source can inherit one background fraction and seed
+        // the connection far below the selected full-stream budget.
+        let secondMetadata =
+            ClipLiveShareWebRTCTestFixtures.streamDescriptor(
+                for: host.slotSnapshots[1],
+                windowName: "Second VP8 fixture",
+                appName: "Clip tests",
+                width: 320,
+                height: 180
+            )
+        try host.activateSlot(1, metadata: secondMetadata)
+        host.updateSenderPolicies(
+            [
+                0: .init(
+                    maximumBitrateBps: 500_000,
+                    maximumFramesPerSecond: 30,
+                    maintainsResolution: true
+                ),
+                1: .init(
+                    maximumBitrateBps: 1_500_000,
+                    maximumFramesPerSecond: 30,
+                    maintainsResolution: true
+                ),
+            ],
+            fallback: fullSenderPolicy
+        )
+        host.deactivateSlot(1)
+        host.deactivateSlot(0)
+        #expect(host.senderPolicy(forSlot: 0) == fullSenderPolicy)
+        #expect(host.senderPolicy(forSlot: 1) == fullSenderPolicy)
+
+        // A late coordinator/focus update may race after the last source
+        // stopped. First-source activation must still discard these fractions.
+        host.updateSenderPolicies(
+            [
+                0: .init(
+                    maximumBitrateBps: 500_000,
+                    maximumFramesPerSecond: 30,
+                    maintainsResolution: true
+                ),
+                1: .init(
+                    maximumBitrateBps: 1_500_000,
+                    maximumFramesPerSecond: 30,
+                    maintainsResolution: true
+                ),
+            ],
+            fallback: fullSenderPolicy
+        )
+        #expect(host.senderPolicy(forSlot: 0) != fullSenderPolicy)
+
+        try host.activateSlot(0, metadata: firstMetadata)
+        #expect(host.senderPolicy(forSlot: 0) == fullSenderPolicy)
+        #expect(host.senderPolicy(forSlot: 1) == fullSenderPolicy)
+        let restartedBandwidthState = try #require(
+            host.peerBandwidthApplicationState(for: "loopback-viewer")
+        )
+        #expect(restartedBandwidthState.hasSeededCurrentEstimate)
+        #expect(
+            restartedBandwidthState.lastAppliedEnvelope?.maximumBitrateBps
+                == 2_128_000
+        )
+
         for index in 0 ..< 45 {
             #expect(host.send(
                 try makeFixtureFrame(index: index, width: 320, height: 180),
