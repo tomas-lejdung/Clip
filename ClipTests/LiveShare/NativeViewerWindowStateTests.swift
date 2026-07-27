@@ -71,6 +71,26 @@ struct NativeViewerWindowStateTests {
         #expect(registry.windows[id]?.isVisible == false)
     }
 
+    @Test("Host metadata cannot reset local sizing or fullscreen presentation")
+    func metadataPreservesLocalPresentation() {
+        var registry = NativeViewerWindowRegistry(sessionID: "session")
+        _ = registry.reconcile([source(instance: "one", stream: "video0", revision: 1)])
+        let id = NativeViewerWindowID.manual(sourceInstanceID: "one")
+        registry.setScaleMode(.native, for: id)
+        registry.setFullScreen(true, for: id)
+
+        let updated = source(
+            instance: "one",
+            stream: "video0",
+            revision: 2,
+            title: "Renamed"
+        )
+        _ = registry.reconcile([updated])
+
+        #expect(registry.windows[id]?.scaleMode == .native)
+        #expect(registry.windows[id]?.isFullScreen == true)
+    }
+
     @Test("Removing a source closes its window")
     func removalClosesWindow() {
         var registry = NativeViewerWindowRegistry(sessionID: "session")

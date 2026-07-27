@@ -37,6 +37,10 @@ struct NativeViewerPresentationModelTests {
     func sourceVisibilityAndVolumeAreNormalized() {
         var visibility: [(String, Bool)] = []
         var volumes: [Double] = []
+        var sourceModes: [(String, NativeViewerScaleMode)] = []
+        var fullScreenSources: [String] = []
+        var broughtForwardSources: [String] = []
+        var bringAllCount = 0
         let source = NativeViewerSourceViewSnapshot(
             id: "source-1",
             applicationName: "Keynote",
@@ -55,17 +59,72 @@ struct NativeViewerPresentationModelTests {
             ),
             actions: .init(
                 setVolume: { volumes.append($0) },
-                setSourceVisible: { visibility.append(($0, $1)) }
+                setSourceScaleMode: { sourceModes.append(($0, $1)) },
+                setSourceVisible: { visibility.append(($0, $1)) },
+                toggleSourceFullScreen: { fullScreenSources.append($0) },
+                bringSourceToFront: { broughtForwardSources.append($0) },
+                bringAllToFront: { bringAllCount += 1 }
             )
         )
 
+        model.setSourceScaleMode("unknown", .fit)
+        model.setSourceScaleMode("source-1", .fit)
         model.setSourceVisible("unknown", false)
         model.setSourceVisible("source-1", false)
+        model.toggleSourceFullScreen("unknown")
+        model.toggleSourceFullScreen("source-1")
+        model.bringSourceToFront("unknown")
+        model.bringSourceToFront("source-1")
+        model.bringAllToFront()
         model.setVolume(2)
+        #expect(sourceModes.count == 1)
+        #expect(sourceModes.first?.0 == "source-1")
+        #expect(sourceModes.first?.1 == .fit)
         #expect(visibility.count == 1)
         #expect(visibility.first?.0 == "source-1")
         #expect(visibility.first?.1 == false)
+        #expect(fullScreenSources == ["source-1"])
+        #expect(broughtForwardSources == ["source-1"])
+        #expect(bringAllCount == 1)
         #expect(volumes == [1])
+    }
+
+    @Test
+    func fullScreenRequiresAVisibleConnectedSource() {
+        var toggled: [String] = []
+        let hidden = NativeViewerSourceViewSnapshot(
+            id: "hidden",
+            applicationName: "Keynote",
+            windowName: "Hidden",
+            pixelWidth: 1_920,
+            pixelHeight: 1_080,
+            isVisible: false,
+            isFocused: false,
+            isConnected: true
+        )
+        let disconnected = NativeViewerSourceViewSnapshot(
+            id: "disconnected",
+            applicationName: "Keynote",
+            windowName: "Disconnected",
+            pixelWidth: 1_920,
+            pixelHeight: 1_080,
+            isVisible: true,
+            isFocused: false,
+            isConnected: false
+        )
+        let model = NativeViewerPresentationModel(
+            snapshot: .init(
+                phase: .live,
+                sources: [hidden, disconnected]
+            ),
+            actions: .init(
+                toggleSourceFullScreen: { toggled.append($0) }
+            )
+        )
+
+        model.toggleSourceFullScreen("hidden")
+        model.toggleSourceFullScreen("disconnected")
+        #expect(toggled.isEmpty)
     }
 
     @Test

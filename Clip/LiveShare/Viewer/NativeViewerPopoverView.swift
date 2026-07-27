@@ -23,7 +23,6 @@ struct NativeViewerPopoverView: View {
                         waitingForSourceSection(waitingMessage)
                     }
                     if model.snapshot.phase.isLive {
-                        displaySection
                         audioSection
                         friendshipSection
                         statisticsSection
@@ -104,10 +103,7 @@ struct NativeViewerPopoverView: View {
             VStack(spacing: 0) {
                 ForEach(model.snapshot.sources) { source in
                     if source.id != model.snapshot.sources.first?.id { Divider() }
-                    Toggle(isOn: Binding(
-                        get: { source.isVisible },
-                        set: { model.setSourceVisible(source.id, $0) }
-                    )) {
+                    VStack(alignment: .leading, spacing: 7) {
                         HStack(spacing: 8) {
                             Image(systemName: source.isFocused ? "rectangle.inset.filled" : "rectangle")
                                 .foregroundStyle(source.isConnected ? .primary : .secondary)
@@ -122,14 +118,45 @@ struct NativeViewerPopoverView: View {
                                         .lineLimit(1)
                                 }
                             }
+                            Spacer(minLength: 4)
+                            Toggle("", isOn: Binding(
+                                get: { source.isVisible },
+                                set: { model.setSourceVisible(source.id, $0) }
+                            ))
+                            .labelsHidden()
+                            .toggleStyle(.switch)
+                            .controlSize(.small)
+                        }
+
+                        HStack(spacing: 6) {
+                            sourceScaleModeMenu(source)
+                            Spacer(minLength: 4)
+                            sourceActionButton(
+                                title: String(localized: "Bring to Front"),
+                                systemImage: "macwindow.on.rectangle",
+                                identifier: "clip.nativeViewer.source.bringToFront.\(source.id)"
+                            ) {
+                                model.bringSourceToFront(source.id)
+                            }
+                            sourceActionButton(
+                                title: source.isFullScreen
+                                    ? String(localized: "Exit Full Screen")
+                                    : String(localized: "Enter Full Screen"),
+                                systemImage: source.isFullScreen
+                                    ? "arrow.down.right.and.arrow.up.left"
+                                    : "arrow.up.left.and.arrow.down.right",
+                                identifier: "clip.nativeViewer.source.fullScreen.\(source.id)"
+                            ) {
+                                model.toggleSourceFullScreen(source.id)
+                            }
+                            .disabled(!source.isVisible || !source.isConnected)
                         }
                     }
-                    .toggleStyle(.switch)
                     .padding(.vertical, 8)
                 }
             }
         } label: {
-            HStack {
+            HStack(spacing: 8) {
                 Text("Shared Windows")
                 Spacer()
                 if model.snapshot.visibleSourceCount < model.snapshot.sources.count {
@@ -137,9 +164,84 @@ struct NativeViewerPopoverView: View {
                         .buttonStyle(.plain)
                         .font(.caption)
                 }
+                Button {
+                    model.bringAllToFront()
+                } label: {
+                    Label("Bring All to Front", systemImage: "square.3.layers.3d.top.filled")
+                        .labelStyle(.titleAndIcon)
+                }
+                .buttonStyle(.plain)
+                .font(.caption)
+                .accessibilityIdentifier("clip.nativeViewer.bringAllToFront")
             }
         }
         .accessibilityIdentifier("clip.nativeViewer.sources")
+    }
+
+    private func sourceScaleModeMenu(
+        _ source: NativeViewerSourceViewSnapshot
+    ) -> some View {
+        Menu {
+            Button {
+                model.setSourceScaleMode(source.id, .follow)
+            } label: {
+                modeMenuLabel("Follow Host", isSelected: source.scaleMode == .follow)
+            }
+            Button {
+                model.setSourceScaleMode(source.id, .native)
+            } label: {
+                modeMenuLabel("Native", isSelected: source.scaleMode == .native)
+            }
+            Button {
+                model.setSourceScaleMode(source.id, .fit)
+            } label: {
+                modeMenuLabel("Fit", isSelected: source.scaleMode == .fit)
+            }
+        } label: {
+            Label(scaleModeTitle(source.scaleMode), systemImage: "aspectratio")
+                .font(.caption)
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+        .accessibilityLabel("Window sizing")
+        .accessibilityValue(scaleModeTitle(source.scaleMode))
+        .accessibilityIdentifier("clip.nativeViewer.source.scaleMode.\(source.id)")
+    }
+
+    private func sourceActionButton(
+        title: String,
+        systemImage: String,
+        identifier: String,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            Image(systemName: systemImage)
+                .frame(width: 18, height: 18)
+        }
+        .buttonStyle(.borderless)
+        .help(Text(title))
+        .accessibilityLabel(Text(title))
+        .accessibilityIdentifier(identifier)
+    }
+
+    private func modeMenuLabel(
+        _ title: LocalizedStringKey,
+        isSelected: Bool
+    ) -> some View {
+        HStack {
+            Text(title)
+            if isSelected {
+                Image(systemName: "checkmark")
+            }
+        }
+    }
+
+    private func scaleModeTitle(_ mode: NativeViewerScaleMode) -> String {
+        switch mode {
+        case .follow: String(localized: "Follow")
+        case .native: String(localized: "Native")
+        case .fit: String(localized: "Fit")
+        }
     }
 
     private func waitingForSourceSection(_ message: String) -> some View {
@@ -151,21 +253,6 @@ struct NativeViewerPopoverView: View {
                 .padding(.vertical, 6)
         }
         .accessibilityIdentifier("clip.nativeViewer.waitingForSource")
-    }
-
-    private var displaySection: some View {
-        GroupBox("Display") {
-            Picker("Size", selection: Binding(
-                get: { model.snapshot.scaleMode },
-                set: { model.setScaleMode($0) }
-            )) {
-                Text("Auto").tag(NativeViewerScaleMode.automatic)
-                Text("Actual").tag(NativeViewerScaleMode.actualPixels)
-                Text("Fit").tag(NativeViewerScaleMode.fit)
-            }
-            .pickerStyle(.segmented)
-        }
-        .accessibilityIdentifier("clip.nativeViewer.display")
     }
 
     @ViewBuilder

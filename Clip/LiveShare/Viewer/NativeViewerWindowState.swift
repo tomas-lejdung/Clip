@@ -73,6 +73,24 @@ struct NativeViewerWindowSnapshot: Equatable, Identifiable, Sendable {
     let id: NativeViewerWindowID
     let source: NativeViewerSourceSnapshot
     var isVisible: Bool
+    /// Local viewer presentation state. This is intentionally independent
+    /// from the host-owned source lifecycle and geometry.
+    var scaleMode: NativeViewerScaleMode
+    var isFullScreen: Bool
+
+    init(
+        id: NativeViewerWindowID,
+        source: NativeViewerSourceSnapshot,
+        isVisible: Bool,
+        scaleMode: NativeViewerScaleMode = .follow,
+        isFullScreen: Bool = false
+    ) {
+        self.id = id
+        self.source = source
+        self.isVisible = isVisible
+        self.scaleMode = scaleMode
+        self.isFullScreen = isFullScreen
+    }
 }
 
 enum NativeViewerWindowChange: Equatable, Sendable {
@@ -123,7 +141,9 @@ struct NativeViewerWindowRegistry: Equatable, Sendable {
                 existing = NativeViewerWindowSnapshot(
                     id: id,
                     source: source,
-                    isVisible: existing.isVisible
+                    isVisible: existing.isVisible,
+                    scaleMode: existing.scaleMode,
+                    isFullScreen: existing.isFullScreen
                 )
                 windows[id] = existing
                 changes.append(.update(existing))
@@ -152,6 +172,24 @@ struct NativeViewerWindowRegistry: Equatable, Sendable {
 
     mutating func showAll() -> [NativeViewerWindowChange] {
         windows.keys.sorted(by: descriptionOrder).compactMap { setVisible(true, for: $0) }
+    }
+
+    mutating func setScaleMode(
+        _ scaleMode: NativeViewerScaleMode,
+        for id: NativeViewerWindowID
+    ) {
+        guard var snapshot = windows[id] else { return }
+        snapshot.scaleMode = scaleMode
+        windows[id] = snapshot
+    }
+
+    mutating func setFullScreen(
+        _ isFullScreen: Bool,
+        for id: NativeViewerWindowID
+    ) {
+        guard var snapshot = windows[id] else { return }
+        snapshot.isFullScreen = isFullScreen
+        windows[id] = snapshot
     }
 
     var visibleWindowCount: Int {

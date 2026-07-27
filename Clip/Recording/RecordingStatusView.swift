@@ -2,64 +2,81 @@ import SwiftUI
 
 @MainActor
 struct RecordingStatusView: View {
-    static let contentSize = CGSize(width: 330, height: 235)
+    static let contentWidth: CGFloat = 330
+    /// Bootstrap size used only until the first SwiftUI layout reports the
+    /// current natural height.
+    static let contentSize = CGSize(width: contentWidth, height: 235)
 
     @ObservedObject var model: RecordingPresentationModel
+    private let maximumHeight: CGFloat
+    private let onContentHeightChange: (CGFloat) -> Void
+
+    init(
+        model: RecordingPresentationModel,
+        maximumHeight: CGFloat = 10_000,
+        onContentHeightChange: @escaping (CGFloat) -> Void = { _ in }
+    ) {
+        self.model = model
+        self.maximumHeight = maximumHeight
+        self.onContentHeightChange = onContentHeightChange
+    }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            header
+        FluidPopoverContent(
+            width: Self.contentWidth,
+            maximumHeight: maximumHeight,
+            initialHeight: Self.contentSize.height,
+            onContentHeightChange: onContentHeightChange
+        ) {
+            VStack(alignment: .leading, spacing: 12) {
+                header
 
-            VStack(spacing: 7) {
-                RecordingAudioRow(
-                    title: String(localized: "Microphone"),
-                    systemImage: "mic.fill",
-                    state: model.snapshot.microphone
-                )
-                RecordingAudioRow(
-                    title: String(localized: "System Audio"),
-                    systemImage: "speaker.wave.2.fill",
-                    state: model.snapshot.systemAudio
-                )
-            }
-
-            if let notice = model.snapshot.notice {
-                Label(notice, systemImage: "info.circle")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-
-            if let error = model.actionErrorMessage {
-                HStack(alignment: .top, spacing: 7) {
-                    Image(systemName: "exclamationmark.triangle.fill")
-                        .foregroundStyle(.orange)
-                    Text(error)
-                        .font(.caption)
-                        .fixedSize(horizontal: false, vertical: true)
-                    Spacer(minLength: 0)
-                    Button {
-                        model.dismissActionError()
-                    } label: {
-                        Image(systemName: "xmark")
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel(String(localized: "Dismiss error"))
+                VStack(spacing: 7) {
+                    RecordingAudioRow(
+                        title: String(localized: "Microphone"),
+                        systemImage: "mic.fill",
+                        state: model.snapshot.microphone
+                    )
+                    RecordingAudioRow(
+                        title: String(localized: "System Audio"),
+                        systemImage: "speaker.wave.2.fill",
+                        state: model.snapshot.systemAudio
+                    )
                 }
-                .padding(8)
-                .background(.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 7))
+
+                if let notice = model.snapshot.notice {
+                    Label(notice, systemImage: "info.circle")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                if let error = model.actionErrorMessage {
+                    HStack(alignment: .top, spacing: 7) {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .foregroundStyle(.orange)
+                        Text(error)
+                            .font(.caption)
+                            .fixedSize(horizontal: false, vertical: true)
+                        Spacer(minLength: 0)
+                        Button {
+                            model.dismissActionError()
+                        } label: {
+                            Image(systemName: "xmark")
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel(String(localized: "Dismiss error"))
+                    }
+                    .padding(8)
+                    .background(.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 7))
+                }
+
+                Divider()
+
+                controls
             }
-
-            Divider()
-
-            controls
+            .padding(14)
         }
-        .padding(14)
-        .frame(
-            width: Self.contentSize.width,
-            height: Self.contentSize.height,
-            alignment: .topLeading
-        )
         .alert(
             String(localized: "Discard this recording?"),
             isPresented: cancelConfirmationBinding

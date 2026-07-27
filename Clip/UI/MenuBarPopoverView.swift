@@ -230,18 +230,34 @@ struct MenuBarActions {
 }
 
 struct MenuBarPopoverView: View {
-    static let contentSize = CGSize(width: 330, height: 620)
+    static let contentWidth: CGFloat = 330
+    /// Bootstrap size used only until the first SwiftUI layout reports the
+    /// current natural height.
+    static let contentSize = CGSize(width: contentWidth, height: 620)
 
     @StateObject private var model: MenuBarPopoverModel
     let actions: MenuBarActions
+    private let maximumHeight: CGFloat
+    private let onContentHeightChange: (CGFloat) -> Void
 
-    init(model: MenuBarPopoverModel, actions: MenuBarActions) {
+    init(
+        model: MenuBarPopoverModel,
+        actions: MenuBarActions,
+        maximumHeight: CGFloat = 10_000,
+        onContentHeightChange: @escaping (CGFloat) -> Void = { _ in }
+    ) {
         _model = StateObject(wrappedValue: model)
         self.actions = actions
+        self.maximumHeight = maximumHeight
+        self.onContentHeightChange = onContentHeightChange
     }
 
     /// Compatibility initializer for the coordinator while it adopts the live model.
-    init(actions: MenuBarActions) {
+    init(
+        actions: MenuBarActions,
+        maximumHeight: CGFloat = 10_000,
+        onContentHeightChange: @escaping (CGFloat) -> Void = { _ in }
+    ) {
         _model = StateObject(
             wrappedValue: MenuBarPopoverModel(
                 isLastAreaAvailable: true,
@@ -249,31 +265,38 @@ struct MenuBarPopoverView: View {
             )
         )
         self.actions = actions
+        self.maximumHeight = maximumHeight
+        self.onContentHeightChange = onContentHeightChange
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            header
-            captureTargets
+        FluidPopoverContent(
+            width: Self.contentWidth,
+            maximumHeight: maximumHeight,
+            initialHeight: Self.contentSize.height,
+            onContentHeightChange: onContentHeightChange
+        ) {
+            VStack(alignment: .leading, spacing: 12) {
+                header
+                captureTargets
 
-            if let preparedDisplay = model.preparedDisplay {
-                preparedTarget(preparedDisplay)
-            }
+                if let preparedDisplay = model.preparedDisplay {
+                    preparedTarget(preparedDisplay)
+                }
 
-            Divider()
-            quickSettingControls
-
-            if !model.recentRecordings.isEmpty {
                 Divider()
-                recentRecordings
-            }
+                quickSettingControls
 
-            Divider()
-            footer
+                if !model.recentRecordings.isEmpty {
+                    Divider()
+                    recentRecordings
+                }
+
+                Divider()
+                footer
+            }
+            .padding(14)
         }
-        .padding(14)
-        .frame(width: Self.contentSize.width)
-        .fixedSize(horizontal: false, vertical: true)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("clip.menuBarPopover")
     }

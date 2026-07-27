@@ -235,6 +235,91 @@ final class PopoverContentContainerViewController: NSViewController {
     }
 }
 
+private struct FluidPopoverContentHeightPreferenceKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
+    }
+}
+
+/// Gives a popover a natural, content-driven height while retaining a bounded
+/// scrolling fallback for displays that cannot fit all of the content.
+///
+/// The measured view remains vertically unconstrained inside the scroll view,
+/// so changes from an observable model report their new natural height instead
+/// of the currently clipped viewport height.
+struct FluidPopoverContent<Content: View>: View {
+    let width: CGFloat
+    let maximumHeight: CGFloat
+    let onContentHeightChange: (CGFloat) -> Void
+    @ViewBuilder let content: () -> Content
+
+    @State private var measuredHeight: CGFloat
+
+    init(
+        width: CGFloat,
+        maximumHeight: CGFloat,
+        initialHeight: CGFloat,
+        onContentHeightChange: @escaping (CGFloat) -> Void = { _ in },
+        @ViewBuilder content: @escaping () -> Content
+    ) {
+        self.width = width
+        self.maximumHeight = maximumHeight
+        self.onContentHeightChange = onContentHeightChange
+        self.content = content
+        _measuredHeight = State(initialValue: initialHeight)
+    }
+
+    var body: some View {
+        ScrollView(.vertical) {
+            content()
+                .frame(width: width)
+                .fixedSize(horizontal: false, vertical: true)
+                .background {
+                    GeometryReader { proxy in
+                        Color.clear.preference(
+                            key: FluidPopoverContentHeightPreferenceKey.self,
+                            value: proxy.size.height
+                        )
+                    }
+                }
+        }
+        .scrollDisabled(measuredHeight <= maximumHeight)
+        .scrollIndicators(measuredHeight > maximumHeight ? .automatic : .never)
+        .frame(
+            width: width,
+            height: min(maximumHeight, max(1, measuredHeight))
+        )
+        .onPreferenceChange(FluidPopoverContentHeightPreferenceKey.self) { height in
+            guard height.isFinite, height > 0 else { return }
+            let roundedHeight = ceil(height)
+            guard abs(roundedHeight - measuredHeight) >= 0.5 else { return }
+            measuredHeight = roundedHeight
+            onContentHeightChange(roundedHeight)
+        }
+    }
+}
+
+enum PopoverSizingPolicy {
+    static let screenEdgeClearance: CGFloat = 16
+
+    static func maximumContentHeight(visibleScreenHeight: CGFloat) -> CGFloat {
+        max(1, floor(visibleScreenHeight - screenEdgeClearance))
+    }
+
+    static func contentSize(
+        width: CGFloat,
+        idealHeight: CGFloat,
+        maximumHeight: CGFloat
+    ) -> NSSize {
+        NSSize(
+            width: width,
+            height: min(maximumHeight, max(1, ceil(idealHeight)))
+        )
+    }
+}
+
 @MainActor
 final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerminationHandling {
     private let dependencies: AppDependencies
@@ -250,6 +335,7 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
     private let nativeFriendPresenceMonitor: NativeFriendPresenceMonitor
 
     private var statusItem: NSStatusItem?
+    private var activeFluidPopoverSizingToken: UUID?
     private var selectionController: CaptureSelectionController?
     private var applicationSelectionController: ApplicationCaptureSelectionController?
     private var countdownController: SilentCountdownController?
@@ -615,17 +701,55 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
         popover.behavior = .transient
         popover.animates = true
         popover.delegate = self
+        installFluidPopoverContent(
+            width: MenuBarPopoverView.contentWidth,
+            initialHeight: MenuBarPopoverView.contentSize.height
+        ) { maximumHeight, reportContentHeight in
+            MenuBarPopoverView(
+                model: menuBarModel,
+                actions: actions,
+                maximumHeight: maximumHeight,
+                onContentHeightChange: reportContentHeight
+            )
+        }
+    }
+
+    private func installFluidPopoverContent<Content: View>(
+        width: CGFloat,
+        initialHeight: CGFloat,
+        @ViewBuilder content: (
+            _ maximumHeight: CGFloat,
+            _ reportContentHeight: @escaping (CGFloat) -> Void
+        ) -> Content
+    ) {
+        let token = UUID()
+        let maximumHeight = maximumPopoverContentHeight()
+        let reportContentHeight: (CGFloat) -> Void = { [weak self] idealHeight in
+            self?.resizeFluidPopover(
+                toIdealHeight: idealHeight,
+                width: width,
+                maximumHeight: maximumHeight,
+                token: token
+            )
+        }
         installPopoverContent(
-            MenuBarPopoverView(model: menuBarModel, actions: actions),
-            size: MenuBarPopoverView.contentSize
+            content(maximumHeight, reportContentHeight),
+            size: PopoverSizingPolicy.contentSize(
+                width: width,
+                idealHeight: initialHeight,
+                maximumHeight: maximumHeight
+            ),
+            fluidSizingToken: token
         )
     }
 
     private func installPopoverContent<Content: View>(
         _ content: Content,
-        size: NSSize
+        size: NSSize,
+        fluidSizingToken: UUID? = nil
     ) {
         let shouldAnimate = popover.isShown
+        activeFluidPopoverSizingToken = fluidSizingToken
         if popover.contentViewController !== popoverContentController {
             popover.contentViewController = popoverContentController
         }
@@ -637,6 +761,35 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
         if shouldAnimate {
             popover.contentViewController?.view.window?.makeKey()
         }
+    }
+
+    private func resizeFluidPopover(
+        toIdealHeight idealHeight: CGFloat,
+        width: CGFloat,
+        maximumHeight: CGFloat,
+        token: UUID
+    ) {
+        guard activeFluidPopoverSizingToken == token else { return }
+        let nextSize = PopoverSizingPolicy.contentSize(
+            width: width,
+            idealHeight: idealHeight,
+            maximumHeight: maximumHeight
+        )
+        guard abs(popover.contentSize.width - nextSize.width) >= 0.5
+                || abs(popover.contentSize.height - nextSize.height) >= 0.5 else {
+            return
+        }
+        // NSPopover animates content-size changes while shown when `animates`
+        // is enabled, which it is for every product popover.
+        popover.contentSize = nextSize
+    }
+
+    private func maximumPopoverContentHeight() -> CGFloat {
+        let screen = statusItem?.button?.window?.screen ?? NSScreen.main ?? NSScreen.screens.first
+        return PopoverSizingPolicy.maximumContentHeight(
+            visibleScreenHeight: screen?.visibleFrame.height
+                ?? (MenuBarPopoverView.contentSize.height + PopoverSizingPolicy.screenEdgeClearance)
+        )
     }
 
     private func checkForUpdates() {
@@ -651,10 +804,16 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
 
     private func installRecordingPopover(model: RecordingPresentationModel) {
         guard !isPreparingForTermination else { return }
-        installPopoverContent(
-            RecordingStatusView(model: model),
-            size: RecordingStatusView.contentSize
-        )
+        installFluidPopoverContent(
+            width: RecordingStatusView.contentWidth,
+            initialHeight: RecordingStatusView.contentSize.height
+        ) { maximumHeight, reportContentHeight in
+            RecordingStatusView(
+                model: model,
+                maximumHeight: maximumHeight,
+                onContentHeightChange: reportContentHeight
+            )
+        }
     }
 
     private func installLiveSharePopover(model: LiveSharePresentationModel) {

@@ -192,6 +192,101 @@ final class MenuBarPopoverModelTests: XCTestCase {
         XCTAssertLessThanOrEqual(fittingSize.height, MenuBarPopoverView.contentSize.height)
     }
 
+    func testPopoverSizingPolicyPreservesWidthAndCapsHeightToTheVisibleScreen() {
+        let maximumHeight = PopoverSizingPolicy.maximumContentHeight(
+            visibleScreenHeight: 956
+        )
+
+        XCTAssertEqual(maximumHeight, 940)
+        XCTAssertEqual(
+            PopoverSizingPolicy.contentSize(
+                width: 330,
+                idealHeight: 481.2,
+                maximumHeight: maximumHeight
+            ),
+            NSSize(width: 330, height: 482)
+        )
+        XCTAssertEqual(
+            PopoverSizingPolicy.contentSize(
+                width: 330,
+                idealHeight: 1_200,
+                maximumHeight: maximumHeight
+            ),
+            NSSize(width: 330, height: 940)
+        )
+    }
+
+    func testFluidPopoverReportsTheIdleMenuNaturalHeight() {
+        let reported = expectation(description: "Natural menu height reported")
+        var reportedHeight: CGFloat?
+        let model = MenuBarPopoverModel(
+            displays: [display(id: 1, name: "Studio Display", width: 5_120, height: 2_880)],
+            microphone: .init(),
+            systemAudio: .init(),
+            isLastAreaAvailable: true,
+            isFullscreenAvailable: true
+        )
+        let controller = NSHostingController(
+            rootView: MenuBarPopoverView(
+                model: model,
+                actions: MenuBarActions(
+                    captureArea: {},
+                    lastArea: {},
+                    fullscreen: {},
+                    openHistory: {},
+                    openSettings: {},
+                    quit: {}
+                ),
+                maximumHeight: 940,
+                onContentHeightChange: { height in
+                    guard reportedHeight == nil else { return }
+                    reportedHeight = height
+                    reported.fulfill()
+                }
+            )
+        )
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 330, height: 620),
+            styleMask: [.borderless],
+            backing: .buffered,
+            defer: false
+        )
+        window.contentViewController = controller
+        controller.view.layoutSubtreeIfNeeded()
+
+        XCTAssertEqual(XCTWaiter.wait(for: [reported], timeout: 1), .completed)
+        XCTAssertNotNil(reportedHeight)
+        XCTAssertLessThan(reportedHeight ?? .infinity, MenuBarPopoverView.contentSize.height)
+    }
+
+    func testFluidPopoverReportsTheRecordingControlsNaturalHeight() {
+        let reported = expectation(description: "Natural recording height reported")
+        var reportedHeight: CGFloat?
+        let controller = NSHostingController(
+            rootView: RecordingStatusView(
+                model: .demo(.demoRecording),
+                maximumHeight: 940,
+                onContentHeightChange: { height in
+                    guard reportedHeight == nil else { return }
+                    reportedHeight = height
+                    reported.fulfill()
+                }
+            )
+        )
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 330, height: 235),
+            styleMask: [.borderless],
+            backing: .buffered,
+            defer: false
+        )
+        window.contentViewController = controller
+        controller.view.layoutSubtreeIfNeeded()
+
+        XCTAssertEqual(XCTWaiter.wait(for: [reported], timeout: 1), .completed)
+        XCTAssertNotNil(reportedHeight)
+        XCTAssertLessThan(reportedHeight ?? .infinity, RecordingStatusView.contentSize.height)
+    }
+
     private func display(
         id: CGDirectDisplayID,
         name: String,

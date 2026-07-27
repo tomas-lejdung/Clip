@@ -627,7 +627,8 @@ enum DeterministicNativeViewerDemo {
                         pixelHeight: 1_200,
                         isVisible: true,
                         isFocused: true,
-                        isConnected: true
+                        isConnected: true,
+                        scaleMode: .follow
                     ),
                     NativeViewerSourceViewSnapshot(
                         id: "source-safari",
@@ -637,7 +638,8 @@ enum DeterministicNativeViewerDemo {
                         pixelHeight: 900,
                         isVisible: false,
                         isFocused: false,
-                        isConnected: true
+                        isConnected: true,
+                        scaleMode: .native
                     ),
                     NativeViewerSourceViewSnapshot(
                         id: "source-terminal",
@@ -647,13 +649,14 @@ enum DeterministicNativeViewerDemo {
                         pixelHeight: 800,
                         isVisible: true,
                         isFocused: false,
-                        isConnected: false
+                        isConnected: false,
+                        scaleMode: .fit
                     ),
                 ],
                 systemAudioAvailable: true,
                 systemAudioEnabled: true,
                 volume: 0.72,
-                scaleMode: .automatic,
+                scaleMode: .follow,
                 friendship: .friends,
                 statistics: NativeViewerStatisticsSnapshot(
                     bitsPerSecond: 8_400_000,

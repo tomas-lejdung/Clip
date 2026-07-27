@@ -60,6 +60,32 @@ struct NativeViewerSourceViewSnapshot: Equatable, Identifiable, Sendable {
     let isVisible: Bool
     let isFocused: Bool
     let isConnected: Bool
+    let scaleMode: NativeViewerScaleMode
+    let isFullScreen: Bool
+
+    init(
+        id: String,
+        applicationName: String,
+        windowName: String,
+        pixelWidth: Int,
+        pixelHeight: Int,
+        isVisible: Bool,
+        isFocused: Bool,
+        isConnected: Bool,
+        scaleMode: NativeViewerScaleMode = .follow,
+        isFullScreen: Bool = false
+    ) {
+        self.id = id
+        self.applicationName = applicationName
+        self.windowName = windowName
+        self.pixelWidth = pixelWidth
+        self.pixelHeight = pixelHeight
+        self.isVisible = isVisible
+        self.isFocused = isFocused
+        self.isConnected = isConnected
+        self.scaleMode = scaleMode
+        self.isFullScreen = isFullScreen
+    }
 
     var title: String {
         if !windowName.isEmpty { return windowName }
@@ -129,7 +155,7 @@ struct NativeViewerViewSnapshot: Equatable, Sendable {
         systemAudioAvailable: Bool = false,
         systemAudioEnabled: Bool = true,
         volume: Double = 1,
-        scaleMode: NativeViewerScaleMode = .actualPixels,
+        scaleMode: NativeViewerScaleMode = .follow,
         friendship: NativeViewerFriendshipState = .unavailable,
         statistics: NativeViewerStatisticsSnapshot = .init()
     ) {

@@ -7,9 +7,11 @@ enum NativeViewerWindowCloseDisposition: Sendable {
 }
 
 private enum NativeViewerHeaderAction {
-    case fitToWindow
-    case nativeSize
-    case resetToActualSize
+    case followHost
+    case native
+    case fit
+    case matchHostSize
+    case toggleFullScreen
     case close
 }
 
@@ -69,7 +71,11 @@ private final class NativeViewerHeaderView: NSView {
 
     private let titleLabel = NSTextField(labelWithString: "")
     private let zoomButton = NativeViewerHeaderButton()
+    private let fullScreenButton = NativeViewerHeaderButton()
     private let closeButton = NativeViewerHeaderButton()
+    private var scaleMode = NativeViewerScaleMode.follow
+    private var zoomPercentage = 100
+    private var isFullScreen = false
 
     var onAction: ((NativeViewerHeaderAction) -> Void)?
 
@@ -94,6 +100,17 @@ private final class NativeViewerHeaderView: NSView {
         zoomButton.setAccessibilityIdentifier("clip.nativeViewer.zoom")
         addSubview(zoomButton)
 
+        configureButton(fullScreenButton, action: #selector(toggleFullScreen))
+        fullScreenButton.title = ""
+        fullScreenButton.image = NSImage(
+            systemSymbolName: "arrow.up.left.and.arrow.down.right",
+            accessibilityDescription: "Enter Full Screen"
+        )
+        fullScreenButton.imagePosition = .imageOnly
+        fullScreenButton.setAccessibilityLabel("Enter Full Screen")
+        fullScreenButton.setAccessibilityIdentifier("clip.nativeViewer.fullScreen")
+        addSubview(fullScreenButton)
+
         configureButton(closeButton, action: #selector(closeWindow))
         closeButton.title = ""
         closeButton.image = NSImage(systemSymbolName: "xmark", accessibilityDescription: "Close")
@@ -111,7 +128,8 @@ private final class NativeViewerHeaderView: NSView {
     override func layout() {
         super.layout()
         let closeWidth: CGFloat = 24
-        let zoomWidth: CGFloat = 60
+        let fullScreenWidth: CGFloat = 24
+        let zoomWidth: CGFloat = 78
         let controlHeight = min(CGFloat(22), max(0, bounds.height - 4))
         closeButton.frame = CGRect(
             x: max(4, bounds.width - closeWidth - 4),
@@ -119,10 +137,16 @@ private final class NativeViewerHeaderView: NSView {
             width: min(closeWidth, max(0, bounds.width - 8)),
             height: controlHeight
         )
-        zoomButton.frame = CGRect(
-            x: max(4, closeButton.frame.minX - zoomWidth - 2),
+        fullScreenButton.frame = CGRect(
+            x: max(4, closeButton.frame.minX - fullScreenWidth - 2),
             y: closeButton.frame.minY,
-            width: min(zoomWidth, max(0, closeButton.frame.minX - 6)),
+            width: min(fullScreenWidth, max(0, closeButton.frame.minX - 6)),
+            height: controlHeight
+        )
+        zoomButton.frame = CGRect(
+            x: max(4, fullScreenButton.frame.minX - zoomWidth - 2),
+            y: closeButton.frame.minY,
+            width: min(zoomWidth, max(0, fullScreenButton.frame.minX - 6)),
             height: controlHeight
         )
         titleLabel.frame = CGRect(
@@ -136,8 +160,9 @@ private final class NativeViewerHeaderView: NSView {
     override func hitTest(_ point: NSPoint) -> NSView? {
         let hit = super.hitTest(point)
         if let hit,
-           hit === zoomButton || hit === closeButton
+           hit === zoomButton || hit === fullScreenButton || hit === closeButton
             || hit.isDescendant(of: zoomButton)
+            || hit.isDescendant(of: fullScreenButton)
             || hit.isDescendant(of: closeButton) {
             return hit
         }
@@ -155,10 +180,42 @@ private final class NativeViewerHeaderView: NSView {
         titleLabel.setAccessibilityLabel(title)
     }
 
-    func updateZoomPercentage(_ percentage: Int) {
-        let clamped = max(1, percentage)
-        zoomButton.title = "\(clamped)%"
-        zoomButton.setAccessibilityValue("\(clamped) percent")
+    func updatePresentation(mode: NativeViewerScaleMode, zoomPercentage: Int) {
+        scaleMode = mode
+        self.zoomPercentage = max(1, zoomPercentage)
+        switch mode {
+        case .follow:
+            zoomButton.title = String(localized: "Follow")
+        case .native:
+            zoomButton.title = String(localized: "Native")
+        case .fit:
+            zoomButton.title = String(localized: "Fit · \(self.zoomPercentage)%")
+        }
+        zoomButton.setAccessibilityValue(zoomButton.title)
+    }
+
+    func updateFullScreen(_ fullScreen: Bool) {
+        isFullScreen = fullScreen
+        let symbol = fullScreen
+            ? "arrow.down.right.and.arrow.up.left"
+            : "arrow.up.left.and.arrow.down.right"
+        let label = fullScreen
+            ? String(localized: "Exit Full Screen")
+            : String(localized: "Enter Full Screen")
+        fullScreenButton.image = NSImage(
+            systemSymbolName: symbol,
+            accessibilityDescription: label
+        )
+        fullScreenButton.setAccessibilityLabel(label)
+        let tint: NSColor = fullScreen ? .white : .black
+        zoomButton.contentTintColor = tint
+        fullScreenButton.contentTintColor = tint
+        closeButton.contentTintColor = tint
+        wantsLayer = true
+        layer?.backgroundColor = fullScreen
+            ? NSColor.black.withAlphaComponent(0.42).cgColor
+            : NSColor.clear.cgColor
+        layer?.cornerRadius = fullScreen ? 7 : 0
     }
 
     func updateIdentityColor(_ color: NSColor) {
@@ -171,16 +228,16 @@ private final class NativeViewerHeaderView: NSView {
             : .white
     }
 
-    var controlFrames: (zoom: CGRect, close: CGRect) {
-        (zoomButton.frame, closeButton.frame)
+    var controlFrames: (zoom: CGRect, fullScreen: CGRect, close: CGRect) {
+        (zoomButton.frame, fullScreenButton.frame, closeButton.frame)
     }
 
     var controlOpacities: [CGFloat] {
-        [zoomButton.alphaValue, closeButton.alphaValue]
+        [zoomButton.alphaValue, fullScreenButton.alphaValue, closeButton.alphaValue]
     }
 
     var controlTintColors: [NSColor?] {
-        [zoomButton.contentTintColor, closeButton.contentTintColor]
+        [zoomButton.contentTintColor, fullScreenButton.contentTintColor, closeButton.contentTintColor]
     }
 
     private func configureButton(_ button: NSButton, action: Selector) {
@@ -195,30 +252,52 @@ private final class NativeViewerHeaderView: NSView {
 
     @objc private func showZoomMenu() {
         let menu = NSMenu(title: "Viewer Zoom")
-        let fit = NSMenuItem(
-            title: String(localized: "Fit to Window"),
-            action: #selector(selectFit),
+        let follow = NSMenuItem(
+            title: String(localized: "Follow Host"),
+            action: #selector(selectFollow),
             keyEquivalent: ""
         )
-        fit.target = self
-        menu.addItem(fit)
+        follow.target = self
+        follow.state = scaleMode == .follow ? .on : .off
+        menu.addItem(follow)
 
         let native = NSMenuItem(
-            title: String(localized: "Native 100%"),
+            title: String(localized: "Native"),
             action: #selector(selectNative),
             keyEquivalent: ""
         )
         native.target = self
+        native.state = scaleMode == .native ? .on : .off
         menu.addItem(native)
-        menu.addItem(.separator())
 
-        let reset = NSMenuItem(
-            title: String(localized: "Reset Window to Actual Size"),
-            action: #selector(resetToActualSize),
+        let fit = NSMenuItem(
+            title: String(localized: "Fit Window"),
+            action: #selector(selectFit),
             keyEquivalent: ""
         )
-        reset.target = self
-        menu.addItem(reset)
+        fit.target = self
+        fit.state = scaleMode == .fit ? .on : .off
+        menu.addItem(fit)
+
+        menu.addItem(.separator())
+
+        let match = NSMenuItem(
+            title: String(localized: "Match Host Size"),
+            action: #selector(matchHostSize),
+            keyEquivalent: ""
+        )
+        match.target = self
+        menu.addItem(match)
+
+        let fullScreen = NSMenuItem(
+            title: isFullScreen
+                ? String(localized: "Exit Full Screen")
+                : String(localized: "Enter Full Screen"),
+            action: #selector(toggleFullScreen),
+            keyEquivalent: ""
+        )
+        fullScreen.target = self
+        menu.addItem(fullScreen)
         menu.popUp(
             positioning: nil,
             at: CGPoint(x: zoomButton.frame.minX, y: zoomButton.frame.minY),
@@ -226,16 +305,24 @@ private final class NativeViewerHeaderView: NSView {
         )
     }
 
+    @objc private func selectFollow() {
+        onAction?(.followHost)
+    }
+
     @objc private func selectFit() {
-        onAction?(.fitToWindow)
+        onAction?(.fit)
     }
 
     @objc private func selectNative() {
-        onAction?(.nativeSize)
+        onAction?(.native)
     }
 
-    @objc private func resetToActualSize() {
-        onAction?(.resetToActualSize)
+    @objc private func matchHostSize() {
+        onAction?(.matchHostSize)
+    }
+
+    @objc private func toggleFullScreen() {
+        onAction?(.toggleFullScreen)
     }
 
     @objc private func closeWindow() {
@@ -253,9 +340,11 @@ final class NativeViewerContentView: NSView {
 
     let videoView: NSView
 
+    var onFollowHost: (() -> Void)?
     var onFitToWindow: (() -> Void)?
     var onNativeSize: (() -> Void)?
-    var onResetToActualSize: (() -> Void)?
+    var onMatchHostSize: (() -> Void)?
+    var onToggleFullScreen: (() -> Void)?
     var onClose: (() -> Void)?
 
     private let videoViewport = NSView()
@@ -269,12 +358,16 @@ final class NativeViewerContentView: NSView {
     private var sourcePixelSize: CGSize?
     private var sourceLogicalSize: CGSize?
     private var sourceStreamID: String?
-    private var scaleMode = NativeViewerScaleMode.actualPixels
+    private var scaleMode = NativeViewerScaleMode.follow
     private var isPresentationActive = true
+    private(set) var isFullScreenPresentation = false
     private var currentNativeOrigin: CGPoint?
     private var targetNativeOrigin: CGPoint?
     private var panGeometryKey: PanGeometryKey?
     private var panTimer: Timer?
+    private var fullScreenTrackingArea: NSTrackingArea?
+    private var fullScreenHeaderHideTimer: Timer?
+    private(set) var isFullScreenHeaderVisible = true
 
     private struct PanGeometryKey: Equatable {
         let sourceSize: CGSize
@@ -313,12 +406,16 @@ final class NativeViewerContentView: NSView {
         headerView.onAction = { [weak self] action in
             guard let self else { return }
             switch action {
-            case .fitToWindow:
+            case .followHost:
+                onFollowHost?()
+            case .fit:
                 onFitToWindow?()
-            case .nativeSize:
+            case .native:
                 onNativeSize?()
-            case .resetToActualSize:
-                onResetToActualSize?()
+            case .matchHostSize:
+                onMatchHostSize?()
+            case .toggleFullScreen:
+                onToggleFullScreen?()
             case .close:
                 onClose?()
             }
@@ -335,12 +432,52 @@ final class NativeViewerContentView: NSView {
     override func viewWillMove(toWindow newWindow: NSWindow?) {
         if newWindow == nil {
             stopPanAnimation()
+            stopFullScreenHeaderTimer()
         }
         super.viewWillMove(toWindow: newWindow)
     }
 
+    override func updateTrackingAreas() {
+        if let fullScreenTrackingArea {
+            removeTrackingArea(fullScreenTrackingArea)
+        }
+        let replacement = NSTrackingArea(
+            rect: bounds,
+            options: [
+                .activeAlways,
+                .inVisibleRect,
+                .mouseEnteredAndExited,
+                .mouseMoved,
+            ],
+            owner: self
+        )
+        addTrackingArea(replacement)
+        fullScreenTrackingArea = replacement
+        super.updateTrackingAreas()
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        revealFullScreenHeaderIfNeeded(for: event)
+    }
+
+    override func mouseMoved(with event: NSEvent) {
+        revealFullScreenHeaderIfNeeded(for: event)
+    }
+
     override func layout() {
         super.layout()
+        if isFullScreenPresentation {
+            videoViewport.frame = bounds
+            headerView.frame = CGRect(
+                x: 8,
+                y: max(0, bounds.height - Self.headerHeight - 8),
+                width: max(0, bounds.width - 16),
+                height: min(Self.headerHeight, bounds.height)
+            )
+            cursorLayer.frame = videoViewport.bounds
+            layoutVideoSurface()
+            return
+        }
         let border = Self.identityBorderWidth
         headerView.frame = CGRect(
             x: border,
@@ -399,7 +536,25 @@ final class NativeViewerContentView: NSView {
         }
         scaleMode = mode
         resetPanGeometry()
+        updateZoomIndicator()
         needsLayout = true
+    }
+
+    func setFullScreenPresentation(_ fullScreen: Bool) {
+        guard isFullScreenPresentation != fullScreen else { return }
+        isFullScreenPresentation = fullScreen
+        layer?.cornerRadius = fullScreen ? 0 : 10
+        headerView.updateFullScreen(fullScreen)
+        updateFrameColor()
+        if fullScreen {
+            showFullScreenHeader(scheduleHide: true)
+        } else {
+            stopFullScreenHeaderTimer()
+            setFullScreenHeaderVisible(true)
+        }
+        resetPanGeometry()
+        needsLayout = true
+        layoutSubtreeIfNeeded()
     }
 
     func setCursor(normalizedX: CGFloat?, normalizedY: CGFloat?) {
@@ -475,13 +630,13 @@ final class NativeViewerContentView: NSView {
     var videoViewportFrame: CGRect { videoViewport.frame }
     var headerFrame: CGRect { headerView.frame }
     var zoomPercentage: Int {
-        if scaleMode == .actualPixels { return 100 }
+        if !isFullScreenPresentation, scaleMode != .fit { return 100 }
         return NativeViewerPanPolicy.zoomPercentage(
             sourceLogicalSize: sourceLogicalSize ?? .zero,
             renderedContentSize: videoView.frame.size
         ) ?? 100
     }
-    var headerControlFrames: (zoom: CGRect, close: CGRect) {
+    var headerControlFrames: (zoom: CGRect, fullScreen: CGRect, close: CGRect) {
         headerView.controlFrames
     }
     var headerControlOpacities: [CGFloat] { headerView.controlOpacities }
@@ -492,7 +647,8 @@ final class NativeViewerContentView: NSView {
             videoView.frame = .zero
             return
         }
-        if scaleMode == .actualPixels,
+        if !isFullScreenPresentation,
+           scaleMode != .fit,
            let sourceLogicalSize,
            let geometry = NativeViewerPanPolicy.geometry(
                sourceLogicalSize: sourceLogicalSize,
@@ -546,7 +702,8 @@ final class NativeViewerContentView: NSView {
 
     private func updateNativePanTarget(animated: Bool) {
         guard isPresentationActive,
-              scaleMode == .actualPixels,
+              !isFullScreenPresentation,
+              scaleMode != .fit,
               let sourceLogicalSize,
               let geometry = NativeViewerPanPolicy.geometry(
                   sourceLogicalSize: sourceLogicalSize,
@@ -658,6 +815,69 @@ final class NativeViewerContentView: NSView {
         panTimer = nil
     }
 
+    private func revealFullScreenHeaderIfNeeded(for event: NSEvent) {
+        guard isFullScreenPresentation else { return }
+        let point = convert(event.locationInWindow, from: nil)
+        guard Self.shouldRevealFullScreenHeader(
+            pointer: point,
+            bounds: bounds,
+            headerFrame: headerView.frame
+        ) else { return }
+        showFullScreenHeader(scheduleHide: true)
+    }
+
+    static func shouldRevealFullScreenHeader(
+        pointer: CGPoint,
+        bounds: CGRect,
+        headerFrame: CGRect
+    ) -> Bool {
+        pointer.y >= bounds.maxY - 64
+            || headerFrame.insetBy(dx: -8, dy: -8).contains(pointer)
+    }
+
+    private func showFullScreenHeader(scheduleHide: Bool) {
+        stopFullScreenHeaderTimer()
+        setFullScreenHeaderVisible(true)
+        guard scheduleHide, isFullScreenPresentation else { return }
+        let timer = Timer(timeInterval: 2.2, repeats: false) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.hideFullScreenHeaderForInactivity()
+            }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        fullScreenHeaderHideTimer = timer
+    }
+
+    func hideFullScreenHeaderForInactivity() {
+        stopFullScreenHeaderTimer()
+        guard isFullScreenPresentation else { return }
+        if let window {
+            let pointer = convert(window.mouseLocationOutsideOfEventStream, from: nil)
+            if headerView.frame.insetBy(dx: -8, dy: -8).contains(pointer) {
+                showFullScreenHeader(scheduleHide: true)
+                return
+            }
+        }
+        setFullScreenHeaderVisible(false)
+    }
+
+    private func setFullScreenHeaderVisible(_ visible: Bool) {
+        isFullScreenHeaderVisible = visible
+        let targetAlpha: CGFloat = visible ? 1 : 0.06
+        guard headerView.alphaValue != targetAlpha else { return }
+        let duration = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion ? 0 : 0.18
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = duration
+            context.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            headerView.animator().alphaValue = targetAlpha
+        }
+    }
+
+    private func stopFullScreenHeaderTimer() {
+        fullScreenHeaderHideTimer?.invalidate()
+        fullScreenHeaderHideTimer = nil
+    }
+
     private func resetPanGeometry() {
         stopPanAnimation()
         currentNativeOrigin = nil
@@ -672,14 +892,19 @@ final class NativeViewerContentView: NSView {
             : baseColor
         CATransaction.begin()
         CATransaction.setDisableActions(true)
-        layer?.backgroundColor = color.withAlphaComponent(isFocused ? 0.98 : 0.82).cgColor
+        layer?.backgroundColor = isFullScreenPresentation
+            ? NSColor.black.cgColor
+            : color.withAlphaComponent(isFocused ? 0.98 : 0.82).cgColor
         cursorLayer.strokeColor = color.cgColor
         CATransaction.commit()
-        headerView.updateIdentityColor(color)
+        headerView.updateIdentityColor(isFullScreenPresentation ? .black : color)
     }
 
     private func updateZoomIndicator() {
-        headerView.updateZoomPercentage(zoomPercentage)
+        headerView.updatePresentation(
+            mode: scaleMode,
+            zoomPercentage: zoomPercentage
+        )
     }
 
     private func layoutCursor() {
@@ -719,12 +944,18 @@ final class NativeViewerWindowController: NSWindowController, NSWindowDelegate {
     let content: NativeViewerContentView
 
     var onCloseRequested: ((NativeViewerWindowController) -> NativeViewerWindowCloseDisposition)?
+    /// User-originated mode changes. Programmatic synchronization through
+    /// `setScaleMode(_:)` deliberately does not echo through this callback.
+    var onScaleModeChanged: ((NativeViewerWindowController, NativeViewerScaleMode) -> Void)?
+    var onFullScreenChanged: ((NativeViewerWindowController, Bool) -> Void)?
 
-    private(set) var scaleMode = NativeViewerScaleMode.actualPixels
+    private(set) var scaleMode = NativeViewerScaleMode.follow
+    private(set) var isFullScreen = false
     private var source: NativeViewerSourceSnapshot
     private var dimensionStabilizer = NativeViewerDimensionStabilizer()
     private var isApplyingPolicySize = false
-    private var userAdjustedSize = false
+    private var pendingPolicyResizeAfterFullScreen = false
+    private var pendingHideAfterFullScreen = false
 
     init(
         id: NativeViewerWindowID,
@@ -775,6 +1006,7 @@ final class NativeViewerWindowController: NSWindowController, NSWindowDelegate {
         window.standardWindowButton(.miniaturizeButton)?.isHidden = true
         window.standardWindowButton(.zoomButton)?.isHidden = true
         window.isMovableByWindowBackground = false
+        window.acceptsMouseMovedEvents = true
         window.isReleasedWhenClosed = false
         window.collectionBehavior = [.managed, .participatesInCycle, .fullScreenPrimary]
         window.backgroundColor = .clear
@@ -786,14 +1018,20 @@ final class NativeViewerWindowController: NSWindowController, NSWindowDelegate {
         )
         window.setAccessibilitySubrole(.standardWindow)
 
+        content.onFollowHost = { [weak self] in
+            self?.setUserScaleMode(.follow)
+        }
         content.onFitToWindow = { [weak self] in
-            self?.setPresentationModeWithoutResizing(.fit)
+            self?.setUserScaleMode(.fit)
         }
         content.onNativeSize = { [weak self] in
-            self?.setPresentationModeWithoutResizing(.actualPixels)
+            self?.setUserScaleMode(.native)
         }
-        content.onResetToActualSize = { [weak self] in
-            self?.resetToActualSize()
+        content.onMatchHostSize = { [weak self] in
+            self?.matchHostSize()
+        }
+        content.onToggleFullScreen = { [weak self] in
+            self?.toggleFullScreen()
         }
         content.onClose = { [weak self] in
             self?.requestClose()
@@ -837,7 +1075,7 @@ final class NativeViewerWindowController: NSWindowController, NSWindowDelegate {
         content.setScaleMode(scaleMode)
         applyPixelSize(source.pixelSize, authoritative: source.pixelSize, revision: source.stateRevision)
         if previousSourcePointSize != source.sourcePointSize,
-           (!userAdjustedSize || scaleMode != .automatic),
+           scaleMode == .follow,
            let committed = dimensionStabilizer.committedPixelSize {
             resizeVideoContent(for: committed)
         }
@@ -848,26 +1086,58 @@ final class NativeViewerWindowController: NSWindowController, NSWindowDelegate {
     }
 
     func setScaleMode(_ mode: NativeViewerScaleMode) {
+        let changed = scaleMode != mode
         scaleMode = mode
-        userAdjustedSize = false
+        if changed, mode != .follow {
+            // A host-size update may have arrived while Follow was fullscreen.
+            // Once the viewer chooses Native or Fit, that queued Follow resize
+            // must not overwrite the viewer-owned frame on fullscreen exit.
+            pendingPolicyResizeAfterFullScreen = false
+        }
         content.setScaleMode(mode)
-        if let committed = dimensionStabilizer.committedPixelSize {
+        if mode == .follow,
+           let committed = dimensionStabilizer.committedPixelSize {
             resizeVideoContent(for: committed)
+        } else if mode == .native {
+            clampCurrentNativeWindowIfNeeded()
+        } else if changed {
+            pendingPolicyResizeAfterFullScreen = false
+            content.layoutSubtreeIfNeeded()
         }
     }
 
+    func toggleFullScreen() {
+        window?.toggleFullScreen(nil)
+    }
+
     func showWithoutTakingFocus() {
+        pendingHideAfterFullScreen = false
         content.setPresentationActive(true)
         window?.orderFront(nil)
     }
 
     func hide() {
+        guard !isFullScreen else {
+            // Ordering out a fullscreen window can strand a hidden fullscreen
+            // Space and leave the coordinator's fullscreen state stale. Exit
+            // through AppKit first, then hide after the restored frame exists.
+            guard !pendingHideAfterFullScreen else { return }
+            pendingHideAfterFullScreen = true
+            window?.toggleFullScreen(nil)
+            return
+        }
+        performHide()
+    }
+
+    private func performHide() {
         content.setPresentationActive(false)
         window?.orderOut(nil)
     }
 
     func tearDown() {
         onCloseRequested = nil
+        onScaleModeChanged = nil
+        onFullScreenChanged = nil
         window?.delegate = nil
         content.removeFromSuperview()
         close()
@@ -876,7 +1146,7 @@ final class NativeViewerWindowController: NSWindowController, NSWindowDelegate {
     func windowShouldClose(_ sender: NSWindow) -> Bool {
         switch onCloseRequested?(self) ?? .hide {
         case .hide:
-            sender.orderOut(nil)
+            hide()
             return false
         case .leaveSession:
             return true
@@ -885,12 +1155,15 @@ final class NativeViewerWindowController: NSWindowController, NSWindowDelegate {
 
     func windowDidResize(_ notification: Notification) {
         guard !isApplyingPolicySize else { return }
-        userAdjustedSize = true
+        guard !isFullScreen else { return }
+        if scaleMode == .follow {
+            setUserScaleMode(.native)
+        }
     }
 
     func windowDidChangeScreen(_ notification: Notification) {
         refreshResolvedSourceLogicalSize()
-        guard !userAdjustedSize,
+        guard scaleMode == .follow,
               let committed = dimensionStabilizer.committedPixelSize else { return }
         resizeVideoContent(for: committed)
     }
@@ -899,22 +1172,94 @@ final class NativeViewerWindowController: NSWindowController, NSWindowDelegate {
         refreshResolvedSourceLogicalSize()
         content.needsLayout = true
         content.layoutSubtreeIfNeeded()
-        guard !userAdjustedSize,
+        guard scaleMode == .follow,
               let committed = dimensionStabilizer.committedPixelSize else { return }
         resizeVideoContent(for: committed)
     }
 
-    private func setPresentationModeWithoutResizing(_ mode: NativeViewerScaleMode) {
-        scaleMode = mode
-        userAdjustedSize = true
-        content.setScaleMode(mode)
-        content.layoutSubtreeIfNeeded()
+    func windowWillEnterFullScreen(_ notification: Notification) {
+        isFullScreen = true
+        content.setFullScreenPresentation(true)
     }
 
-    private func resetToActualSize() {
-        scaleMode = .actualPixels
-        userAdjustedSize = false
-        content.setScaleMode(.actualPixels)
+    func windowDidEnterFullScreen(_ notification: Notification) {
+        onFullScreenChanged?(self, true)
+    }
+
+    func windowWillExitFullScreen(_ notification: Notification) {
+        // Keep the edge-to-edge presentation through AppKit's exit animation.
+        // The restored window frame and persistent mode take effect together
+        // in `windowDidExitFullScreen`.
+    }
+
+    func windowDidExitFullScreen(_ notification: Notification) {
+        isFullScreen = false
+        content.setFullScreenPresentation(false)
+        onFullScreenChanged?(self, false)
+        if pendingPolicyResizeAfterFullScreen,
+           let committed = dimensionStabilizer.committedPixelSize {
+            pendingPolicyResizeAfterFullScreen = false
+            resizeVideoContent(for: committed)
+        } else {
+            pendingPolicyResizeAfterFullScreen = false
+        }
+        if pendingHideAfterFullScreen {
+            pendingHideAfterFullScreen = false
+            performHide()
+        }
+    }
+
+    func windowDidFailToEnterFullScreen(_ window: NSWindow) {
+        isFullScreen = false
+        content.setFullScreenPresentation(false)
+    }
+
+    func windowDidFailToExitFullScreen(_ window: NSWindow) {
+        isFullScreen = true
+        pendingHideAfterFullScreen = false
+        content.setFullScreenPresentation(true)
+    }
+
+    func windowWillResize(
+        _ sender: NSWindow,
+        to frameSize: NSSize
+    ) -> NSSize {
+        guard !isApplyingPolicySize, !isFullScreen else { return frameSize }
+        if scaleMode == .follow {
+            setUserScaleMode(.native)
+        }
+        guard scaleMode == .native else { return frameSize }
+        return clampedNativeFrameSize(frameSize, for: sender)
+    }
+
+    private func setUserScaleMode(_ mode: NativeViewerScaleMode) {
+        guard scaleMode != mode else {
+            if mode == .follow,
+               let committed = dimensionStabilizer.committedPixelSize {
+                resizeVideoContent(for: committed)
+            }
+            return
+        }
+        scaleMode = mode
+        if mode != .follow {
+            // See `setScaleMode(_:)`: manual resize and header-menu changes
+            // must cancel any Follow resize deferred by fullscreen.
+            pendingPolicyResizeAfterFullScreen = false
+        }
+        content.setScaleMode(mode)
+        if mode == .follow,
+           let committed = dimensionStabilizer.committedPixelSize {
+            resizeVideoContent(for: committed)
+        } else if mode == .native {
+            clampCurrentNativeWindowIfNeeded()
+        } else {
+            pendingPolicyResizeAfterFullScreen = false
+            content.layoutSubtreeIfNeeded()
+        }
+        onScaleModeChanged?(self, mode)
+    }
+
+    private func matchHostSize() {
         if let committed = dimensionStabilizer.committedPixelSize {
             resizeVideoContent(for: committed)
         }
@@ -944,11 +1289,19 @@ final class NativeViewerWindowController: NSWindowController, NSWindowDelegate {
             authoritativePixelSize: authoritative,
             stateRevision: revision
         ) else { return }
-        guard !userAdjustedSize || scaleMode != .automatic else { return }
-        resizeVideoContent(for: committed)
+        guard scaleMode == .follow else { return }
+        if isFullScreen {
+            pendingPolicyResizeAfterFullScreen = true
+        } else {
+            resizeVideoContent(for: committed)
+        }
     }
 
     private func resizeVideoContent(for pixelSize: CGSize) {
+        if isFullScreen {
+            pendingPolicyResizeAfterFullScreen = true
+            return
+        }
         guard let window,
               let screen = window.screen ?? NSScreen.main else { return }
         let backingScale = max(1, screen.backingScaleFactor)
@@ -991,6 +1344,78 @@ final class NativeViewerWindowController: NSWindowController, NSWindowDelegate {
         )
         window.setFrame(frame, display: true, animate: false)
         isApplyingPolicySize = false
+    }
+
+    private func clampCurrentNativeWindowIfNeeded() {
+        guard scaleMode == .native,
+              !isFullScreen,
+              let window else { return }
+        let clampedSize = clampedNativeFrameSize(window.frame.size, for: window)
+        guard clampedSize != window.frame.size else { return }
+        var frame = window.frame
+        let oldTop = frame.maxY
+        frame.size = clampedSize
+        frame.origin.y = oldTop - frame.height
+        if let screen = window.screen ?? NSScreen.main {
+            frame.origin = Self.clampedOrigin(
+                frame: frame,
+                visibleFrame: screen.visibleFrame
+            )
+        }
+        isApplyingPolicySize = true
+        window.setFrame(frame, display: true, animate: false)
+        isApplyingPolicySize = false
+    }
+
+    private func clampedNativeFrameSize(
+        _ proposedFrameSize: CGSize,
+        for window: NSWindow
+    ) -> CGSize {
+        let proposedFrame = CGRect(origin: .zero, size: proposedFrameSize)
+        let proposedContentSize = window.contentRect(forFrameRect: proposedFrame).size
+        let systemChromeSize = CGSize(
+            width: max(0, proposedFrameSize.width - proposedContentSize.width),
+            height: max(0, proposedFrameSize.height - proposedContentSize.height)
+        )
+        return Self.clampedNativeFrameSize(
+            proposedFrameSize: proposedFrameSize,
+            sourceLogicalSize: Self.resolvedSourceLogicalSize(
+                source: source,
+                destinationBackingScale: window.backingScaleFactor
+            ),
+            systemChromeSize: systemChromeSize,
+            minimumFrameSize: window.minSize
+        )
+    }
+
+    static func clampedNativeFrameSize(
+        proposedFrameSize: CGSize,
+        sourceLogicalSize: CGSize,
+        systemChromeSize: CGSize,
+        minimumFrameSize: CGSize
+    ) -> CGSize {
+        // Native and Follow operate in host logical points, not decoded pixels.
+        // This is what lets the same 1,000-point host window remain the same
+        // physical AppKit size on both 1x and Retina viewer displays while the
+        // decoder preserves whatever pixel density the host supplied.
+        let maximumFrameSize = CGSize(
+            width: sourceLogicalSize.width
+                + NativeViewerContentView.horizontalChrome
+                + systemChromeSize.width,
+            height: sourceLogicalSize.height
+                + NativeViewerContentView.verticalChrome
+                + systemChromeSize.height
+        )
+        return CGSize(
+            width: max(
+                minimumFrameSize.width,
+                min(proposedFrameSize.width, maximumFrameSize.width)
+            ),
+            height: max(
+                minimumFrameSize.height,
+                min(proposedFrameSize.height, maximumFrameSize.height)
+            )
+        )
     }
 
     static func clampedOrigin(frame: CGRect, visibleFrame: CGRect) -> CGPoint {

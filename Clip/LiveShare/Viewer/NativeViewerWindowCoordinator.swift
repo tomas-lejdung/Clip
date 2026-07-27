@@ -64,13 +64,14 @@ final class NativeViewerWindowCoordinator {
 
     var confirmLeaveWhenLastWindowCloses: () -> Bool = { false }
     var onLeaveRequested: () -> Void = {}
+    var onPresentationChanged: () -> Void = {}
 
     private var ownerName: String
     private let identityColor: NSColor
     private let surfaceFactory: SurfaceFactory
     private var registry: NativeViewerWindowRegistry
     private var entries: [NativeViewerWindowID: Entry] = [:]
-    private var scaleMode = NativeViewerScaleMode.actualPixels
+    private var scaleMode = NativeViewerScaleMode.follow
 
     init(
         sessionID: String,
@@ -136,8 +137,61 @@ final class NativeViewerWindowCoordinator {
 
     func setScaleMode(_ mode: NativeViewerScaleMode) {
         scaleMode = mode
-        for entry in entries.values {
+        for (id, entry) in entries {
             entry.controller.setScaleMode(mode)
+            registry.setScaleMode(mode, for: id)
+        }
+    }
+
+    func setScaleMode(
+        _ mode: NativeViewerScaleMode,
+        sourceInstanceID: String
+    ) {
+        guard let id = windowID(sourceInstanceID: sourceInstanceID),
+              let controller = entries[id]?.controller else { return }
+        controller.setScaleMode(mode)
+        registry.setScaleMode(mode, for: id)
+    }
+
+    func toggleFullScreen(sourceInstanceID: String) {
+        guard let id = windowID(sourceInstanceID: sourceInstanceID),
+              let controller = entries[id]?.controller else { return }
+        if registry.windows[id]?.isVisible != true,
+           let change = registry.setVisible(true, for: id),
+           case let .visibility(changedID, isVisible) = change {
+            setVisibility(isVisible, id: changedID)
+        }
+        controller.toggleFullScreen()
+    }
+
+    func bringToFront(sourceInstanceID: String) {
+        guard let id = windowID(sourceInstanceID: sourceInstanceID),
+              let controller = entries[id]?.controller else { return }
+        if registry.windows[id]?.isVisible != true,
+           let change = registry.setVisible(true, for: id),
+           case let .visibility(changedID, isVisible) = change {
+            setVisibility(isVisible, id: changedID)
+        }
+        controller.showWithoutTakingFocus()
+        controller.window?.orderFrontRegardless()
+    }
+
+    func bringAllToFront() {
+        for change in registry.showAll() {
+            guard case let .visibility(id, isVisible) = change else { continue }
+            setVisibility(isVisible, id: id)
+        }
+        let ordered = entries.keys.sorted { lhs, rhs in
+            let lhsSource = registry.windows[lhs]?.source
+            let rhsSource = registry.windows[rhs]?.source
+            if lhsSource?.isFocused != rhsSource?.isFocused {
+                return lhsSource?.isFocused == false
+            }
+            return lhs.description < rhs.description
+        }
+        for id in ordered {
+            entries[id]?.controller.showWithoutTakingFocus()
+            entries[id]?.controller.window?.orderFrontRegardless()
         }
     }
 
@@ -235,6 +289,16 @@ final class NativeViewerWindowCoordinator {
         controller.onCloseRequested = { [weak self] controller in
             self?.handleClose(controller) ?? .hide
         }
+        controller.onScaleModeChanged = { [weak self] controller, mode in
+            guard let self else { return }
+            registry.setScaleMode(mode, for: controller.viewerWindowID)
+            onPresentationChanged()
+        }
+        controller.onFullScreenChanged = { [weak self] controller, isFullScreen in
+            guard let self else { return }
+            registry.setFullScreen(isFullScreen, for: controller.viewerWindowID)
+            onPresentationChanged()
+        }
         do {
             try surface.bind(to: snapshot.source)
         } catch {
@@ -243,9 +307,14 @@ final class NativeViewerWindowCoordinator {
             throw error
         }
         entries[snapshot.id] = Entry(controller: controller, surface: surface)
+        registry.setScaleMode(scaleMode, for: snapshot.id)
         cascade(controller.window, index: entries.count - 1)
         if snapshot.isVisible {
             controller.showWithoutTakingFocus()
+            // A newly shared source should be visible immediately, even when
+            // Clip is not the active application, without stealing keyboard
+            // focus or becoming permanently floating.
+            controller.window?.orderFrontRegardless()
         }
     }
 
@@ -278,6 +347,12 @@ final class NativeViewerWindowCoordinator {
         } else {
             controller.hide()
         }
+    }
+
+    private func windowID(sourceInstanceID: String) -> NativeViewerWindowID? {
+        registry.windows.first(where: {
+            $0.value.source.sourceInstanceID == sourceInstanceID
+        })?.key
     }
 
     private func handleClose(
