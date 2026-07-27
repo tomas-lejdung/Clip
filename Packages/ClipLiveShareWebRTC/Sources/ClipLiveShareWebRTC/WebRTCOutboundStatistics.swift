@@ -12,6 +12,7 @@ struct WebRTCOutboundCounter: Equatable, Sendable {
     let packetsSent: UInt64
     let framesSent: UInt64
     let framesEncoded: UInt64
+    let qpSum: UInt64?
     let framesDroppedByEncoder: UInt64?
     let totalEncodeTimeSeconds: Double?
     let totalPacketSendDelaySeconds: Double?
@@ -22,6 +23,7 @@ struct WebRTCOutboundCounter: Equatable, Sendable {
         packetsSent: UInt64 = 0,
         framesSent: UInt64,
         framesEncoded: UInt64 = 0,
+        qpSum: UInt64? = nil,
         framesDroppedByEncoder: UInt64? = nil,
         totalEncodeTimeSeconds: Double? = nil,
         totalPacketSendDelaySeconds: Double? = nil
@@ -31,6 +33,7 @@ struct WebRTCOutboundCounter: Equatable, Sendable {
         self.packetsSent = packetsSent
         self.framesSent = framesSent
         self.framesEncoded = framesEncoded
+        self.qpSum = qpSum
         self.framesDroppedByEncoder = framesDroppedByEncoder
         self.totalEncodeTimeSeconds = totalEncodeTimeSeconds
         self.totalPacketSendDelaySeconds = totalPacketSendDelaySeconds
@@ -46,12 +49,16 @@ struct WebRTCRawOutboundStatistics: Equatable, Sendable {
     let packetsSent: UInt64
     let framesSent: UInt64
     let framesEncoded: UInt64
+    let encodedFrameWidth: Int?
+    let encodedFrameHeight: Int?
+    let qpSum: UInt64?
     let reportedFramesPerSecond: Double?
     let targetBitrateBps: Double?
     let framesDroppedByEncoder: UInt64?
     let totalEncodeTimeSeconds: Double?
     let totalPacketSendDelaySeconds: Double?
     let qualityLimitationReason: String?
+    let qualityLimitationResolutionChanges: UInt64?
     let codec: String?
     let route: WebRTCConnectionRoute?
 
@@ -64,12 +71,16 @@ struct WebRTCRawOutboundStatistics: Equatable, Sendable {
         packetsSent: UInt64,
         framesSent: UInt64,
         framesEncoded: UInt64,
+        encodedFrameWidth: Int? = nil,
+        encodedFrameHeight: Int? = nil,
+        qpSum: UInt64? = nil,
         reportedFramesPerSecond: Double?,
         targetBitrateBps: Double? = nil,
         framesDroppedByEncoder: UInt64? = nil,
         totalEncodeTimeSeconds: Double? = nil,
         totalPacketSendDelaySeconds: Double? = nil,
         qualityLimitationReason: String? = nil,
+        qualityLimitationResolutionChanges: UInt64? = nil,
         codec: String? = nil,
         route: WebRTCConnectionRoute? = nil
     ) {
@@ -81,12 +92,17 @@ struct WebRTCRawOutboundStatistics: Equatable, Sendable {
         self.packetsSent = packetsSent
         self.framesSent = framesSent
         self.framesEncoded = framesEncoded
+        self.encodedFrameWidth = encodedFrameWidth
+        self.encodedFrameHeight = encodedFrameHeight
+        self.qpSum = qpSum
         self.reportedFramesPerSecond = reportedFramesPerSecond
         self.targetBitrateBps = targetBitrateBps
         self.framesDroppedByEncoder = framesDroppedByEncoder
         self.totalEncodeTimeSeconds = totalEncodeTimeSeconds
         self.totalPacketSendDelaySeconds = totalPacketSendDelaySeconds
         self.qualityLimitationReason = qualityLimitationReason
+        self.qualityLimitationResolutionChanges =
+            qualityLimitationResolutionChanges
         self.codec = codec
         self.route = route
     }
@@ -102,6 +118,7 @@ struct WebRTCRawOutboundStatistics: Equatable, Sendable {
             packetsSent: packetsSent,
             framesSent: framesSent,
             framesEncoded: framesEncoded,
+            qpSum: qpSum,
             framesDroppedByEncoder: framesDroppedByEncoder,
             totalEncodeTimeSeconds: totalEncodeTimeSeconds,
             totalPacketSendDelaySeconds: totalPacketSendDelaySeconds
@@ -122,6 +139,7 @@ enum WebRTCOutboundStatisticsParser {
                 ?? string(statistic.values["mediaType"])
             return kind == nil || kind == "video"
         }
+        let encodedDimensions = encodedFrameDimensions(in: outbound)
         return WebRTCRawOutboundStatistics(
             viewerID: viewerID,
             slot: slot,
@@ -132,6 +150,9 @@ enum WebRTCOutboundStatisticsParser {
             packetsSent: sum(outbound, key: "packetsSent"),
             framesSent: sum(outbound, key: "framesSent"),
             framesEncoded: sum(outbound, key: "framesEncoded"),
+            encodedFrameWidth: encodedDimensions?.width,
+            encodedFrameHeight: encodedDimensions?.height,
+            qpSum: optionalUInt64Sum(outbound, key: "qpSum"),
             reportedFramesPerSecond: optionalSum(outbound, key: "framesPerSecond"),
             targetBitrateBps: optionalSum(outbound, key: "targetBitrate"),
             // The WebRTC stats standard used `framesDroppedByEncoder`; the
@@ -150,9 +171,33 @@ enum WebRTCOutboundStatisticsParser {
             qualityLimitationReason: outbound.lazy.compactMap {
                 string($0.values["qualityLimitationReason"])
             }.first,
+            qualityLimitationResolutionChanges: optionalUInt64Sum(
+                outbound,
+                key: "qualityLimitationResolutionChanges"
+            ),
             codec: codecName(for: outbound, in: report),
             route: selectedConnectionRoute(in: report)
         )
+    }
+
+    /// A sender can publish several outbound RTP rows when simulcast or an
+    /// implementation-specific auxiliary layer is active. Report the largest
+    /// encoded layer because that is the one that represents Clip's requested
+    /// screen-share detail.
+    private static func encodedFrameDimensions(
+        in outbound: [RTCStatistics]
+    ) -> (width: Int, height: Int)? {
+        outbound.compactMap { statistic -> (width: Int, height: Int)? in
+            guard let width = number(statistic.values["frameWidth"])?.intValue,
+                  let height = number(statistic.values["frameHeight"])?.intValue,
+                  width > 0,
+                  height > 0 else {
+                return nil
+            }
+            return (width, height)
+        }.max {
+            $0.width * $0.height < $1.width * $1.height
+        }
     }
 
     private static func codecName(
@@ -251,14 +296,19 @@ enum WebRTCOutboundStatisticsAggregator {
                 packetsSent: sample.packetsSent,
                 framesSent: sample.framesSent,
                 framesEncoded: sample.framesEncoded,
+                encodedFrameWidth: sample.encodedFrameWidth,
+                encodedFrameHeight: sample.encodedFrameHeight,
                 bitrateBps: rates.bitrateBps,
                 framesPerSecond: rates.framesPerSecond ?? sample.reportedFramesPerSecond,
                 targetBitrateBps: sample.targetBitrateBps,
+                averageQuantizer: rates.averageQuantizer,
                 averageEncodeTimeMilliseconds: rates.averageEncodeTimeMilliseconds,
                 averagePacketSendDelayMilliseconds: rates
                     .averagePacketSendDelayMilliseconds,
                 encoderDroppedFrames: rates.encoderDroppedFrames,
                 qualityLimitationReason: sample.qualityLimitationReason,
+                qualityLimitationResolutionChanges:
+                    sample.qualityLimitationResolutionChanges,
                 codec: sample.codec
             )
             previous[sample.key] = sample.counter
@@ -272,10 +322,26 @@ enum WebRTCOutboundStatisticsAggregator {
             let bitrateValues = viewers.compactMap(\.bitrateBps)
             let fpsValues = viewers.compactMap(\.framesPerSecond)
             let targetBitrateValues = viewers.compactMap(\.targetBitrateBps)
+            let quantizerValues = viewers.compactMap(\.averageQuantizer)
             let encodeTimeValues = viewers.compactMap(\.averageEncodeTimeMilliseconds)
             let packetDelayValues = viewers.compactMap(
                 \.averagePacketSendDelayMilliseconds
             )
+            let encodedDimensions: Set<WebRTCEncodedFrameDimensions> = Set(
+                viewers.compactMap { viewer -> WebRTCEncodedFrameDimensions? in
+                    guard let width = viewer.encodedFrameWidth,
+                          let height = viewer.encodedFrameHeight else {
+                        return nil
+                    }
+                    return WebRTCEncodedFrameDimensions(
+                        width: width,
+                        height: height
+                    )
+                }
+            )
+            let commonEncodedDimensions = encodedDimensions.count == 1
+                ? encodedDimensions.first
+                : nil
             return WebRTCOutboundSlotStatistics(
                 slot: slot.index,
                 trackID: slot.trackID,
@@ -294,6 +360,12 @@ enum WebRTCOutboundStatisticsAggregator {
                     && !viewers.isEmpty
                     ? targetBitrateValues.reduce(0, +)
                     : nil,
+                encodedFrameWidth: commonEncodedDimensions?.width,
+                encodedFrameHeight: commonEncodedDimensions?.height,
+                hasMixedEncodedFrameDimensions: encodedDimensions.count > 1,
+                averageQuantizer: quantizerValues.isEmpty
+                    ? nil
+                    : quantizerValues.reduce(0, +) / Double(quantizerValues.count),
                 averageEncodeTimeMilliseconds: encodeTimeValues.isEmpty
                     ? nil
                     : encodeTimeValues.reduce(0, +) / Double(encodeTimeValues.count),
@@ -306,6 +378,9 @@ enum WebRTCOutboundStatisticsAggregator {
                 qualityLimitationReasons: Array(Set(viewers.compactMap {
                     $0.qualityLimitationReason
                 })).sorted(),
+                qualityLimitationResolutionChanges: viewers.reduce(0) {
+                    $0 + ($1.qualityLimitationResolutionChanges ?? 0)
+                },
                 codecs: Array(Set(viewers.compactMap(\.codec))).sorted(),
                 viewers: viewers
             )
@@ -325,6 +400,7 @@ enum WebRTCOutboundStatisticsAggregator {
     ) -> (
         bitrateBps: Double?,
         framesPerSecond: Double?,
+        averageQuantizer: Double?,
         averageEncodeTimeMilliseconds: Double?,
         averagePacketSendDelayMilliseconds: Double?,
         encoderDroppedFrames: UInt64?
@@ -333,11 +409,11 @@ enum WebRTCOutboundStatisticsAggregator {
               current.timestampMicroseconds > previous.timestampMicroseconds,
               current.bytesSent >= previous.bytesSent,
               current.framesSent >= previous.framesSent else {
-            return (nil, nil, nil, nil, nil)
+            return (nil, nil, nil, nil, nil, nil)
         }
         let seconds = (current.timestampMicroseconds - previous.timestampMicroseconds)
             / 1_000_000
-        guard seconds > 0 else { return (nil, nil, nil, nil, nil) }
+        guard seconds > 0 else { return (nil, nil, nil, nil, nil, nil) }
         let encodedFrameDelta = current.framesEncoded >= previous.framesEncoded
             ? current.framesEncoded - previous.framesEncoded
             : 0
@@ -347,6 +423,11 @@ enum WebRTCOutboundStatisticsAggregator {
         return (
             Double(current.bytesSent - previous.bytesSent) * 8 / seconds,
             Double(current.framesSent - previous.framesSent) / seconds,
+            averageCounterDelta(
+                current: current.qpSum,
+                previous: previous.qpSum,
+                count: encodedFrameDelta
+            ),
             averageDeltaMilliseconds(
                 current: current.totalEncodeTimeSeconds,
                 previous: previous.totalEncodeTimeSeconds,
@@ -362,6 +443,17 @@ enum WebRTCOutboundStatisticsAggregator {
                 previous: previous.framesDroppedByEncoder
             )
         )
+    }
+
+    private static func averageCounterDelta(
+        current: UInt64?,
+        previous: UInt64?,
+        count: UInt64
+    ) -> Double? {
+        guard let current, let previous, current >= previous, count > 0 else {
+            return nil
+        }
+        return Double(current - previous) / Double(count)
     }
 
     private static func averageDeltaMilliseconds(

@@ -5125,8 +5125,21 @@ final class LiveShareCoordinator {
                 return LiveShareStreamStatisticsViewSnapshot(
                     id: slot.trackID,
                     name: descriptor.stream.appName,
+                    sourcePointWidth: descriptor.stream.sourcePointWidth,
+                    sourcePointHeight: descriptor.stream.sourcePointHeight,
+                    sourcePixelWidth: descriptor.sourcePixelWidth,
+                    sourcePixelHeight: descriptor.sourcePixelHeight,
+                    captureWidth: descriptor.video.width,
+                    captureHeight: descriptor.video.height,
+                    capturePixelFormat: Self.capturePixelFormatDescription(
+                        descriptor.video.pixelFormat
+                    ),
                     width: descriptor.stream.width,
                     height: descriptor.stream.height,
+                    encodedFrameWidth: outboundSlot.encodedFrameWidth,
+                    encodedFrameHeight: outboundSlot.encodedFrameHeight,
+                    hasMixedEncodedFrameDimensions:
+                        outboundSlot.hasMixedEncodedFrameDimensions,
                     deliveredFramesPerSecond: outboundSlot.deliveredFramesPerSecond ?? 0,
                     bitsPerSecond: max(
                         0,
@@ -5134,6 +5147,12 @@ final class LiveShareCoordinator {
                     ),
                     targetBitsPerSecond: outboundSlot.aggregateTargetBitrateBps.map {
                         max(0, Int($0.rounded()))
+                    },
+                    configuredBitrateFloor: senderPolicy.minimumBitrateBps.map {
+                        LiveShareCoordinatorPolicy.aggregateConfiguredBitrateCeiling(
+                            perViewer: $0,
+                            viewerCount: outboundSlot.viewers.count
+                        )
                     },
                     configuredBitrateCeiling: LiveShareCoordinatorPolicy
                         .aggregateConfiguredBitrateCeiling(
@@ -5147,11 +5166,14 @@ final class LiveShareCoordinator {
                         generation: captureGenerations[source.id]
                     ),
                     encoderDroppedFrames: outboundSlot.encoderDroppedFrames,
+                    averageQuantizer: outboundSlot.averageQuantizer,
                     averageEncodeTimeMilliseconds: outboundSlot
                         .averageEncodeTimeMilliseconds,
                     averagePacketSendDelayMilliseconds: outboundSlot
                         .averagePacketSendDelayMilliseconds,
                     qualityLimitationReasons: outboundSlot.qualityLimitationReasons,
+                    qualityLimitationResolutionChanges:
+                        outboundSlot.qualityLimitationResolutionChanges,
                     codec: outboundSlot.codecs.isEmpty
                         ? nil
                         : outboundSlot.codecs.sorted().joined(separator: " / "),
@@ -5171,6 +5193,21 @@ final class LiveShareCoordinator {
         }
         updateViewerCount()
         publish()
+    }
+
+    private static func capturePixelFormatDescription(
+        _ pixelFormat: CaptureVideoPixelFormat
+    ) -> String {
+        switch pixelFormat {
+        case .bgra:
+            "BGRA native"
+        case .rec709BGRA:
+            "BGRA Rec.709"
+        case .rec709VideoRange:
+            "NV12 Rec.709 video"
+        case .rec709FullRange:
+            "NV12 Rec.709 full"
+        }
     }
 
     private func refreshCaptureDeliveryStatistics() async {

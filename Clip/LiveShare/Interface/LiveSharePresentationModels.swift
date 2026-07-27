@@ -419,53 +419,91 @@ struct LiveShareViewerViewSnapshot: Equatable, Identifiable, Sendable {
 struct LiveShareStreamStatisticsViewSnapshot: Equatable, Identifiable, Sendable {
     let id: String
     let name: String
+    let sourcePointWidth: Int?
+    let sourcePointHeight: Int?
+    let sourcePixelWidth: Int
+    let sourcePixelHeight: Int
+    let captureWidth: Int
+    let captureHeight: Int
+    let capturePixelFormat: String?
     let width: Int
     let height: Int
+    let encodedFrameWidth: Int?
+    let encodedFrameHeight: Int?
+    let hasMixedEncodedFrameDimensions: Bool
     let deliveredFramesPerSecond: Double
     let bitsPerSecond: Int
     let targetBitsPerSecond: Int?
+    let configuredBitrateFloor: Int?
     let configuredBitrateCeiling: Int
     let bytesSent: Int64
     let captureDeliveredFrames: UInt64
     let captureBackpressureDrops: UInt64
     let encoderDroppedFrames: UInt64
+    let averageQuantizer: Double?
     let averageEncodeTimeMilliseconds: Double?
     let averagePacketSendDelayMilliseconds: Double?
     let qualityLimitationReasons: [String]
+    let qualityLimitationResolutionChanges: UInt64
     let codec: String?
     let isFocused: Bool
 
     init(
         id: String,
         name: String,
+        sourcePointWidth: Int? = nil,
+        sourcePointHeight: Int? = nil,
+        sourcePixelWidth: Int? = nil,
+        sourcePixelHeight: Int? = nil,
+        captureWidth: Int? = nil,
+        captureHeight: Int? = nil,
+        capturePixelFormat: String? = nil,
         width: Int,
         height: Int,
+        encodedFrameWidth: Int? = nil,
+        encodedFrameHeight: Int? = nil,
+        hasMixedEncodedFrameDimensions: Bool = false,
         deliveredFramesPerSecond: Double,
         bitsPerSecond: Int,
         targetBitsPerSecond: Int? = nil,
+        configuredBitrateFloor: Int? = nil,
         configuredBitrateCeiling: Int = 0,
         bytesSent: Int64,
         captureDeliveredFrames: UInt64 = 0,
         captureBackpressureDrops: UInt64 = 0,
         encoderDroppedFrames: UInt64 = 0,
+        averageQuantizer: Double? = nil,
         averageEncodeTimeMilliseconds: Double? = nil,
         averagePacketSendDelayMilliseconds: Double? = nil,
         qualityLimitationReasons: [String] = [],
+        qualityLimitationResolutionChanges: UInt64 = 0,
         codec: String? = nil,
         isFocused: Bool = false
     ) {
         self.id = id
         self.name = name
+        self.sourcePointWidth = sourcePointWidth.map { max(0, $0) }
+        self.sourcePointHeight = sourcePointHeight.map { max(0, $0) }
+        self.sourcePixelWidth = max(0, sourcePixelWidth ?? width)
+        self.sourcePixelHeight = max(0, sourcePixelHeight ?? height)
+        self.captureWidth = max(0, captureWidth ?? width)
+        self.captureHeight = max(0, captureHeight ?? height)
+        self.capturePixelFormat = capturePixelFormat
         self.width = max(0, width)
         self.height = max(0, height)
+        self.encodedFrameWidth = encodedFrameWidth.map { max(0, $0) }
+        self.encodedFrameHeight = encodedFrameHeight.map { max(0, $0) }
+        self.hasMixedEncodedFrameDimensions = hasMixedEncodedFrameDimensions
         self.deliveredFramesPerSecond = max(0, deliveredFramesPerSecond)
         self.bitsPerSecond = max(0, bitsPerSecond)
         self.targetBitsPerSecond = targetBitsPerSecond.map { max(0, $0) }
+        self.configuredBitrateFloor = configuredBitrateFloor.map { max(0, $0) }
         self.configuredBitrateCeiling = max(0, configuredBitrateCeiling)
         self.bytesSent = max(0, bytesSent)
         self.captureDeliveredFrames = captureDeliveredFrames
         self.captureBackpressureDrops = captureBackpressureDrops
         self.encoderDroppedFrames = encoderDroppedFrames
+        self.averageQuantizer = averageQuantizer.map { max(0, $0) }
         self.averageEncodeTimeMilliseconds = averageEncodeTimeMilliseconds.map {
             max(0, $0)
         }
@@ -473,6 +511,8 @@ struct LiveShareStreamStatisticsViewSnapshot: Equatable, Identifiable, Sendable 
             max(0, $0)
         }
         self.qualityLimitationReasons = qualityLimitationReasons
+        self.qualityLimitationResolutionChanges =
+            qualityLimitationResolutionChanges
         self.codec = codec
         self.isFocused = isFocused
     }

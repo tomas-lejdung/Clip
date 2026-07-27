@@ -522,17 +522,34 @@ public struct WebRTCViewerSnapshot: Equatable, Sendable, Identifiable {
 /// established a baseline. FPS uses libwebrtc's direct measurement when it is
 /// present, then falls back to counter deltas. Nothing is estimated from the
 /// configured bitrate or capture cadence.
+public struct WebRTCEncodedFrameDimensions: Hashable, Sendable {
+    public let width: Int
+    public let height: Int
+
+    public init(width: Int, height: Int) {
+        self.width = max(0, width)
+        self.height = max(0, height)
+    }
+}
+
 public struct WebRTCOutboundViewerStatistics: Equatable, Sendable, Identifiable {
     public let viewerID: String
     public let bytesSent: UInt64
     public let packetsSent: UInt64
     public let framesSent: UInt64
     public let framesEncoded: UInt64
+    /// The largest outbound spatial layer currently reported by libwebrtc.
+    public let encodedFrameWidth: Int?
+    public let encodedFrameHeight: Int?
     public let bitrateBps: Double?
     public let framesPerSecond: Double?
     /// libwebrtc's current codec target, which may be lower than Clip's
     /// selected ceiling while congestion control protects latency.
     public let targetBitrateBps: Double?
+    /// Mean encoder quantizer for frames completed during the latest sample.
+    /// Quantizer scales are codec-specific and should not be compared across
+    /// different codecs.
+    public let averageQuantizer: Double?
     /// Mean encoder time for frames completed during the latest sample.
     public let averageEncodeTimeMilliseconds: Double?
     /// Mean time packets completed during the latest sample spent waiting
@@ -540,6 +557,8 @@ public struct WebRTCOutboundViewerStatistics: Equatable, Sendable, Identifiable 
     public let averagePacketSendDelayMilliseconds: Double?
     public let encoderDroppedFrames: UInt64?
     public let qualityLimitationReason: String?
+    /// Cumulative sender resolution adaptations reported by libwebrtc.
+    public let qualityLimitationResolutionChanges: UInt64?
     public let codec: String?
 
     public var id: String { viewerID }
@@ -551,13 +570,17 @@ public struct WebRTCOutboundViewerStatistics: Equatable, Sendable, Identifiable 
         packetsSent: UInt64,
         framesSent: UInt64,
         framesEncoded: UInt64,
+        encodedFrameWidth: Int? = nil,
+        encodedFrameHeight: Int? = nil,
         bitrateBps: Double?,
         framesPerSecond: Double?,
         targetBitrateBps: Double? = nil,
+        averageQuantizer: Double? = nil,
         averageEncodeTimeMilliseconds: Double? = nil,
         averagePacketSendDelayMilliseconds: Double? = nil,
         encoderDroppedFrames: UInt64? = nil,
         qualityLimitationReason: String? = nil,
+        qualityLimitationResolutionChanges: UInt64? = nil,
         codec: String? = nil
     ) {
         self.viewerID = viewerID
@@ -565,13 +588,18 @@ public struct WebRTCOutboundViewerStatistics: Equatable, Sendable, Identifiable 
         self.packetsSent = packetsSent
         self.framesSent = framesSent
         self.framesEncoded = framesEncoded
+        self.encodedFrameWidth = encodedFrameWidth.map { max(0, $0) }
+        self.encodedFrameHeight = encodedFrameHeight.map { max(0, $0) }
         self.bitrateBps = bitrateBps
         self.framesPerSecond = framesPerSecond
         self.targetBitrateBps = targetBitrateBps
+        self.averageQuantizer = averageQuantizer.map { max(0, $0) }
         self.averageEncodeTimeMilliseconds = averageEncodeTimeMilliseconds
         self.averagePacketSendDelayMilliseconds = averagePacketSendDelayMilliseconds
         self.encoderDroppedFrames = encoderDroppedFrames
         self.qualityLimitationReason = qualityLimitationReason
+        self.qualityLimitationResolutionChanges =
+            qualityLimitationResolutionChanges
         self.codec = codec
     }
 }
@@ -593,10 +621,18 @@ public struct WebRTCOutboundSlotStatistics: Equatable, Sendable, Identifiable {
     /// Sum of libwebrtc's current target across viewers. This is deliberately
     /// distinct from both measured egress and Clip's configured ceiling.
     public let aggregateTargetBitrateBps: Double?
+    /// The encoded dimensions when every current viewer agrees. If peers have
+    /// adapted independently, these values are `nil` and
+    /// `hasMixedEncodedFrameDimensions` is true.
+    public let encodedFrameWidth: Int?
+    public let encodedFrameHeight: Int?
+    public let hasMixedEncodedFrameDimensions: Bool
+    public let averageQuantizer: Double?
     public let averageEncodeTimeMilliseconds: Double?
     public let averagePacketSendDelayMilliseconds: Double?
     public let encoderDroppedFrames: UInt64
     public let qualityLimitationReasons: [String]
+    public let qualityLimitationResolutionChanges: UInt64
     public let codecs: [String]
     public let viewers: [WebRTCOutboundViewerStatistics]
 
@@ -615,10 +651,15 @@ public struct WebRTCOutboundSlotStatistics: Equatable, Sendable, Identifiable {
         aggregateBitrateBps: Double?,
         averageFramesPerSecond: Double?,
         aggregateTargetBitrateBps: Double? = nil,
+        encodedFrameWidth: Int? = nil,
+        encodedFrameHeight: Int? = nil,
+        hasMixedEncodedFrameDimensions: Bool = false,
+        averageQuantizer: Double? = nil,
         averageEncodeTimeMilliseconds: Double? = nil,
         averagePacketSendDelayMilliseconds: Double? = nil,
         encoderDroppedFrames: UInt64 = 0,
         qualityLimitationReasons: [String] = [],
+        qualityLimitationResolutionChanges: UInt64 = 0,
         codecs: [String] = [],
         viewers: [WebRTCOutboundViewerStatistics]
     ) {
@@ -632,10 +673,16 @@ public struct WebRTCOutboundSlotStatistics: Equatable, Sendable, Identifiable {
         self.aggregateBitrateBps = aggregateBitrateBps
         self.averageFramesPerSecond = averageFramesPerSecond
         self.aggregateTargetBitrateBps = aggregateTargetBitrateBps
+        self.encodedFrameWidth = encodedFrameWidth.map { max(0, $0) }
+        self.encodedFrameHeight = encodedFrameHeight.map { max(0, $0) }
+        self.hasMixedEncodedFrameDimensions = hasMixedEncodedFrameDimensions
+        self.averageQuantizer = averageQuantizer.map { max(0, $0) }
         self.averageEncodeTimeMilliseconds = averageEncodeTimeMilliseconds
         self.averagePacketSendDelayMilliseconds = averagePacketSendDelayMilliseconds
         self.encoderDroppedFrames = encoderDroppedFrames
         self.qualityLimitationReasons = qualityLimitationReasons
+        self.qualityLimitationResolutionChanges =
+            qualityLimitationResolutionChanges
         self.codecs = codecs
         self.viewers = viewers
     }
