@@ -232,129 +232,108 @@ struct LiveSharePopoverView: View {
 
     @ViewBuilder
     private var shareLinkSection: some View {
-        ClipPopoverSection(String(localized: "Invite"), systemImage: "link") {
-            if let room = model.snapshot.room {
-                VStack(alignment: .leading, spacing: 8) {
-                    HStack(spacing: 8) {
-                        VStack(alignment: .leading, spacing: 2) {
+        VStack(alignment: .leading, spacing: ClipPopoverDesign.sectionSpacing) {
+            ClipPopoverSection(String(localized: "Invite")) {
+                if let room = model.snapshot.room {
+                    VStack(alignment: .leading, spacing: 8) {
+                        HStack(spacing: 10) {
                             Text(room.roomCode)
                                 .font(.subheadline.weight(.semibold).monospaced())
-                                .textSelection(.enabled)
-                            Text(room.viewerURL.absoluteString)
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
                                 .lineLimit(1)
-                                .truncationMode(.middle)
                                 .textSelection(.enabled)
-                        }
-                        Spacer(minLength: 6)
-                        Button(action: model.copyLink) {
-                            Label(
+
+                            Spacer(minLength: 8)
+
+                            ClipPopoverButton(
                                 model.copiedItem == .link
                                     ? String(localized: "Copied")
                                     : String(localized: "Copy Invite"),
                                 systemImage: model.copiedItem == .link
                                     ? "checkmark"
-                                    : "doc.on.doc"
+                                    : "doc.on.doc",
+                                prominence: .secondary,
+                                size: .standard,
+                                isEnabled: room.isAvailable,
+                                accessibilityIdentifier: "clip.liveShare.copyLink",
+                                action: model.copyLink
                             )
                         }
-                        .controlSize(.small)
-                        .disabled(!room.isAvailable)
-                        .accessibilityIdentifier("clip.liveShare.copyLink")
-                    }
-                    .padding(.horizontal, ClipPopoverDesign.rowHorizontalPadding)
-                    .padding(.vertical, ClipPopoverDesign.rowVerticalPadding)
-
-                    if model.snapshot.sessionStage == .preparing {
-                        ClipPopoverRowDivider(leadingInset: 12)
-                        ClipPopoverActionRow(
-                            String(localized: "New Room"),
-                            systemImage: "arrow.clockwise",
-                            isEnabled: model.snapshot.canReplaceRoom,
-                            accessibilityIdentifier: "clip.liveShare.newRoom",
-                            action: model.replaceRoom
-                        )
-                    }
-
-                    if !room.isAvailable {
-                        Label(
-                            String(
-                                localized: "Share link temporarily unavailable. Existing viewers stay connected."
-                            ),
-                            systemImage: "exclamationmark.triangle.fill"
-                        )
-                        .font(.caption)
-                        .foregroundStyle(.orange)
-                        .fixedSize(horizontal: false, vertical: true)
                         .padding(.horizontal, ClipPopoverDesign.rowHorizontalPadding)
-                        .padding(.bottom, 4)
-                        .accessibilityIdentifier("clip.liveShare.signalingUnavailable")
-                    }
+                        .padding(.vertical, ClipPopoverDesign.rowVerticalPadding)
 
-                    ClipPopoverRowDivider()
-                    ClipPopoverToggleRow(
-                        String(localized: "Access Code"),
-                        systemImage: "lock",
-                        isEnabled: model.snapshot.canChangeAccessCode,
-                        accessibilityIdentifier: "clip.liveShare.accessCode.toggle",
-                        isOn: Binding(
-                            get: { model.snapshot.accessCodeEnabled },
-                            set: { model.setAccessCodeEnabled($0) }
+                        if !room.isAvailable {
+                            Label(
+                                String(
+                                    localized: "Share link temporarily unavailable. Existing viewers stay connected."
+                                ),
+                                systemImage: "exclamationmark.triangle.fill"
+                            )
+                            .font(.caption)
+                            .foregroundStyle(.orange)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .padding(.horizontal, ClipPopoverDesign.rowHorizontalPadding)
+                            .padding(.bottom, 4)
+                            .accessibilityIdentifier("clip.liveShare.signalingUnavailable")
+                        }
+
+                        ClipPopoverRowDivider()
+                        ClipPopoverToggleRow(
+                            String(localized: "Access Code"),
+                            systemImage: "lock",
+                            isEnabled: model.snapshot.canChangeAccessCode,
+                            accessibilityIdentifier: "clip.liveShare.accessCode.toggle",
+                            isOn: Binding(
+                                get: { model.snapshot.accessCodeEnabled },
+                                set: { model.setAccessCodeEnabled($0) }
+                            )
                         )
-                    )
 
-                    if model.snapshot.accessCodeEnabled {
-                        HStack(spacing: 8) {
-                            Text(model.snapshot.accessCode ?? String(localized: "Creating…"))
-                                .font(.body.monospaced().weight(.medium))
-                                .textSelection(.enabled)
-                                .lineLimit(1)
-                            Spacer()
-                            Button {
-                                model.copyAccessCode()
-                            } label: {
-                                Label(
+                        if model.snapshot.accessCodeEnabled {
+                            HStack(spacing: 8) {
+                                Text(model.snapshot.accessCode ?? String(localized: "Creating…"))
+                                    .font(.body.monospaced().weight(.medium))
+                                    .textSelection(.enabled)
+                                    .lineLimit(1)
+                                Spacer()
+                                ClipPopoverButton(
                                     model.copiedItem == .accessCode
                                         ? String(localized: "Copied")
                                         : String(localized: "Copy"),
                                     systemImage: model.copiedItem == .accessCode
                                         ? "checkmark"
-                                        : "doc.on.doc"
+                                        : "doc.on.doc",
+                                    isEnabled: model.snapshot.accessCode?.isEmpty == false,
+                                    accessibilityIdentifier: "clip.liveShare.accessCode.copy",
+                                    action: model.copyAccessCode
+                                )
+                                ClipPopoverButton(
+                                    String(localized: "Replace"),
+                                    systemImage: "arrow.clockwise",
+                                    isEnabled: model.snapshot.canChangeAccessCode,
+                                    accessibilityIdentifier: "clip.liveShare.accessCode.replace",
+                                    action: model.replaceAccessCode
                                 )
                             }
-                            .controlSize(.small)
-                            .disabled(model.snapshot.accessCode?.isEmpty != false)
-                            .accessibilityIdentifier("clip.liveShare.accessCode.copy")
-                            Button {
-                                model.replaceAccessCode()
-                            } label: {
-                                Label(String(localized: "Replace"), systemImage: "arrow.clockwise")
-                            }
-                            .controlSize(.small)
-                            .disabled(!model.snapshot.canChangeAccessCode)
-                            .accessibilityIdentifier("clip.liveShare.accessCode.replace")
-                        }
-                        .padding(.horizontal, ClipPopoverDesign.rowHorizontalPadding)
-                        .padding(.bottom, ClipPopoverDesign.rowVerticalPadding)
+                            .padding(.horizontal, ClipPopoverDesign.rowHorizontalPadding)
+                            .padding(.bottom, ClipPopoverDesign.rowVerticalPadding)
 
-                        Text("Verified by this Mac; the server never receives the code.")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
-                            .padding(.horizontal, ClipPopoverDesign.rowHorizontalPadding)
-                            .padding(.bottom, 4)
+                            Text("Verified by this Mac; the server never receives the code.")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                                .padding(.horizontal, ClipPopoverDesign.rowHorizontalPadding)
+                                .padding(.bottom, 4)
+                        }
+                        if let error = model.snapshot.accessCodeError {
+                            Text(error)
+                                .font(.caption2)
+                                .foregroundStyle(.red)
+                                .fixedSize(horizontal: false, vertical: true)
+                                .padding(.horizontal, ClipPopoverDesign.rowHorizontalPadding)
+                                .padding(.bottom, 4)
+                        }
                     }
-                    if let error = model.snapshot.accessCodeError {
-                        Text(error)
-                            .font(.caption2)
-                            .foregroundStyle(.red)
-                            .fixedSize(horizontal: false, vertical: true)
-                            .padding(.horizontal, ClipPopoverDesign.rowHorizontalPadding)
-                            .padding(.bottom, 4)
-                    }
-                }
-            } else {
-                if model.snapshot.phase.isFailure {
+                } else if model.snapshot.phase.isFailure {
                     Label(
                         model.snapshot.phase.statusText,
                         systemImage: "exclamationmark.triangle.fill"
@@ -378,14 +357,26 @@ struct LiveSharePopoverView: View {
                     .padding(ClipPopoverDesign.rowHorizontalPadding)
                 }
             }
+
+            if model.snapshot.sessionStage == .preparing,
+               model.snapshot.room != nil {
+                ClipPopoverButton(
+                    String(localized: "New Room"),
+                    systemImage: "arrow.clockwise",
+                    prominence: .secondary,
+                    size: .standard,
+                    isEnabled: model.snapshot.canReplaceRoom,
+                    accessibilityIdentifier: "clip.liveShare.newRoom",
+                    action: model.replaceRoom
+                )
+            }
         }
     }
 
     private var preparationSection: some View {
         VStack(alignment: .leading, spacing: ClipPopoverDesign.paneSpacing) {
             ClipPopoverSection(
-                String(localized: "Join a Share"),
-                systemImage: "rectangle.portrait.and.arrow.right"
+                String(localized: "Join a Share")
             ) {
                 VStack(alignment: .leading, spacing: 8) {
                     Text("Paste an invite from another Clip user to view their share.")
@@ -398,26 +389,35 @@ struct LiveSharePopoverView: View {
                             .textFieldStyle(.roundedBorder)
                             .accessibilityIdentifier("clip.liveShare.joinInvite.field")
                         HStack {
-                            Button("Cancel") {
+                            ClipPopoverButton(
+                                String(localized: "Cancel"),
+                                prominence: .secondary,
+                                size: .standard
+                            ) {
                                 inviteEntry = ""
                                 showsInviteEntry = false
                             }
                             Spacer()
-                            Button("Join") {
+                            ClipPopoverButton(
+                                String(localized: "Join"),
+                                systemImage: "rectangle.portrait.and.arrow.right",
+                                prominence: .primary,
+                                size: .standard,
+                                isEnabled: !inviteEntry.trimmingCharacters(
+                                    in: .whitespacesAndNewlines
+                                ).isEmpty,
+                                accessibilityIdentifier: "clip.liveShare.joinInvite.submit"
+                            ) {
                                 model.joinInvite(inviteEntry)
                             }
-                            .buttonStyle(.borderedProminent)
-                            .disabled(
-                                inviteEntry.trimmingCharacters(
-                                    in: .whitespacesAndNewlines
-                                ).isEmpty
-                            )
-                            .accessibilityIdentifier("clip.liveShare.joinInvite.submit")
                         }
                     } else {
-                        ClipPopoverActionRow(
+                        ClipPopoverButton(
                             String(localized: "Join an Invite"),
                             systemImage: "rectangle.portrait.and.arrow.right",
+                            prominence: .secondary,
+                            size: .standard,
+                            fillsWidth: true,
                             accessibilityIdentifier: "clip.liveShare.joinInvite"
                         ) {
                             showsInviteEntry = true
@@ -430,8 +430,7 @@ struct LiveSharePopoverView: View {
             ClipPopoverSection(
                 model.snapshot.friends.isEmpty
                     ? String(localized: "Friends")
-                    : String(localized: "Friends · \(model.snapshot.friends.count)"),
-                systemImage: "person.2"
+                    : String(localized: "Friends · \(model.snapshot.friends.count)")
             ) {
                 if model.snapshot.friends.isEmpty {
                     Text("Friends you add will appear here.")
@@ -505,8 +504,7 @@ struct LiveSharePopoverView: View {
         ClipPopoverSection(
             String(
                 localized: "Sources · \(min(4, model.snapshot.sources.count)) of 4 windows"
-            ),
-            systemImage: "macwindow.on.rectangle"
+            )
         ) {
             VStack(spacing: 0) {
                 ClipPopoverToggleRow(
@@ -574,24 +572,27 @@ struct LiveSharePopoverView: View {
                     }
                     .menuStyle(.button)
                     .menuIndicator(.visible)
+                    .buttonStyle(
+                        ClipPopoverButtonStyle(
+                            prominence: .secondary,
+                            size: .standard,
+                            fillsWidth: true
+                        )
+                    )
                     .disabled(!model.snapshot.canAddWindow)
                     .accessibilityIdentifier("clip.liveShare.addWindow")
 
-                    Button {
-                        model.shareFocusedWindow()
-                    } label: {
-                        Label(
-                            String(localized: "Share Focused"),
-                            systemImage: "scope"
-                        )
-                        .frame(maxWidth: .infinity)
-                    }
-                    .buttonStyle(.bordered)
-                    .disabled(
-                        !model.snapshot.canShareFocusedWindow
-                            || model.snapshot.settings.autoShareFocusedWindows
+                    ClipPopoverButton(
+                        String(localized: "Share Focused"),
+                        systemImage: "scope",
+                        prominence: .secondary,
+                        size: .standard,
+                        fillsWidth: true,
+                        isEnabled: model.snapshot.canShareFocusedWindow
+                            && !model.snapshot.settings.autoShareFocusedWindows,
+                        accessibilityIdentifier: "clip.liveShare.shareFocusedWindow",
+                        action: model.shareFocusedWindow
                     )
-                    .accessibilityIdentifier("clip.liveShare.shareFocusedWindow")
                 }
                 .padding(.horizontal, ClipPopoverDesign.rowHorizontalPadding)
                 .padding(.vertical, ClipPopoverDesign.rowVerticalPadding)
@@ -617,7 +618,7 @@ struct LiveSharePopoverView: View {
     }
 
     private var quickAudioSection: some View {
-        ClipPopoverSection(String(localized: "Audio"), systemImage: "speaker.wave.2") {
+        ClipPopoverSection {
             VStack(spacing: 0) {
                 ClipPopoverToggleRow(
                     String(localized: "System Audio"),
@@ -704,160 +705,145 @@ struct LiveSharePopoverView: View {
 
     private var streamSettingsSection: some View {
         VStack(alignment: .leading, spacing: ClipPopoverDesign.paneSpacing) {
-            ClipPopoverSection(
-                String(localized: "Video"),
-                systemImage: "video"
-            ) {
+            ClipPopoverSection(String(localized: "Video")) {
                 VStack(spacing: 0) {
-            LiveShareSettingRow(title: String(localized: "Quality")) {
-                Picker(
-                    String(localized: "Quality"),
-                    selection: Binding(
-                        get: { model.snapshot.settings.quality },
-                        set: { model.setQuality($0) }
-                    )
-                ) {
-                    ForEach(LiveShareQualityPreset.allCases) { quality in
-                        Text("\(quality.title) · \(quality.bitrateText)")
-                            .tag(quality)
-                    }
-                }
-                .labelsHidden()
-                .frame(width: 165)
-                .disabled(!model.snapshot.settings.canChangeQuality)
-                .accessibilityIdentifier("clip.liveShare.quality")
-            }
-
-            ClipPopoverRowDivider(leadingInset: 12)
-
-            VStack(alignment: .leading, spacing: 5) {
-                Text("Frame Rate")
-                    .font(.subheadline)
-                Picker(
-                    String(localized: "Frame Rate"),
-                    selection: Binding(
-                        get: { model.snapshot.settings.frameRate },
-                        set: { model.setFrameRate($0) }
-                    )
-                ) {
-                    ForEach(LiveShareFrameRate.allCases) { frameRate in
-                        Text("\(frameRate.rawValue)")
-                            .tag(frameRate)
-                            .disabled(!model.snapshot.settings.availableFrameRates.contains(frameRate))
-                    }
-                }
-                .labelsHidden()
-                .pickerStyle(.segmented)
-                .disabled(!model.snapshot.settings.canChangeFrameRate)
-                .accessibilityIdentifier("clip.liveShare.frameRate")
-            }
-            .padding(.horizontal, ClipPopoverDesign.rowHorizontalPadding)
-            .padding(.vertical, ClipPopoverDesign.rowVerticalPadding)
-
-            ClipPopoverRowDivider(leadingInset: 12)
-
-            LiveShareSettingRow(title: String(localized: "Codec")) {
-                VStack(alignment: .trailing, spacing: 1) {
-                    HStack(spacing: 6) {
+                    LiveShareSettingRow(title: String(localized: "Quality")) {
                         Picker(
-                            String(localized: "Codec"),
+                            String(localized: "Quality"),
                             selection: Binding(
-                                get: { model.snapshot.settings.codec.codec },
-                                set: { model.setCodec($0) }
+                                get: { model.snapshot.settings.quality },
+                                set: { model.setQuality($0) }
                             )
                         ) {
-                            ForEach(LiveShareVideoCodec.allCases) { codec in
-                                Text(codec.displayName).tag(codec)
+                            ForEach(LiveShareQualityPreset.allCases) { quality in
+                                Text("\(quality.title) · \(quality.bitrateText)")
+                                    .tag(quality)
+                            }
+                        }
+                        .labelsHidden()
+                        .frame(width: 180)
+                        .disabled(!model.snapshot.settings.canChangeQuality)
+                        .accessibilityIdentifier("clip.liveShare.quality")
+                    }
+
+                    ClipPopoverRowDivider(leadingInset: 12)
+
+                    LiveShareSettingRow(title: String(localized: "Frame Rate")) {
+                        Picker(
+                            String(localized: "Frame Rate"),
+                            selection: Binding(
+                                get: { model.snapshot.settings.frameRate },
+                                set: { model.setFrameRate($0) }
+                            )
+                        ) {
+                            ForEach(LiveShareFrameRate.allCases) { frameRate in
+                                Text("\(frameRate.rawValue)")
+                                    .tag(frameRate)
+                                    .disabled(
+                                        !model.snapshot.settings.availableFrameRates
+                                            .contains(frameRate)
+                                    )
+                            }
+                        }
+                        .labelsHidden()
+                        .pickerStyle(.segmented)
+                        .frame(width: 165)
+                        .disabled(!model.snapshot.settings.canChangeFrameRate)
+                        .accessibilityIdentifier("clip.liveShare.frameRate")
+                    }
+
+                    ClipPopoverRowDivider(leadingInset: 12)
+
+                    LiveShareSettingRow(
+                        title: String(localized: "Codec"),
+                        detail: model.snapshot.settings.codec.detail
+                    ) {
+                        HStack(spacing: 6) {
+                            Picker(
+                                String(localized: "Codec"),
+                                selection: Binding(
+                                    get: { model.snapshot.settings.codec.codec },
+                                    set: { model.setCodec($0) }
+                                )
+                            ) {
+                                ForEach(LiveShareVideoCodec.allCases) { codec in
+                                    Text(codec.displayName).tag(codec)
+                                }
+                            }
+                            .labelsHidden()
+                            .pickerStyle(.menu)
+                            .frame(width: 128, alignment: .trailing)
+                            .disabled(!model.snapshot.settings.canChangeCodec)
+                            .accessibilityIdentifier("clip.liveShare.codec")
+
+                            Button {
+                                route = .advancedCodec(
+                                    model.snapshot.settings.codec.codec
+                                )
+                            } label: {
+                                Image(systemName: "slider.horizontal.3")
+                                    .accessibilityLabel(
+                                        "Advanced \(model.snapshot.settings.codec.codec.displayName) Settings"
+                                    )
+                            }
+                            .buttonStyle(.borderless)
+                            .disabled(!model.snapshot.settings.canChangeMode)
+                            .accessibilityIdentifier("clip.liveShare.codec.advanced")
+                            .id(model.snapshot.settings.codec.codec)
+                        }
+                    }
+
+                    ClipPopoverRowDivider(leadingInset: 12)
+
+                    LiveShareSettingRow(
+                        title: String(localized: "Color"),
+                        detail: model.snapshot.settings.colorMode.detail(
+                            for: model.snapshot.settings.codec.codec
+                        )
+                    ) {
+                        Picker(
+                            String(localized: "Color"),
+                            selection: Binding(
+                                get: { model.snapshot.settings.colorMode },
+                                set: { model.setColorMode($0) }
+                            )
+                        ) {
+                            ForEach(LiveShareColorMode.allCases) { colorMode in
+                                Text(colorMode.title).tag(colorMode)
                             }
                         }
                         .labelsHidden()
                         .pickerStyle(.menu)
-                        .frame(width: 128, alignment: .trailing)
-                        .disabled(!model.snapshot.settings.canChangeCodec)
-                        .accessibilityIdentifier("clip.liveShare.codec")
+                        .frame(width: 190, alignment: .trailing)
+                        .disabled(!model.snapshot.settings.canChangeColorMode)
+                        .accessibilityIdentifier("clip.liveShare.colorMode")
+                    }
 
-                        Button {
-                            route = .advancedCodec(
-                                model.snapshot.settings.codec.codec
+                    ClipPopoverRowDivider(leadingInset: 12)
+
+                    LiveShareSettingRow(title: String(localized: "Mode")) {
+                        Picker(
+                            String(localized: "Mode"),
+                            selection: Binding(
+                                get: { model.snapshot.settings.mode },
+                                set: { model.setMode($0) }
                             )
-                        } label: {
-                            Image(systemName: "slider.horizontal.3")
-                                .accessibilityLabel(
-                                    "Advanced \(model.snapshot.settings.codec.codec.displayName) Settings"
-                                )
+                        ) {
+                            ForEach(LiveShareEncodingMode.allCases) { mode in
+                                Text(mode.title).tag(mode)
+                            }
                         }
-                        .buttonStyle(.borderless)
+                        .labelsHidden()
+                        .pickerStyle(.segmented)
+                        .frame(width: 190)
                         .disabled(!model.snapshot.settings.canChangeMode)
-                        .accessibilityIdentifier("clip.liveShare.codec.advanced")
-                        .id(model.snapshot.settings.codec.codec)
+                        .accessibilityIdentifier("clip.liveShare.mode")
                     }
-
-                    Text(model.snapshot.settings.codec.detail)
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                }
-            }
-
-            ClipPopoverRowDivider(leadingInset: 12)
-
-            LiveShareSettingRow(title: String(localized: "Color")) {
-                VStack(alignment: .trailing, spacing: 1) {
-                    Picker(
-                        String(localized: "Color"),
-                        selection: Binding(
-                            get: { model.snapshot.settings.colorMode },
-                            set: { model.setColorMode($0) }
-                        )
-                    ) {
-                        ForEach(LiveShareColorMode.allCases) { colorMode in
-                            Text(colorMode.title).tag(colorMode)
-                        }
-                    }
-                    .labelsHidden()
-                    .pickerStyle(.menu)
-                    .frame(width: 190, alignment: .trailing)
-                    .disabled(!model.snapshot.settings.canChangeColorMode)
-                    .accessibilityIdentifier("clip.liveShare.colorMode")
-
-                    Text(
-                        model.snapshot.settings.colorMode.detail(
-                            for: model.snapshot.settings.codec.codec
-                        )
-                    )
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                }
-            }
-
-            ClipPopoverRowDivider(leadingInset: 12)
-
-            VStack(alignment: .leading, spacing: 5) {
-                Text("Mode")
-                    .font(.subheadline)
-                Picker(
-                    String(localized: "Mode"),
-                    selection: Binding(
-                        get: { model.snapshot.settings.mode },
-                        set: { model.setMode($0) }
-                    )
-                ) {
-                    ForEach(LiveShareEncodingMode.allCases) { mode in
-                        Text(mode.title).tag(mode)
-                    }
-                }
-                .labelsHidden()
-                .pickerStyle(.segmented)
-                .disabled(!model.snapshot.settings.canChangeMode)
-                .accessibilityIdentifier("clip.liveShare.mode")
-            }
-            .padding(.horizontal, ClipPopoverDesign.rowHorizontalPadding)
-            .padding(.vertical, ClipPopoverDesign.rowVerticalPadding)
                 }
             }
 
             ClipPopoverSection(
-                String(localized: "Behavior"),
-                systemImage: "cursorarrow.motionlines"
+                String(localized: "Behavior")
             ) {
                 VStack(spacing: 0) {
                     ClipPopoverToggleRow(
@@ -1019,8 +1005,7 @@ struct LiveSharePopoverView: View {
         ClipPopoverSection(
             String(
                 localized: "Viewers · \(model.snapshot.connectedViewerCount) connected"
-            ),
-            systemImage: "person.2"
+            )
         ) {
             if model.snapshot.viewers.isEmpty {
                 Text("No viewers connected yet.")
@@ -1078,8 +1063,7 @@ struct LiveSharePopoverView: View {
     private var statisticsSection: some View {
         VStack(alignment: .leading, spacing: ClipPopoverDesign.paneSpacing) {
             ClipPopoverSection(
-                String(localized: "Session"),
-                systemImage: "clock"
+                String(localized: "Session")
             ) {
                 VStack(alignment: .leading, spacing: 5) {
                     Text(
@@ -1105,8 +1089,7 @@ struct LiveSharePopoverView: View {
 
             if model.snapshot.statistics.streams.isEmpty {
                 ClipPopoverSection(
-                    String(localized: "Streams"),
-                    systemImage: "waveform.path.ecg"
+                    String(localized: "Streams")
                 ) {
                     Text("Statistics appear after a source starts sending.")
                         .font(.caption)
@@ -1117,8 +1100,7 @@ struct LiveSharePopoverView: View {
                 ClipPopoverSection(
                     String(
                         localized: "Streams · \(model.snapshot.statistics.streams.count)"
-                    ),
-                    systemImage: "waveform.path.ecg"
+                    )
                 ) {
                     VStack(spacing: 0) {
                         ForEach(
@@ -1141,14 +1123,15 @@ struct LiveSharePopoverView: View {
     private var sessionActions: some View {
         if model.snapshot.phase.isFailure {
             HStack(spacing: 8) {
-                Button {
-                    model.retry()
-                } label: {
-                    Label(String(localized: "Retry"), systemImage: "arrow.clockwise")
-                        .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(.borderedProminent)
-                .accessibilityIdentifier("clip.liveShare.retry")
+                ClipPopoverButton(
+                    String(localized: "Retry"),
+                    systemImage: "arrow.clockwise",
+                    prominence: .primary,
+                    size: .bottom,
+                    fillsWidth: true,
+                    accessibilityIdentifier: "clip.liveShare.retry",
+                    action: model.retry
+                )
 
                 Button(role: .destructive) {
                     model.stopSession()
@@ -1156,7 +1139,13 @@ struct LiveSharePopoverView: View {
                     Text("Stop Session")
                         .frame(maxWidth: .infinity)
                 }
-                .buttonStyle(.bordered)
+                .buttonStyle(
+                    ClipPopoverButtonStyle(
+                        prominence: .destructive,
+                        size: .bottom,
+                        fillsWidth: true
+                    )
+                )
                 .disabled(!model.snapshot.canStopSession)
                 .accessibilityIdentifier("clip.liveShare.stopSession")
             }
@@ -1166,31 +1155,36 @@ struct LiveSharePopoverView: View {
                     model.stopSession()
                 } label: {
                     Text("Cancel")
-                        .frame(maxWidth: .infinity)
                 }
-                .buttonStyle(.bordered)
+                .buttonStyle(
+                    ClipPopoverButtonStyle(
+                        prominence: .secondary,
+                        size: .bottom
+                    )
+                )
 
-                Button {
-                    model.startSharing()
-                } label: {
-                    Label(String(localized: "Start Sharing"), systemImage: "play.fill")
-                        .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(.borderedProminent)
-                .disabled(!model.snapshot.canStartSharing)
-                .accessibilityIdentifier("clip.liveShare.start")
+                ClipPopoverButton(
+                    String(localized: "Start Sharing"),
+                    systemImage: "play.fill",
+                    prominence: .primary,
+                    size: .bottom,
+                    fillsWidth: true,
+                    isEnabled: model.snapshot.canStartSharing,
+                    accessibilityIdentifier: "clip.liveShare.start",
+                    action: model.startSharing
+                )
             }
         } else {
             HStack(spacing: 8) {
                 if model.snapshot.hasActiveMedia {
-                    Button {
-                        model.stopAllMedia()
-                    } label: {
-                        Label(String(localized: "Stop All"), systemImage: "stop.circle")
-                            .labelStyle(.titleAndIcon)
-                    }
-                    .buttonStyle(.bordered)
-                    .accessibilityIdentifier("clip.liveShare.stopAll")
+                    ClipPopoverButton(
+                        String(localized: "Stop All"),
+                        systemImage: "stop.circle",
+                        prominence: .secondary,
+                        size: .bottom,
+                        accessibilityIdentifier: "clip.liveShare.stopAll",
+                        action: model.stopAllMedia
+                    )
                 }
 
                 Button(role: .destructive) {
@@ -1200,8 +1194,13 @@ struct LiveSharePopoverView: View {
                         .labelStyle(.titleAndIcon)
                         .frame(maxWidth: .infinity)
                 }
-                .buttonStyle(.borderedProminent)
-                .tint(.red)
+                .buttonStyle(
+                    ClipPopoverButtonStyle(
+                        prominence: .destructive,
+                        size: .bottom,
+                        fillsWidth: true
+                    )
+                )
                 .disabled(!model.snapshot.canStopSession)
                 .accessibilityIdentifier("clip.liveShare.stopSession")
             }
@@ -1291,8 +1290,7 @@ private struct LiveShareAdvancedCodecSettingsEditor: View {
     private var inlineBody: some View {
         VStack(alignment: .leading, spacing: ClipPopoverDesign.paneSpacing) {
             ClipPopoverSection(
-                String(localized: "Encoder Controls"),
-                systemImage: "dial.high"
+                String(localized: "Encoder Controls")
             ) {
                 settingsControls
                     .padding(ClipPopoverDesign.rowHorizontalPadding)
@@ -1380,14 +1378,31 @@ private struct LiveShareAdvancedCodecSettingsEditor: View {
             Button("Reset") {
                 draft = .default
             }
+            .buttonStyle(
+                ClipPopoverButtonStyle(
+                    prominence: .secondary,
+                    size: .standard
+                )
+            )
             .disabled(draft == .default)
             Spacer()
             Button("Cancel", action: onCancel)
+                .buttonStyle(
+                    ClipPopoverButtonStyle(
+                        prominence: .secondary,
+                        size: .standard
+                    )
+                )
                 .accessibilityIdentifier("clip.liveShare.codec.advanced.cancel")
             Button("Apply") {
                 onApply(draft.normalized(for: codec))
             }
-            .buttonStyle(.borderedProminent)
+            .buttonStyle(
+                ClipPopoverButtonStyle(
+                    prominence: .primary,
+                    size: .standard
+                )
+            )
             .keyboardShortcut(.defaultAction)
             .accessibilityIdentifier("clip.liveShare.codec.advanced.apply")
         }
@@ -1622,14 +1637,25 @@ private extension LiveShareDegradationPreference {
 
 private struct LiveShareSettingRow<Content: View>: View {
     let title: String
+    var detail: String? = nil
     @ViewBuilder let content: Content
 
     var body: some View {
-        HStack(alignment: .center, spacing: 8) {
-            Text(title)
-                .font(.subheadline.weight(.medium))
-            Spacer()
-            content
+        VStack(alignment: .leading, spacing: 3) {
+            HStack(alignment: .center, spacing: 10) {
+                Text(title)
+                    .font(.subheadline.weight(.medium))
+                Spacer(minLength: 10)
+                content
+            }
+
+            if let detail {
+                Text(detail)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .frame(maxWidth: .infinity, alignment: .trailing)
+            }
         }
         .padding(.horizontal, ClipPopoverDesign.rowHorizontalPadding)
         .padding(.vertical, ClipPopoverDesign.rowVerticalPadding)

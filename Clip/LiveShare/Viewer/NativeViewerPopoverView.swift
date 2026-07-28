@@ -57,15 +57,25 @@ struct NativeViewerPopoverView: View {
                 terminalSection
             }
         } footer: {
-            HStack(spacing: 10) {
+            VStack(spacing: 8) {
                 if model.snapshot.phase.isTerminal {
-                    Button("Try Again") { model.retry() }
-                        .buttonStyle(.bordered)
+                    ClipPopoverButton(
+                        String(localized: "Try Again"),
+                        systemImage: "arrow.clockwise",
+                        fillsWidth: true,
+                        action: model.retry
+                    )
                 }
-                Spacer()
-                Button("Leave") { model.leave() }
-                    .buttonStyle(.borderedProminent)
-                    .accessibilityIdentifier("clip.nativeViewer.leave")
+
+                ClipPopoverButton(
+                    String(localized: "Leave"),
+                    systemImage: "rectangle.portrait.and.arrow.right",
+                    prominence: .primary,
+                    size: .bottom,
+                    fillsWidth: true,
+                    accessibilityIdentifier: "clip.nativeViewer.leave",
+                    action: model.leave
+                )
             }
         }
     }
@@ -80,7 +90,6 @@ struct NativeViewerPopoverView: View {
     private var accessCodeSection: some View {
         ClipPopoverSection(
             String(localized: "Access Code"),
-            systemImage: "lock.fill",
             contentInsets: EdgeInsets(top: 12, leading: 12, bottom: 12, trailing: 12)
         ) {
             VStack(alignment: .leading, spacing: 10) {
@@ -90,9 +99,17 @@ struct NativeViewerPopoverView: View {
                 SecureField("Access code", text: $accessCode)
                     .textFieldStyle(.roundedBorder)
                     .onSubmit { model.submitAccessCode(accessCode) }
-                Button("Join Share") { model.submitAccessCode(accessCode) }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(accessCode.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                ClipPopoverButton(
+                    String(localized: "Join Share"),
+                    systemImage: "rectangle.portrait.and.arrow.right",
+                    prominence: .primary,
+                    fillsWidth: true,
+                    isEnabled: !accessCode
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                        .isEmpty
+                ) {
+                    model.submitAccessCode(accessCode)
+                }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         }
@@ -100,8 +117,7 @@ struct NativeViewerPopoverView: View {
 
     private var sourcesSection: some View {
         ClipPopoverSection(
-            String(localized: "Shared Windows"),
-            systemImage: "rectangle.on.rectangle"
+            String(localized: "Shared Windows")
         ) {
             HStack(spacing: 10) {
                 if model.snapshot.visibleSourceCount < model.snapshot.sources.count {
@@ -250,7 +266,6 @@ struct NativeViewerPopoverView: View {
     private func waitingForSourceSection(_ message: String) -> some View {
         ClipPopoverSection(
             String(localized: "Shared Windows"),
-            systemImage: "rectangle.on.rectangle",
             contentInsets: EdgeInsets(top: 12, leading: 12, bottom: 12, trailing: 12)
         ) {
             Label(message, systemImage: "rectangle.badge.clock")
@@ -267,7 +282,6 @@ struct NativeViewerPopoverView: View {
         if model.snapshot.systemAudioAvailable {
             ClipPopoverSection(
                 String(localized: "Audio"),
-                systemImage: "speaker.wave.2.fill",
                 contentInsets: EdgeInsets(top: 12, leading: 12, bottom: 12, trailing: 12)
             ) {
                 VStack(spacing: 10) {
@@ -295,13 +309,15 @@ struct NativeViewerPopoverView: View {
         if model.snapshot.friendship != .unavailable {
             ClipPopoverSection(
                 String(localized: "Friend"),
-                systemImage: "person.crop.circle.badge.plus",
                 contentInsets: EdgeInsets(top: 12, leading: 12, bottom: 12, trailing: 12)
             ) {
                 switch model.snapshot.friendship {
                 case .available:
-                    Button("Add as Friend") { model.requestFriendship() }
-                        .buttonStyle(.bordered)
+                    ClipPopoverButton(
+                        String(localized: "Add as Friend"),
+                        systemImage: "person.crop.circle.badge.plus",
+                        action: model.requestFriendship
+                    )
                 case .pending:
                     Label("Friend request sent", systemImage: "clock")
                         .font(.caption)
@@ -324,7 +340,6 @@ struct NativeViewerPopoverView: View {
     private var statisticsSection: some View {
         ClipPopoverSection(
             String(localized: "Connection"),
-            systemImage: "network",
             contentInsets: EdgeInsets(top: 12, leading: 12, bottom: 12, trailing: 12)
         ) {
             Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 5) {

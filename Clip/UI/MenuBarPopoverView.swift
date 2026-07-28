@@ -311,10 +311,7 @@ struct MenuBarPopoverView: View {
     }
 
     private var captureSection: some View {
-        ClipPopoverSection(
-            String(localized: "Capture"),
-            systemImage: "record.circle"
-        ) {
+        ClipPopoverSection(String(localized: "Capture")) {
             VStack(spacing: 0) {
                 actionRow(
                     String(localized: "Capture Area"),
@@ -383,10 +380,7 @@ struct MenuBarPopoverView: View {
     }
 
     private func preparedTargetSection(_ display: MenuBarDisplayRow) -> some View {
-        ClipPopoverSection(
-            String(localized: "Prepared Target"),
-            systemImage: "scope"
-        ) {
+        ClipPopoverSection(String(localized: "Prepared Target")) {
             HStack(spacing: 10) {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(display.name)
@@ -397,25 +391,22 @@ struct MenuBarPopoverView: View {
                         .foregroundStyle(.secondary)
                 }
                 Spacer()
-                Button {
+                ClipPopoverButton(
+                    String(localized: "Record"),
+                    systemImage: "record.circle.fill",
+                    prominence: .primary,
+                    accessibilityIdentifier: "clip.menu.recordPrepared"
+                ) {
                     actions.recordPreparedDisplay(display.id)
-                } label: {
-                    Label("Record", systemImage: "record.circle.fill")
                 }
-                .buttonStyle(.borderedProminent)
                 .keyboardShortcut(.defaultAction)
-                .modifier(MenuProminentControlHoverEffect())
-                .accessibilityIdentifier("clip.menu.recordPrepared")
             }
             .padding(12)
         }
     }
 
     private var quickSettingsSection: some View {
-        ClipPopoverSection(
-            String(localized: "Quick Settings"),
-            systemImage: "slider.horizontal.3"
-        ) {
+        ClipPopoverSection(String(localized: "Quick Settings")) {
             VStack(spacing: 0) {
                 quickToggle(
                     title: String(localized: "Microphone"),
@@ -470,10 +461,7 @@ struct MenuBarPopoverView: View {
     }
 
     private var recentRecordingsSection: some View {
-        ClipPopoverSection(
-            String(localized: "Recent Recordings"),
-            systemImage: "clock.arrow.circlepath"
-        ) {
+        ClipPopoverSection(String(localized: "Recent Recordings")) {
             VStack(spacing: 0) {
                 ForEach(Array(model.recentRecordings.enumerated()), id: \.element.id) {
                     index,
@@ -503,10 +491,7 @@ struct MenuBarPopoverView: View {
     }
 
     private var applicationSection: some View {
-        ClipPopoverSection(
-            String(localized: "Application"),
-            systemImage: "app"
-        ) {
+        ClipPopoverSection(String(localized: "Application")) {
             VStack(spacing: 0) {
                 ClipPopoverNavigationRow(
                     String(localized: "History"),
@@ -569,65 +554,6 @@ struct MenuBarPopoverView: View {
             isOn: isOn
         )
         .help(state.detail ?? state.status)
-    }
-}
-
-/// Keeps the prominent prepared-target action consistent with the menu rows.
-/// Its native button style already changes on hover; the explicit highlight
-/// remains visible across accent colors and appearance modes.
-private struct MenuProminentControlHoverEffect: ViewModifier {
-    @State private var isHovered = false
-
-    func body(content: Content) -> some View {
-        content
-            .contentShape(Rectangle())
-            .overlay {
-                RoundedRectangle(cornerRadius: 6, style: .continuous)
-                    .fill(Color.white.opacity(isHovered ? 0.14 : 0))
-                    .allowsHitTesting(false)
-            }
-            .modifier(ClipPopoverPointingHandCursorEffect(isEnabled: true))
-            .onHover { hovering in
-                isHovered = hovering
-            }
-            .animation(.easeOut(duration: 0.1), value: isHovered)
-    }
-}
-
-final class MenuPointingHandCursorView: NSView {
-    var isEnabled = true {
-        didSet {
-            guard isEnabled != oldValue else { return }
-            window?.invalidateCursorRects(for: self)
-        }
-    }
-
-    var registeredCursor: NSCursor? {
-        isEnabled ? .pointingHand : nil
-    }
-
-    override func resetCursorRects() {
-        super.resetCursorRects()
-        guard let registeredCursor, !bounds.isEmpty else { return }
-        addCursorRect(bounds, cursor: registeredCursor)
-    }
-
-    override func viewDidMoveToWindow() {
-        super.viewDidMoveToWindow()
-        window?.invalidateCursorRects(for: self)
-    }
-
-    override func setFrameSize(_ newSize: NSSize) {
-        let sizeChanged = frame.size != newSize
-        super.setFrameSize(newSize)
-        if sizeChanged {
-            window?.invalidateCursorRects(for: self)
-        }
-    }
-
-    /// The transparent cursor surface must never intercept the control below.
-    override func hitTest(_ point: NSPoint) -> NSView? {
-        nil
     }
 }
 

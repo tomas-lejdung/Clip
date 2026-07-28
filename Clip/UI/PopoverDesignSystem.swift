@@ -18,10 +18,10 @@ enum ClipPopoverDesign {
     )
 
     static let footerInsets = EdgeInsets(
-        top: 11,
-        leading: 12,
-        bottom: 10,
-        trailing: 12
+        top: 0,
+        leading: 14,
+        bottom: 14,
+        trailing: 14
     )
 }
 
@@ -102,7 +102,6 @@ struct ClipPopoverPane<
                 } footer: {
                     footer
                         .padding(ClipPopoverDesign.footerInsets)
-                        .background(.bar)
                 }
             } else {
                 FluidPopoverContent(
@@ -350,20 +349,17 @@ struct ClipPopoverSection<
     Content: View
 >: View {
     let title: String?
-    let systemImage: String?
     let contentInsets: EdgeInsets
     private let headerTrailing: HeaderTrailing
     private let content: Content
 
     init(
         _ title: String? = nil,
-        systemImage: String? = nil,
         contentInsets: EdgeInsets = .init(),
         @ViewBuilder headerTrailing: () -> HeaderTrailing,
         @ViewBuilder content: () -> Content
     ) {
         self.title = title
-        self.systemImage = systemImage
         self.contentInsets = contentInsets
         self.headerTrailing = headerTrailing()
         self.content = content()
@@ -373,10 +369,6 @@ struct ClipPopoverSection<
         VStack(alignment: .leading, spacing: ClipPopoverDesign.sectionSpacing) {
             if let title {
                 HStack(spacing: 7) {
-                    if let systemImage {
-                        Image(systemName: systemImage)
-                            .accessibilityHidden(true)
-                    }
                     Text(title)
                     Spacer(minLength: 8)
                     headerTrailing
@@ -410,13 +402,11 @@ struct ClipPopoverSection<
 extension ClipPopoverSection where HeaderTrailing == EmptyView {
     init(
         _ title: String? = nil,
-        systemImage: String? = nil,
         contentInsets: EdgeInsets = .init(),
         @ViewBuilder content: () -> Content
     ) {
         self.init(
             title,
-            systemImage: systemImage,
             contentInsets: contentInsets,
             headerTrailing: { EmptyView() },
             content: content
@@ -562,7 +552,8 @@ struct ClipPopoverToggleRow: View {
             ClipPopoverRowLabel(
                 title: title,
                 subtitle: subtitle,
-                systemImage: systemImage
+                systemImage: systemImage,
+                appliesOuterPadding: false
             ) {
                 if let status {
                     Text(status)
@@ -574,6 +565,10 @@ struct ClipPopoverToggleRow: View {
         }
         .toggleStyle(.switch)
         .controlSize(.small)
+        .padding(.horizontal, ClipPopoverDesign.rowHorizontalPadding)
+        .padding(.vertical, ClipPopoverDesign.rowVerticalPadding)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .contentShape(Rectangle())
         .disabled(!isEnabled)
         .modifier(ClipPopoverHoverEffect(isInteractive: isEnabled))
         .modifier(
@@ -598,6 +593,7 @@ private struct ClipPopoverRowLabel<Trailing: View>: View {
     let title: String
     let subtitle: String?
     let systemImage: String
+    var appliesOuterPadding = true
     @ViewBuilder let trailing: () -> Trailing
 
     var body: some View {
@@ -624,10 +620,197 @@ private struct ClipPopoverRowLabel<Trailing: View>: View {
             Spacer(minLength: 8)
             trailing()
         }
-        .padding(.horizontal, ClipPopoverDesign.rowHorizontalPadding)
-        .padding(.vertical, ClipPopoverDesign.rowVerticalPadding)
+        .padding(
+            .horizontal,
+            appliesOuterPadding ? ClipPopoverDesign.rowHorizontalPadding : 0
+        )
+        .padding(
+            .vertical,
+            appliesOuterPadding ? ClipPopoverDesign.rowVerticalPadding : 0
+        )
         .frame(maxWidth: .infinity, alignment: .leading)
         .contentShape(Rectangle())
+    }
+}
+
+enum ClipPopoverButtonSize {
+    case standard
+    case bottom
+
+    var height: CGFloat {
+        switch self {
+        case .standard:
+            32
+        case .bottom:
+            40
+        }
+    }
+
+    var horizontalPadding: CGFloat {
+        switch self {
+        case .standard:
+            13
+        case .bottom:
+            16
+        }
+    }
+}
+
+enum ClipPopoverButtonProminence {
+    case secondary
+    case primary
+    case destructive
+}
+
+/// Filled popover button chrome shared by regular actions, menus, and the
+/// larger pane-ending action. Apply this style directly to either a `Button`
+/// or a button-style `Menu` so both controls use identical geometry.
+struct ClipPopoverButtonStyle: ButtonStyle {
+    var prominence: ClipPopoverButtonProminence = .secondary
+    var size: ClipPopoverButtonSize = .standard
+    var fillsWidth = false
+
+    func makeBody(configuration: Configuration) -> some View {
+        ClipPopoverButtonStyleBody(
+            configuration: configuration,
+            prominence: prominence,
+            size: size,
+            fillsWidth: fillsWidth
+        )
+    }
+}
+
+private struct ClipPopoverButtonStyleBody: View {
+    let configuration: ButtonStyle.Configuration
+    let prominence: ClipPopoverButtonProminence
+    let size: ClipPopoverButtonSize
+    let fillsWidth: Bool
+
+    @Environment(\.isEnabled) private var isEnabled
+    @State private var isHovered = false
+
+    var body: some View {
+        configuration.label
+            .font(.subheadline.weight(.semibold))
+            .lineLimit(1)
+            .foregroundStyle(foregroundStyle)
+            .padding(.horizontal, size.horizontalPadding)
+            .frame(
+                maxWidth: fillsWidth ? .infinity : nil,
+                minHeight: size.height,
+                maxHeight: size.height
+            )
+            .background {
+                RoundedRectangle(
+                    cornerRadius: ClipPopoverDesign.rowCornerRadius,
+                    style: .continuous
+                )
+                .fill(backgroundStyle)
+            }
+            .overlay {
+                if prominence == .secondary {
+                    RoundedRectangle(
+                        cornerRadius: ClipPopoverDesign.rowCornerRadius,
+                        style: .continuous
+                    )
+                    .strokeBorder(Color.primary.opacity(0.08), lineWidth: 0.75)
+                }
+            }
+            .contentShape(
+                RoundedRectangle(
+                    cornerRadius: ClipPopoverDesign.rowCornerRadius,
+                    style: .continuous
+                )
+            )
+            .scaleEffect(configuration.isPressed ? 0.985 : 1)
+            .opacity(isEnabled ? 1 : 0.45)
+            .animation(.easeOut(duration: 0.1), value: isHovered)
+            .animation(.easeOut(duration: 0.08), value: configuration.isPressed)
+            .modifier(ClipPopoverPointingHandCursorEffect(isEnabled: isEnabled))
+            .onHover { isHovered = $0 }
+    }
+
+    private var foregroundStyle: Color {
+        switch prominence {
+        case .secondary:
+            .primary
+        case .primary, .destructive:
+            .white
+        }
+    }
+
+    private var backgroundStyle: Color {
+        let interactionBoost: Double
+        if configuration.isPressed {
+            interactionBoost = 0.07
+        } else if isHovered {
+            interactionBoost = 0.035
+        } else {
+            interactionBoost = 0
+        }
+
+        switch prominence {
+        case .secondary:
+            return Color.primary.opacity(0.09 + interactionBoost)
+        case .primary:
+            return Color.accentColor.opacity(1 - interactionBoost)
+        case .destructive:
+            return Color.red.opacity(0.92 + min(interactionBoost, 0.08))
+        }
+    }
+}
+
+struct ClipPopoverButton: View {
+    let title: String
+    let systemImage: String?
+    let prominence: ClipPopoverButtonProminence
+    let size: ClipPopoverButtonSize
+    let fillsWidth: Bool
+    let isEnabled: Bool
+    let accessibilityIdentifier: String?
+    let action: () -> Void
+
+    init(
+        _ title: String,
+        systemImage: String? = nil,
+        prominence: ClipPopoverButtonProminence = .secondary,
+        size: ClipPopoverButtonSize = .standard,
+        fillsWidth: Bool = false,
+        isEnabled: Bool = true,
+        accessibilityIdentifier: String? = nil,
+        action: @escaping () -> Void
+    ) {
+        self.title = title
+        self.systemImage = systemImage
+        self.prominence = prominence
+        self.size = size
+        self.fillsWidth = fillsWidth
+        self.isEnabled = isEnabled
+        self.accessibilityIdentifier = accessibilityIdentifier
+        self.action = action
+    }
+
+    var body: some View {
+        Button(action: action) {
+            if let systemImage {
+                Label(title, systemImage: systemImage)
+            } else {
+                Text(title)
+            }
+        }
+        .buttonStyle(
+            ClipPopoverButtonStyle(
+                prominence: prominence,
+                size: size,
+                fillsWidth: fillsWidth
+            )
+        )
+        .disabled(!isEnabled)
+        .modifier(
+            ClipOptionalAccessibilityIdentifier(
+                identifier: accessibilityIdentifier
+            )
+        )
     }
 }
 
@@ -686,17 +869,54 @@ private struct ClipOptionalAccessibilityIdentifier: ViewModifier {
 private struct ClipPopoverPointingHandCursorRegion: NSViewRepresentable {
     let isEnabled: Bool
 
-    func makeNSView(context: Context) -> MenuPointingHandCursorView {
-        let view = MenuPointingHandCursorView(frame: .zero)
+    func makeNSView(context: Context) -> ClipPopoverPointingHandCursorView {
+        let view = ClipPopoverPointingHandCursorView(frame: .zero)
         view.isEnabled = isEnabled
         view.setAccessibilityElement(false)
         return view
     }
 
     func updateNSView(
-        _ nsView: MenuPointingHandCursorView,
+        _ nsView: ClipPopoverPointingHandCursorView,
         context: Context
     ) {
         nsView.isEnabled = isEnabled
+    }
+}
+
+final class ClipPopoverPointingHandCursorView: NSView {
+    var isEnabled = true {
+        didSet {
+            guard isEnabled != oldValue else { return }
+            window?.invalidateCursorRects(for: self)
+        }
+    }
+
+    var registeredCursor: NSCursor? {
+        isEnabled ? .pointingHand : nil
+    }
+
+    override func resetCursorRects() {
+        super.resetCursorRects()
+        guard let registeredCursor, !bounds.isEmpty else { return }
+        addCursorRect(bounds, cursor: registeredCursor)
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        window?.invalidateCursorRects(for: self)
+    }
+
+    override func setFrameSize(_ newSize: NSSize) {
+        let sizeChanged = frame.size != newSize
+        super.setFrameSize(newSize)
+        if sizeChanged {
+            window?.invalidateCursorRects(for: self)
+        }
+    }
+
+    /// The transparent cursor surface must never intercept the control below.
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        nil
     }
 }

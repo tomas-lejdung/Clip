@@ -87,8 +87,7 @@ struct RecordingStatusView: View {
 
     private var audioSection: some View {
         ClipPopoverSection(
-            String(localized: "Audio"),
-            systemImage: "waveform"
+            String(localized: "Audio")
         ) {
             VStack(spacing: 0) {
                 RecordingAudioRow(
@@ -143,33 +142,37 @@ struct RecordingStatusView: View {
     private var controls: some View {
         VStack(spacing: 9) {
             HStack(spacing: 8) {
-                Button {
-                    model.togglePauseResume()
-                } label: {
-                    Label(model.pauseResumeTitle, systemImage: model.pauseResumeSystemImage)
-                        .frame(maxWidth: .infinity)
-                }
-                .disabled(!model.canPauseOrResume)
-                .accessibilityIdentifier("clip.recording.pauseResume")
+                ClipPopoverButton(
+                    model.pauseResumeTitle,
+                    systemImage: model.pauseResumeSystemImage,
+                    fillsWidth: true,
+                    isEnabled: model.canPauseOrResume,
+                    accessibilityIdentifier: "clip.recording.pauseResume",
+                    action: model.togglePauseResume
+                )
 
-                Button {
-                    model.requestFinish()
-                } label: {
-                    Label(String(localized: "Finish"), systemImage: "stop.fill")
-                        .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(.borderedProminent)
-                .disabled(!model.canFinish)
-                .accessibilityIdentifier("clip.recording.finish")
+                ClipPopoverButton(
+                    String(localized: "Finish"),
+                    systemImage: "stop.fill",
+                    prominence: .primary,
+                    fillsWidth: true,
+                    isEnabled: model.canFinish,
+                    accessibilityIdentifier: "clip.recording.finish",
+                    action: model.requestFinish
+                )
             }
 
             Button(role: .destructive) {
                 model.requestCancel()
             } label: {
                 Label(String(localized: "Cancel Recording"), systemImage: "trash")
-                    .frame(maxWidth: .infinity)
             }
-            .buttonStyle(.borderless)
+            .buttonStyle(
+                ClipPopoverButtonStyle(
+                    prominence: .destructive,
+                    fillsWidth: true
+                )
+            )
             .disabled(!model.canCancel)
             .accessibilityIdentifier("clip.recording.cancel")
         }

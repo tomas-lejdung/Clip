@@ -313,9 +313,6 @@ struct FluidFooterPopoverContent<Body: View, Footer: View>: View {
             .scrollBounceBehavior(.basedOnSize)
             .defaultScrollAnchor(.top)
 
-            Divider()
-                .background(measuredSegment)
-
             footer()
                 .frame(width: width)
                 .fixedSize(horizontal: false, vertical: true)
