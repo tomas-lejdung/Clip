@@ -3,34 +3,32 @@
     <channel>
         <title>Clip</title>
         <item>
-            <title>1.3.10</title>
-            <pubDate>Mon, 27 Jul 2026 19:55:17 +0200</pubDate>
-            <sparkle:version>15</sparkle:version>
-            <sparkle:shortVersionString>1.3.10</sparkle:shortVersionString>
+            <title>1.3.11</title>
+            <pubDate>Tue, 28 Jul 2026 12:46:45 +0200</pubDate>
+            <sparkle:version>16</sparkle:version>
+            <sparkle:shortVersionString>1.3.11</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
             <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
-            <description sparkle:format="markdown"><![CDATA[# Clip 1.3.10
+            <description sparkle:format="markdown"><![CDATA[# Clip 1.3.11
 
-Clip 1.3.10 makes app-to-app Live Share sharper when a window from a standard
-1× display is viewed on a Retina Mac.
+Clip 1.3.11 makes the recording and Live Share controls more fluid while
+keeping native viewer windows stable as they change size and state.
 
-## Native viewer
+## Popovers and viewer windows
 
-- Keep WebRTC's Metal drawable at the decoded video resolution so presentation
-  scaling no longer blurs the source inside the video shader.
-- Use nearest-neighbour sampling whenever shared content is enlarged, including
-  standard-display shares shown at their native logical size on Retina.
-- Continue using filtered scaling when Retina content is reduced for a smaller
-  window or standard-density display.
-- Snap tiny odd-dimension encoder differences to the intended integer scale
-  instead of stretching every source pixel fractionally.
+- Keep the menu-bar popover and Live Share controls stable while expanding,
+  replacing, or returning from compact states.
+- Improve native viewer window transitions and controls across resizing,
+  reopening, and recording-state changes.
+- Preserve viewer presentation state and source-resolution behavior as the
+  native viewer changes layout.
 
 ## Requirements
 
 Clip requires macOS 15 or later on Apple silicon. This build uses the same
 stable Apple Development identity as previous updater releases.
 ]]></description>
-            <enclosure url="https://github.com/tomas-lejdung/Clip/releases/download/v1.3.10/Clip-1.3.10.dmg" length="12207471" type="application/octet-stream" sparkle:edSignature="0ullJzYIE0GoHz66SU+FVD/6+5YuqA81F27oRfZvW5Fw1dz8r+F8HI2pA4c+ATT4esU0u3IvSyMWkDBnzNRoAQ=="/>
+            <enclosure url="https://github.com/tomas-lejdung/Clip/releases/download/v1.3.11/Clip-1.3.11.dmg" length="12351030" type="application/octet-stream" sparkle:edSignature="aw0/HFC+0YcjksNROcFqJPOLPGAVOLsIA5C7f9/YdZnEni+PwiRPCRuZ03EgqaPp34R/OP0T8Dz23w0P+EffBQ=="/>
         </item>
     </channel>
 </rss>
