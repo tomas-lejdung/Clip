@@ -9,7 +9,7 @@ import Foundation
 public enum CaptureAudioScope: Equatable, Sendable {
     case system(
         displayID: CGDirectDisplayID,
-        excludedBundleIdentifier: String?
+        excludedBundleIdentifiers: Set<String>
     )
     case applications(
         displayID: CGDirectDisplayID,
@@ -25,23 +25,31 @@ public enum CaptureAudioScope: Equatable, Sendable {
 
     var normalized: Self {
         switch self {
-        case let .system(displayID, excludedBundleIdentifier):
-            let identifier = excludedBundleIdentifier?
-                .trimmingCharacters(in: .whitespacesAndNewlines)
+        case let .system(displayID, excludedBundleIdentifiers):
             return .system(
                 displayID: displayID,
-                excludedBundleIdentifier: identifier?.isEmpty == false ? identifier : nil
+                excludedBundleIdentifiers: Self.normalized(
+                    bundleIdentifiers: excludedBundleIdentifiers
+                )
             )
 
         case let .applications(displayID, bundleIdentifiers):
             return .applications(
                 displayID: displayID,
-                bundleIdentifiers: Set(bundleIdentifiers.compactMap { identifier in
-                    let trimmed = identifier.trimmingCharacters(in: .whitespacesAndNewlines)
-                    return trimmed.isEmpty ? nil : trimmed
-                })
+                bundleIdentifiers: Self.normalized(
+                    bundleIdentifiers: bundleIdentifiers
+                )
             )
         }
+    }
+
+    private static func normalized(
+        bundleIdentifiers: Set<String>
+    ) -> Set<String> {
+        Set(bundleIdentifiers.compactMap { identifier in
+            let trimmed = identifier.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? nil : trimmed
+        })
     }
 }
 /// Live Share always feeds WebRTC the native ScreenCaptureKit mix at 48 kHz,
@@ -62,15 +70,24 @@ public struct CaptureAudioSessionRequest: Equatable, Sendable {
     public let identifier: UUID
     public let scope: CaptureAudioScope
     public let configuration: CaptureAudioConfiguration
+    /// A refresh fingerprint for the concrete application records resolved by
+    /// ScreenCaptureKit. Bundle identifiers define the audio policy; process
+    /// identifiers only make an otherwise-identical request compare unequal
+    /// when a selected application launches, terminates, or restarts.
+    public let filterApplicationProcessIdentifiers: Set<pid_t>
 
     public init(
         identifier: UUID = UUID(),
         scope: CaptureAudioScope,
-        configuration: CaptureAudioConfiguration = .init()
+        configuration: CaptureAudioConfiguration = .init(),
+        filterApplicationProcessIdentifiers: Set<pid_t> = []
     ) {
         self.identifier = identifier
         self.scope = scope.normalized
         self.configuration = configuration
+        self.filterApplicationProcessIdentifiers = Set(
+            filterApplicationProcessIdentifiers.filter { $0 > 0 }
+        )
     }
 }
 

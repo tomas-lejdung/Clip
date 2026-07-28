@@ -14,6 +14,7 @@
 		E7B100000000000000000001 /* UnattendedCaptureSmokeCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = E7F200000000000000000001 /* UnattendedCaptureSmokeCoordinator.swift */; };
 		E8B100000000000000000001 /* UnattendedCursorCaptureRegressionCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = E8F200000000000000000001 /* UnattendedCursorCaptureRegressionCoordinator.swift */; };
 		B00000000000000000000004 /* MenuBarPopoverView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F00000000000000000000004 /* MenuBarPopoverView.swift */; };
+		P0B100000000000000000001 /* PopoverDesignSystem.swift in Sources */ = {isa = PBXBuildFile; fileRef = P0F100000000000000000001 /* PopoverDesignSystem.swift */; };
 		B00000000000000000000005 /* ServiceInterfaces.swift in Sources */ = {isa = PBXBuildFile; fileRef = F00000000000000000000005 /* ServiceInterfaces.swift */; };
 		B00000000000000000000006 /* LiveServices.swift in Sources */ = {isa = PBXBuildFile; fileRef = F00000000000000000000006 /* LiveServices.swift */; };
 		B00000000000000000000007 /* ApplicationDirectories.swift in Sources */ = {isa = PBXBuildFile; fileRef = F00000000000000000000007 /* ApplicationDirectories.swift */; };
@@ -67,6 +68,7 @@
 		C7A100000000000000000001 /* OnboardingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C7A200000000000000000001 /* OnboardingView.swift */; };
 		C7A100000000000000000002 /* MenuBarPopoverModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C7A200000000000000000002 /* MenuBarPopoverModelTests.swift */; };
 		C7A100000000000000000003 /* OnboardingViewModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C7A200000000000000000003 /* OnboardingViewModelTests.swift */; };
+		P1B100000000000000000001 /* FluidPopoverResizeCoalescerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = P1F100000000000000000001 /* FluidPopoverResizeCoalescerTests.swift */; };
 		D9B100000000000000000001 /* PreviewViewModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D9B200000000000000000001 /* PreviewViewModelTests.swift */; };
 		A8D100000000000000000003 /* SettingsPresentationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A8D200000000000000000003 /* SettingsPresentationTests.swift */; };
 		F5B100000000000000000001 /* SettingsVisualSnapshotTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F5B200000000000000000001 /* SettingsVisualSnapshotTests.swift */; };
@@ -151,6 +153,7 @@
 		E8F200000000000000000001 /* UnattendedCursorCaptureRegressionCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UnattendedCursorCaptureRegressionCoordinator.swift; sourceTree = "<group>"; };
 		E9F100000000000000000001 /* README.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = README.md; sourceTree = "<group>"; };
 		F00000000000000000000004 /* MenuBarPopoverView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MenuBarPopoverView.swift; sourceTree = "<group>"; };
+		P0F100000000000000000001 /* PopoverDesignSystem.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PopoverDesignSystem.swift; sourceTree = "<group>"; };
 		F00000000000000000000005 /* ServiceInterfaces.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServiceInterfaces.swift; sourceTree = "<group>"; };
 		F00000000000000000000006 /* LiveServices.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveServices.swift; sourceTree = "<group>"; };
 		F00000000000000000000007 /* ApplicationDirectories.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ApplicationDirectories.swift; sourceTree = "<group>"; };
@@ -206,6 +209,7 @@
 		C7A200000000000000000001 /* OnboardingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OnboardingView.swift; sourceTree = "<group>"; };
 		C7A200000000000000000002 /* MenuBarPopoverModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MenuBarPopoverModelTests.swift; sourceTree = "<group>"; };
 		C7A200000000000000000003 /* OnboardingViewModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OnboardingViewModelTests.swift; sourceTree = "<group>"; };
+		P1F100000000000000000001 /* FluidPopoverResizeCoalescerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FluidPopoverResizeCoalescerTests.swift; sourceTree = "<group>"; };
 		D9B200000000000000000001 /* PreviewViewModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PreviewViewModelTests.swift; sourceTree = "<group>"; };
 		A8D200000000000000000003 /* SettingsPresentationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsPresentationTests.swift; sourceTree = "<group>"; };
 		F5B200000000000000000001 /* SettingsVisualSnapshotTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsVisualSnapshotTests.swift; sourceTree = "<group>"; };
@@ -367,6 +371,7 @@
 			isa = PBXGroup;
 			children = (
 				F00000000000000000000004 /* MenuBarPopoverView.swift */,
+				P0F100000000000000000001 /* PopoverDesignSystem.swift */,
 			);
 			path = UI;
 			sourceTree = "<group>";
@@ -579,6 +584,7 @@
 				F1000000000000000000001C /* LivePlatformServicesTests.swift */,
 				F1000000000000000000001D /* ManagedHistoryRepositoryTests.swift */,
 				F1000000000000000000001F /* GlobalShortcutServiceTests.swift */,
+				P1F100000000000000000001 /* FluidPopoverResizeCoalescerTests.swift */,
 				C7A200000000000000000002 /* MenuBarPopoverModelTests.swift */,
 				C7A200000000000000000003 /* OnboardingViewModelTests.swift */,
 				D9B200000000000000000001 /* PreviewViewModelTests.swift */,
@@ -858,6 +864,7 @@
 				E7B100000000000000000001 /* UnattendedCaptureSmokeCoordinator.swift in Sources */,
 				E8B100000000000000000001 /* UnattendedCursorCaptureRegressionCoordinator.swift in Sources */,
 				B00000000000000000000004 /* MenuBarPopoverView.swift in Sources */,
+				P0B100000000000000000001 /* PopoverDesignSystem.swift in Sources */,
 				B00000000000000000000005 /* ServiceInterfaces.swift in Sources */,
 				B00000000000000000000006 /* LiveServices.swift in Sources */,
 				B00000000000000000000007 /* ApplicationDirectories.swift in Sources */,
@@ -921,6 +928,7 @@
 				B1000000000000000000001C /* LivePlatformServicesTests.swift in Sources */,
 				B1000000000000000000001D /* ManagedHistoryRepositoryTests.swift in Sources */,
 				B1000000000000000000001F /* GlobalShortcutServiceTests.swift in Sources */,
+				P1B100000000000000000001 /* FluidPopoverResizeCoalescerTests.swift in Sources */,
 				C7A100000000000000000002 /* MenuBarPopoverModelTests.swift in Sources */,
 				C7A100000000000000000003 /* OnboardingViewModelTests.swift in Sources */,
 				D9B100000000000000000001 /* PreviewViewModelTests.swift in Sources */,

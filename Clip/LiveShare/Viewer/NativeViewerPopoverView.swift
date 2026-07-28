@@ -2,87 +2,96 @@ import AppKit
 import SwiftUI
 
 struct NativeViewerPopoverView: View {
-    static let contentSize = NSSize(width: 360, height: 590)
+    static let contentWidth = ClipPopoverDesign.width
+    static let contentSize = NSSize(width: contentWidth, height: 590)
 
     @ObservedObject var model: NativeViewerPresentationModel
     @State private var accessCode = ""
+    private let maximumHeight: CGFloat
+    private let onContentHeightChange: (CGFloat) -> Void
 
-    var body: some View {
-        VStack(spacing: 0) {
-            header
-            Divider()
-            ScrollView {
-                VStack(alignment: .leading, spacing: 16) {
-                    if model.snapshot.phase == .waitingForAccessCode {
-                        accessCodeSection
-                    }
-                    if !model.snapshot.sources.isEmpty {
-                        sourcesSection
-                    }
-                    if let waitingMessage = model.snapshot.waitingForSourceMessage {
-                        waitingForSourceSection(waitingMessage)
-                    }
-                    if model.snapshot.phase.isLive {
-                        audioSection
-                        friendshipSection
-                        statisticsSection
-                    }
-                    if model.snapshot.phase.isTerminal {
-                        terminalSection
-                    }
-                }
-                .padding(14)
-            }
-            Divider()
-            HStack(spacing: 10) {
-                if model.snapshot.phase.isTerminal {
-                    Button("Try Again") { model.retry() }
-                        .buttonStyle(.bordered)
-                }
-                Spacer()
-                Button("Leave") { model.leave() }
-                    .buttonStyle(.borderedProminent)
-                    .accessibilityIdentifier("clip.nativeViewer.leave")
-            }
-            .padding(12)
-        }
-        .frame(width: Self.contentSize.width, height: Self.contentSize.height)
+    init(
+        model: NativeViewerPresentationModel,
+        maximumHeight: CGFloat = 10_000,
+        onContentHeightChange: @escaping (CGFloat) -> Void = { _ in }
+    ) {
+        self.model = model
+        self.maximumHeight = maximumHeight
+        self.onContentHeightChange = onContentHeightChange
     }
 
-    private var header: some View {
-        HStack(spacing: 10) {
-            Image(systemName: "rectangle.on.rectangle.angled")
-                .font(.system(size: 18, weight: .semibold))
-                .foregroundStyle(model.snapshot.phase.isLive ? .green : .secondary)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(model.snapshot.ownerName.isEmpty ? "Live Share Viewer" : model.snapshot.ownerName)
-                    .font(.headline)
-                    .lineLimit(1)
-                HStack(spacing: 5) {
-                    Text(model.snapshot.phase.title)
-                    if model.snapshot.phase.isLive {
-                        Text("·")
-                        Text(model.snapshot.route.title)
-                    }
-                }
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            }
-            Spacer()
+    var body: some View {
+        ClipPopoverPane(
+            maximumHeight: maximumHeight,
+            onContentHeightChange: onContentHeightChange,
+            icon: "rectangle.on.rectangle.angled",
+            iconTint: model.snapshot.phase.isLive ? .green : .secondary,
+            title: model.snapshot.ownerName.isEmpty
+                ? String(localized: "Live Share Viewer")
+                : model.snapshot.ownerName,
+            subtitle: headerSubtitle,
+            accessibilityIdentifier: "clip.nativeViewer.status"
+        ) {
             if let device = model.snapshot.ownerDeviceName, !device.isEmpty {
                 Text(device)
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
             }
+        } content: {
+            if model.snapshot.phase == .waitingForAccessCode {
+                accessCodeSection
+            }
+            if !model.snapshot.sources.isEmpty {
+                sourcesSection
+            }
+            if let waitingMessage = model.snapshot.waitingForSourceMessage {
+                waitingForSourceSection(waitingMessage)
+            }
+            if model.snapshot.phase.isLive {
+                audioSection
+                friendshipSection
+                statisticsSection
+            }
+            if model.snapshot.phase.isTerminal {
+                terminalSection
+            }
+        } footer: {
+            VStack(spacing: 8) {
+                if model.snapshot.phase.isTerminal {
+                    ClipPopoverButton(
+                        String(localized: "Try Again"),
+                        systemImage: "arrow.clockwise",
+                        fillsWidth: true,
+                        action: model.retry
+                    )
+                }
+
+                ClipPopoverButton(
+                    String(localized: "Leave"),
+                    systemImage: "rectangle.portrait.and.arrow.right",
+                    prominence: .primary,
+                    size: .bottom,
+                    fillsWidth: true,
+                    accessibilityIdentifier: "clip.nativeViewer.leave",
+                    action: model.leave
+                )
+            }
         }
-        .padding(14)
-        .accessibilityElement(children: .contain)
-        .accessibilityIdentifier("clip.nativeViewer.status")
+    }
+
+    private var headerSubtitle: String {
+        guard model.snapshot.phase.isLive else {
+            return model.snapshot.phase.title
+        }
+        return "\(model.snapshot.phase.title) · \(model.snapshot.route.title)"
     }
 
     private var accessCodeSection: some View {
-        GroupBox("Access Code") {
+        ClipPopoverSection(
+            String(localized: "Access Code"),
+            contentInsets: EdgeInsets(top: 12, leading: 12, bottom: 12, trailing: 12)
+        ) {
             VStack(alignment: .leading, spacing: 10) {
                 Text("This share requires the code provided by the host.")
                     .font(.caption)
@@ -90,16 +99,43 @@ struct NativeViewerPopoverView: View {
                 SecureField("Access code", text: $accessCode)
                     .textFieldStyle(.roundedBorder)
                     .onSubmit { model.submitAccessCode(accessCode) }
-                Button("Join Share") { model.submitAccessCode(accessCode) }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(accessCode.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                ClipPopoverButton(
+                    String(localized: "Join Share"),
+                    systemImage: "rectangle.portrait.and.arrow.right",
+                    prominence: .primary,
+                    fillsWidth: true,
+                    isEnabled: !accessCode
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
+                        .isEmpty
+                ) {
+                    model.submitAccessCode(accessCode)
+                }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 
     private var sourcesSection: some View {
-        GroupBox {
+        ClipPopoverSection(
+            String(localized: "Shared Windows")
+        ) {
+            HStack(spacing: 10) {
+                if model.snapshot.visibleSourceCount < model.snapshot.sources.count {
+                    Button("Show All") { model.showAll() }
+                        .buttonStyle(.plain)
+                        .font(.caption)
+                }
+                Button {
+                    model.bringAllToFront()
+                } label: {
+                    Label("Bring All to Front", systemImage: "square.3.layers.3d.top.filled")
+                        .labelStyle(.titleAndIcon)
+                }
+                .buttonStyle(.plain)
+                .font(.caption)
+                .accessibilityIdentifier("clip.nativeViewer.bringAllToFront")
+            }
+        } content: {
             VStack(spacing: 0) {
                 ForEach(model.snapshot.sources) { source in
                     if source.id != model.snapshot.sources.first?.id { Divider() }
@@ -152,27 +188,9 @@ struct NativeViewerPopoverView: View {
                             .disabled(!source.isVisible || !source.isConnected)
                         }
                     }
-                    .padding(.vertical, 8)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 10)
                 }
-            }
-        } label: {
-            HStack(spacing: 8) {
-                Text("Shared Windows")
-                Spacer()
-                if model.snapshot.visibleSourceCount < model.snapshot.sources.count {
-                    Button("Show All") { model.showAll() }
-                        .buttonStyle(.plain)
-                        .font(.caption)
-                }
-                Button {
-                    model.bringAllToFront()
-                } label: {
-                    Label("Bring All to Front", systemImage: "square.3.layers.3d.top.filled")
-                        .labelStyle(.titleAndIcon)
-                }
-                .buttonStyle(.plain)
-                .font(.caption)
-                .accessibilityIdentifier("clip.nativeViewer.bringAllToFront")
             }
         }
         .accessibilityIdentifier("clip.nativeViewer.sources")
@@ -246,7 +264,10 @@ struct NativeViewerPopoverView: View {
     }
 
     private func waitingForSourceSection(_ message: String) -> some View {
-        GroupBox("Shared Windows") {
+        ClipPopoverSection(
+            String(localized: "Shared Windows"),
+            contentInsets: EdgeInsets(top: 12, leading: 12, bottom: 12, trailing: 12)
+        ) {
             Label(message, systemImage: "rectangle.badge.clock")
                 .font(.callout)
                 .foregroundStyle(.secondary)
@@ -259,7 +280,10 @@ struct NativeViewerPopoverView: View {
     @ViewBuilder
     private var audioSection: some View {
         if model.snapshot.systemAudioAvailable {
-            GroupBox("Audio") {
+            ClipPopoverSection(
+                String(localized: "Audio"),
+                contentInsets: EdgeInsets(top: 12, leading: 12, bottom: 12, trailing: 12)
+            ) {
                 VStack(spacing: 10) {
                     Toggle("Play shared audio", isOn: Binding(
                         get: { model.snapshot.systemAudioEnabled },
@@ -282,29 +306,42 @@ struct NativeViewerPopoverView: View {
 
     @ViewBuilder
     private var friendshipSection: some View {
-        switch model.snapshot.friendship {
-        case .available:
-            Button("Add as Friend") { model.requestFriendship() }
-                .buttonStyle(.bordered)
-        case .pending:
-            Label("Friend request sent", systemImage: "clock")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-        case .friends:
-            Label("Friends", systemImage: "person.crop.circle.badge.checkmark")
-                .font(.caption)
-                .foregroundStyle(.green)
-        case .declined:
-            Text("Friend request declined")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-        case .unavailable:
-            EmptyView()
+        if model.snapshot.friendship != .unavailable {
+            ClipPopoverSection(
+                String(localized: "Friend"),
+                contentInsets: EdgeInsets(top: 12, leading: 12, bottom: 12, trailing: 12)
+            ) {
+                switch model.snapshot.friendship {
+                case .available:
+                    ClipPopoverButton(
+                        String(localized: "Add as Friend"),
+                        systemImage: "person.crop.circle.badge.plus",
+                        action: model.requestFriendship
+                    )
+                case .pending:
+                    Label("Friend request sent", systemImage: "clock")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                case .friends:
+                    Label("Friends", systemImage: "person.crop.circle.badge.checkmark")
+                        .font(.caption)
+                        .foregroundStyle(.green)
+                case .declined:
+                    Text("Friend request declined")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                case .unavailable:
+                    EmptyView()
+                }
+            }
         }
     }
 
     private var statisticsSection: some View {
-        GroupBox("Connection") {
+        ClipPopoverSection(
+            String(localized: "Connection"),
+            contentInsets: EdgeInsets(top: 12, leading: 12, bottom: 12, trailing: 12)
+        ) {
             Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 5) {
                 GridRow {
                     Text("Video")
@@ -327,10 +364,14 @@ struct NativeViewerPopoverView: View {
     }
 
     private var terminalSection: some View {
-        Text(model.snapshot.phase.title)
-            .font(.callout)
-            .foregroundStyle(.secondary)
-            .frame(maxWidth: .infinity, alignment: .leading)
+        ClipPopoverSection(
+            contentInsets: EdgeInsets(top: 12, leading: 12, bottom: 12, trailing: 12)
+        ) {
+            Text(model.snapshot.phase.title)
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
     }
 
     private var statisticsVideoText: String {

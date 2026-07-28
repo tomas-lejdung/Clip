@@ -2,10 +2,10 @@ import SwiftUI
 
 @MainActor
 struct RecordingStatusView: View {
-    static let contentWidth: CGFloat = 330
+    static let contentWidth = ClipPopoverDesign.width
     /// Fallback used only if synchronous SwiftUI fitting-size measurement is
     /// unavailable.
-    static let contentSize = CGSize(width: contentWidth, height: 235)
+    static let contentSize = CGSize(width: contentWidth, height: 360)
 
     @ObservedObject var model: RecordingPresentationModel
     private let maximumHeight: CGFloat
@@ -22,60 +22,32 @@ struct RecordingStatusView: View {
     }
 
     var body: some View {
-        FluidPopoverContent(
-            width: Self.contentWidth,
+        ClipPopoverPane(
             maximumHeight: maximumHeight,
-            onContentHeightChange: onContentHeightChange
-        ) {
-            VStack(alignment: .leading, spacing: 12) {
-                header
-
-                VStack(spacing: 7) {
-                    RecordingAudioRow(
-                        title: String(localized: "Microphone"),
-                        systemImage: "mic.fill",
-                        state: model.snapshot.microphone
-                    )
-                    RecordingAudioRow(
-                        title: String(localized: "System Audio"),
-                        systemImage: "speaker.wave.2.fill",
-                        state: model.snapshot.systemAudio
-                    )
-                }
-
+            onContentHeightChange: onContentHeightChange,
+            title: stateTitle,
+            titleAccessibilityIdentifier: "clip.recording.phase",
+            subtitle: stateSubtitle,
+            accessibilityIdentifier: "clip.recording.status",
+            headerIcon: {
+                RecordingStateIndicator(phase: model.snapshot.phase)
+            },
+            headerTrailing: {
+                recordingProgress
+            },
+            content: {
+                audioSection
                 if let notice = model.snapshot.notice {
-                    Label(notice, systemImage: "info.circle")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
+                    noticeSection(notice)
                 }
-
                 if let error = model.actionErrorMessage {
-                    HStack(alignment: .top, spacing: 7) {
-                        Image(systemName: "exclamationmark.triangle.fill")
-                            .foregroundStyle(.orange)
-                        Text(error)
-                            .font(.caption)
-                            .fixedSize(horizontal: false, vertical: true)
-                        Spacer(minLength: 0)
-                        Button {
-                            model.dismissActionError()
-                        } label: {
-                            Image(systemName: "xmark")
-                        }
-                        .buttonStyle(.plain)
-                        .accessibilityLabel(String(localized: "Dismiss error"))
-                    }
-                    .padding(8)
-                    .background(.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 7))
+                    actionErrorSection(error)
                 }
-
-                Divider()
-
+            },
+            footer: {
                 controls
             }
-            .padding(PopoverLayoutMetrics.contentInsets)
-        }
+        )
         .alert(
             String(localized: "Discard this recording?"),
             isPresented: cancelConfirmationBinding
@@ -89,23 +61,13 @@ struct RecordingStatusView: View {
         } message: {
             Text(String(localized: "The captured video will be permanently discarded."))
         }
-        .accessibilityElement(children: .contain)
-        .accessibilityIdentifier("clip.recording.status")
     }
 
-    private var header: some View {
+    private var recordingProgress: some View {
         HStack(spacing: 8) {
-            RecordingStateIndicator(phase: model.snapshot.phase)
-
-            Text(stateTitle)
-                .font(.headline)
-                .accessibilityIdentifier("clip.recording.phase")
-
-            Spacer()
-
             TimelineView(.periodic(from: .now, by: 0.1)) { _ in
                 Text(model.elapsedText())
-                    .font(.system(.title3, design: .monospaced, weight: .semibold))
+                    .font(.system(.headline, design: .monospaced, weight: .semibold))
                     .contentTransition(.numericText())
                     .accessibilityLabel(
                         String(
@@ -123,36 +85,94 @@ struct RecordingStatusView: View {
         }
     }
 
+    private var audioSection: some View {
+        ClipPopoverSection(
+            String(localized: "Audio")
+        ) {
+            VStack(spacing: 0) {
+                RecordingAudioRow(
+                    title: String(localized: "Microphone"),
+                    systemImage: "mic.fill",
+                    state: model.snapshot.microphone
+                )
+                ClipPopoverRowDivider()
+                RecordingAudioRow(
+                    title: String(localized: "System Audio"),
+                    systemImage: "speaker.wave.2.fill",
+                    state: model.snapshot.systemAudio
+                )
+            }
+        }
+    }
+
+    private func noticeSection(_ notice: String) -> some View {
+        ClipPopoverSection {
+            Label(notice, systemImage: "info.circle")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(11)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    private func actionErrorSection(_ error: String) -> some View {
+        ClipPopoverSection {
+            HStack(alignment: .top, spacing: 8) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .foregroundStyle(.orange)
+                Text(error)
+                    .font(.caption)
+                    .fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 0)
+                Button {
+                    model.dismissActionError()
+                } label: {
+                    Image(systemName: "xmark")
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(String(localized: "Dismiss error"))
+            }
+            .padding(11)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(.orange.opacity(0.08))
+        }
+    }
+
     private var controls: some View {
         VStack(spacing: 9) {
             HStack(spacing: 8) {
-                Button {
-                    model.togglePauseResume()
-                } label: {
-                    Label(model.pauseResumeTitle, systemImage: model.pauseResumeSystemImage)
-                        .frame(maxWidth: .infinity)
-                }
-                .disabled(!model.canPauseOrResume)
-                .accessibilityIdentifier("clip.recording.pauseResume")
+                ClipPopoverButton(
+                    model.pauseResumeTitle,
+                    systemImage: model.pauseResumeSystemImage,
+                    fillsWidth: true,
+                    isEnabled: model.canPauseOrResume,
+                    accessibilityIdentifier: "clip.recording.pauseResume",
+                    action: model.togglePauseResume
+                )
 
-                Button {
-                    model.requestFinish()
-                } label: {
-                    Label(String(localized: "Finish"), systemImage: "stop.fill")
-                        .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(.borderedProminent)
-                .disabled(!model.canFinish)
-                .accessibilityIdentifier("clip.recording.finish")
+                ClipPopoverButton(
+                    String(localized: "Finish"),
+                    systemImage: "stop.fill",
+                    prominence: .primary,
+                    fillsWidth: true,
+                    isEnabled: model.canFinish,
+                    accessibilityIdentifier: "clip.recording.finish",
+                    action: model.requestFinish
+                )
             }
 
             Button(role: .destructive) {
                 model.requestCancel()
             } label: {
                 Label(String(localized: "Cancel Recording"), systemImage: "trash")
-                    .frame(maxWidth: .infinity)
             }
-            .buttonStyle(.borderless)
+            .buttonStyle(
+                ClipPopoverButtonStyle(
+                    prominence: .destructive,
+                    fillsWidth: true
+                )
+            )
             .disabled(!model.canCancel)
             .accessibilityIdentifier("clip.recording.cancel")
         }
@@ -166,6 +186,17 @@ struct RecordingStatusView: View {
             String(localized: "Paused")
         case .finishing:
             String(localized: "Finishing…")
+        }
+    }
+
+    private var stateSubtitle: String {
+        switch model.snapshot.phase {
+        case .recording:
+            String(localized: "Capturing your screen")
+        case .paused:
+            String(localized: "Capture is paused")
+        case .finishing:
+            String(localized: "Preparing your preview…")
         }
     }
 
@@ -247,6 +278,8 @@ private struct RecordingAudioRow: View {
                 .lineLimit(1)
                 .truncationMode(.middle)
         }
+        .padding(.horizontal, ClipPopoverDesign.rowHorizontalPadding)
+        .padding(.vertical, ClipPopoverDesign.rowVerticalPadding)
         .accessibilityElement(children: .combine)
     }
 

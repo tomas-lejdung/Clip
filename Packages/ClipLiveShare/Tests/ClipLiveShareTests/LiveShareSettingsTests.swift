@@ -27,6 +27,7 @@ struct LiveShareSettingsTests {
         #expect(settings.videoCodec == .vp8)
         #expect(settings.colorMode == .compatibleRec709)
         #expect(!settings.systemAudioEnabled)
+        #expect(settings.excludedAudioApplicationBundleIdentifiers.isEmpty)
         #expect(!settings.cursorUpdatesMatchFrameRate)
         #expect(settings.prioritizeFocusedWindow)
         #expect(!settings.autoShareFocusedWindows)
@@ -45,6 +46,10 @@ struct LiveShareSettingsTests {
         value.videoCodec = .h264
         value.colorMode = .fullRangeRec709
         value.systemAudioEnabled = true
+        value.excludedAudioApplicationBundleIdentifiers = [
+            "com.hnc.Discord",
+            "com.apple.Music",
+        ]
         value.cursorUpdatesMatchFrameRate = true
         value.prioritizeFocusedWindow = false
         value.autoShareFocusedWindows = true
@@ -64,6 +69,10 @@ struct LiveShareSettingsTests {
         #expect(object["videoCodec"] as? String == "h264")
         #expect(object["colorMode"] as? String == "fullRangeRec709")
         #expect(object["systemAudioEnabled"] as? Bool == true)
+        #expect(
+            Set(object["excludedAudioApplicationBundleIdentifiers"] as? [String] ?? [])
+                == ["com.hnc.Discord", "com.apple.Music"]
+        )
         #expect(object["cursorUpdatesMatchFrameRate"] as? Bool == true)
         #expect(object["prioritizeFocusedWindow"] as? Bool == false)
         #expect(object["adaptiveBitrateEnabled"] == nil)
@@ -90,6 +99,7 @@ struct LiveShareSettingsTests {
         #expect(settings.videoCodec == .vp8)
         #expect(settings.colorMode == .compatibleRec709)
         #expect(!settings.systemAudioEnabled)
+        #expect(settings.excludedAudioApplicationBundleIdentifiers.isEmpty)
         #expect(!settings.cursorUpdatesMatchFrameRate)
         #expect(!settings.prioritizeFocusedWindow)
         #expect(settings.autoShareFocusedWindows)
@@ -101,6 +111,38 @@ struct LiveShareSettingsTests {
     func missingFieldsUseDefaults() throws {
         let settings = try JSONDecoder().decode(LiveShareSettings.self, from: Data("{}".utf8))
         #expect(settings == .default)
+    }
+
+    @Test("audio exclusion identifiers normalize while decoding and initializing")
+    func audioExclusionIdentifiersNormalize() throws {
+        let initialized = LiveShareSettings(
+            excludedAudioApplicationBundleIdentifiers: [
+                " com.hnc.Discord ",
+                "com.hnc.Discord",
+                " \n ",
+            ]
+        )
+        #expect(
+            initialized.excludedAudioApplicationBundleIdentifiers
+                == ["com.hnc.Discord"]
+        )
+
+        let decoded = try JSONDecoder().decode(
+            LiveShareSettings.self,
+            from: Data("""
+            {
+              "excludedAudioApplicationBundleIdentifiers": [
+                " com.apple.Music ",
+                "",
+                "com.apple.Music"
+              ]
+            }
+            """.utf8)
+        )
+        #expect(
+            decoded.excludedAudioApplicationBundleIdentifiers
+                == ["com.apple.Music"]
+        )
     }
 
     @Test("codec options have stable persistence identifiers and user-facing names")

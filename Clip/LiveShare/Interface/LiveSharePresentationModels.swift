@@ -175,6 +175,28 @@ struct LiveShareAvailableWindowViewSnapshot: Equatable, Identifiable, Sendable {
     let applicationPath: String?
 }
 
+/// One application that can be excluded from Fullscreen's system-audio mix.
+/// Bundle identifiers are stable across process restarts, so `id` deliberately
+/// matches `bundleIdentifier` and can also persist as the user's selection.
+struct LiveShareAudioApplicationViewSnapshot: Equatable, Identifiable, Sendable {
+    let id: String
+    let name: String
+    let bundleIdentifier: String
+    let applicationPath: String?
+
+    init(
+        id: String,
+        name: String,
+        bundleIdentifier: String,
+        applicationPath: String? = nil
+    ) {
+        self.id = id
+        self.name = name
+        self.bundleIdentifier = bundleIdentifier
+        self.applicationPath = applicationPath
+    }
+}
+
 enum LiveShareSourceSlotState: String, Equatable, Sendable {
     case empty
     case starting
@@ -286,6 +308,8 @@ struct LiveShareSettingsViewSnapshot: Equatable, Sendable {
     let codec: LiveShareCodecViewSnapshot
     let colorMode: LiveShareColorMode
     let systemAudioEnabled: Bool
+    let audioExclusionApplications: [LiveShareAudioApplicationViewSnapshot]
+    let excludedAudioApplicationIDs: Set<String>
     let cursorUpdatesMatchFrameRate: Bool
     let prioritizeFocusedWindow: Bool
     let mode: LiveShareEncodingMode
@@ -297,6 +321,7 @@ struct LiveShareSettingsViewSnapshot: Equatable, Sendable {
     let canChangeCodec: Bool
     let canChangeColorMode: Bool
     let canChangeSystemAudio: Bool
+    let canChangeAudioExclusions: Bool
     let canChangeCursorUpdateRate: Bool
     let canChangePrioritizeFocusedWindow: Bool
     let canChangeMode: Bool
@@ -308,6 +333,8 @@ struct LiveShareSettingsViewSnapshot: Equatable, Sendable {
         codec: LiveShareCodecViewSnapshot = .init(),
         colorMode: LiveShareColorMode = .compatibleRec709,
         systemAudioEnabled: Bool = false,
+        audioExclusionApplications: [LiveShareAudioApplicationViewSnapshot] = [],
+        excludedAudioApplicationIDs: Set<String> = [],
         cursorUpdatesMatchFrameRate: Bool = false,
         prioritizeFocusedWindow: Bool = true,
         mode: LiveShareEncodingMode = .quality,
@@ -319,6 +346,7 @@ struct LiveShareSettingsViewSnapshot: Equatable, Sendable {
         canChangeCodec: Bool = true,
         canChangeColorMode: Bool = true,
         canChangeSystemAudio: Bool = true,
+        canChangeAudioExclusions: Bool = false,
         canChangeCursorUpdateRate: Bool = true,
         canChangePrioritizeFocusedWindow: Bool = true,
         canChangeMode: Bool = true,
@@ -329,6 +357,8 @@ struct LiveShareSettingsViewSnapshot: Equatable, Sendable {
         self.codec = codec
         self.colorMode = colorMode
         self.systemAudioEnabled = systemAudioEnabled
+        self.audioExclusionApplications = audioExclusionApplications
+        self.excludedAudioApplicationIDs = excludedAudioApplicationIDs
         self.cursorUpdatesMatchFrameRate = cursorUpdatesMatchFrameRate
         self.prioritizeFocusedWindow = prioritizeFocusedWindow
         self.mode = mode
@@ -340,6 +370,7 @@ struct LiveShareSettingsViewSnapshot: Equatable, Sendable {
         self.canChangeCodec = canChangeCodec
         self.canChangeColorMode = canChangeColorMode
         self.canChangeSystemAudio = canChangeSystemAudio
+        self.canChangeAudioExclusions = canChangeAudioExclusions
         self.canChangeCursorUpdateRate = canChangeCursorUpdateRate
         self.canChangePrioritizeFocusedWindow = canChangePrioritizeFocusedWindow
         self.canChangeMode = canChangeMode

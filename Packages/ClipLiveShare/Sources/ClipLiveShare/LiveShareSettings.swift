@@ -300,6 +300,10 @@ public struct LiveShareSettings: Codable, Equatable, Sendable {
     public var videoCodec: LiveShareVideoCodec
     public var colorMode: LiveShareColorMode
     public var systemAudioEnabled: Bool
+    /// Bundle identifiers excluded from Fullscreen's mixed system-audio
+    /// capture. Window sharing keeps its existing application-inclusion
+    /// semantics and deliberately ignores this preference.
+    public var excludedAudioApplicationBundleIdentifiers: Set<String>
     public var cursorUpdatesMatchFrameRate: Bool
     public var prioritizeFocusedWindow: Bool
     public var autoShareFocusedWindows: Bool
@@ -313,6 +317,7 @@ public struct LiveShareSettings: Codable, Equatable, Sendable {
         videoCodec: LiveShareVideoCodec = .vp8,
         colorMode: LiveShareColorMode = .compatibleRec709,
         systemAudioEnabled: Bool = false,
+        excludedAudioApplicationBundleIdentifiers: Set<String> = [],
         cursorUpdatesMatchFrameRate: Bool = false,
         prioritizeFocusedWindow: Bool = true,
         autoShareFocusedWindows: Bool = false,
@@ -325,6 +330,9 @@ public struct LiveShareSettings: Codable, Equatable, Sendable {
         self.videoCodec = videoCodec
         self.colorMode = colorMode
         self.systemAudioEnabled = systemAudioEnabled
+        self.excludedAudioApplicationBundleIdentifiers = Self.normalizedBundleIdentifiers(
+            excludedAudioApplicationBundleIdentifiers
+        )
         self.cursorUpdatesMatchFrameRate = cursorUpdatesMatchFrameRate
         self.prioritizeFocusedWindow = prioritizeFocusedWindow
         self.autoShareFocusedWindows = autoShareFocusedWindows
@@ -341,6 +349,7 @@ public struct LiveShareSettings: Codable, Equatable, Sendable {
         case videoCodec
         case colorMode
         case systemAudioEnabled
+        case excludedAudioApplicationBundleIdentifiers
         case cursorUpdatesMatchFrameRate
         case prioritizeFocusedWindow
         case adaptiveBitrateEnabled
@@ -357,6 +366,12 @@ public struct LiveShareSettings: Codable, Equatable, Sendable {
         videoCodec = try container.decodeIfPresent(LiveShareVideoCodec.self, forKey: .videoCodec) ?? .vp8
         colorMode = try container.decodeIfPresent(LiveShareColorMode.self, forKey: .colorMode) ?? .compatibleRec709
         systemAudioEnabled = try container.decodeIfPresent(Bool.self, forKey: .systemAudioEnabled) ?? false
+        excludedAudioApplicationBundleIdentifiers = Self.normalizedBundleIdentifiers(
+            try container.decodeIfPresent(
+                Set<String>.self,
+                forKey: .excludedAudioApplicationBundleIdentifiers
+            ) ?? []
+        )
         cursorUpdatesMatchFrameRate = try container.decodeIfPresent(
             Bool.self,
             forKey: .cursorUpdatesMatchFrameRate
@@ -380,10 +395,23 @@ public struct LiveShareSettings: Codable, Equatable, Sendable {
         try container.encode(videoCodec, forKey: .videoCodec)
         try container.encode(colorMode, forKey: .colorMode)
         try container.encode(systemAudioEnabled, forKey: .systemAudioEnabled)
+        try container.encode(
+            excludedAudioApplicationBundleIdentifiers.sorted(),
+            forKey: .excludedAudioApplicationBundleIdentifiers
+        )
         try container.encode(cursorUpdatesMatchFrameRate, forKey: .cursorUpdatesMatchFrameRate)
         try container.encode(prioritizeFocusedWindow, forKey: .prioritizeFocusedWindow)
         try container.encode(autoShareFocusedWindows, forKey: .autoShareFocusedWindows)
         try container.encode(accessCodeEnabled, forKey: .accessCodeEnabled)
         try container.encode(advancedVideoSettings, forKey: .advancedVideoSettings)
+    }
+
+    private static func normalizedBundleIdentifiers(
+        _ identifiers: Set<String>
+    ) -> Set<String> {
+        Set(identifiers.compactMap { identifier in
+            let trimmed = identifier.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? nil : trimmed
+        })
     }
 }

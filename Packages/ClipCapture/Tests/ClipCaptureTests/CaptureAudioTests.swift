@@ -44,23 +44,74 @@ struct CaptureAudioTests {
         ))
     }
 
-    @Test("empty system exclusions are normalized away")
-    func normalizedExclusion() {
+    @Test("system exclusions deduplicate, trim, and discard empty identifiers")
+    func normalizedExclusions() {
         let request = CaptureAudioSessionRequest(scope: .system(
             displayID: 7,
-            excludedBundleIdentifier: " \n "
+            excludedBundleIdentifiers: [
+                "com.example.Clip",
+                " com.example.Clip ",
+                "com.example.voice",
+                " \n ",
+            ]
         ))
         #expect(request.scope == .system(
             displayID: 7,
-            excludedBundleIdentifier: nil
+            excludedBundleIdentifiers: [
+                "com.example.Clip",
+                "com.example.voice",
+            ]
         ))
+    }
+
+    @Test("system exclusions may be empty")
+    func emptySystemExclusions() {
+        let request = CaptureAudioSessionRequest(scope: .system(
+            displayID: 7,
+            excludedBundleIdentifiers: []
+        ))
+        #expect(request.scope == .system(
+            displayID: 7,
+            excludedBundleIdentifiers: []
+        ))
+    }
+
+    @Test("filter process fingerprint discards invalid process identifiers")
+    func normalizedFilterProcessFingerprint() {
+        let request = CaptureAudioSessionRequest(
+            scope: .system(
+                displayID: 7,
+                excludedBundleIdentifiers: ["com.example.voice"]
+            ),
+            filterApplicationProcessIdentifiers: [-1, 0, 101, 101, 202]
+        )
+
+        #expect(request.filterApplicationProcessIdentifiers == [101, 202])
+    }
+
+    @Test("all running application records matching an exclusion are retained")
+    func resolvesEveryExcludedApplication() {
+        let applications = [
+            RunningApplicationFixture(identifier: "com.example.voice", processID: 101),
+            RunningApplicationFixture(identifier: "com.example.browser", processID: 102),
+            RunningApplicationFixture(identifier: "com.example.voice", processID: 103),
+            RunningApplicationFixture(identifier: "com.example.music", processID: 104),
+        ]
+
+        let matches = ScreenCaptureAudioSession.applications(
+            matching: ["com.example.voice", "com.example.music"],
+            in: applications,
+            bundleIdentifier: \.identifier
+        )
+
+        #expect(matches.map(\.processID) == [101, 103, 104])
     }
 
     @Test("scope exposes the display used by ScreenCaptureKit")
     func displayIdentity() {
         #expect(CaptureAudioScope.system(
             displayID: 11,
-            excludedBundleIdentifier: nil
+            excludedBundleIdentifiers: []
         ).displayID == 11)
         #expect(CaptureAudioScope.applications(
             displayID: 12,
@@ -162,4 +213,9 @@ private enum AudioFixtureError: Error {
     case cannotCreateBlockBuffer
     case cannotCreateFormat
     case cannotCreateSample
+}
+
+private struct RunningApplicationFixture {
+    let identifier: String
+    let processID: Int
 }

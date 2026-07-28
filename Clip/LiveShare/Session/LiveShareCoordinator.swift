@@ -1767,6 +1767,9 @@ final class LiveShareCoordinator {
             setSystemAudioEnabled: { [weak self] enabled in
                 self?.setSystemAudioEnabled(enabled)
             },
+            setExcludedAudioApplicationIDs: { [weak self] identifiers in
+                self?.setExcludedAudioApplicationIDs(identifiers)
+            },
             setCursorUpdatesMatchFrameRate: { [weak self] enabled in
                 self?.setCursorUpdatesMatchFrameRate(enabled)
             },
@@ -4217,6 +4220,44 @@ final class LiveShareCoordinator {
         publish()
     }
 
+    private func setExcludedAudioApplicationIDs(_ identifiers: Set<String>) {
+        guard !isEnding, state.snapshot.sources.fullscreen != nil else { return }
+        settings.excludedAudioApplicationBundleIdentifiers = Set(
+            identifiers.compactMap { identifier in
+                let trimmed = identifier.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !trimmed.isEmpty,
+                      trimmed != ApplicationDirectories.bundleIdentifier else {
+                    return nil
+                }
+                return trimmed
+            }
+        )
+        persistSettings()
+        // `publish()` reconciles the existing ScreenCaptureKit audio session
+        // in place. The video source and WebRTC audio track stay uninterrupted.
+        publish()
+    }
+
+    private func audioFilterProcessIdentifiers() -> Set<pid_t> {
+        let candidates = NSWorkspace.shared.runningApplications.compactMap {
+            application -> LiveShareAudioApplicationProcessCandidate? in
+            guard !application.isTerminated,
+                  let bundleIdentifier = application.bundleIdentifier else {
+                return nil
+            }
+            return LiveShareAudioApplicationProcessCandidate(
+                processIdentifier: application.processIdentifier,
+                bundleIdentifier: bundleIdentifier
+            )
+        }
+        return LiveShareCoordinatorPolicy.audioFilterProcessIdentifiers(
+            candidates: candidates,
+            excludedBundleIdentifiers:
+                settings.excludedAudioApplicationBundleIdentifiers,
+            clipBundleIdentifier: ApplicationDirectories.bundleIdentifier
+        )
+    }
+
     private func scheduleSystemAudioReconciliation() {
         guard let pipeline = capturePipeline else {
             desiredSystemAudioRequest = nil
@@ -4235,6 +4276,10 @@ final class LiveShareCoordinator {
             knownWindows: windowsByID,
             filterDisplayID: CGMainDisplayID(),
             clipBundleIdentifier: ApplicationDirectories.bundleIdentifier,
+            excludedAudioApplicationBundleIdentifiers:
+                settings.excludedAudioApplicationBundleIdentifiers,
+            filterApplicationProcessIdentifiers:
+                audioFilterProcessIdentifiers(),
             requestIdentifier: systemAudioRequestIdentifier
         )
         guard request != desiredSystemAudioRequest else { return }
@@ -4711,6 +4756,11 @@ final class LiveShareCoordinator {
             }
             if baseline.systemAudioEnabled != value.systemAudioEnabled {
                 stored.systemAudioEnabled = value.systemAudioEnabled
+            }
+            if baseline.excludedAudioApplicationBundleIdentifiers
+                != value.excludedAudioApplicationBundleIdentifiers {
+                stored.excludedAudioApplicationBundleIdentifiers =
+                    value.excludedAudioApplicationBundleIdentifiers
             }
             if baseline.cursorUpdatesMatchFrameRate != value.cursorUpdatesMatchFrameRate {
                 stored.cursorUpdatesMatchFrameRate = value.cursorUpdatesMatchFrameRate
@@ -5869,6 +5919,25 @@ final class LiveShareCoordinator {
                     )?.bundleURL?.path
                 )
             }
+        let audioApplicationCandidates = NSWorkspace.shared.runningApplications
+            .filter { !$0.isTerminated && $0.activationPolicy == .regular }
+            .compactMap { application -> LiveShareAudioApplicationCandidate? in
+                guard let bundleIdentifier = application.bundleIdentifier else {
+                    return nil
+                }
+                return LiveShareAudioApplicationCandidate(
+                    bundleIdentifier: bundleIdentifier,
+                    name: application.localizedName ?? bundleIdentifier,
+                    applicationPath: application.bundleURL?.path
+                )
+            }
+        let audioExclusionApplications =
+            LiveShareCoordinatorPolicy.audioExclusionApplications(
+                candidates: audioApplicationCandidates,
+                selectedBundleIdentifiers:
+                    settings.excludedAudioApplicationBundleIdentifiers,
+                clipBundleIdentifier: ApplicationDirectories.bundleIdentifier
+            )
         let overloadedSourceNames = slotAllocation.activeSlots.compactMap { slot -> String? in
             guard let source = slot.source,
                   capturePressure.isOverloaded(
@@ -5929,6 +5998,9 @@ final class LiveShareCoordinator {
                 ),
                 colorMode: settings.colorMode,
                 systemAudioEnabled: settings.systemAudioEnabled,
+                audioExclusionApplications: audioExclusionApplications,
+                excludedAudioApplicationIDs:
+                    settings.excludedAudioApplicationBundleIdentifiers,
                 cursorUpdatesMatchFrameRate: settings.cursorUpdatesMatchFrameRate,
                 prioritizeFocusedWindow: settings.prioritizeFocusedWindow,
                 mode: settings.encodingMode,
@@ -5940,6 +6012,8 @@ final class LiveShareCoordinator {
                 canChangeCodec: canChangeSettings && codecChangeTask == nil,
                 canChangeColorMode: canChangeSettings && codecChangeTask == nil,
                 canChangeSystemAudio: canChangeSettings,
+                canChangeAudioExclusions: canChangeSettings
+                    && fullscreenSource != nil,
                 canChangeCursorUpdateRate: canChangeSettings,
                 canChangePrioritizeFocusedWindow: canChangeSettings,
                 canChangeMode: canChangeSettings && codecChangeTask == nil,

@@ -156,10 +156,12 @@ public final class ScreenCaptureAudioSession: NSObject, @unchecked Sendable {
         }
 
         switch scope {
-        case let .system(_, excludedBundleIdentifier):
-            let excludedApplications = excludedBundleIdentifier.map { identifier in
-                content.applications.filter { $0.bundleIdentifier == identifier }
-            } ?? []
+        case let .system(_, excludedBundleIdentifiers):
+            let excludedApplications = Self.applications(
+                matching: excludedBundleIdentifiers,
+                in: content.applications,
+                bundleIdentifier: { $0.bundleIdentifier }
+            )
             return SCContentFilter(
                 display: display,
                 excludingApplications: excludedApplications,
@@ -183,6 +185,19 @@ public final class ScreenCaptureAudioSession: NSObject, @unchecked Sendable {
                 including: applications,
                 exceptingWindows: []
             )
+        }
+    }
+
+    /// ScreenCaptureKit can report multiple running application records for
+    /// one bundle identifier. Preserve every matching record so none of that
+    /// application's audio processes leak into the system mix.
+    static func applications<Application>(
+        matching bundleIdentifiers: Set<String>,
+        in applications: [Application],
+        bundleIdentifier: (Application) -> String
+    ) -> [Application] {
+        applications.filter {
+            bundleIdentifiers.contains(bundleIdentifier($0))
         }
     }
 
