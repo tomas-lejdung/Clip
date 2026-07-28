@@ -196,8 +196,8 @@ final class MenuBarPopoverModelTests: XCTestCase {
     }
 
     func testSharedPopoverButtonSizesMatchTheVisualHierarchy() {
-        XCTAssertEqual(ClipPopoverButtonSize.standard.height, 32)
-        XCTAssertEqual(ClipPopoverButtonSize.bottom.height, 40)
+        XCTAssertEqual(ClipPopoverButtonSize.standard.height, 28)
+        XCTAssertEqual(ClipPopoverButtonSize.bottom.height, 36)
     }
 
     func testPopoverSizingPolicyPreservesWidthAndCapsHeightToTheVisibleScreen() {

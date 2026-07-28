@@ -388,6 +388,12 @@ struct ClipPopoverSection<
                     )
                     .fill(Color.primary.opacity(0.055))
                 }
+                .clipShape(
+                    RoundedRectangle(
+                        cornerRadius: ClipPopoverDesign.cardCornerRadius,
+                        style: .continuous
+                    )
+                )
                 .overlay {
                     RoundedRectangle(
                         cornerRadius: ClipPopoverDesign.cardCornerRadius,
@@ -640,9 +646,9 @@ enum ClipPopoverButtonSize {
     var height: CGFloat {
         switch self {
         case .standard:
-            32
+            28
         case .bottom:
-            40
+            36
         }
     }
 
@@ -825,15 +831,12 @@ struct ClipPopoverHoverEffect: ViewModifier {
     func body(content: Content) -> some View {
         content
             .background {
-                RoundedRectangle(
-                    cornerRadius: ClipPopoverDesign.rowCornerRadius,
-                    style: .continuous
-                )
-                .fill(
-                    isHovered && isInteractive
-                        ? Color.primary.opacity(0.085)
-                        : .clear
-                )
+                Rectangle()
+                    .fill(
+                        isHovered && isInteractive
+                            ? Color.primary.opacity(0.085)
+                            : .clear
+                    )
             }
             .contentShape(Rectangle())
             .modifier(ClipPopoverPointingHandCursorEffect(isEnabled: isInteractive))

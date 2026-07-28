@@ -13,6 +13,7 @@ private enum LiveSharePopoverRoute: Equatable {
 struct LiveSharePopoverView: View {
     static let contentWidth: CGFloat = 380
     static let contentSize = CGSize(width: contentWidth, height: 620)
+    private static let streamSettingsControlWidth: CGFloat = 190
 
     @ObservedObject var model: LiveSharePresentationModel
     private let maximumHeight: CGFloat
@@ -235,7 +236,7 @@ struct LiveSharePopoverView: View {
         VStack(alignment: .leading, spacing: ClipPopoverDesign.sectionSpacing) {
             ClipPopoverSection(String(localized: "Invite")) {
                 if let room = model.snapshot.room {
-                    VStack(alignment: .leading, spacing: 8) {
+                    VStack(alignment: .leading, spacing: 0) {
                         HStack(spacing: 10) {
                             Text(room.roomCode)
                                 .font(.subheadline.weight(.semibold).monospaced())
@@ -721,7 +722,11 @@ struct LiveSharePopoverView: View {
                             }
                         }
                         .labelsHidden()
-                        .frame(width: 180)
+                        .pickerStyle(.menu)
+                        .frame(
+                            width: Self.streamSettingsControlWidth,
+                            alignment: .trailing
+                        )
                         .disabled(!model.snapshot.settings.canChangeQuality)
                         .accessibilityIdentifier("clip.liveShare.quality")
                     }
@@ -747,7 +752,10 @@ struct LiveSharePopoverView: View {
                         }
                         .labelsHidden()
                         .pickerStyle(.segmented)
-                        .frame(width: 165)
+                        .frame(
+                            width: Self.streamSettingsControlWidth,
+                            alignment: .trailing
+                        )
                         .disabled(!model.snapshot.settings.canChangeFrameRate)
                         .accessibilityIdentifier("clip.liveShare.frameRate")
                     }
@@ -814,7 +822,10 @@ struct LiveSharePopoverView: View {
                         }
                         .labelsHidden()
                         .pickerStyle(.menu)
-                        .frame(width: 190, alignment: .trailing)
+                        .frame(
+                            width: Self.streamSettingsControlWidth,
+                            alignment: .trailing
+                        )
                         .disabled(!model.snapshot.settings.canChangeColorMode)
                         .accessibilityIdentifier("clip.liveShare.colorMode")
                     }
@@ -835,7 +846,10 @@ struct LiveSharePopoverView: View {
                         }
                         .labelsHidden()
                         .pickerStyle(.segmented)
-                        .frame(width: 190)
+                        .frame(
+                            width: Self.streamSettingsControlWidth,
+                            alignment: .trailing
+                        )
                         .disabled(!model.snapshot.settings.canChangeMode)
                         .accessibilityIdentifier("clip.liveShare.mode")
                     }
