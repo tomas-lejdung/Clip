@@ -129,10 +129,17 @@ final class MenuBarPopoverModelTests: XCTestCase {
         container.loadView()
         container.view.frame = NSRect(origin: .zero, size: MenuBarPopoverView.contentSize)
         let stableRootView = container.view
+        let window = NSWindow(
+            contentRect: container.view.frame,
+            styleMask: [.borderless],
+            backing: .buffered,
+            defer: false
+        )
+        window.contentViewController = container
 
         let idle = NSViewController()
         idle.view = NSView(frame: .zero)
-        container.replaceContent(with: idle, animated: false)
+        container.replaceContent(with: idle)
 
         XCTAssertTrue(container.view === stableRootView)
         XCTAssertTrue(container.currentContentViewController === idle)
@@ -141,8 +148,9 @@ final class MenuBarPopoverModelTests: XCTestCase {
 
         let liveShare = NSViewController()
         liveShare.view = NSView(frame: .zero)
+        container.replaceContent(with: liveShare)
         container.view.frame.size = LiveSharePopoverView.contentSize
-        container.replaceContent(with: liveShare, animated: false)
+        container.view.layoutSubtreeIfNeeded()
 
         XCTAssertTrue(container.view === stableRootView)
         XCTAssertTrue(container.currentContentViewController === liveShare)
@@ -150,6 +158,30 @@ final class MenuBarPopoverModelTests: XCTestCase {
         XCTAssertTrue(liveShare.parent === container)
         XCTAssertTrue(liveShare.view.superview === container.view)
         XCTAssertEqual(liveShare.view.frame, container.view.bounds)
+
+        let recording = NSViewController()
+        recording.view = NSView(frame: .zero)
+        container.replaceContent(with: recording)
+        container.view.frame.size = RecordingStatusView.contentSize
+        container.view.layoutSubtreeIfNeeded()
+
+        XCTAssertNil(liveShare.parent)
+        XCTAssertTrue(recording.parent === container)
+        XCTAssertEqual(container.view.subviews.count, 1)
+        XCTAssertTrue(container.view.subviews.first === recording.view)
+        XCTAssertEqual(recording.view.frame, container.view.bounds)
+
+        let nextIdle = NSViewController()
+        nextIdle.view = NSView(frame: .zero)
+        container.replaceContent(with: nextIdle)
+        container.view.frame.size = MenuBarPopoverView.contentSize
+        container.view.layoutSubtreeIfNeeded()
+
+        XCTAssertNil(recording.parent)
+        XCTAssertTrue(nextIdle.parent === container)
+        XCTAssertEqual(container.view.subviews.count, 1)
+        XCTAssertTrue(container.view.subviews.first === nextIdle.view)
+        XCTAssertEqual(nextIdle.view.frame, container.view.bounds)
     }
 
     func testIdleMenuRetainsItsExpectedWidthAndBootstrapHeight() {

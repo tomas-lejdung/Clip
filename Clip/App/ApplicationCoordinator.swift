@@ -188,9 +188,12 @@ enum PeriodicStorageMaintenanceLoop {
 
 /// Keeps one AppKit content host attached to the status-item popover while its
 /// SwiftUI screen changes. Replacing the popover itself briefly resigns key
-/// status and makes the first click in the next screen reactivate the window;
-/// swapping children in place preserves focus and gives the transition an
-/// immediate visual response.
+/// status and makes the first click in the next screen reactivate the window.
+///
+/// Child replacement is deliberately immediate. Crossfading child view
+/// controllers while `NSPopover.contentSize` is animating lets AppKit retain
+/// the transition's old frame, which can leave fluid SwiftUI content
+/// bottom-offset or completely outside the visible popover.
 @MainActor
 final class PopoverContentContainerViewController: NSViewController {
     private(set) var currentContentViewController: NSViewController?
@@ -199,10 +202,7 @@ final class PopoverContentContainerViewController: NSViewController {
         view = NSView(frame: .zero)
     }
 
-    func replaceContent(
-        with next: NSViewController,
-        animated: Bool
-    ) {
+    func replaceContent(with next: NSViewController) {
         loadViewIfNeeded()
         next.view.frame = view.bounds
         next.view.autoresizingMask = [.width, .height]
@@ -216,22 +216,10 @@ final class PopoverContentContainerViewController: NSViewController {
 
         addChild(next)
         self.currentContentViewController = next
-        guard animated, view.window != nil else {
-            currentContentViewController.view.removeFromSuperview()
-            currentContentViewController.removeFromParent()
-            view.addSubview(next.view)
-            return
-        }
-
-        transition(
-            from: currentContentViewController,
-            to: next,
-            options: [.crossfade, .allowUserInteraction]
-        ) {
-            Task { @MainActor in
-                currentContentViewController.removeFromParent()
-            }
-        }
+        currentContentViewController.view.removeFromSuperview()
+        currentContentViewController.removeFromParent()
+        view.addSubview(next.view)
+        view.layoutSubtreeIfNeeded()
     }
 }
 
@@ -817,11 +805,13 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
         if popover.contentViewController !== popoverContentController {
             popover.contentViewController = popoverContentController
         }
-        popover.contentSize = size
         popoverContentController.replaceContent(
-            with: NSHostingController(rootView: content),
-            animated: shouldAnimate
+            with: NSHostingController(rootView: content)
         )
+        // Install the incoming child at the current bounds first. The popover
+        // then owns the only animated geometry change and the child follows it
+        // through its width/height autoresizing mask.
+        popover.contentSize = size
         if shouldAnimate {
             popover.contentViewController?.view.window?.makeKey()
         }
