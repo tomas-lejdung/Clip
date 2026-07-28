@@ -210,15 +210,26 @@ struct LiveShareCoordinatorPolicyTests {
             knownWindows: [:],
             filterDisplayID: 99,
             clipBundleIdentifier: "com.example.Clip",
+            excludedAudioApplicationBundleIdentifiers: [
+                " com.hnc.Discord ",
+                "com.apple.Music",
+                "",
+            ],
+            filterApplicationProcessIdentifiers: [101, 202],
             requestIdentifier: identifier
         ))
 
         #expect(request.identifier == identifier)
         #expect(request.scope == .system(
             displayID: 42,
-            excludedBundleIdentifier: "com.example.Clip"
+            excludedBundleIdentifiers: [
+                "com.example.Clip",
+                "com.hnc.Discord",
+                "com.apple.Music",
+            ]
         ))
         #expect(request.configuration.excludesCurrentProcessAudio)
+        #expect(request.filterApplicationProcessIdentifiers == [101, 202])
     }
 
     @Test("window system audio resolves, trims, and deduplicates owning applications")
@@ -273,6 +284,8 @@ struct LiveShareCoordinatorPolicyTests {
             knownWindows: knownWindows,
             filterDisplayID: 7,
             clipBundleIdentifier: "com.example.Clip",
+            excludedAudioApplicationBundleIdentifiers: ["com.hnc.Discord"],
+            filterApplicationProcessIdentifiers: [101],
             requestIdentifier: identifier
         ))
 
@@ -281,6 +294,109 @@ struct LiveShareCoordinatorPolicyTests {
             displayID: 7,
             bundleIdentifiers: ["com.example.browser"]
         ))
+        #expect(request.filterApplicationProcessIdentifiers.isEmpty)
+    }
+
+    @Test("audio filter fingerprint follows selected application process lifecycle")
+    func audioFilterProcessFingerprint() {
+        let beforeLaunch = LiveShareCoordinatorPolicy.audioFilterProcessIdentifiers(
+            candidates: [
+                .init(
+                    processIdentifier: 10,
+                    bundleIdentifier: "com.example.Clip"
+                ),
+                .init(
+                    processIdentifier: 20,
+                    bundleIdentifier: "com.apple.Music"
+                ),
+            ],
+            excludedBundleIdentifiers: ["com.hnc.Discord"],
+            clipBundleIdentifier: "com.example.Clip"
+        )
+        let afterLaunch = LiveShareCoordinatorPolicy.audioFilterProcessIdentifiers(
+            candidates: [
+                .init(
+                    processIdentifier: 10,
+                    bundleIdentifier: "com.example.Clip"
+                ),
+                .init(
+                    processIdentifier: 30,
+                    bundleIdentifier: " com.hnc.Discord "
+                ),
+            ],
+            excludedBundleIdentifiers: ["com.hnc.Discord"],
+            clipBundleIdentifier: "com.example.Clip"
+        )
+        let afterRestart = LiveShareCoordinatorPolicy.audioFilterProcessIdentifiers(
+            candidates: [
+                .init(
+                    processIdentifier: 10,
+                    bundleIdentifier: "com.example.Clip"
+                ),
+                .init(
+                    processIdentifier: 31,
+                    bundleIdentifier: "com.hnc.Discord"
+                ),
+                .init(
+                    processIdentifier: 0,
+                    bundleIdentifier: "com.hnc.Discord"
+                ),
+            ],
+            excludedBundleIdentifiers: ["com.hnc.Discord"],
+            clipBundleIdentifier: "com.example.Clip"
+        )
+
+        #expect(beforeLaunch == [10])
+        #expect(afterLaunch == [10, 30])
+        #expect(afterRestart == [10, 31])
+        #expect(beforeLaunch != afterLaunch)
+        #expect(afterLaunch != afterRestart)
+    }
+
+    @Test("audio exclusion applications group windows and retain unavailable selections")
+    func audioExclusionApplications() {
+        let applications = LiveShareCoordinatorPolicy.audioExclusionApplications(
+            candidates: [
+                LiveShareAudioApplicationCandidate(
+                    bundleIdentifier: "com.hnc.Discord",
+                    name: "Discord",
+                    applicationPath: "/Applications/Discord.app"
+                ),
+                LiveShareAudioApplicationCandidate(
+                    bundleIdentifier: " com.hnc.Discord ",
+                    name: "Discord",
+                    applicationPath: nil
+                ),
+                LiveShareAudioApplicationCandidate(
+                    bundleIdentifier: "com.example.Clip",
+                    name: "Clip",
+                    applicationPath: "/Applications/Clip.app"
+                ),
+                LiveShareAudioApplicationCandidate(
+                    bundleIdentifier: "com.apple.Music",
+                    name: "Music",
+                    applicationPath: "/System/Applications/Music.app"
+                ),
+            ],
+            selectedBundleIdentifiers: [
+                "com.hnc.Discord",
+                "com.example.Offline",
+            ],
+            clipBundleIdentifier: "com.example.Clip"
+        )
+
+        #expect(Set(applications.map(\.id)) == [
+            "com.hnc.Discord",
+            "com.example.Offline",
+            "com.apple.Music",
+        ])
+        let discord = applications.first { $0.id == "com.hnc.Discord" }
+        #expect(discord?.name == "Discord")
+        #expect(discord?.applicationPath == "/Applications/Discord.app")
+        let offline = applications.first { $0.id == "com.example.Offline" }
+        #expect(offline?.name == "com.example.Offline")
+        #expect(offline?.applicationPath == nil)
+        #expect(!applications.contains { $0.id == "com.example.Clip" })
     }
 
     @Test("system audio request is absent when disabled or has no resolvable source")

@@ -24,6 +24,7 @@ struct LiveSharePresentationActions {
     var setCodec: (LiveShareVideoCodec) -> Void
     var setColorMode: (LiveShareColorMode) -> Void
     var setSystemAudioEnabled: (Bool) -> Void
+    var setExcludedAudioApplicationIDs: (Set<String>) -> Void
     var setCursorUpdatesMatchFrameRate: (Bool) -> Void
     var setPrioritizeFocusedWindow: (Bool) -> Void
     var setMode: (LiveShareEncodingMode) -> Void
@@ -53,6 +54,7 @@ struct LiveSharePresentationActions {
         setCodec: @escaping (LiveShareVideoCodec) -> Void = { _ in },
         setColorMode: @escaping (LiveShareColorMode) -> Void = { _ in },
         setSystemAudioEnabled: @escaping (Bool) -> Void = { _ in },
+        setExcludedAudioApplicationIDs: @escaping (Set<String>) -> Void = { _ in },
         setCursorUpdatesMatchFrameRate: @escaping (Bool) -> Void = { _ in },
         setPrioritizeFocusedWindow: @escaping (Bool) -> Void = { _ in },
         setMode: @escaping (LiveShareEncodingMode) -> Void = { _ in },
@@ -81,6 +83,7 @@ struct LiveSharePresentationActions {
         self.setCodec = setCodec
         self.setColorMode = setColorMode
         self.setSystemAudioEnabled = setSystemAudioEnabled
+        self.setExcludedAudioApplicationIDs = setExcludedAudioApplicationIDs
         self.setCursorUpdatesMatchFrameRate = setCursorUpdatesMatchFrameRate
         self.setPrioritizeFocusedWindow = setPrioritizeFocusedWindow
         self.setMode = setMode
@@ -227,6 +230,16 @@ final class LiveSharePresentationModel: ObservableObject {
     func setSystemAudioEnabled(_ enabled: Bool) {
         guard snapshot.settings.canChangeSystemAudio else { return }
         actions.setSystemAudioEnabled(enabled)
+    }
+
+    func setExcludedAudioApplicationIDs(_ identifiers: Set<String>) {
+        guard snapshot.settings.canChangeAudioExclusions else { return }
+        let availableIdentifiers = Set(
+            snapshot.settings.audioExclusionApplications.map(\.id)
+        )
+        actions.setExcludedAudioApplicationIDs(
+            identifiers.intersection(availableIdentifiers)
+        )
     }
 
     func setCursorUpdatesMatchFrameRate(_ enabled: Bool) {

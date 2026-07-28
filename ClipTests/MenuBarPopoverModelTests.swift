@@ -402,6 +402,75 @@ final class MenuBarPopoverModelTests: XCTestCase {
         XCTAssertEqual(fittedHeight, reportedHeight ?? 0, accuracy: 1)
     }
 
+    func testAudioExclusionMenuAppearsOnlyForFullscreenSystemAudio() {
+        let application = LiveShareAudioApplicationViewSnapshot(
+            id: "com.hnc.Discord",
+            name: "Discord",
+            bundleIdentifier: "com.hnc.Discord"
+        )
+        let fullscreenWithAudio = LiveShareViewSnapshot(
+            phase: .live(elapsedSeconds: 10),
+            sessionStage: .active,
+            fullscreen: .init(isOn: true, displayName: "Built-in Retina Display"),
+            settings: .init(
+                systemAudioEnabled: true,
+                audioExclusionApplications: [application],
+                canChangeAudioExclusions: true
+            )
+        )
+        let fullscreenWithoutAudio = LiveShareViewSnapshot(
+            phase: .live(elapsedSeconds: 10),
+            sessionStage: .active,
+            fullscreen: .init(isOn: true, displayName: "Built-in Retina Display"),
+            settings: .init(
+                systemAudioEnabled: false,
+                audioExclusionApplications: [application],
+                canChangeAudioExclusions: true
+            )
+        )
+        let windowShareWithAudio = LiveShareViewSnapshot(
+            phase: .live(elapsedSeconds: 10),
+            sessionStage: .active,
+            fullscreen: .init(isOn: false, displayName: "Built-in Retina Display"),
+            settings: .init(
+                systemAudioEnabled: true,
+                audioExclusionApplications: [application],
+                canChangeAudioExclusions: true
+            )
+        )
+
+        let visibleHeight = fittedLiveShareHeight(for: fullscreenWithAudio)
+        let audioOffHeight = fittedLiveShareHeight(for: fullscreenWithoutAudio)
+        let windowShareHeight = fittedLiveShareHeight(for: windowShareWithAudio)
+
+        XCTAssertGreaterThan(visibleHeight, audioOffHeight + 10)
+        XCTAssertEqual(windowShareHeight, audioOffHeight, accuracy: 1)
+    }
+
+    private func fittedLiveShareHeight(for snapshot: LiveShareViewSnapshot) -> CGFloat {
+        let controller = NSHostingController(
+            rootView: LiveSharePopoverView(
+                model: LiveSharePresentationModel(
+                    snapshot: snapshot,
+                    actions: .noOp
+                ),
+                maximumHeight: 940
+            )
+        )
+        let window = NSWindow(
+            contentRect: NSRect(
+                origin: .zero,
+                size: LiveSharePopoverView.contentSize
+            ),
+            styleMask: [.borderless],
+            backing: .buffered,
+            defer: false
+        )
+        window.contentViewController = controller
+        controller.view.layoutSubtreeIfNeeded()
+        return ceil(controller.view.fittingSize.height)
+    }
+
     private func display(
         id: CGDirectDisplayID,
         name: String,

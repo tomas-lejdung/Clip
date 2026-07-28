@@ -186,6 +186,51 @@ struct LiveSharePresentationModelTests {
     }
 
     @Test
+    func testAudioExclusionsUseFullscreenCapabilityAndKnownApplicationIDs() {
+        var changes: [Set<String>] = []
+        let discord = LiveShareAudioApplicationViewSnapshot(
+            id: "com.hnc.Discord",
+            name: "Discord",
+            bundleIdentifier: "com.hnc.Discord"
+        )
+        let unavailable = LiveShareAudioApplicationViewSnapshot(
+            id: "com.example.Offline",
+            name: "com.example.Offline",
+            bundleIdentifier: "com.example.Offline"
+        )
+        let model = LiveSharePresentationModel(
+            snapshot: LiveShareViewSnapshot(
+                phase: .live(elapsedSeconds: 12),
+                fullscreen: .init(
+                    isOn: true,
+                    displayName: "Studio Display"
+                ),
+                settings: .init(
+                    audioExclusionApplications: [discord, unavailable],
+                    excludedAudioApplicationIDs: [unavailable.id],
+                    canChangeAudioExclusions: true
+                )
+            ),
+            actions: .init(
+                setExcludedAudioApplicationIDs: { changes.append($0) }
+            )
+        )
+
+        model.setExcludedAudioApplicationIDs([
+            discord.id,
+            unavailable.id,
+            "com.example.NotPresented",
+        ])
+        model.update(LiveShareViewSnapshot(
+            phase: .reconnecting(attempt: 1, maximumAttempts: 5),
+            settings: .init(canChangeAudioExclusions: false)
+        ))
+        model.setExcludedAudioApplicationIDs([])
+
+        #expect(changes == [[discord.id, unavailable.id]])
+    }
+
+    @Test
     func testCursorRateToggleUsesPresentationCapabilityGate() {
         var changes: [Bool] = []
         let model = LiveSharePresentationModel(

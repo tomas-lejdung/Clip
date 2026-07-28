@@ -135,6 +135,7 @@ struct SettingsPresentationTests {
             $0.videoCodec = .av1
             $0.colorMode = .nativeDisplay
             $0.systemAudioEnabled = true
+            $0.excludedAudioApplicationBundleIdentifiers = ["com.hnc.Discord"]
             $0.cursorUpdatesMatchFrameRate = true
         }
         let customEndpoint = try ClipLiveShareServerEndpoint(
@@ -149,6 +150,10 @@ struct SettingsPresentationTests {
         #expect(reloaded.settings.videoCodec == .av1)
         #expect(reloaded.settings.colorMode == .nativeDisplay)
         #expect(reloaded.settings.systemAudioEnabled)
+        #expect(
+            reloaded.settings.excludedAudioApplicationBundleIdentifiers
+                == ["com.hnc.Discord"]
+        )
         #expect(reloaded.settings.cursorUpdatesMatchFrameRate)
         #expect(reloaded.serverEndpoint == customEndpoint)
 

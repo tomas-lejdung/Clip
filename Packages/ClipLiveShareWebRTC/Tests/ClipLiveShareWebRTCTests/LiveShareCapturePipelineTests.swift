@@ -326,6 +326,39 @@ struct LiveShareCapturePipelineTests {
         try await pipeline.setSystemAudio(nil)
     }
 
+    @Test("system audio refreshes in place when excluded app process membership changes")
+    func systemAudioProcessFingerprintUpdate() async throws {
+        let host = FakeSlotHost()
+        let factory = FixtureAudioSessionFactory()
+        let pipeline = Self.pipeline(host: host, audioFactory: factory)
+        let identifier = UUID(
+            uuidString: "00000000-0000-0000-0000-000000000004"
+        )!
+        let initial = CaptureAudioSessionRequest(
+            identifier: identifier,
+            scope: .system(
+                displayID: 42,
+                excludedBundleIdentifiers: ["com.example.voice"]
+            ),
+            filterApplicationProcessIdentifiers: []
+        )
+        let afterLaunch = CaptureAudioSessionRequest(
+            identifier: identifier,
+            scope: initial.scope,
+            filterApplicationProcessIdentifiers: [101]
+        )
+
+        try await pipeline.setSystemAudio(initial)
+        try await pipeline.setSystemAudio(afterLaunch)
+        try await pipeline.setSystemAudio(afterLaunch)
+
+        #expect(factory.creationCount == 1)
+        #expect(factory.latestSession?.startRequests == [initial])
+        #expect(factory.latestSession?.updateRequests == [afterLaunch])
+        #expect(factory.latestSession?.stopCount == 0)
+        try await pipeline.setSystemAudio(nil)
+    }
+
     @Test("disabling system audio stops capture and disables its sender")
     func systemAudioDisable() async throws {
         let host = FakeSlotHost()

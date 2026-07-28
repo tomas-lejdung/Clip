@@ -527,6 +527,11 @@ struct LiveSharePopoverView: View {
             .disabled(!model.snapshot.settings.canChangeSystemAudio)
             .accessibilityIdentifier("clip.liveShare.systemAudio")
 
+            if model.snapshot.fullscreen.isOn,
+               model.snapshot.settings.systemAudioEnabled {
+                audioExclusionMenu
+            }
+
             LiveShareSettingRow(title: String(localized: "Quality")) {
                 Picker(
                     String(localized: "Quality"),
@@ -702,6 +707,101 @@ struct LiveSharePopoverView: View {
             )
             .accessibilityIdentifier("clip.liveShare.autoShare")
         }
+    }
+
+    private var audioExclusionMenu: some View {
+        Menu {
+            if sortedAudioExclusionApplications.isEmpty {
+                Text("No other apps are running")
+            } else {
+                Section("Exclude Audio") {
+                    ForEach(sortedAudioExclusionApplications) { application in
+                        Toggle(
+                            application.name,
+                            isOn: audioExclusionBinding(for: application.id)
+                        )
+                    }
+                }
+            }
+
+            if !model.snapshot.settings.excludedAudioApplicationIDs.isEmpty {
+                Divider()
+                Button("Include Audio from All Apps") {
+                    model.setExcludedAudioApplicationIDs([])
+                }
+            }
+        } label: {
+            HStack(spacing: 7) {
+                Image(systemName: "speaker.slash")
+                    .accessibilityHidden(true)
+                Text("Exclude Audio From…")
+                Spacer(minLength: 8)
+                Text(audioExclusionSummary)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                Image(systemName: "chevron.down")
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .accessibilityHidden(true)
+            }
+            .font(.subheadline)
+            .contentShape(Rectangle())
+        }
+        .menuStyle(.borderlessButton)
+        .disabled(
+            !model.snapshot.settings.canChangeAudioExclusions
+                || (
+                    model.snapshot.settings.audioExclusionApplications.isEmpty
+                        && model.snapshot.settings.excludedAudioApplicationIDs.isEmpty
+                )
+        )
+        .help("Apps remain visible; only their audio is removed.")
+        .accessibilityLabel("Exclude Audio From")
+        .accessibilityValue(audioExclusionSummary)
+        .accessibilityIdentifier("clip.liveShare.audioExclusions")
+    }
+
+    private var sortedAudioExclusionApplications: [LiveShareAudioApplicationViewSnapshot] {
+        model.snapshot.settings.audioExclusionApplications.sorted {
+            let nameOrder = $0.name.localizedCaseInsensitiveCompare($1.name)
+            if nameOrder == .orderedSame {
+                return $0.bundleIdentifier < $1.bundleIdentifier
+            }
+            return nameOrder == .orderedAscending
+        }
+    }
+
+    private var audioExclusionSummary: String {
+        let excludedIDs = model.snapshot.settings.excludedAudioApplicationIDs
+        guard !excludedIDs.isEmpty else {
+            return String(localized: "None")
+        }
+
+        if excludedIDs.count == 1,
+           let application = model.snapshot.settings.audioExclusionApplications.first(
+               where: { excludedIDs.contains($0.id) }
+           ) {
+            return application.name
+        }
+
+        return String(localized: "\(excludedIDs.count) apps")
+    }
+
+    private func audioExclusionBinding(for applicationID: String) -> Binding<Bool> {
+        Binding(
+            get: {
+                model.snapshot.settings.excludedAudioApplicationIDs.contains(applicationID)
+            },
+            set: { isExcluded in
+                var excludedIDs = model.snapshot.settings.excludedAudioApplicationIDs
+                if isExcluded {
+                    excludedIDs.insert(applicationID)
+                } else {
+                    excludedIDs.remove(applicationID)
+                }
+                model.setExcludedAudioApplicationIDs(excludedIDs)
+            }
+        )
     }
 
     private var viewersSection: some View {

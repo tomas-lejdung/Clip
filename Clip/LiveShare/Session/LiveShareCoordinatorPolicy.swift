@@ -4,6 +4,17 @@ import ClipLiveShareWebRTC
 import CoreGraphics
 import Foundation
 
+struct LiveShareAudioApplicationCandidate: Equatable, Sendable {
+    let bundleIdentifier: String
+    let name: String
+    let applicationPath: String?
+}
+
+struct LiveShareAudioApplicationProcessCandidate: Equatable, Sendable {
+    let processIdentifier: pid_t
+    let bundleIdentifier: String
+}
+
 enum LiveShareCoordinatorPolicy {
     static let maximumReconnectAttempts = 7
 
@@ -214,17 +225,24 @@ enum LiveShareCoordinatorPolicy {
         knownWindows: [LiveShareWindowID: ShareableCaptureWindow],
         filterDisplayID: CGDirectDisplayID,
         clipBundleIdentifier: String,
+        excludedAudioApplicationBundleIdentifiers: Set<String> = [],
+        filterApplicationProcessIdentifiers: Set<pid_t> = [],
         requestIdentifier: UUID
     ) -> CaptureAudioSessionRequest? {
         guard systemAudioEnabled else { return nil }
 
         if let fullscreen = sources.fullscreen {
+            let excludedBundleIdentifiers = normalizedBundleIdentifiers(
+                excludedAudioApplicationBundleIdentifiers.union([clipBundleIdentifier])
+            )
             return CaptureAudioSessionRequest(
                 identifier: requestIdentifier,
                 scope: .system(
                     displayID: fullscreen.id.rawValue,
-                    excludedBundleIdentifier: clipBundleIdentifier
-                )
+                    excludedBundleIdentifiers: excludedBundleIdentifiers
+                ),
+                filterApplicationProcessIdentifiers:
+                    filterApplicationProcessIdentifiers
             )
         }
 
@@ -245,6 +263,105 @@ enum LiveShareCoordinatorPolicy {
                 bundleIdentifiers: bundleIdentifiers
             )
         )
+    }
+
+    /// ScreenCaptureKit resolves an application's bundle identifier to the
+    /// concrete running records present when an `SCContentFilter` is built.
+    /// This fingerprint lets the existing audio reconciliation path rebuild
+    /// that filter after a selected app launches, terminates, or restarts.
+    static func audioFilterProcessIdentifiers(
+        candidates: [LiveShareAudioApplicationProcessCandidate],
+        excludedBundleIdentifiers: Set<String>,
+        clipBundleIdentifier: String
+    ) -> Set<pid_t> {
+        let identifiers = normalizedBundleIdentifiers(
+            excludedBundleIdentifiers.union([clipBundleIdentifier])
+        )
+        return Set(candidates.compactMap { candidate in
+            let bundleIdentifier = candidate.bundleIdentifier.trimmingCharacters(
+                in: .whitespacesAndNewlines
+            )
+            guard candidate.processIdentifier > 0,
+                  identifiers.contains(bundleIdentifier) else {
+                return nil
+            }
+            return candidate.processIdentifier
+        })
+    }
+
+    /// Builds the Fullscreen audio-exclusion menu from the current eligible
+    /// running applications. Applications are grouped by bundle identifier
+    /// because ScreenCaptureKit's audio filter is application-scoped. A saved
+    /// selection remains visible even while its app is no longer running, so
+    /// users can always clear a stale selection.
+    static func audioExclusionApplications(
+        candidates: [LiveShareAudioApplicationCandidate],
+        selectedBundleIdentifiers: Set<String>,
+        clipBundleIdentifier: String
+    ) -> [LiveShareAudioApplicationViewSnapshot] {
+        let clipIdentifier = clipBundleIdentifier.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        )
+        var applications: [String: LiveShareAudioApplicationViewSnapshot] = [:]
+
+        for candidate in candidates {
+            let identifier = candidate.bundleIdentifier.trimmingCharacters(
+                in: .whitespacesAndNewlines
+            )
+            guard !identifier.isEmpty, identifier != clipIdentifier else { continue }
+            let suppliedName = candidate.name.trimmingCharacters(
+                in: .whitespacesAndNewlines
+            )
+            let name = suppliedName.isEmpty ? identifier : suppliedName
+            let snapshot = LiveShareAudioApplicationViewSnapshot(
+                id: identifier,
+                name: name,
+                bundleIdentifier: identifier,
+                applicationPath: candidate.applicationPath
+            )
+            if let current = applications[identifier] {
+                // Prefer the candidate carrying an icon path, otherwise use a
+                // stable localized ordering rather than transient window order.
+                let candidateAddsPath =
+                    current.applicationPath == nil && snapshot.applicationPath != nil
+                let hasSamePathPriority =
+                    (current.applicationPath == nil) == (snapshot.applicationPath == nil)
+                if candidateAddsPath
+                    || hasSamePathPriority
+                        && snapshot.name.localizedStandardCompare(current.name)
+                            == .orderedAscending {
+                    applications[identifier] = snapshot
+                }
+            } else {
+                applications[identifier] = snapshot
+            }
+        }
+
+        for identifier in normalizedBundleIdentifiers(selectedBundleIdentifiers)
+            where identifier != clipIdentifier && applications[identifier] == nil {
+            applications[identifier] = LiveShareAudioApplicationViewSnapshot(
+                id: identifier,
+                name: identifier,
+                bundleIdentifier: identifier,
+                applicationPath: nil
+            )
+        }
+
+        return applications.values.sorted { lhs, rhs in
+            let comparison = lhs.name.localizedStandardCompare(rhs.name)
+            return comparison == .orderedSame
+                ? lhs.bundleIdentifier < rhs.bundleIdentifier
+                : comparison == .orderedAscending
+        }
+    }
+
+    private static func normalizedBundleIdentifiers(
+        _ identifiers: Set<String>
+    ) -> Set<String> {
+        Set(identifiers.compactMap { identifier in
+            let trimmed = identifier.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? nil : trimmed
+        })
     }
 
     static func senderPolicy(
