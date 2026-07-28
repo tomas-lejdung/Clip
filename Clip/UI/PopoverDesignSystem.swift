@@ -526,6 +526,74 @@ struct ClipPopoverNavigationRow: View {
     }
 }
 
+/// A full-width popover row backed by a native menu. The row owns the same
+/// padding, hover surface, cursor, and two-column alignment as the other shared
+/// controls so menu labels cannot collapse to their intrinsic width.
+struct ClipPopoverMenuRow<MenuContent: View>: View {
+    let title: String
+    let subtitle: String?
+    let systemImage: String?
+    let value: String
+    let isEnabled: Bool
+    let accessibilityIdentifier: String?
+    private let menuContent: MenuContent
+
+    init(
+        _ title: String,
+        subtitle: String? = nil,
+        systemImage: String? = nil,
+        value: String,
+        isEnabled: Bool = true,
+        accessibilityIdentifier: String? = nil,
+        @ViewBuilder content: () -> MenuContent
+    ) {
+        self.title = title
+        self.subtitle = subtitle
+        self.systemImage = systemImage
+        self.value = value
+        self.isEnabled = isEnabled
+        self.accessibilityIdentifier = accessibilityIdentifier
+        self.menuContent = content()
+    }
+
+    var body: some View {
+        Menu {
+            menuContent
+        } label: {
+            ClipPopoverRowLabel(
+                title: title,
+                subtitle: subtitle,
+                systemImage: systemImage
+            ) {
+                HStack(spacing: 6) {
+                    Text(value)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+
+                    Image(systemName: "chevron.up.chevron.down")
+                        .font(.caption2.weight(.semibold))
+                        .accessibilityHidden(true)
+                }
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+            }
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .contentShape(Rectangle())
+        .disabled(!isEnabled)
+        .modifier(ClipPopoverHoverEffect(isInteractive: isEnabled))
+        .accessibilityLabel(title)
+        .accessibilityValue(value)
+        .modifier(
+            ClipOptionalAccessibilityIdentifier(
+                identifier: accessibilityIdentifier
+            )
+        )
+    }
+}
+
 struct ClipPopoverToggleRow: View {
     let title: String
     let subtitle: String?
@@ -598,17 +666,19 @@ struct ClipPopoverRowDivider: View {
 private struct ClipPopoverRowLabel<Trailing: View>: View {
     let title: String
     let subtitle: String?
-    let systemImage: String
+    let systemImage: String?
     var appliesOuterPadding = true
     @ViewBuilder let trailing: () -> Trailing
 
     var body: some View {
         HStack(spacing: 10) {
-            Image(systemName: systemImage)
-                .font(.system(size: 14, weight: .medium))
-                .frame(width: 20)
-                .foregroundStyle(.secondary)
-                .accessibilityHidden(true)
+            if let systemImage {
+                Image(systemName: systemImage)
+                    .font(.system(size: 14, weight: .medium))
+                    .frame(width: 20)
+                    .foregroundStyle(.secondary)
+                    .accessibilityHidden(true)
+            }
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(title)
