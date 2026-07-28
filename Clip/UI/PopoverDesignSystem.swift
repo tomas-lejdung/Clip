@@ -526,9 +526,10 @@ struct ClipPopoverNavigationRow: View {
     }
 }
 
-/// A full-width popover row backed by a native menu. The row owns the same
-/// padding, hover surface, cursor, and two-column alignment as the other shared
-/// controls so menu labels cannot collapse to their intrinsic width.
+/// A labeled row with a separate native menu control in its trailing column.
+/// Keeping the row label outside `Menu` is important on macOS: AppKit flattens
+/// complex menu labels and otherwise collapses the title, value, and indicator
+/// into one tiny intrinsic-width control.
 struct ClipPopoverMenuRow<MenuContent: View>: View {
     let title: String
     let subtitle: String?
@@ -557,40 +558,34 @@ struct ClipPopoverMenuRow<MenuContent: View>: View {
     }
 
     var body: some View {
-        Menu {
-            menuContent
-        } label: {
-            ClipPopoverRowLabel(
-                title: title,
-                subtitle: subtitle,
-                systemImage: systemImage
-            ) {
-                HStack(spacing: 6) {
-                    Text(value)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-
-                    Image(systemName: "chevron.up.chevron.down")
-                        .font(.caption2.weight(.semibold))
-                        .accessibilityHidden(true)
-                }
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
+        ClipPopoverRowLabel(
+            title: title,
+            subtitle: subtitle,
+            systemImage: systemImage
+        ) {
+            Menu {
+                menuContent
+            } label: {
+                Text(value)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
             }
-        }
-        .menuStyle(.borderlessButton)
-        .menuIndicator(.hidden)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .contentShape(Rectangle())
-        .disabled(!isEnabled)
-        .modifier(ClipPopoverHoverEffect(isInteractive: isEnabled))
-        .accessibilityLabel(title)
-        .accessibilityValue(value)
-        .modifier(
-            ClipOptionalAccessibilityIdentifier(
-                identifier: accessibilityIdentifier
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.visible)
+            .fixedSize(horizontal: true, vertical: false)
+            .disabled(!isEnabled)
+            .modifier(ClipPopoverPointingHandCursorEffect(isEnabled: isEnabled))
+            .accessibilityLabel(title)
+            .accessibilityValue(value)
+            .modifier(
+                ClipOptionalAccessibilityIdentifier(
+                    identifier: accessibilityIdentifier
+                )
             )
-        )
+        }
+        .opacity(isEnabled ? 1 : 0.45)
     }
 }
 
