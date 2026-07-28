@@ -351,7 +351,6 @@ final class NativeLiveShareViewerCoordinator {
     private var hostSystemAudioEnabled = false
     private var systemAudioEnabled = true
     private var volume = 1.0
-    private var scaleMode = NativeViewerScaleMode.actualPixels
     private var latestStatistics = NativeViewerStatisticsSnapshot()
     private var priorStatistics: WebRTCInboundStatisticsSnapshot?
     private var isEnding = false
@@ -369,11 +368,20 @@ final class NativeLiveShareViewerCoordinator {
                 self?.setSystemAudioEnabled(enabled)
             },
             setVolume: { [weak self] volume in self?.setVolume(volume) },
-            setScaleMode: { [weak self] mode in self?.setScaleMode(mode) },
+            setSourceScaleMode: { [weak self] id, mode in
+                self?.setSourceScaleMode(mode, id: id)
+            },
             setSourceVisible: { [weak self] id, visible in
                 self?.setSourceVisible(id, visible: visible)
             },
             showAll: { [weak self] in self?.showAll() },
+            toggleSourceFullScreen: { [weak self] id in
+                self?.toggleSourceFullScreen(id)
+            },
+            bringSourceToFront: { [weak self] id in
+                self?.bringSourceToFront(id)
+            },
+            bringAllToFront: { [weak self] in self?.bringAllToFront() },
             requestFriendship: { [weak self] in self?.requestFriendship() },
             retry: { [weak self] in self?.retry() },
             leave: { [weak self] in self?.requestLeave() }
@@ -1287,7 +1295,7 @@ final class NativeLiveShareViewerCoordinator {
             return alert.runModal() == .alertFirstButtonReturn
         }
         coordinator.onLeaveRequested = { [weak self] in self?.requestLeave() }
-        coordinator.setScaleMode(scaleMode)
+        coordinator.onPresentationChanged = { [weak self] in self?.publish() }
         windowCoordinator = coordinator
     }
 
@@ -1358,19 +1366,33 @@ final class NativeLiveShareViewerCoordinator {
         publish()
     }
 
-    private func setScaleMode(_ mode: NativeViewerScaleMode) {
-        scaleMode = mode
-        windowCoordinator?.setScaleMode(mode)
-        publish()
-    }
-
     private func setSourceVisible(_ id: String, visible: Bool) {
         windowCoordinator?.setSourceVisible(visible, sourceInstanceID: id)
         publish()
     }
 
+    private func setSourceScaleMode(_ mode: NativeViewerScaleMode, id: String) {
+        windowCoordinator?.setScaleMode(mode, sourceInstanceID: id)
+        publish()
+    }
+
     private func showAll() {
         windowCoordinator?.showAll()
+        publish()
+    }
+
+    private func toggleSourceFullScreen(_ id: String) {
+        windowCoordinator?.toggleFullScreen(sourceInstanceID: id)
+        publish()
+    }
+
+    private func bringSourceToFront(_ id: String) {
+        windowCoordinator?.bringToFront(sourceInstanceID: id)
+        publish()
+    }
+
+    private func bringAllToFront() {
+        windowCoordinator?.bringAllToFront()
         publish()
     }
 
@@ -1634,7 +1656,9 @@ final class NativeLiveShareViewerCoordinator {
                 pixelHeight: Int(window.source.pixelSize.height.rounded()),
                 isVisible: window.isVisible,
                 isFocused: window.source.isFocused,
-                isConnected: window.source.isConnected
+                isConnected: window.source.isConnected,
+                scaleMode: window.scaleMode,
+                isFullScreen: window.isFullScreen
             )
         } ?? []
         return NativeViewerViewSnapshot(
@@ -1646,7 +1670,6 @@ final class NativeLiveShareViewerCoordinator {
             systemAudioAvailable: audioTrackAvailable && hostSystemAudioEnabled,
             systemAudioEnabled: systemAudioEnabled,
             volume: volume,
-            scaleMode: scaleMode,
             friendship: friendship,
             statistics: latestStatistics
         )
@@ -1704,7 +1727,14 @@ final class NativeLiveShareViewerCoordinator {
     private func reinstallWindowCoordinatorForVerifiedHost() {
         guard let host = signedHostDescriptor?.descriptor,
               let sessionID = controlState?.sessionID else { return }
-        let existingScaleMode = scaleMode
+        let localPresentation = windowCoordinator?.windowSnapshots.reduce(
+            into: [String: (mode: NativeViewerScaleMode, isVisible: Bool)]()
+        ) { result, snapshot in
+            result[snapshot.source.sourceInstanceID] = (
+                mode: snapshot.scaleMode,
+                isVisible: snapshot.isVisible
+            )
+        } ?? [:]
         windowCoordinator?.tearDown()
         windowCoordinator = nil
         installWindowCoordinator(
@@ -1712,7 +1742,18 @@ final class NativeLiveShareViewerCoordinator {
             ownerName: resolvedOwnerName,
             ownerIdentity: host.hostIdentity.x963Representation
         )
-        windowCoordinator?.setScaleMode(existingScaleMode)
         reconcileWindows()
+        for (sourceInstanceID, presentation) in localPresentation {
+            windowCoordinator?.setScaleMode(
+                presentation.mode,
+                sourceInstanceID: sourceInstanceID
+            )
+            if !presentation.isVisible {
+                windowCoordinator?.setSourceVisible(
+                    false,
+                    sourceInstanceID: sourceInstanceID
+                )
+            }
+        }
     }
 }

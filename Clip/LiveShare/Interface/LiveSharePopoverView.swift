@@ -3,9 +3,12 @@ import SwiftUI
 
 @MainActor
 struct LiveSharePopoverView: View {
-    static let contentSize = CGSize(width: 380, height: 620)
+    static let contentWidth: CGFloat = 380
+    static let contentSize = CGSize(width: contentWidth, height: 620)
 
     @ObservedObject var model: LiveSharePresentationModel
+    private let maximumHeight: CGFloat
+    private let onContentHeightChange: (CGFloat) -> Void
     @State private var statisticsExpanded: Bool
     @State private var showsInviteEntry = false
     @State private var inviteEntry = ""
@@ -13,9 +16,13 @@ struct LiveSharePopoverView: View {
 
     init(
         model: LiveSharePresentationModel,
-        initiallyExpandsStatistics: Bool = false
+        initiallyExpandsStatistics: Bool = false,
+        maximumHeight: CGFloat = 10_000,
+        onContentHeightChange: @escaping (CGFloat) -> Void = { _ in }
     ) {
         self.model = model
+        self.maximumHeight = maximumHeight
+        self.onContentHeightChange = onContentHeightChange
         _statisticsExpanded = State(initialValue: initiallyExpandsStatistics)
         _advancedCodec = State(initialValue: nil)
     }
@@ -24,43 +31,46 @@ struct LiveSharePopoverView: View {
         Group {
             if let advancedCodec {
                 inlineAdvancedSettings(for: advancedCodec)
+                    .onAppear {
+                        onContentHeightChange(Self.contentSize.height)
+                    }
             } else {
                 mainContent
             }
         }
-        .frame(width: Self.contentSize.width, height: Self.contentSize.height)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("clip.liveShare.popover")
     }
 
     private var mainContent: some View {
-        VStack(spacing: 0) {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 14) {
-                    header
-                    if let warning = model.snapshot.capturePressureWarning {
-                        capturePressureBanner(warning)
-                    }
-                    shareLinkSection
-                    if model.snapshot.sessionStage == .active {
-                        Divider()
-                        sourcesSection
-                        Divider()
-                        streamSettingsSection
-                        Divider()
-                        viewersSection
-                        statisticsSection
-                    } else {
-                        Divider()
-                        preparationSection
-                    }
+        FluidFooterPopoverContent(
+            width: Self.contentWidth,
+            maximumHeight: maximumHeight,
+            onContentHeightChange: onContentHeightChange
+        ) {
+            VStack(alignment: .leading, spacing: 14) {
+                header
+                if let warning = model.snapshot.capturePressureWarning {
+                    capturePressureBanner(warning)
                 }
-                .padding(14)
+                shareLinkSection
+                if model.snapshot.sessionStage == .active {
+                    Divider()
+                    sourcesSection
+                    Divider()
+                    streamSettingsSection
+                    Divider()
+                    viewersSection
+                    statisticsSection
+                } else {
+                    Divider()
+                    preparationSection
+                }
             }
-
-            Divider()
+            .padding(PopoverLayoutMetrics.contentInsets)
+        } footer: {
             sessionActions
-                .padding(12)
+                .padding(PopoverLayoutMetrics.footerInsets)
                 .background(.bar)
         }
     }
@@ -70,6 +80,7 @@ struct LiveSharePopoverView: View {
             codec: codec,
             current: model.snapshot.settings.advancedVideoSettings.settings(for: codec),
             presentationStyle: .inline,
+            inlineMaximumHeight: maximumHeight,
             onApply: { advanced in
                 model.setAdvancedVideoSettings(advanced, for: codec)
                 advancedCodec = nil
@@ -898,6 +909,7 @@ private struct LiveShareAdvancedCodecSettingsEditor: View {
     let codec: LiveShareVideoCodec
     let current: LiveShareCodecAdvancedSettings
     let presentationStyle: LiveShareAdvancedCodecSettingsPresentationStyle
+    let inlineMaximumHeight: CGFloat
     let onApply: (LiveShareCodecAdvancedSettings) -> Void
     let onCancel: () -> Void
 
@@ -907,12 +919,14 @@ private struct LiveShareAdvancedCodecSettingsEditor: View {
         codec: LiveShareVideoCodec,
         current: LiveShareCodecAdvancedSettings,
         presentationStyle: LiveShareAdvancedCodecSettingsPresentationStyle = .popover,
+        inlineMaximumHeight: CGFloat = LiveSharePopoverView.contentSize.height,
         onApply: @escaping (LiveShareCodecAdvancedSettings) -> Void,
         onCancel: @escaping () -> Void
     ) {
         self.codec = codec
         self.current = current
         self.presentationStyle = presentationStyle
+        self.inlineMaximumHeight = inlineMaximumHeight
         self.onApply = onApply
         self.onCancel = onCancel
         _draft = State(initialValue: current.normalized(for: codec))
@@ -990,7 +1004,7 @@ private struct LiveShareAdvancedCodecSettingsEditor: View {
         .frame(
             width: presentationStyle == .inline ? LiveSharePopoverView.contentSize.width : 370,
             height: presentationStyle == .inline
-                ? LiveSharePopoverView.contentSize.height
+                ? min(LiveSharePopoverView.contentSize.height, inlineMaximumHeight)
                 : (codec == .h264 ? 565 : 425)
         )
         .accessibilityIdentifier("clip.liveShare.codec.advanced.editor")

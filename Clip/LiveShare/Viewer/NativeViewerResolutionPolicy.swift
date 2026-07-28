@@ -2,8 +2,13 @@ import CoreGraphics
 import Foundation
 
 enum NativeViewerScaleMode: String, CaseIterable, Equatable, Sendable {
-    case automatic
-    case actualPixels
+    /// Render at the source Mac's logical size and keep the viewer window in
+    /// sync when that logical size changes.
+    case follow
+    /// Render at the source Mac's logical size inside a viewer-owned viewport.
+    /// A smaller viewport crops and pans rather than scaling the video down.
+    case native
+    /// Scale the complete shared surface to the viewer-owned viewport.
     case fit
 }
 
@@ -61,10 +66,12 @@ enum NativeViewerResolutionPolicy {
 
         // AppKit window geometry is expressed in points. A source Mac's
         // logical point size is therefore the only display-independent
-        // definition of "Actual": a 1,000-point window stays 1,000 points on
-        // both 1x and Retina viewer displays. Dividing decoded pixels by the
-        // *viewer's* backing scale incorrectly doubles Retina-hosted windows
-        // on 1x viewers and halves 1x-hosted windows on Retina viewers.
+        // definition of "native": a 1,000-point host window stays 1,000
+        // points on both 1x and Retina viewer displays. The encoded pixel
+        // dimensions describe image density, not the desired window size.
+        // Dividing them by the *viewer's* backing scale would incorrectly
+        // double Retina-hosted windows on 1x viewers and halve 1x-hosted
+        // windows on Retina viewers.
         let legacyPointSize = CGSize(
             width: request.decodedPixelSize.width / request.destinationBackingScale,
             height: request.decodedPixelSize.height / request.destinationBackingScale
@@ -75,21 +82,15 @@ enum NativeViewerResolutionPolicy {
             request.maximumContentSize.width / preferredPointSize.width,
             request.maximumContentSize.height / preferredPointSize.height
         )
-        let shouldFit = switch request.mode {
-        case .automatic:
-            fitScale < 1
-        case .actualPixels:
-            false
-        case .fit:
-            true
-        }
+        let shouldFit = request.mode == .fit
         let pointScale = shouldFit ? fitScale : 1
-        // Native mode keeps the video surface at 100%, but the window itself
-        // must remain usable on the viewer's current display. A capped
-        // viewport crops the native surface; cursor-follow panning reveals the
-        // hidden portion without ever scaling the shared pixels down.
+        // Follow and Native share exactly the same rendering policy. Follow
+        // additionally lets the controller resize the window as host geometry
+        // changes; Native leaves the viewport under viewer control. In either
+        // mode an oversized source gets a capped viewport and cursor-follow
+        // panning, never an implicit downscale.
         let resolvedContentSize: CGSize
-        if request.mode == .actualPixels {
+        if request.mode != .fit {
             resolvedContentSize = CGSize(
                 width: min(preferredPointSize.width, request.maximumContentSize.width),
                 height: min(preferredPointSize.height, request.maximumContentSize.height)

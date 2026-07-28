@@ -99,7 +99,14 @@ struct NativeViewerWindowControllerTests {
         #expect(content.headerFrame == CGRect(x: 6, y: 506, width: 1_000, height: 28))
         #expect(video.frame == CGRect(x: 0, y: 0, width: 1_000, height: 500))
         #expect(content.headerFrame.minY == content.videoViewportFrame.maxY)
-        #expect(content.headerControlFrames.zoom.maxX < content.headerControlFrames.close.minX)
+        #expect(
+            content.headerControlFrames.zoom.maxX
+                < content.headerControlFrames.fullScreen.minX
+        )
+        #expect(
+            content.headerControlFrames.fullScreen.maxX
+                < content.headerControlFrames.close.minX
+        )
         #expect(content.headerControlOpacities.allSatisfy { $0 < 1 })
         #expect(content.headerControlTintColors.allSatisfy { $0 == .black })
     }
@@ -137,7 +144,7 @@ struct NativeViewerWindowControllerTests {
         #expect(controller.window?.collectionBehavior.contains(.fullScreenPrimary) == true)
         #expect(controller.window?.tabbingMode == .disallowed)
         #expect(controller.content.isFlipped == false)
-        #expect(controller.scaleMode == .actualPixels)
+        #expect(controller.scaleMode == .follow)
         #expect(controller.content.zoomPercentage == 100)
     }
 
@@ -169,7 +176,7 @@ struct NativeViewerWindowControllerTests {
             identityColor: .systemPink,
             resolvedSourceLogicalSize: CGSize(width: 1_000, height: 500)
         )
-        content.setScaleMode(.actualPixels)
+        content.setScaleMode(.native)
         content.layoutSubtreeIfNeeded()
 
         #expect(video.frame.size == CGSize(width: 1_000, height: 500))
@@ -207,7 +214,7 @@ struct NativeViewerWindowControllerTests {
             identityColor: .systemPink,
             resolvedSourceLogicalSize: CGSize(width: 2_311, height: 1_222)
         )
-        content.setScaleMode(.actualPixels)
+        content.setScaleMode(.native)
         content.setCursor(normalizedX: 0.371, normalizedY: 0.619)
         content.layoutSubtreeIfNeeded()
 
@@ -230,5 +237,348 @@ struct NativeViewerWindowControllerTests {
             frame: oversizedAtEdge,
             visibleFrame: visible
         ) == CGPoint(x: 400, y: 50))
+    }
+
+    @Test("Manual resize leaves Follow and enters Native")
+    func manualResizeLeavesFollow() {
+        let controller = makeController()
+        defer { controller.tearDown() }
+        var reportedMode: NativeViewerScaleMode?
+        controller.onScaleModeChanged = { _, mode in
+            reportedMode = mode
+        }
+        guard let window = controller.window else {
+            Issue.record("Expected viewer window")
+            return
+        }
+
+        let proposed = CGSize(width: 700, height: 450)
+        _ = controller.windowWillResize(
+            window,
+            to: proposed
+        )
+
+        #expect(controller.scaleMode == .native)
+        #expect(reportedMode == .native)
+    }
+
+    @Test("Programmatic mode synchronization does not echo")
+    func programmaticModeDoesNotNotify() {
+        let controller = makeController()
+        defer { controller.tearDown() }
+        var callbackCount = 0
+        controller.onScaleModeChanged = { _, _ in
+            callbackCount += 1
+        }
+
+        controller.setScaleMode(.fit)
+        controller.setScaleMode(.native)
+        controller.setScaleMode(.follow)
+
+        #expect(callbackCount == 0)
+    }
+
+    @Test("Native mode prevents a viewport larger than the host logical size")
+    func nativeModeCapsViewerSize() {
+        let result = NativeViewerWindowController.clampedNativeFrameSize(
+            proposedFrameSize: CGSize(width: 1_600, height: 1_000),
+            sourceLogicalSize: CGSize(width: 1_000, height: 600),
+            systemChromeSize: .zero,
+            minimumFrameSize: CGSize(width: 332, height: 220)
+        )
+
+        #expect(result == CGSize(
+            width: 1_000 + NativeViewerContentView.horizontalChrome,
+            height: 600 + NativeViewerContentView.verticalChrome
+        ))
+    }
+
+    @Test("A small native host lowers the normal window minimum")
+    func nativeModeCapsMinimumToSmallHost() {
+        let systemChromeSize = CGSize(width: 8, height: 22)
+        let sourceLogicalSize = CGSize(width: 120, height: 80)
+        let expectedMaximum = CGSize(
+            width: sourceLogicalSize.width
+                + NativeViewerContentView.horizontalChrome
+                + systemChromeSize.width,
+            height: sourceLogicalSize.height
+                + NativeViewerContentView.verticalChrome
+                + systemChromeSize.height
+        )
+
+        let enlarged = NativeViewerWindowController.clampedNativeFrameSize(
+            proposedFrameSize: CGSize(width: 1_000, height: 800),
+            sourceLogicalSize: sourceLogicalSize,
+            systemChromeSize: systemChromeSize,
+            minimumFrameSize: CGSize(width: 332, height: 220)
+        )
+        let reduced = NativeViewerWindowController.clampedNativeFrameSize(
+            proposedFrameSize: CGSize(width: 1, height: 1),
+            sourceLogicalSize: sourceLogicalSize,
+            systemChromeSize: systemChromeSize,
+            minimumFrameSize: CGSize(width: 332, height: 220)
+        )
+
+        #expect(enlarged == expectedMaximum)
+        #expect(reduced == expectedMaximum)
+    }
+
+    @Test("The AppKit minimum follows Native but is restored for Fit")
+    func nativeModeUpdatesWindowMinimum() {
+        let source = Self.makeSource(
+            sourcePointSize: CGSize(width: 120, height: 80)
+        )
+        let controller = makeController(source: source)
+        defer { controller.tearDown() }
+        guard let window = controller.window else {
+            Issue.record("Expected viewer window")
+            return
+        }
+        let defaultMinimum = window.minSize
+
+        controller.setScaleMode(.native)
+
+        let frameSize = window.frame.size
+        let contentSize = window.contentRect(
+            forFrameRect: CGRect(origin: .zero, size: frameSize)
+        ).size
+        let maximum = CGSize(
+            width: source.sourcePointSize!.width
+                + NativeViewerContentView.horizontalChrome
+                + max(0, frameSize.width - contentSize.width),
+            height: source.sourcePointSize!.height
+                + NativeViewerContentView.verticalChrome
+                + max(0, frameSize.height - contentSize.height)
+        )
+        #expect(window.minSize.width <= maximum.width)
+        #expect(window.minSize.height <= maximum.height)
+        #expect(window.minSize.width < defaultMinimum.width)
+        #expect(window.minSize.height < defaultMinimum.height)
+        #expect(controller.windowWillResize(
+            window,
+            to: CGSize(width: 1_000, height: 800)
+        ) == maximum)
+
+        controller.setScaleMode(.fit)
+        #expect(window.minSize == defaultMinimum)
+    }
+
+    @Test("Host growth resizes Follow but preserves Native and Fit frames")
+    func hostGrowthRespectsSizingModeOwnership() {
+        let initial = Self.makeSource(
+            sourcePointSize: CGSize(width: 480, height: 270)
+        )
+        let grown = Self.makeSource(
+            sourcePointSize: CGSize(width: 640, height: 360),
+            stateRevision: 2
+        )
+
+        let follow = makeController(source: initial)
+        defer { follow.tearDown() }
+        let followFrame = follow.window?.frame
+        follow.update(
+            ownerName: "Friend",
+            source: grown,
+            identityColor: .systemPink
+        )
+        #expect(follow.window?.frame != followFrame)
+
+        for mode in [NativeViewerScaleMode.native, .fit] {
+            let controller = makeController(source: initial)
+            controller.setScaleMode(mode)
+            let viewerOwnedFrame = controller.window?.frame
+            controller.update(
+                ownerName: "Friend",
+                source: grown,
+                identityColor: .systemPink
+            )
+            #expect(controller.window?.frame == viewerOwnedFrame)
+            controller.tearDown()
+        }
+    }
+
+    @Test("Native applies a host shrink after leaving fullscreen")
+    func nativeHostShrinkWhileFullscreenClampsRestoredWindow() {
+        let initial = Self.makeSource(
+            sourcePointSize: CGSize(width: 640, height: 360)
+        )
+        let shrunk = Self.makeSource(
+            sourcePointSize: CGSize(width: 240, height: 135),
+            stateRevision: 2
+        )
+        let controller = makeController(source: initial)
+        defer { controller.tearDown() }
+        guard let window = controller.window else {
+            Issue.record("Expected viewer window")
+            return
+        }
+        controller.setScaleMode(.native)
+        let initialFrame = window.frame
+
+        controller.windowWillEnterFullScreen(
+            Notification(name: NSWindow.willEnterFullScreenNotification, object: window)
+        )
+        controller.update(
+            ownerName: "Friend",
+            source: shrunk,
+            identityColor: .systemPink
+        )
+        #expect(window.frame == initialFrame)
+
+        controller.windowDidExitFullScreen(
+            Notification(name: NSWindow.didExitFullScreenNotification, object: window)
+        )
+        #expect(window.frame.width < initialFrame.width)
+        #expect(window.frame.height < initialFrame.height)
+    }
+
+    @Test("Fullscreen overlays the header and fits video into the whole content area")
+    func fullscreenUsesWholeContentArea() {
+        let video = NSView()
+        let content = NativeViewerContentView(videoView: video, identityColor: .systemPink)
+        let source = Self.makeSource()
+        content.frame = CGRect(x: 0, y: 0, width: 1_200, height: 800)
+        content.update(
+            ownerName: "Friend",
+            source: source,
+            identityColor: .systemPink,
+            resolvedSourceLogicalSize: CGSize(width: 960, height: 540)
+        )
+
+        content.setFullScreenPresentation(true)
+        content.layoutSubtreeIfNeeded()
+
+        #expect(content.videoViewportFrame == content.bounds)
+        #expect(content.headerFrame.maxY <= content.bounds.maxY)
+        #expect(content.headerFrame.intersects(content.videoViewportFrame))
+        #expect(video.frame == CGRect(x: 0, y: 63, width: 1_200, height: 675))
+        #expect(content.isFullScreenHeaderVisible)
+
+        content.hideFullScreenHeaderForInactivity()
+        #expect(!content.isFullScreenHeaderVisible)
+        content.setFullScreenPresentation(false)
+        #expect(content.isFullScreenHeaderVisible)
+    }
+
+    @Test("Fullscreen controls reveal only near the top overlay")
+    func fullscreenHeaderRevealRegion() {
+        let bounds = CGRect(x: 0, y: 0, width: 1_200, height: 800)
+        let header = CGRect(x: 8, y: 764, width: 1_184, height: 28)
+
+        #expect(NativeViewerContentView.shouldRevealFullScreenHeader(
+            pointer: CGPoint(x: 600, y: 790),
+            bounds: bounds,
+            headerFrame: header
+        ))
+        #expect(NativeViewerContentView.shouldRevealFullScreenHeader(
+            pointer: CGPoint(x: 10, y: 760),
+            bounds: bounds,
+            headerFrame: header
+        ))
+        #expect(!NativeViewerContentView.shouldRevealFullScreenHeader(
+            pointer: CGPoint(x: 600, y: 400),
+            bounds: bounds,
+            headerFrame: header
+        ))
+    }
+
+    @Test("Fullscreen callbacks preserve the persistent sizing mode")
+    func fullscreenPreservesScaleMode() {
+        let controller = makeController()
+        defer { controller.tearDown() }
+        controller.setScaleMode(.native)
+        var states: [Bool] = []
+        controller.onFullScreenChanged = { _, isFullScreen in
+            states.append(isFullScreen)
+        }
+        let notification = Notification(
+            name: NSWindow.willEnterFullScreenNotification,
+            object: controller.window
+        )
+
+        controller.windowWillEnterFullScreen(notification)
+        controller.windowDidEnterFullScreen(notification)
+        #expect(controller.isFullScreen)
+        #expect(controller.content.isFullScreenPresentation)
+        #expect(controller.scaleMode == .native)
+
+        controller.windowWillExitFullScreen(notification)
+        controller.windowDidExitFullScreen(notification)
+        #expect(!controller.isFullScreen)
+        #expect(!controller.content.isFullScreenPresentation)
+        #expect(controller.scaleMode == .native)
+        #expect(states == [true, false])
+    }
+
+    @Test("Leaving Follow during fullscreen cancels its deferred host resize")
+    func nativeModeCancelsDeferredFollowResize() {
+        let controller = makeController()
+        defer { controller.tearDown() }
+        guard let window = controller.window else {
+            Issue.record("Expected viewer window")
+            return
+        }
+        let originalFrame = window.frame
+        let notification = Notification(
+            name: NSWindow.willEnterFullScreenNotification,
+            object: window
+        )
+        controller.windowWillEnterFullScreen(notification)
+
+        let grownSource = NativeViewerSourceSnapshot(
+            sourceInstanceID: "source-1",
+            streamID: "video0",
+            applicationName: "Fixture",
+            windowName: "Document",
+            pixelSize: CGSize(width: 2_400, height: 1_350),
+            sourcePointSize: CGSize(width: 1_200, height: 675),
+            isFocused: true,
+            isConnected: true,
+            stateRevision: 2,
+            mode: .manual
+        )
+        controller.update(
+            ownerName: "Friend",
+            source: grownSource,
+            identityColor: .systemPink
+        )
+        controller.setScaleMode(.native)
+        controller.windowDidExitFullScreen(notification)
+
+        #expect(controller.scaleMode == .native)
+        #expect(window.frame == originalFrame)
+    }
+
+    private func makeController(
+        source: NativeViewerSourceSnapshot = Self.makeSource()
+    ) -> NativeViewerWindowController {
+        NativeViewerWindowController(
+            id: .manual(sourceInstanceID: source.sourceInstanceID),
+            ownerName: "Friend",
+            source: source,
+            identityColor: .systemPink,
+            videoView: NSView()
+        )
+    }
+
+    private static func makeSource(
+        sourcePointSize: CGSize = CGSize(width: 960, height: 540),
+        stateRevision: UInt64 = 1
+    ) -> NativeViewerSourceSnapshot {
+        NativeViewerSourceSnapshot(
+            sourceInstanceID: "source-1",
+            streamID: "video0",
+            applicationName: "Fixture",
+            windowName: "Document",
+            pixelSize: CGSize(
+                width: sourcePointSize.width * 2,
+                height: sourcePointSize.height * 2
+            ),
+            sourcePointSize: sourcePointSize,
+            isFocused: true,
+            isConnected: true,
+            stateRevision: stateRevision,
+            mode: .manual
+        )
     }
 }

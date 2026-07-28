@@ -60,6 +60,32 @@ struct NativeViewerSourceViewSnapshot: Equatable, Identifiable, Sendable {
     let isVisible: Bool
     let isFocused: Bool
     let isConnected: Bool
+    let scaleMode: NativeViewerScaleMode
+    let isFullScreen: Bool
+
+    init(
+        id: String,
+        applicationName: String,
+        windowName: String,
+        pixelWidth: Int,
+        pixelHeight: Int,
+        isVisible: Bool,
+        isFocused: Bool,
+        isConnected: Bool,
+        scaleMode: NativeViewerScaleMode = .follow,
+        isFullScreen: Bool = false
+    ) {
+        self.id = id
+        self.applicationName = applicationName
+        self.windowName = windowName
+        self.pixelWidth = pixelWidth
+        self.pixelHeight = pixelHeight
+        self.isVisible = isVisible
+        self.isFocused = isFocused
+        self.isConnected = isConnected
+        self.scaleMode = scaleMode
+        self.isFullScreen = isFullScreen
+    }
 
     var title: String {
         if !windowName.isEmpty { return windowName }
@@ -116,7 +142,6 @@ struct NativeViewerViewSnapshot: Equatable, Sendable {
     let systemAudioAvailable: Bool
     let systemAudioEnabled: Bool
     let volume: Double
-    let scaleMode: NativeViewerScaleMode
     let friendship: NativeViewerFriendshipState
     let statistics: NativeViewerStatisticsSnapshot
 
@@ -129,7 +154,6 @@ struct NativeViewerViewSnapshot: Equatable, Sendable {
         systemAudioAvailable: Bool = false,
         systemAudioEnabled: Bool = true,
         volume: Double = 1,
-        scaleMode: NativeViewerScaleMode = .actualPixels,
         friendship: NativeViewerFriendshipState = .unavailable,
         statistics: NativeViewerStatisticsSnapshot = .init()
     ) {
@@ -141,7 +165,6 @@ struct NativeViewerViewSnapshot: Equatable, Sendable {
         self.systemAudioAvailable = systemAudioAvailable
         self.systemAudioEnabled = systemAudioEnabled
         self.volume = min(max(volume, 0), 1)
-        self.scaleMode = scaleMode
         self.friendship = friendship
         self.statistics = statistics
     }

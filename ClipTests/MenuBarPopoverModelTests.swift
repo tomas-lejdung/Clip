@@ -129,10 +129,17 @@ final class MenuBarPopoverModelTests: XCTestCase {
         container.loadView()
         container.view.frame = NSRect(origin: .zero, size: MenuBarPopoverView.contentSize)
         let stableRootView = container.view
+        let window = NSWindow(
+            contentRect: container.view.frame,
+            styleMask: [.borderless],
+            backing: .buffered,
+            defer: false
+        )
+        window.contentViewController = container
 
         let idle = NSViewController()
         idle.view = NSView(frame: .zero)
-        container.replaceContent(with: idle, animated: false)
+        container.replaceContent(with: idle)
 
         XCTAssertTrue(container.view === stableRootView)
         XCTAssertTrue(container.currentContentViewController === idle)
@@ -141,8 +148,9 @@ final class MenuBarPopoverModelTests: XCTestCase {
 
         let liveShare = NSViewController()
         liveShare.view = NSView(frame: .zero)
+        container.replaceContent(with: liveShare)
         container.view.frame.size = LiveSharePopoverView.contentSize
-        container.replaceContent(with: liveShare, animated: false)
+        container.view.layoutSubtreeIfNeeded()
 
         XCTAssertTrue(container.view === stableRootView)
         XCTAssertTrue(container.currentContentViewController === liveShare)
@@ -150,17 +158,117 @@ final class MenuBarPopoverModelTests: XCTestCase {
         XCTAssertTrue(liveShare.parent === container)
         XCTAssertTrue(liveShare.view.superview === container.view)
         XCTAssertEqual(liveShare.view.frame, container.view.bounds)
+
+        let recording = NSViewController()
+        recording.view = NSView(frame: .zero)
+        container.replaceContent(with: recording)
+        container.view.frame.size = RecordingStatusView.contentSize
+        container.view.layoutSubtreeIfNeeded()
+
+        XCTAssertNil(liveShare.parent)
+        XCTAssertTrue(recording.parent === container)
+        XCTAssertEqual(container.view.subviews.count, 1)
+        XCTAssertTrue(container.view.subviews.first === recording.view)
+        XCTAssertEqual(recording.view.frame, container.view.bounds)
+
+        let nextIdle = NSViewController()
+        nextIdle.view = NSView(frame: .zero)
+        container.replaceContent(with: nextIdle)
+        container.view.frame.size = MenuBarPopoverView.contentSize
+        container.view.layoutSubtreeIfNeeded()
+
+        XCTAssertNil(recording.parent)
+        XCTAssertTrue(nextIdle.parent === container)
+        XCTAssertEqual(container.view.subviews.count, 1)
+        XCTAssertTrue(container.view.subviews.first === nextIdle.view)
+        XCTAssertEqual(nextIdle.view.frame, container.view.bounds)
     }
 
-    func testIdleMenuContentSizeShowsTheWholeMenu() {
+    func testIdleMenuRetainsItsExpectedWidthAndFallbackHeight() {
         XCTAssertEqual(MenuBarPopoverView.contentSize.width, 330)
         XCTAssertEqual(MenuBarPopoverView.contentSize.height, 620)
+    }
 
+    func testPopoverSizingPolicyPreservesWidthAndCapsHeightToTheVisibleScreen() {
+        let maximumHeight = PopoverSizingPolicy.maximumContentHeight(
+            visibleScreenHeight: 956
+        )
+
+        XCTAssertEqual(maximumHeight, 940)
+        XCTAssertEqual(
+            PopoverSizingPolicy.contentSize(
+                width: 330,
+                idealHeight: 481.2,
+                maximumHeight: maximumHeight
+            ),
+            NSSize(width: 330, height: 482)
+        )
+        XCTAssertEqual(
+            PopoverSizingPolicy.contentSize(
+                width: 330,
+                idealHeight: 1_200,
+                maximumHeight: maximumHeight
+            ),
+            NSSize(width: 330, height: 940)
+        )
+    }
+
+    func testFluidPopoverReportsTheIdleMenuNaturalHeight() {
+        let reported = expectation(description: "Natural menu height reported")
+        var reportedHeight: CGFloat?
         let model = MenuBarPopoverModel(
             displays: [display(id: 1, name: "Studio Display", width: 5_120, height: 2_880)],
             microphone: .init(),
             systemAudio: .init(),
-            showClickHighlights: true,
+            isLastAreaAvailable: true,
+            isFullscreenAvailable: true
+        )
+        let controller = NSHostingController(
+            rootView: MenuBarPopoverView(
+                model: model,
+                actions: MenuBarActions(
+                    captureArea: {},
+                    lastArea: {},
+                    fullscreen: {},
+                    openHistory: {},
+                    openSettings: {},
+                    quit: {}
+                ),
+                maximumHeight: 940,
+                onContentHeightChange: { height in
+                    guard reportedHeight == nil else { return }
+                    reportedHeight = height
+                    reported.fulfill()
+                }
+            )
+        )
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 330, height: 620),
+            styleMask: [.borderless],
+            backing: .buffered,
+            defer: false
+        )
+        window.contentViewController = controller
+        controller.view.layoutSubtreeIfNeeded()
+
+        let fittedHeight = ceil(controller.view.fittingSize.height)
+        XCTAssertEqual(XCTWaiter.wait(for: [reported], timeout: 1), .completed)
+        XCTAssertNotNil(reportedHeight)
+        XCTAssertLessThan(fittedHeight, MenuBarPopoverView.contentSize.height)
+        XCTAssertLessThan(reportedHeight ?? .infinity, MenuBarPopoverView.contentSize.height)
+        // NSScrollView's fitting height and its document geometry can differ by
+        // one small AppKit layout inset; they must still describe the same
+        // compact layout rather than the 620-point fallback viewport.
+        XCTAssertEqual(fittedHeight, reportedHeight ?? 0, accuracy: 16)
+    }
+
+    func testIdleMenuNaturalHeightCanGrowFromRecordingSizedViewport() {
+        let reported = expectation(description: "Idle menu grows beyond recording viewport")
+        var reportedHeight: CGFloat?
+        let model = MenuBarPopoverModel(
+            displays: [display(id: 1, name: "Studio Display", width: 5_120, height: 2_880)],
+            microphone: .init(),
+            systemAudio: .init(),
             recentRecordings: (0..<MenuBarPopoverModel.recentRecordingLimit).map { index in
                 MenuBarRecentRecordingRow(
                     id: RecordingID(),
@@ -181,15 +289,117 @@ final class MenuBarPopoverModelTests: XCTestCase {
                     openHistory: {},
                     openSettings: {},
                     quit: {}
-                )
+                ),
+                maximumHeight: 940,
+                onContentHeightChange: { height in
+                    guard reportedHeight == nil,
+                          height > RecordingStatusView.contentSize.height else {
+                        return
+                    }
+                    reportedHeight = height
+                    reported.fulfill()
+                }
             )
         )
-        let fittingSize = controller.sizeThatFits(
-            in: NSSize(width: MenuBarPopoverView.contentSize.width, height: 10_000)
+        let window = NSWindow(
+            contentRect: NSRect(
+                origin: .zero,
+                size: NSSize(
+                    width: MenuBarPopoverView.contentWidth,
+                    height: RecordingStatusView.contentSize.height
+                )
+            ),
+            styleMask: [.borderless],
+            backing: .buffered,
+            defer: false
         )
+        window.contentViewController = controller
+        controller.view.layoutSubtreeIfNeeded()
 
-        XCTAssertGreaterThan(fittingSize.height, 360)
-        XCTAssertLessThanOrEqual(fittingSize.height, MenuBarPopoverView.contentSize.height)
+        let fittedHeight = ceil(controller.view.fittingSize.height)
+        XCTAssertGreaterThan(fittedHeight, RecordingStatusView.contentSize.height)
+        XCTAssertLessThan(fittedHeight, MenuBarPopoverView.contentSize.height)
+        XCTAssertEqual(XCTWaiter.wait(for: [reported], timeout: 1), .completed)
+        XCTAssertGreaterThan(
+            reportedHeight ?? 0,
+            RecordingStatusView.contentSize.height
+        )
+        XCTAssertEqual(fittedHeight, reportedHeight ?? 0, accuracy: 16)
+    }
+
+    func testFluidPopoverReportsTheRecordingControlsNaturalHeight() {
+        let reported = expectation(description: "Natural recording height reported")
+        var reportedHeight: CGFloat?
+        let controller = NSHostingController(
+            rootView: RecordingStatusView(
+                model: .demo(.demoRecording),
+                maximumHeight: 940,
+                onContentHeightChange: { height in
+                    guard reportedHeight == nil else { return }
+                    reportedHeight = height
+                    reported.fulfill()
+                }
+            )
+        )
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 330, height: 235),
+            styleMask: [.borderless],
+            backing: .buffered,
+            defer: false
+        )
+        window.contentViewController = controller
+        controller.view.layoutSubtreeIfNeeded()
+
+        let fittedHeight = ceil(controller.view.fittingSize.height)
+        XCTAssertEqual(XCTWaiter.wait(for: [reported], timeout: 1), .completed)
+        XCTAssertNotNil(reportedHeight)
+        XCTAssertLessThan(fittedHeight, RecordingStatusView.contentSize.height)
+        XCTAssertLessThan(reportedHeight ?? .infinity, RecordingStatusView.contentSize.height)
+        XCTAssertEqual(fittedHeight, reportedHeight ?? 0, accuracy: 1)
+    }
+
+    func testReadyLiveShareReportsItsNaturalHeightInsteadOfTheLegacyFixedHeight() throws {
+        let reported = expectation(description: "Natural Live Share height reported")
+        var reportedHeight: CGFloat?
+        let snapshot = try XCTUnwrap(
+            DeterministicLiveShareDemo.snapshot(for: .liveShareReady)
+        )
+        let controller = NSHostingController(
+            rootView: LiveSharePopoverView(
+                model: LiveSharePresentationModel(
+                    snapshot: snapshot,
+                    actions: .noOp
+                ),
+                maximumHeight: 940,
+                onContentHeightChange: { height in
+                    guard reportedHeight == nil, height > 250 else { return }
+                    reportedHeight = height
+                    reported.fulfill()
+                }
+            )
+        )
+        let window = NSWindow(
+            contentRect: NSRect(
+                origin: .zero,
+                size: LiveSharePopoverView.contentSize
+            ),
+            styleMask: [.borderless],
+            backing: .buffered,
+            defer: false
+        )
+        window.contentViewController = controller
+        controller.view.layoutSubtreeIfNeeded()
+
+        let fittedHeight = ceil(controller.view.fittingSize.height)
+        XCTAssertEqual(XCTWaiter.wait(for: [reported], timeout: 1), .completed)
+        XCTAssertGreaterThan(fittedHeight, 300)
+        XCTAssertLessThan(fittedHeight, LiveSharePopoverView.contentSize.height)
+        XCTAssertGreaterThan(reportedHeight ?? 0, 300)
+        XCTAssertLessThan(
+            reportedHeight ?? .infinity,
+            LiveSharePopoverView.contentSize.height
+        )
+        XCTAssertEqual(fittedHeight, reportedHeight ?? 0, accuracy: 1)
     }
 
     private func display(

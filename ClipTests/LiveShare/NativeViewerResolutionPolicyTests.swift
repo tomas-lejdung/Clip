@@ -4,13 +4,13 @@ import Testing
 
 @Suite("Native viewer resolution policy")
 struct NativeViewerResolutionPolicyTests {
-    @Test("Auto maps one decoded pixel to one Retina backing pixel")
-    func automaticUsesActualPixelsWhenTheyFit() throws {
+    @Test("Follow maps one decoded pixel to one Retina backing pixel")
+    func followUsesNativeRenderingWhenItFits() throws {
         let result = try #require(NativeViewerResolutionPolicy.resolve(.init(
             decodedPixelSize: CGSize(width: 2_560, height: 1_440),
             destinationBackingScale: 2,
             maximumContentSize: CGSize(width: 1_500, height: 900),
-            mode: .automatic
+            mode: .follow
         )))
 
         #expect(result.contentSize == CGSize(width: 1_280, height: 720))
@@ -18,22 +18,22 @@ struct NativeViewerResolutionPolicyTests {
         #expect(!result.isFitted)
     }
 
-    @Test("Auto preserves source point size across Retina combinations")
-    func automaticUsesSourcePointsAcrossDisplayScales() throws {
+    @Test("Follow preserves source point size across Retina combinations")
+    func followUsesSourcePointsAcrossDisplayScales() throws {
         for destinationScale in [CGFloat(1), CGFloat(2)] {
             let retina = try #require(NativeViewerResolutionPolicy.resolve(.init(
                 decodedPixelSize: CGSize(width: 2_000, height: 1_200),
                 sourcePointSize: CGSize(width: 1_000, height: 600),
                 destinationBackingScale: destinationScale,
                 maximumContentSize: CGSize(width: 1_500, height: 900),
-                mode: .automatic
+                mode: .follow
             )))
             let external = try #require(NativeViewerResolutionPolicy.resolve(.init(
                 decodedPixelSize: CGSize(width: 1_000, height: 600),
                 sourcePointSize: CGSize(width: 1_000, height: 600),
                 destinationBackingScale: destinationScale,
                 maximumContentSize: CGSize(width: 1_500, height: 900),
-                mode: .automatic
+                mode: .follow
             )))
 
             #expect(retina.contentSize == CGSize(width: 1_000, height: 600))
@@ -41,52 +41,50 @@ struct NativeViewerResolutionPolicyTests {
         }
     }
 
-    @Test("Auto preserves source points when the encoder downsizes")
-    func automaticSeparatesPresentationFromEncodedGeometry() throws {
+    @Test("Follow preserves source points when the encoder downsizes")
+    func followSeparatesPresentationFromEncodedGeometry() throws {
         let result = try #require(NativeViewerResolutionPolicy.resolve(.init(
             decodedPixelSize: CGSize(width: 2_560, height: 1_440),
             sourcePointSize: CGSize(width: 3_000, height: 1_687.5),
             destinationBackingScale: 2,
             maximumContentSize: CGSize(width: 1_600, height: 900),
-            mode: .automatic
+            mode: .follow
         )))
 
         #expect(result.contentSize == CGSize(width: 1_600, height: 900))
-        #expect(result.isFitted)
+        #expect(!result.isFitted)
     }
 
-    @Test("Auto fits an oversized stream without upscaling")
-    func automaticFitsOversizedStream() throws {
+    @Test("Follow caps an oversized viewport without scaling the surface")
+    func followCapsOversizedViewportWithoutScaling() throws {
         let result = try #require(NativeViewerResolutionPolicy.resolve(.init(
             decodedPixelSize: CGSize(width: 3_840, height: 2_160),
             destinationBackingScale: 1,
             maximumContentSize: CGSize(width: 1_600, height: 900),
-            mode: .automatic
+            mode: .follow
         )))
 
         #expect(result.contentSize == CGSize(width: 1_600, height: 900))
-        // Runtime CGFloat division and the compiler-folded literal can differ
-        // by one ULP even though they describe the same fitted scale.
-        #expect(abs(result.destinationPixelsPerSourcePixel - (1_600.0 / 3_840.0)) < 1e-12)
-        #expect(result.isFitted)
+        #expect(result.destinationPixelsPerSourcePixel == 1)
+        #expect(!result.isFitted)
     }
 
-    @Test("Actual preserves native content but caps its viewport across viewer display scales")
-    func actualPixelsCapsViewportWithoutScalingContent() throws {
+    @Test("Native preserves native content but caps its viewport across viewer display scales")
+    func nativeCapsViewportWithoutScalingContent() throws {
         for destinationScale in [CGFloat(1), CGFloat(2)] {
             let retinaHost = try #require(NativeViewerResolutionPolicy.resolve(.init(
                 decodedPixelSize: CGSize(width: 2_000, height: 1_000),
                 sourcePointSize: CGSize(width: 1_000, height: 500),
                 destinationBackingScale: destinationScale,
                 maximumContentSize: CGSize(width: 800, height: 400),
-                mode: .actualPixels
+                mode: .native
             )))
             let externalHost = try #require(NativeViewerResolutionPolicy.resolve(.init(
                 decodedPixelSize: CGSize(width: 2_000, height: 1_000),
                 sourcePointSize: CGSize(width: 2_000, height: 1_000),
                 destinationBackingScale: destinationScale,
                 maximumContentSize: CGSize(width: 800, height: 400),
-                mode: .actualPixels
+                mode: .native
             )))
 
             #expect(retinaHost.contentSize == CGSize(width: 800, height: 400))
@@ -96,17 +94,35 @@ struct NativeViewerResolutionPolicyTests {
         }
     }
 
-    @Test("Actual keeps the legacy decoded-pixel fallback for old hosts")
-    func actualLegacyHostFallbackUsesViewerBackingScale() throws {
+    @Test("Native keeps the legacy decoded-pixel fallback for old hosts")
+    func nativeLegacyHostFallbackUsesViewerBackingScale() throws {
         let result = try #require(NativeViewerResolutionPolicy.resolve(.init(
             decodedPixelSize: CGSize(width: 1_600, height: 1_200),
             destinationBackingScale: 2,
             maximumContentSize: CGSize(width: 2_000, height: 1_500),
-            mode: .actualPixels
+            mode: .native
         )))
 
         #expect(result.contentSize == CGSize(width: 800, height: 600))
         #expect(!result.isFitted)
+    }
+
+    @Test("Follow, Native, and Fit agree at the exact host size")
+    func allModesAgreeAtHostSize() throws {
+        let modes: [NativeViewerScaleMode] = [.follow, .native, .fit]
+        let results = try modes.map { mode in
+            try #require(NativeViewerResolutionPolicy.resolve(.init(
+                decodedPixelSize: CGSize(width: 2_000, height: 1_200),
+                sourcePointSize: CGSize(width: 1_000, height: 600),
+                destinationBackingScale: 2,
+                maximumContentSize: CGSize(width: 1_000, height: 600),
+                mode: mode
+            )))
+        }
+
+        #expect(results.allSatisfy { $0.contentSize == CGSize(width: 1_000, height: 600) })
+        #expect(Set(results.map(\.destinationPixelsPerSourcePixel)) == [1])
+        #expect(results.allSatisfy { !$0.isFitted })
     }
 
     @Test("Legacy hosts retain decoded-pixel sizing")
@@ -115,7 +131,7 @@ struct NativeViewerResolutionPolicyTests {
             decodedPixelSize: CGSize(width: 1_600, height: 1_200),
             destinationBackingScale: 1,
             maximumContentSize: CGSize(width: 2_000, height: 1_500),
-            mode: .automatic
+            mode: .follow
         )))
 
         #expect(result.contentSize == CGSize(width: 1_600, height: 1_200))
@@ -141,7 +157,7 @@ struct NativeViewerResolutionPolicyTests {
             decodedPixelSize: .zero,
             destinationBackingScale: 2,
             maximumContentSize: CGSize(width: 1_600, height: 900),
-            mode: .automatic
+            mode: .follow
         )) == nil)
     }
 
