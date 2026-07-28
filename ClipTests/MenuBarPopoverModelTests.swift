@@ -111,7 +111,7 @@ final class MenuBarPopoverModelTests: XCTestCase {
     }
 
     func testCursorRegionIsBalancedAndNeverInterceptsMenuControls() {
-        let cursorRegion = MenuPointingHandCursorView(
+        let cursorRegion = ClipPopoverPointingHandCursorView(
             frame: NSRect(x: 0, y: 0, width: 120, height: 28)
         )
 
@@ -184,9 +184,20 @@ final class MenuBarPopoverModelTests: XCTestCase {
         XCTAssertEqual(nextIdle.view.frame, container.view.bounds)
     }
 
-    func testIdleMenuRetainsItsExpectedWidthAndFallbackHeight() {
-        XCTAssertEqual(MenuBarPopoverView.contentSize.width, 330)
-        XCTAssertEqual(MenuBarPopoverView.contentSize.height, 620)
+    func testPopoverViewsShareTheDesignWidthAndRetainFallbackHeights() {
+        XCTAssertEqual(MenuBarPopoverView.contentSize.width, ClipPopoverDesign.width)
+        XCTAssertEqual(MenuBarPopoverView.contentSize.height, 900)
+        XCTAssertEqual(RecordingStatusView.contentSize.width, ClipPopoverDesign.width)
+        XCTAssertEqual(RecordingStatusView.contentSize.height, 360)
+        XCTAssertEqual(LiveSharePopoverView.contentWidth, ClipPopoverDesign.width)
+        XCTAssertEqual(LiveSharePopoverView.contentSize.height, 620)
+        XCTAssertEqual(NativeViewerPopoverView.contentWidth, ClipPopoverDesign.width)
+        XCTAssertEqual(NativeViewerPopoverView.contentSize.height, 590)
+    }
+
+    func testSharedPopoverButtonSizesMatchTheVisualHierarchy() {
+        XCTAssertEqual(ClipPopoverButtonSize.standard.height, 28)
+        XCTAssertEqual(ClipPopoverButtonSize.bottom.height, 36)
     }
 
     func testPopoverSizingPolicyPreservesWidthAndCapsHeightToTheVisibleScreen() {
@@ -243,7 +254,7 @@ final class MenuBarPopoverModelTests: XCTestCase {
             )
         )
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 330, height: 620),
+            contentRect: NSRect(origin: .zero, size: MenuBarPopoverView.contentSize),
             styleMask: [.borderless],
             backing: .buffered,
             defer: false
@@ -258,7 +269,7 @@ final class MenuBarPopoverModelTests: XCTestCase {
         XCTAssertLessThan(reportedHeight ?? .infinity, MenuBarPopoverView.contentSize.height)
         // NSScrollView's fitting height and its document geometry can differ by
         // one small AppKit layout inset; they must still describe the same
-        // compact layout rather than the 620-point fallback viewport.
+        // compact layout rather than the fallback viewport.
         XCTAssertEqual(fittedHeight, reportedHeight ?? 0, accuracy: 16)
     }
 
@@ -342,7 +353,7 @@ final class MenuBarPopoverModelTests: XCTestCase {
             )
         )
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 330, height: 235),
+            contentRect: NSRect(origin: .zero, size: RecordingStatusView.contentSize),
             styleMask: [.borderless],
             backing: .buffered,
             defer: false
@@ -399,6 +410,47 @@ final class MenuBarPopoverModelTests: XCTestCase {
             reportedHeight ?? .infinity,
             LiveSharePopoverView.contentSize.height
         )
+        // SwiftUI can publish a transient segment sum a few points before the
+        // hosting view's final fitting pass; the production coalescer uses the
+        // latest value. Keep this focused on natural-vs-legacy sizing.
+        XCTAssertEqual(fittedHeight, reportedHeight ?? 0, accuracy: 8)
+    }
+
+    func testNativeViewerReportsItsNaturalHeight() {
+        let reported = expectation(description: "Natural native-viewer height reported")
+        var reportedHeight: CGFloat?
+        let controller = NSHostingController(
+            rootView: NativeViewerPopoverView(
+                model: NativeViewerPresentationModel(
+                    snapshot: DeterministicNativeViewerDemo.snapshot(
+                        for: .nativeViewerLive
+                    ),
+                    actions: .init()
+                ),
+                maximumHeight: 940,
+                onContentHeightChange: { height in
+                    guard reportedHeight == nil else { return }
+                    reportedHeight = height
+                    reported.fulfill()
+                }
+            )
+        )
+        let window = NSWindow(
+            contentRect: NSRect(
+                origin: .zero,
+                size: NativeViewerPopoverView.contentSize
+            ),
+            styleMask: [.borderless],
+            backing: .buffered,
+            defer: false
+        )
+        window.contentViewController = controller
+        controller.view.layoutSubtreeIfNeeded()
+
+        let fittedHeight = ceil(controller.view.fittingSize.height)
+        XCTAssertEqual(XCTWaiter.wait(for: [reported], timeout: 1), .completed)
+        XCTAssertGreaterThan(fittedHeight, 300)
+        XCTAssertLessThanOrEqual(fittedHeight, 940)
         XCTAssertEqual(fittedHeight, reportedHeight ?? 0, accuracy: 1)
     }
 

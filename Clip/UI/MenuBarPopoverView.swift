@@ -4,24 +4,6 @@ import CoreGraphics
 import Foundation
 import SwiftUI
 
-enum PopoverLayoutMetrics {
-    /// Keep the total vertical inset unchanged while shifting whitespace
-    /// toward the visually tight top edge of the menu-bar popover.
-    static let contentInsets = EdgeInsets(
-        top: 20,
-        leading: 14,
-        bottom: 8,
-        trailing: 14
-    )
-
-    static let footerInsets = EdgeInsets(
-        top: 12,
-        leading: 12,
-        bottom: 8,
-        trailing: 12
-    )
-}
-
 enum MenuBarApplicationVersion {
     static var currentDisplayString: String? {
         displayString(infoDictionary: Bundle.main.infoDictionary ?? [:])
@@ -248,10 +230,10 @@ struct MenuBarActions {
 }
 
 struct MenuBarPopoverView: View {
-    static let contentWidth: CGFloat = 330
+    static let contentWidth = ClipPopoverDesign.width
     /// Fallback used only if synchronous SwiftUI fitting-size measurement is
     /// unavailable.
-    static let contentSize = CGSize(width: contentWidth, height: 620)
+    static let contentSize = CGSize(width: contentWidth, height: 900)
 
     @StateObject private var model: MenuBarPopoverModel
     let actions: MenuBarActions
@@ -288,416 +270,290 @@ struct MenuBarPopoverView: View {
     }
 
     var body: some View {
-        FluidPopoverContent(
-            width: Self.contentWidth,
+        ClipPopoverPane(
             maximumHeight: maximumHeight,
-            onContentHeightChange: onContentHeightChange
-        ) {
-            VStack(alignment: .leading, spacing: 12) {
-                header
-                captureTargets
-
+            onContentHeightChange: onContentHeightChange,
+            icon: "record.circle",
+            title: String(localized: "Clip"),
+            subtitle: model.preparedDisplay == nil
+                ? String(localized: "Ready to record")
+                : String(localized: "Capture target prepared"),
+            accessibilityIdentifier: "clip.menuBarPopover",
+            headerTrailing: {
+                version
+            },
+            content: {
+                captureSection
                 if let preparedDisplay = model.preparedDisplay {
-                    preparedTarget(preparedDisplay)
+                    preparedTargetSection(preparedDisplay)
                 }
-
-                Divider()
-                quickSettingControls
-
+                quickSettingsSection
                 if !model.recentRecordings.isEmpty {
-                    Divider()
-                    recentRecordings
+                    recentRecordingsSection
+                }
+                applicationSection
+            }
+        )
+    }
+
+    @ViewBuilder
+    private var version: some View {
+        if let version = MenuBarApplicationVersion.currentDisplayString {
+            Text(verbatim: version)
+                .font(.caption.monospacedDigit())
+                .foregroundStyle(.tertiary)
+                .padding(.top, 3)
+                .accessibilityLabel(
+                    Text(verbatim: "Version \(version.dropFirst())")
+                )
+                .accessibilityIdentifier("clip.menu.version")
+        }
+    }
+
+    private var captureSection: some View {
+        ClipPopoverSection(String(localized: "Capture")) {
+            VStack(spacing: 0) {
+                actionRow(
+                    String(localized: "Capture Area"),
+                    systemImage: "viewfinder",
+                    identifier: "clip.menu.captureArea",
+                    action: actions.captureArea
+                )
+
+                if model.isLastAreaAvailable {
+                    ClipPopoverRowDivider()
+                    actionRow(
+                        String(localized: "Last Area"),
+                        systemImage: "rectangle.dashed",
+                        identifier: "clip.menu.lastArea",
+                        action: actions.lastArea
+                    )
                 }
 
-                Divider()
-                footer
-            }
-            .padding(PopoverLayoutMetrics.contentInsets)
-        }
-        .accessibilityElement(children: .contain)
-        .accessibilityIdentifier("clip.menuBarPopover")
-    }
+                ClipPopoverRowDivider()
+                actionRow(
+                    String(localized: "Capture App…"),
+                    systemImage: "app.badge.checkmark",
+                    identifier: "clip.menu.captureApplication",
+                    action: actions.captureApplication
+                )
 
-    private var header: some View {
-        HStack(alignment: .top, spacing: 9) {
-            Image(systemName: "record.circle")
-                .font(.title2)
-                .padding(.top, 1)
-                .accessibilityHidden(true)
-
-            VStack(alignment: .leading, spacing: 1) {
-                Text("Clip")
-                    .font(.headline)
-                Text(model.preparedDisplay == nil ? "Ready to record" : "Capture target prepared")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-            Spacer()
-            if let version = MenuBarApplicationVersion.currentDisplayString {
-                Text(verbatim: version)
-                    .font(.caption.monospacedDigit())
-                    .foregroundStyle(.tertiary)
-                    .padding(.top, 2)
-                    .accessibilityLabel(
-                        Text(verbatim: "Version \(version.dropFirst())")
+                if model.isFullscreenAvailable {
+                    ClipPopoverRowDivider()
+                    actionRow(
+                        String(localized: "Fullscreen"),
+                        systemImage: "macwindow",
+                        identifier: "clip.menu.fullscreen",
+                        action: actions.fullscreen
                     )
-                    .accessibilityIdentifier("clip.menu.version")
-            }
-        }
-    }
+                }
 
-    private var captureTargets: some View {
-        VStack(spacing: 2) {
-            menuButton(
-                "Capture Area",
-                systemImage: "viewfinder",
-                identifier: "clip.menu.captureArea",
-                action: actions.captureArea
-            )
-
-            if model.isLastAreaAvailable {
-                menuButton(
-                    "Last Area",
-                    systemImage: "rectangle.dashed",
-                    identifier: "clip.menu.lastArea",
-                    action: actions.lastArea
-                )
-            }
-
-            menuButton(
-                "Capture App…",
-                systemImage: "app.badge.checkmark",
-                identifier: "clip.menu.captureApplication",
-                action: actions.captureApplication
-            )
-
-            if model.isFullscreenAvailable {
-                menuButton(
-                    "Fullscreen",
-                    systemImage: "macwindow",
-                    identifier: "clip.menu.fullscreen",
-                    action: actions.fullscreen
-                )
-            }
-
-            ForEach(model.displays) { display in
-                Button {
-                    model.prepareDisplay(id: display.id)
-                    actions.prepareDisplay(display.id)
-                } label: {
-                    HStack {
-                        Image(systemName: model.preparedDisplayID == display.id
-                              ? "checkmark.circle.fill"
-                              : "display")
-                            .frame(width: 18)
-                        Text(display.name)
-                            .lineLimit(1)
-                        Spacer(minLength: 6)
+                ForEach(model.displays) { display in
+                    ClipPopoverRowDivider()
+                    ClipPopoverActionRow(
+                        display.name,
+                        systemImage: model.preparedDisplayID == display.id
+                            ? "checkmark.circle.fill"
+                            : "display",
+                        accessibilityIdentifier: "clip.menu.display.\(display.id)",
+                        action: {
+                            model.prepareDisplay(id: display.id)
+                            actions.prepareDisplay(display.id)
+                        }
+                    ) {
                         Text(display.resolution)
                             .font(.caption.monospacedDigit())
                             .foregroundStyle(.secondary)
                     }
-                    .contentShape(Rectangle())
-                    .padding(.vertical, 5)
-                    .modifier(MenuRowHoverEffect())
+                    .accessibilityLabel("\(display.name), \(display.resolution)")
                 }
-                .buttonStyle(.plain)
-                .accessibilityLabel("\(display.name), \(display.resolution)")
-                .accessibilityIdentifier("clip.menu.display.\(display.id)")
-            }
 
-            menuButton(
-                "Live Share",
-                systemImage: "dot.radiowaves.left.and.right",
-                identifier: "clip.menu.liveShare",
-                action: actions.startLiveShare
-            )
+                ClipPopoverRowDivider()
+                actionRow(
+                    String(localized: "Live Share"),
+                    systemImage: "dot.radiowaves.left.and.right",
+                    identifier: "clip.menu.liveShare",
+                    action: actions.startLiveShare
+                )
+            }
         }
     }
 
-    private func preparedTarget(_ display: MenuBarDisplayRow) -> some View {
-        HStack(spacing: 10) {
-            VStack(alignment: .leading, spacing: 1) {
-                Text(display.name)
-                    .font(.subheadline.weight(.medium))
-                    .lineLimit(1)
-                Text(display.resolution)
-                    .font(.caption.monospacedDigit())
-                    .foregroundStyle(.secondary)
+    private func preparedTargetSection(_ display: MenuBarDisplayRow) -> some View {
+        ClipPopoverSection(String(localized: "Prepared Target")) {
+            HStack(spacing: 10) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(display.name)
+                        .font(.subheadline.weight(.medium))
+                        .lineLimit(1)
+                    Text(display.resolution)
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                ClipPopoverButton(
+                    String(localized: "Record"),
+                    systemImage: "record.circle.fill",
+                    prominence: .primary,
+                    accessibilityIdentifier: "clip.menu.recordPrepared"
+                ) {
+                    actions.recordPreparedDisplay(display.id)
+                }
+                .keyboardShortcut(.defaultAction)
             }
-            Spacer()
-            Button {
-                actions.recordPreparedDisplay(display.id)
-            } label: {
-                Label("Record", systemImage: "record.circle.fill")
-            }
-            .buttonStyle(.borderedProminent)
-            .keyboardShortcut(.defaultAction)
-            .modifier(MenuProminentControlHoverEffect())
-            .accessibilityIdentifier("clip.menu.recordPrepared")
-        }
-        .padding(10)
-        .background(.quaternary.opacity(0.65), in: RoundedRectangle(cornerRadius: 8))
-    }
-
-    private var quickSettingControls: some View {
-        VStack(spacing: 8) {
-            quickToggle(
-                title: "Microphone",
-                systemImage: "mic",
-                state: model.microphone,
-                identifier: "clip.menu.microphone",
-                isOn: Binding(
-                    get: { model.microphone.isEnabled },
-                    set: { enabled in
-                        model.setMicrophoneEnabled(enabled)
-                        actions.setMicrophoneEnabled(enabled)
-                    }
-                )
-            )
-            quickToggle(
-                title: "System Audio",
-                systemImage: "speaker.wave.2",
-                state: model.systemAudio,
-                identifier: "clip.menu.systemAudio",
-                isOn: Binding(
-                    get: { model.systemAudio.isEnabled },
-                    set: { enabled in
-                        model.setSystemAudioEnabled(enabled)
-                        actions.setSystemAudioEnabled(enabled)
-                    }
-                )
-            )
-            quickToggle(
-                title: "Click Highlights",
-                systemImage: "cursorarrow.click",
-                state: MenuBarAudioState(isEnabled: model.showClickHighlights),
-                identifier: "clip.menu.clickHighlights",
-                isOn: Binding(
-                    get: { model.showClickHighlights },
-                    set: { enabled in
-                        model.setClickHighlightsEnabled(enabled)
-                        actions.setClickHighlightsEnabled(enabled)
-                    }
-                )
-            )
+            .padding(12)
         }
     }
 
-    private var recentRecordings: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text("Recent Recordings")
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.secondary)
+    private var quickSettingsSection: some View {
+        ClipPopoverSection(String(localized: "Quick Settings")) {
+            VStack(spacing: 0) {
+                quickToggle(
+                    title: String(localized: "Microphone"),
+                    systemImage: "mic",
+                    state: model.microphone,
+                    identifier: "clip.menu.microphone",
+                    isOn: Binding(
+                        get: { model.microphone.isEnabled },
+                        set: { enabled in
+                            model.setMicrophoneEnabled(enabled)
+                            actions.setMicrophoneEnabled(enabled)
+                        }
+                    )
+                )
+                ClipPopoverRowDivider()
+                quickToggle(
+                    title: String(localized: "System Audio"),
+                    systemImage: "speaker.wave.2",
+                    state: model.systemAudio,
+                    identifier: "clip.menu.systemAudio",
+                    isOn: Binding(
+                        get: { model.systemAudio.isEnabled },
+                        set: { enabled in
+                            model.setSystemAudioEnabled(enabled)
+                            actions.setSystemAudioEnabled(enabled)
+                        }
+                    )
+                )
+                ClipPopoverRowDivider()
+                ClipPopoverToggleRow(
+                    String(localized: "Click Highlights"),
+                    systemImage: "cursorarrow.click",
+                    status: model.showClickHighlights
+                        ? String(localized: "On")
+                        : String(localized: "Off"),
+                    accessibilityIdentifier: "clip.menu.clickHighlights",
+                    isOn: Binding(
+                        get: { model.showClickHighlights },
+                        set: { enabled in
+                            model.setClickHighlightsEnabled(enabled)
+                            actions.setClickHighlightsEnabled(enabled)
+                        }
+                    )
+                )
+                .help(
+                    model.showClickHighlights
+                        ? String(localized: "On")
+                        : String(localized: "Off")
+                )
+            }
+        }
+    }
 
-            ForEach(model.recentRecordings) { recording in
-                Button {
-                    actions.openRecentRecording(recording.id)
-                } label: {
-                    HStack {
-                        Image(systemName: "play.rectangle")
-                            .frame(width: 18)
-                        Text(recording.filename)
-                            .lineLimit(1)
-                        Spacer(minLength: 8)
+    private var recentRecordingsSection: some View {
+        ClipPopoverSection(String(localized: "Recent Recordings")) {
+            VStack(spacing: 0) {
+                ForEach(Array(model.recentRecordings.enumerated()), id: \.element.id) {
+                    index,
+                    recording in
+                    if index > 0 {
+                        ClipPopoverRowDivider()
+                    }
+                    ClipPopoverActionRow(
+                        recording.filename,
+                        systemImage: "play.rectangle",
+                        accessibilityIdentifier:
+                            "clip.menu.recent.\(recording.id.description)",
+                        action: {
+                            actions.openRecentRecording(recording.id)
+                        }
+                    ) {
                         Text(recording.formattedByteCount)
                             .font(.caption.monospacedDigit())
                             .foregroundStyle(.secondary)
                     }
-                    .contentShape(Rectangle())
-                    .padding(.vertical, 4)
-                    .modifier(MenuRowHoverEffect())
+                    .accessibilityLabel(
+                        "Open \(recording.filename), \(recording.formattedByteCount)"
+                    )
                 }
-                .buttonStyle(.plain)
-                .accessibilityLabel("Open \(recording.filename), \(recording.formattedByteCount)")
-                .accessibilityIdentifier("clip.menu.recent.\(recording.id.description)")
             }
         }
     }
 
-    private var footer: some View {
-        VStack(spacing: 1) {
-            menuButton(
-                "History",
-                systemImage: "clock.arrow.circlepath",
-                identifier: "clip.menu.history",
-                action: actions.openHistory
-            )
-            menuButton(
-                "Settings",
-                systemImage: "gearshape",
-                identifier: "clip.menu.settings",
-                action: actions.openSettings
-            )
-            menuButton(
-                "Check for Updates…",
-                systemImage: "arrow.triangle.2.circlepath",
-                identifier: "clip.menu.checkForUpdates",
-                action: actions.checkForUpdates
-            )
-            menuButton(
-                "Quit Clip",
-                systemImage: "power",
-                identifier: "clip.menu.quit",
-                action: actions.quit
-            )
+    private var applicationSection: some View {
+        ClipPopoverSection(String(localized: "Application")) {
+            VStack(spacing: 0) {
+                ClipPopoverNavigationRow(
+                    String(localized: "History"),
+                    systemImage: "clock.arrow.circlepath",
+                    accessibilityIdentifier: "clip.menu.history",
+                    action: actions.openHistory
+                )
+                ClipPopoverRowDivider()
+                ClipPopoverNavigationRow(
+                    String(localized: "Settings"),
+                    systemImage: "gearshape",
+                    accessibilityIdentifier: "clip.menu.settings",
+                    action: actions.openSettings
+                )
+                ClipPopoverRowDivider()
+                actionRow(
+                    String(localized: "Check for Updates…"),
+                    systemImage: "arrow.triangle.2.circlepath",
+                    identifier: "clip.menu.checkForUpdates",
+                    action: actions.checkForUpdates
+                )
+                ClipPopoverRowDivider()
+                actionRow(
+                    String(localized: "Quit Clip"),
+                    systemImage: "power",
+                    identifier: "clip.menu.quit",
+                    action: actions.quit
+                )
+            }
         }
     }
 
-    private func menuButton(
-        _ title: LocalizedStringKey,
+    private func actionRow(
+        _ title: String,
         systemImage: String,
         identifier: String,
         action: @escaping () -> Void
     ) -> some View {
-        Button(action: action) {
-            Label(title, systemImage: systemImage)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .contentShape(Rectangle())
-                .padding(.vertical, 5)
-                .modifier(MenuRowHoverEffect())
-        }
-        .buttonStyle(.plain)
-        .accessibilityIdentifier(identifier)
+        ClipPopoverActionRow(
+            title,
+            systemImage: systemImage,
+            accessibilityIdentifier: identifier,
+            action: action
+        )
     }
 
     private func quickToggle(
-        title: LocalizedStringKey,
+        title: String,
         systemImage: String,
         state: MenuBarAudioState,
         identifier: String,
         isOn: Binding<Bool>
     ) -> some View {
-        Toggle(isOn: isOn) {
-            HStack {
-                Label(title, systemImage: systemImage)
-                Spacer()
-                Text(state.status)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-        }
-        .toggleStyle(.switch)
-        .controlSize(.small)
-        .disabled(!state.isAvailable)
-        .modifier(MenuRowHoverEffect(isInteractive: state.isAvailable))
+        ClipPopoverToggleRow(
+            title,
+            systemImage: systemImage,
+            status: state.status,
+            isEnabled: state.isAvailable,
+            accessibilityIdentifier: identifier,
+            isOn: isOn
+        )
         .help(state.detail ?? state.status)
-        .accessibilityIdentifier(identifier)
-    }
-}
-
-private struct MenuRowHoverEffect: ViewModifier {
-    let isInteractive: Bool
-    @State private var isHovered = false
-
-    init(isInteractive: Bool = true) {
-        self.isInteractive = isInteractive
-    }
-
-    func body(content: Content) -> some View {
-        content
-            .padding(.horizontal, 7)
-            .background {
-                RoundedRectangle(cornerRadius: 7, style: .continuous)
-                    .fill(isHovered && isInteractive ? Color.primary.opacity(0.09) : .clear)
-            }
-            .contentShape(Rectangle())
-            .modifier(MenuPointingHandCursorEffect(isEnabled: isInteractive))
-            .onHover { hovering in
-                isHovered = hovering
-            }
-            .animation(.easeOut(duration: 0.1), value: isHovered)
-    }
-}
-
-/// Keeps the prominent prepared-target action consistent with the menu rows.
-/// Its native button style already changes on hover; the explicit highlight
-/// remains visible across accent colors and appearance modes.
-private struct MenuProminentControlHoverEffect: ViewModifier {
-    @State private var isHovered = false
-
-    func body(content: Content) -> some View {
-        content
-            .contentShape(Rectangle())
-            .overlay {
-                RoundedRectangle(cornerRadius: 6, style: .continuous)
-                    .fill(Color.white.opacity(isHovered ? 0.14 : 0))
-                    .allowsHitTesting(false)
-            }
-            .modifier(MenuPointingHandCursorEffect())
-            .onHover { hovering in
-                isHovered = hovering
-            }
-            .animation(.easeOut(duration: 0.1), value: isHovered)
-    }
-}
-
-/// Uses AppKit's balanced cursor-rectangle lifecycle instead of mutating the
-/// process-global cursor stack from SwiftUI hover callbacks.
-private struct MenuPointingHandCursorEffect: ViewModifier {
-    let isEnabled: Bool
-
-    init(isEnabled: Bool = true) {
-        self.isEnabled = isEnabled
-    }
-
-    func body(content: Content) -> some View {
-        content.overlay {
-            MenuPointingHandCursorRegion(isEnabled: isEnabled)
-                .accessibilityHidden(true)
-        }
-    }
-}
-
-private struct MenuPointingHandCursorRegion: NSViewRepresentable {
-    let isEnabled: Bool
-
-    func makeNSView(context: Context) -> MenuPointingHandCursorView {
-        let view = MenuPointingHandCursorView(frame: .zero)
-        view.isEnabled = isEnabled
-        view.setAccessibilityElement(false)
-        return view
-    }
-
-    func updateNSView(_ nsView: MenuPointingHandCursorView, context: Context) {
-        nsView.isEnabled = isEnabled
-    }
-}
-
-final class MenuPointingHandCursorView: NSView {
-    var isEnabled = true {
-        didSet {
-            guard isEnabled != oldValue else { return }
-            window?.invalidateCursorRects(for: self)
-        }
-    }
-
-    var registeredCursor: NSCursor? {
-        isEnabled ? .pointingHand : nil
-    }
-
-    override func resetCursorRects() {
-        super.resetCursorRects()
-        guard let registeredCursor, !bounds.isEmpty else { return }
-        addCursorRect(bounds, cursor: registeredCursor)
-    }
-
-    override func viewDidMoveToWindow() {
-        super.viewDidMoveToWindow()
-        window?.invalidateCursorRects(for: self)
-    }
-
-    override func setFrameSize(_ newSize: NSSize) {
-        let sizeChanged = frame.size != newSize
-        super.setFrameSize(newSize)
-        if sizeChanged {
-            window?.invalidateCursorRects(for: self)
-        }
-    }
-
-    /// The transparent cursor surface must never intercept the control below.
-    override func hitTest(_ point: NSPoint) -> NSView? {
-        nil
     }
 }
 
