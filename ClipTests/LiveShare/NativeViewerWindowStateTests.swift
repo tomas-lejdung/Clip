@@ -91,6 +91,29 @@ struct NativeViewerWindowStateTests {
         #expect(registry.windows[id]?.isFullScreen == true)
     }
 
+    @Test("New windows default to Follow without changing existing window modes")
+    func newWindowsUseIndependentDefaultScaleMode() {
+        var registry = NativeViewerWindowRegistry(sessionID: "session")
+        let first = source(instance: "one", stream: "video0", revision: 1)
+        let second = source(instance: "two", stream: "video1", revision: 1)
+        _ = registry.reconcile([first])
+        registry.setScaleMode(
+            .native,
+            for: .manual(sourceInstanceID: first.sourceInstanceID)
+        )
+
+        _ = registry.reconcile([first, second])
+
+        #expect(
+            registry.windows[.manual(sourceInstanceID: first.sourceInstanceID)]?
+                .scaleMode == .native
+        )
+        #expect(
+            registry.windows[.manual(sourceInstanceID: second.sourceInstanceID)]?
+                .scaleMode == .follow
+        )
+    }
+
     @Test("Removing a source closes its window")
     func removalClosesWindow() {
         var registry = NativeViewerWindowRegistry(sessionID: "session")

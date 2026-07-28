@@ -351,7 +351,6 @@ final class NativeLiveShareViewerCoordinator {
     private var hostSystemAudioEnabled = false
     private var systemAudioEnabled = true
     private var volume = 1.0
-    private var scaleMode = NativeViewerScaleMode.follow
     private var latestStatistics = NativeViewerStatisticsSnapshot()
     private var priorStatistics: WebRTCInboundStatisticsSnapshot?
     private var isEnding = false
@@ -369,7 +368,6 @@ final class NativeLiveShareViewerCoordinator {
                 self?.setSystemAudioEnabled(enabled)
             },
             setVolume: { [weak self] volume in self?.setVolume(volume) },
-            setScaleMode: { [weak self] mode in self?.setScaleMode(mode) },
             setSourceScaleMode: { [weak self] id, mode in
                 self?.setSourceScaleMode(mode, id: id)
             },
@@ -1298,7 +1296,6 @@ final class NativeLiveShareViewerCoordinator {
         }
         coordinator.onLeaveRequested = { [weak self] in self?.requestLeave() }
         coordinator.onPresentationChanged = { [weak self] in self?.publish() }
-        coordinator.setScaleMode(scaleMode)
         windowCoordinator = coordinator
     }
 
@@ -1366,12 +1363,6 @@ final class NativeLiveShareViewerCoordinator {
             await inviteSession?.setSystemAudioVolume(volume)
             await friendSession?.setSystemAudioVolume(volume)
         }
-        publish()
-    }
-
-    private func setScaleMode(_ mode: NativeViewerScaleMode) {
-        scaleMode = mode
-        windowCoordinator?.setScaleMode(mode)
         publish()
     }
 
@@ -1679,7 +1670,6 @@ final class NativeLiveShareViewerCoordinator {
             systemAudioAvailable: audioTrackAvailable && hostSystemAudioEnabled,
             systemAudioEnabled: systemAudioEnabled,
             volume: volume,
-            scaleMode: scaleMode,
             friendship: friendship,
             statistics: latestStatistics
         )
@@ -1737,7 +1727,14 @@ final class NativeLiveShareViewerCoordinator {
     private func reinstallWindowCoordinatorForVerifiedHost() {
         guard let host = signedHostDescriptor?.descriptor,
               let sessionID = controlState?.sessionID else { return }
-        let existingScaleMode = scaleMode
+        let localPresentation = windowCoordinator?.windowSnapshots.reduce(
+            into: [String: (mode: NativeViewerScaleMode, isVisible: Bool)]()
+        ) { result, snapshot in
+            result[snapshot.source.sourceInstanceID] = (
+                mode: snapshot.scaleMode,
+                isVisible: snapshot.isVisible
+            )
+        } ?? [:]
         windowCoordinator?.tearDown()
         windowCoordinator = nil
         installWindowCoordinator(
@@ -1745,7 +1742,18 @@ final class NativeLiveShareViewerCoordinator {
             ownerName: resolvedOwnerName,
             ownerIdentity: host.hostIdentity.x963Representation
         )
-        windowCoordinator?.setScaleMode(existingScaleMode)
         reconcileWindows()
+        for (sourceInstanceID, presentation) in localPresentation {
+            windowCoordinator?.setScaleMode(
+                presentation.mode,
+                sourceInstanceID: sourceInstanceID
+            )
+            if !presentation.isVisible {
+                windowCoordinator?.setSourceVisible(
+                    false,
+                    sourceInstanceID: sourceInstanceID
+                )
+            }
+        }
     }
 }

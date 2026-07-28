@@ -249,8 +249,8 @@ struct MenuBarActions {
 
 struct MenuBarPopoverView: View {
     static let contentWidth: CGFloat = 330
-    /// Bootstrap size used only until the first SwiftUI layout reports the
-    /// current natural height.
+    /// Fallback used only if synchronous SwiftUI fitting-size measurement is
+    /// unavailable.
     static let contentSize = CGSize(width: contentWidth, height: 620)
 
     @StateObject private var model: MenuBarPopoverModel

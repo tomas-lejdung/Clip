@@ -3,8 +3,8 @@ import SwiftUI
 @MainActor
 struct RecordingStatusView: View {
     static let contentWidth: CGFloat = 330
-    /// Bootstrap size used only until the first SwiftUI layout reports the
-    /// current natural height.
+    /// Fallback used only if synchronous SwiftUI fitting-size measurement is
+    /// unavailable.
     static let contentSize = CGSize(width: contentWidth, height: 235)
 
     @ObservedObject var model: RecordingPresentationModel

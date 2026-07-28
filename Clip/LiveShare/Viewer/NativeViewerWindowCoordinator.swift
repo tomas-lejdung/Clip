@@ -71,7 +71,6 @@ final class NativeViewerWindowCoordinator {
     private let surfaceFactory: SurfaceFactory
     private var registry: NativeViewerWindowRegistry
     private var entries: [NativeViewerWindowID: Entry] = [:]
-    private var scaleMode = NativeViewerScaleMode.follow
 
     init(
         sessionID: String,
@@ -135,14 +134,6 @@ final class NativeViewerWindowCoordinator {
         setVisibility(visible, id: changedID)
     }
 
-    func setScaleMode(_ mode: NativeViewerScaleMode) {
-        scaleMode = mode
-        for (id, entry) in entries {
-            entry.controller.setScaleMode(mode)
-            registry.setScaleMode(mode, for: id)
-        }
-    }
-
     func setScaleMode(
         _ mode: NativeViewerScaleMode,
         sourceInstanceID: String
@@ -167,20 +158,14 @@ final class NativeViewerWindowCoordinator {
     func bringToFront(sourceInstanceID: String) {
         guard let id = windowID(sourceInstanceID: sourceInstanceID),
               let controller = entries[id]?.controller else { return }
-        if registry.windows[id]?.isVisible != true,
-           let change = registry.setVisible(true, for: id),
-           case let .visibility(changedID, isVisible) = change {
-            setVisibility(isVisible, id: changedID)
+        if registry.windows[id]?.isVisible != true {
+            _ = registry.setVisible(true, for: id)
         }
-        controller.showWithoutTakingFocus()
-        controller.window?.orderFrontRegardless()
+        bringToFront(controller)
     }
 
     func bringAllToFront() {
-        for change in registry.showAll() {
-            guard case let .visibility(id, isVisible) = change else { continue }
-            setVisibility(isVisible, id: id)
-        }
+        _ = registry.showAll()
         let ordered = entries.keys.sorted { lhs, rhs in
             let lhsSource = registry.windows[lhs]?.source
             let rhsSource = registry.windows[rhs]?.source
@@ -190,8 +175,8 @@ final class NativeViewerWindowCoordinator {
             return lhs.description < rhs.description
         }
         for id in ordered {
-            entries[id]?.controller.showWithoutTakingFocus()
-            entries[id]?.controller.window?.orderFrontRegardless()
+            guard let controller = entries[id]?.controller else { continue }
+            bringToFront(controller)
         }
     }
 
@@ -282,7 +267,7 @@ final class NativeViewerWindowCoordinator {
             identityColor: identityColor,
             videoView: surface.view
         )
-        controller.setScaleMode(scaleMode)
+        controller.setScaleMode(snapshot.scaleMode)
         surface.onDecodedPixelSizeChange = { [weak controller] size in
             controller?.decodedPixelSizeDidChange(size)
         }
@@ -307,14 +292,12 @@ final class NativeViewerWindowCoordinator {
             throw error
         }
         entries[snapshot.id] = Entry(controller: controller, surface: surface)
-        registry.setScaleMode(scaleMode, for: snapshot.id)
         cascade(controller.window, index: entries.count - 1)
         if snapshot.isVisible {
-            controller.showWithoutTakingFocus()
             // A newly shared source should be visible immediately, even when
             // Clip is not the active application, without stealing keyboard
             // focus or becoming permanently floating.
-            controller.window?.orderFrontRegardless()
+            bringToFront(controller)
         }
     }
 
@@ -367,6 +350,7 @@ final class NativeViewerWindowCoordinator {
         if let change = registry.setVisible(false, for: id),
            case let .visibility(changedID, isVisible) = change {
             setVisibility(isVisible, id: changedID)
+            onPresentationChanged()
         }
         return .hide
     }
@@ -394,5 +378,9 @@ final class NativeViewerWindowCoordinator {
             )
         }
         window.setFrameOrigin(origin)
+    }
+
+    private func bringToFront(_ controller: NativeViewerWindowController) {
+        controller.bringToFrontWithoutTakingFocus()
     }
 }

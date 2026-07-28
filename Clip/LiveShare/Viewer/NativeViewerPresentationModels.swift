@@ -142,7 +142,6 @@ struct NativeViewerViewSnapshot: Equatable, Sendable {
     let systemAudioAvailable: Bool
     let systemAudioEnabled: Bool
     let volume: Double
-    let scaleMode: NativeViewerScaleMode
     let friendship: NativeViewerFriendshipState
     let statistics: NativeViewerStatisticsSnapshot
 
@@ -155,7 +154,6 @@ struct NativeViewerViewSnapshot: Equatable, Sendable {
         systemAudioAvailable: Bool = false,
         systemAudioEnabled: Bool = true,
         volume: Double = 1,
-        scaleMode: NativeViewerScaleMode = .follow,
         friendship: NativeViewerFriendshipState = .unavailable,
         statistics: NativeViewerStatisticsSnapshot = .init()
     ) {
@@ -167,7 +165,6 @@ struct NativeViewerViewSnapshot: Equatable, Sendable {
         self.systemAudioAvailable = systemAudioAvailable
         self.systemAudioEnabled = systemAudioEnabled
         self.volume = min(max(volume, 0), 1)
-        self.scaleMode = scaleMode
         self.friendship = friendship
         self.statistics = statistics
     }

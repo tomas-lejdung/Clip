@@ -5,7 +5,6 @@ struct NativeViewerPresentationActions {
     var submitAccessCode: (String) -> Void
     var setSystemAudioEnabled: (Bool) -> Void
     var setVolume: (Double) -> Void
-    var setScaleMode: (NativeViewerScaleMode) -> Void
     var setSourceScaleMode: (String, NativeViewerScaleMode) -> Void
     var setSourceVisible: (String, Bool) -> Void
     var showAll: () -> Void
@@ -20,7 +19,6 @@ struct NativeViewerPresentationActions {
         submitAccessCode: @escaping (String) -> Void = { _ in },
         setSystemAudioEnabled: @escaping (Bool) -> Void = { _ in },
         setVolume: @escaping (Double) -> Void = { _ in },
-        setScaleMode: @escaping (NativeViewerScaleMode) -> Void = { _ in },
         setSourceScaleMode: @escaping (String, NativeViewerScaleMode) -> Void = { _, _ in },
         setSourceVisible: @escaping (String, Bool) -> Void = { _, _ in },
         showAll: @escaping () -> Void = {},
@@ -34,7 +32,6 @@ struct NativeViewerPresentationActions {
         self.submitAccessCode = submitAccessCode
         self.setSystemAudioEnabled = setSystemAudioEnabled
         self.setVolume = setVolume
-        self.setScaleMode = setScaleMode
         self.setSourceScaleMode = setSourceScaleMode
         self.setSourceVisible = setSourceVisible
         self.showAll = showAll
@@ -80,10 +77,6 @@ final class NativeViewerPresentationModel: ObservableObject {
     func setVolume(_ value: Double) {
         guard snapshot.systemAudioAvailable else { return }
         actions.setVolume(min(max(value, 0), 1))
-    }
-
-    func setScaleMode(_ mode: NativeViewerScaleMode) {
-        actions.setScaleMode(mode)
     }
 
     func setSourceScaleMode(_ id: String, _ mode: NativeViewerScaleMode) {

@@ -184,7 +184,7 @@ final class MenuBarPopoverModelTests: XCTestCase {
         XCTAssertEqual(nextIdle.view.frame, container.view.bounds)
     }
 
-    func testIdleMenuRetainsItsExpectedWidthAndBootstrapHeight() {
+    func testIdleMenuRetainsItsExpectedWidthAndFallbackHeight() {
         XCTAssertEqual(MenuBarPopoverView.contentSize.width, 330)
         XCTAssertEqual(MenuBarPopoverView.contentSize.height, 620)
     }
@@ -251,9 +251,15 @@ final class MenuBarPopoverModelTests: XCTestCase {
         window.contentViewController = controller
         controller.view.layoutSubtreeIfNeeded()
 
+        let fittedHeight = ceil(controller.view.fittingSize.height)
         XCTAssertEqual(XCTWaiter.wait(for: [reported], timeout: 1), .completed)
         XCTAssertNotNil(reportedHeight)
+        XCTAssertLessThan(fittedHeight, MenuBarPopoverView.contentSize.height)
         XCTAssertLessThan(reportedHeight ?? .infinity, MenuBarPopoverView.contentSize.height)
+        // NSScrollView's fitting height and its document geometry can differ by
+        // one small AppKit layout inset; they must still describe the same
+        // compact layout rather than the 620-point fallback viewport.
+        XCTAssertEqual(fittedHeight, reportedHeight ?? 0, accuracy: 16)
     }
 
     func testIdleMenuNaturalHeightCanGrowFromRecordingSizedViewport() {
@@ -310,15 +316,15 @@ final class MenuBarPopoverModelTests: XCTestCase {
         window.contentViewController = controller
         controller.view.layoutSubtreeIfNeeded()
 
-        XCTAssertGreaterThan(
-            controller.view.fittingSize.height,
-            RecordingStatusView.contentSize.height
-        )
+        let fittedHeight = ceil(controller.view.fittingSize.height)
+        XCTAssertGreaterThan(fittedHeight, RecordingStatusView.contentSize.height)
+        XCTAssertLessThan(fittedHeight, MenuBarPopoverView.contentSize.height)
         XCTAssertEqual(XCTWaiter.wait(for: [reported], timeout: 1), .completed)
         XCTAssertGreaterThan(
             reportedHeight ?? 0,
             RecordingStatusView.contentSize.height
         )
+        XCTAssertEqual(fittedHeight, reportedHeight ?? 0, accuracy: 16)
     }
 
     func testFluidPopoverReportsTheRecordingControlsNaturalHeight() {
@@ -344,9 +350,12 @@ final class MenuBarPopoverModelTests: XCTestCase {
         window.contentViewController = controller
         controller.view.layoutSubtreeIfNeeded()
 
+        let fittedHeight = ceil(controller.view.fittingSize.height)
         XCTAssertEqual(XCTWaiter.wait(for: [reported], timeout: 1), .completed)
         XCTAssertNotNil(reportedHeight)
+        XCTAssertLessThan(fittedHeight, RecordingStatusView.contentSize.height)
         XCTAssertLessThan(reportedHeight ?? .infinity, RecordingStatusView.contentSize.height)
+        XCTAssertEqual(fittedHeight, reportedHeight ?? 0, accuracy: 1)
     }
 
     func testReadyLiveShareReportsItsNaturalHeightInsteadOfTheLegacyFixedHeight() throws {
@@ -381,12 +390,16 @@ final class MenuBarPopoverModelTests: XCTestCase {
         window.contentViewController = controller
         controller.view.layoutSubtreeIfNeeded()
 
+        let fittedHeight = ceil(controller.view.fittingSize.height)
         XCTAssertEqual(XCTWaiter.wait(for: [reported], timeout: 1), .completed)
+        XCTAssertGreaterThan(fittedHeight, 300)
+        XCTAssertLessThan(fittedHeight, LiveSharePopoverView.contentSize.height)
         XCTAssertGreaterThan(reportedHeight ?? 0, 300)
         XCTAssertLessThan(
             reportedHeight ?? .infinity,
             LiveSharePopoverView.contentSize.height
         )
+        XCTAssertEqual(fittedHeight, reportedHeight ?? 0, accuracy: 1)
     }
 
     private func display(

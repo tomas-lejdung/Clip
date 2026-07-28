@@ -656,7 +656,6 @@ enum DeterministicNativeViewerDemo {
                 systemAudioAvailable: true,
                 systemAudioEnabled: true,
                 volume: 0.72,
-                scaleMode: .follow,
                 friendship: .friends,
                 statistics: NativeViewerStatisticsSnapshot(
                     bitsPerSecond: 8_400_000,

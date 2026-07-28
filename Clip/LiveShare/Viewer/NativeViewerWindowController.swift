@@ -940,6 +940,11 @@ final class NativeViewerContentView: NSView {
 
 @MainActor
 final class NativeViewerWindowController: NSWindowController, NSWindowDelegate {
+    private static let defaultMinimumFrameSize = CGSize(
+        width: 320 + NativeViewerContentView.horizontalChrome,
+        height: 180 + NativeViewerContentView.verticalChrome
+    )
+
     let viewerWindowID: NativeViewerWindowID
     let content: NativeViewerContentView
 
@@ -1012,10 +1017,7 @@ final class NativeViewerWindowController: NSWindowController, NSWindowDelegate {
         window.backgroundColor = .clear
         window.isOpaque = false
         window.hasShadow = true
-        window.minSize = CGSize(
-            width: 320 + NativeViewerContentView.horizontalChrome,
-            height: 180 + NativeViewerContentView.verticalChrome
-        )
+        window.minSize = Self.defaultMinimumFrameSize
         window.setAccessibilitySubrole(.standardWindow)
 
         content.onFollowHost = { [weak self] in
@@ -1074,6 +1076,10 @@ final class NativeViewerWindowController: NSWindowController, NSWindowDelegate {
         )
         content.setScaleMode(scaleMode)
         applyPixelSize(source.pixelSize, authoritative: source.pixelSize, revision: source.stateRevision)
+        if scaleMode == .native {
+            updateWindowMinimumSize(for: scaleMode)
+            clampCurrentNativeWindowIfNeeded()
+        }
         if previousSourcePointSize != source.sourcePointSize,
            scaleMode == .follow,
            let committed = dimensionStabilizer.committedPixelSize {
@@ -1094,6 +1100,7 @@ final class NativeViewerWindowController: NSWindowController, NSWindowDelegate {
             // must not overwrite the viewer-owned frame on fullscreen exit.
             pendingPolicyResizeAfterFullScreen = false
         }
+        updateWindowMinimumSize(for: mode)
         content.setScaleMode(mode)
         if mode == .follow,
            let committed = dimensionStabilizer.committedPixelSize {
@@ -1114,6 +1121,16 @@ final class NativeViewerWindowController: NSWindowController, NSWindowDelegate {
         pendingHideAfterFullScreen = false
         content.setPresentationActive(true)
         window?.orderFront(nil)
+    }
+
+    func bringToFrontWithoutTakingFocus() {
+        pendingHideAfterFullScreen = false
+        content.setPresentationActive(true)
+        if isFullScreen {
+            window?.orderFront(nil)
+        } else {
+            window?.orderFrontRegardless()
+        }
     }
 
     func hide() {
@@ -1163,6 +1180,11 @@ final class NativeViewerWindowController: NSWindowController, NSWindowDelegate {
 
     func windowDidChangeScreen(_ notification: Notification) {
         refreshResolvedSourceLogicalSize()
+        if scaleMode == .native {
+            updateWindowMinimumSize(for: scaleMode)
+            clampCurrentNativeWindowIfNeeded()
+            return
+        }
         guard scaleMode == .follow,
               let committed = dimensionStabilizer.committedPixelSize else { return }
         resizeVideoContent(for: committed)
@@ -1172,6 +1194,11 @@ final class NativeViewerWindowController: NSWindowController, NSWindowDelegate {
         refreshResolvedSourceLogicalSize()
         content.needsLayout = true
         content.layoutSubtreeIfNeeded()
+        if scaleMode == .native {
+            updateWindowMinimumSize(for: scaleMode)
+            clampCurrentNativeWindowIfNeeded()
+            return
+        }
         guard scaleMode == .follow,
               let committed = dimensionStabilizer.committedPixelSize else { return }
         resizeVideoContent(for: committed)
@@ -1195,6 +1222,13 @@ final class NativeViewerWindowController: NSWindowController, NSWindowDelegate {
     func windowDidExitFullScreen(_ notification: Notification) {
         isFullScreen = false
         content.setFullScreenPresentation(false)
+        updateWindowMinimumSize(for: scaleMode)
+        if scaleMode == .native {
+            // Native keeps a viewer-owned frame while fullscreen, but a host
+            // shrink received during that time must apply once the restored
+            // window can be resized safely.
+            clampCurrentNativeWindowIfNeeded()
+        }
         onFullScreenChanged?(self, false)
         if pendingPolicyResizeAfterFullScreen,
            let committed = dimensionStabilizer.committedPixelSize {
@@ -1246,6 +1280,7 @@ final class NativeViewerWindowController: NSWindowController, NSWindowDelegate {
             // must cancel any Follow resize deferred by fullscreen.
             pendingPolicyResizeAfterFullScreen = false
         }
+        updateWindowMinimumSize(for: mode)
         content.setScaleMode(mode)
         if mode == .follow,
            let committed = dimensionStabilizer.committedPixelSize {
@@ -1367,6 +1402,34 @@ final class NativeViewerWindowController: NSWindowController, NSWindowDelegate {
         isApplyingPolicySize = false
     }
 
+    private func updateWindowMinimumSize(for mode: NativeViewerScaleMode) {
+        guard let window else { return }
+        guard mode == .native else {
+            window.minSize = Self.defaultMinimumFrameSize
+            return
+        }
+
+        let frameSize = window.frame.size
+        let contentSize = window.contentRect(
+            forFrameRect: CGRect(origin: .zero, size: frameSize)
+        ).size
+        let systemChromeSize = CGSize(
+            width: max(0, frameSize.width - contentSize.width),
+            height: max(0, frameSize.height - contentSize.height)
+        )
+        let maximumFrameSize = Self.maximumNativeFrameSize(
+            sourceLogicalSize: Self.resolvedSourceLogicalSize(
+                source: source,
+                destinationBackingScale: window.backingScaleFactor
+            ),
+            systemChromeSize: systemChromeSize
+        )
+        window.minSize = CGSize(
+            width: min(Self.defaultMinimumFrameSize.width, maximumFrameSize.width),
+            height: min(Self.defaultMinimumFrameSize.height, maximumFrameSize.height)
+        )
+    }
+
     private func clampedNativeFrameSize(
         _ proposedFrameSize: CGSize,
         for window: NSWindow
@@ -1398,22 +1461,52 @@ final class NativeViewerWindowController: NSWindowController, NSWindowDelegate {
         // This is what lets the same 1,000-point host window remain the same
         // physical AppKit size on both 1x and Retina viewer displays while the
         // decoder preserves whatever pixel density the host supplied.
-        let maximumFrameSize = CGSize(
-            width: sourceLogicalSize.width
-                + NativeViewerContentView.horizontalChrome
-                + systemChromeSize.width,
-            height: sourceLogicalSize.height
-                + NativeViewerContentView.verticalChrome
-                + systemChromeSize.height
+        let maximumFrameSize = maximumNativeFrameSize(
+            sourceLogicalSize: sourceLogicalSize,
+            systemChromeSize: systemChromeSize
+        )
+        // AppKit applies `minimumFrameSize` before returning a live-resize
+        // proposal. A tiny shared window can have a native maximum below
+        // Clip's normal 320×180 usability floor, so Native needs a per-axis
+        // effective minimum that never exceeds its host-derived maximum.
+        let effectiveMinimumFrameSize = CGSize(
+            width: min(
+                maximumFrameSize.width,
+                max(1, minimumFrameSize.width)
+            ),
+            height: min(
+                maximumFrameSize.height,
+                max(1, minimumFrameSize.height)
+            )
         )
         return CGSize(
             width: max(
-                minimumFrameSize.width,
+                effectiveMinimumFrameSize.width,
                 min(proposedFrameSize.width, maximumFrameSize.width)
             ),
             height: max(
-                minimumFrameSize.height,
+                effectiveMinimumFrameSize.height,
                 min(proposedFrameSize.height, maximumFrameSize.height)
+            )
+        )
+    }
+
+    private static func maximumNativeFrameSize(
+        sourceLogicalSize: CGSize,
+        systemChromeSize: CGSize
+    ) -> CGSize {
+        CGSize(
+            width: max(
+                1,
+                sourceLogicalSize.width
+                    + NativeViewerContentView.horizontalChrome
+                    + systemChromeSize.width
+            ),
+            height: max(
+                1,
+                sourceLogicalSize.height
+                    + NativeViewerContentView.verticalChrome
+                    + systemChromeSize.height
             )
         )
     }

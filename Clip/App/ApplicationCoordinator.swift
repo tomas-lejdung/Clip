@@ -360,12 +360,6 @@ enum PopoverSizingPolicy {
 
 @MainActor
 final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerminationHandling {
-    private enum FluidPopoverKind: Hashable {
-        case idle
-        case recording
-        case liveShare
-    }
-
     private let dependencies: AppDependencies
     private let statusBar: NSStatusBar
     private let popover = NSPopover()
@@ -380,7 +374,6 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
 
     private var statusItem: NSStatusItem?
     private var activeFluidPopoverSizingToken: UUID?
-    private var measuredFluidPopoverHeights: [FluidPopoverKind: CGFloat] = [:]
     private var selectionController: CaptureSelectionController?
     private var applicationSelectionController: ApplicationCaptureSelectionController?
     private var countdownController: SilentCountdownController?
@@ -747,7 +740,6 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
         popover.animates = true
         popover.delegate = self
         installFluidPopoverContent(
-            kind: .idle,
             width: MenuBarPopoverView.contentWidth,
             initialHeight: MenuBarPopoverView.contentSize.height
         ) { maximumHeight, reportContentHeight in
@@ -761,7 +753,6 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
     }
 
     private func installFluidPopoverContent<Content: View>(
-        kind: FluidPopoverKind,
         width: CGFloat,
         initialHeight: CGFloat,
         @ViewBuilder content: (
@@ -773,7 +764,6 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
         let maximumHeight = maximumPopoverContentHeight()
         let reportContentHeight: (CGFloat) -> Void = { [weak self] idealHeight in
             guard let self, self.activeFluidPopoverSizingToken == token else { return }
-            self.measuredFluidPopoverHeights[kind] = idealHeight
             self.resizeFluidPopover(
                 toIdealHeight: idealHeight,
                 width: width,
@@ -793,9 +783,8 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
         let bootstrapHeight: CGFloat
         if fittedHeight.isFinite, fittedHeight > 0 {
             bootstrapHeight = ceil(fittedHeight)
-            measuredFluidPopoverHeights[kind] = bootstrapHeight
         } else {
-            bootstrapHeight = measuredFluidPopoverHeights[kind] ?? initialHeight
+            bootstrapHeight = initialHeight
         }
         installPopoverController(
             hostedContent,
@@ -810,13 +799,11 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
 
     private func installPopoverContent<Content: View>(
         _ content: Content,
-        size: NSSize,
-        fluidSizingToken: UUID? = nil
+        size: NSSize
     ) {
         installPopoverController(
             NSHostingController(rootView: content),
-            size: size,
-            fluidSizingToken: fluidSizingToken
+            size: size
         )
     }
 
@@ -825,7 +812,7 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
         size: NSSize,
         fluidSizingToken: UUID? = nil
     ) {
-        let shouldAnimate = popover.isShown
+        let shouldRestoreKeyStatus = popover.isShown
         activeFluidPopoverSizingToken = fluidSizingToken
         if popover.contentViewController !== popoverContentController {
             popover.contentViewController = popoverContentController
@@ -837,7 +824,7 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
         // then owns the only animated geometry change and the child follows it
         // through its width/height autoresizing mask.
         popover.contentSize = size
-        if shouldAnimate {
+        if shouldRestoreKeyStatus {
             popover.contentViewController?.view.window?.makeKey()
         }
     }
@@ -884,7 +871,6 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
     private func installRecordingPopover(model: RecordingPresentationModel) {
         guard !isPreparingForTermination else { return }
         installFluidPopoverContent(
-            kind: .recording,
             width: RecordingStatusView.contentWidth,
             initialHeight: RecordingStatusView.contentSize.height
         ) { maximumHeight, reportContentHeight in
@@ -902,7 +888,6 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
         popover.animates = true
         popover.delegate = self
         installFluidPopoverContent(
-            kind: .liveShare,
             width: LiveSharePopoverView.contentWidth,
             initialHeight: LiveSharePopoverView.contentSize.height
         ) { maximumHeight, reportContentHeight in

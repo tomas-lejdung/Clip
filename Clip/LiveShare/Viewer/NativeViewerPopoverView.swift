@@ -216,7 +216,8 @@ struct NativeViewerPopoverView: View {
     ) -> some View {
         Button(action: action) {
             Image(systemName: systemImage)
-                .frame(width: 18, height: 18)
+                .frame(width: 24, height: 24)
+                .contentShape(Rectangle())
         }
         .buttonStyle(.borderless)
         .help(Text(title))

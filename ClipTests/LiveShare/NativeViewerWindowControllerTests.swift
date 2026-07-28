@@ -293,6 +293,145 @@ struct NativeViewerWindowControllerTests {
         ))
     }
 
+    @Test("A small native host lowers the normal window minimum")
+    func nativeModeCapsMinimumToSmallHost() {
+        let systemChromeSize = CGSize(width: 8, height: 22)
+        let sourceLogicalSize = CGSize(width: 120, height: 80)
+        let expectedMaximum = CGSize(
+            width: sourceLogicalSize.width
+                + NativeViewerContentView.horizontalChrome
+                + systemChromeSize.width,
+            height: sourceLogicalSize.height
+                + NativeViewerContentView.verticalChrome
+                + systemChromeSize.height
+        )
+
+        let enlarged = NativeViewerWindowController.clampedNativeFrameSize(
+            proposedFrameSize: CGSize(width: 1_000, height: 800),
+            sourceLogicalSize: sourceLogicalSize,
+            systemChromeSize: systemChromeSize,
+            minimumFrameSize: CGSize(width: 332, height: 220)
+        )
+        let reduced = NativeViewerWindowController.clampedNativeFrameSize(
+            proposedFrameSize: CGSize(width: 1, height: 1),
+            sourceLogicalSize: sourceLogicalSize,
+            systemChromeSize: systemChromeSize,
+            minimumFrameSize: CGSize(width: 332, height: 220)
+        )
+
+        #expect(enlarged == expectedMaximum)
+        #expect(reduced == expectedMaximum)
+    }
+
+    @Test("The AppKit minimum follows Native but is restored for Fit")
+    func nativeModeUpdatesWindowMinimum() {
+        let source = Self.makeSource(
+            sourcePointSize: CGSize(width: 120, height: 80)
+        )
+        let controller = makeController(source: source)
+        defer { controller.tearDown() }
+        guard let window = controller.window else {
+            Issue.record("Expected viewer window")
+            return
+        }
+        let defaultMinimum = window.minSize
+
+        controller.setScaleMode(.native)
+
+        let frameSize = window.frame.size
+        let contentSize = window.contentRect(
+            forFrameRect: CGRect(origin: .zero, size: frameSize)
+        ).size
+        let maximum = CGSize(
+            width: source.sourcePointSize!.width
+                + NativeViewerContentView.horizontalChrome
+                + max(0, frameSize.width - contentSize.width),
+            height: source.sourcePointSize!.height
+                + NativeViewerContentView.verticalChrome
+                + max(0, frameSize.height - contentSize.height)
+        )
+        #expect(window.minSize.width <= maximum.width)
+        #expect(window.minSize.height <= maximum.height)
+        #expect(window.minSize.width < defaultMinimum.width)
+        #expect(window.minSize.height < defaultMinimum.height)
+        #expect(controller.windowWillResize(
+            window,
+            to: CGSize(width: 1_000, height: 800)
+        ) == maximum)
+
+        controller.setScaleMode(.fit)
+        #expect(window.minSize == defaultMinimum)
+    }
+
+    @Test("Host growth resizes Follow but preserves Native and Fit frames")
+    func hostGrowthRespectsSizingModeOwnership() {
+        let initial = Self.makeSource(
+            sourcePointSize: CGSize(width: 480, height: 270)
+        )
+        let grown = Self.makeSource(
+            sourcePointSize: CGSize(width: 640, height: 360),
+            stateRevision: 2
+        )
+
+        let follow = makeController(source: initial)
+        defer { follow.tearDown() }
+        let followFrame = follow.window?.frame
+        follow.update(
+            ownerName: "Friend",
+            source: grown,
+            identityColor: .systemPink
+        )
+        #expect(follow.window?.frame != followFrame)
+
+        for mode in [NativeViewerScaleMode.native, .fit] {
+            let controller = makeController(source: initial)
+            controller.setScaleMode(mode)
+            let viewerOwnedFrame = controller.window?.frame
+            controller.update(
+                ownerName: "Friend",
+                source: grown,
+                identityColor: .systemPink
+            )
+            #expect(controller.window?.frame == viewerOwnedFrame)
+            controller.tearDown()
+        }
+    }
+
+    @Test("Native applies a host shrink after leaving fullscreen")
+    func nativeHostShrinkWhileFullscreenClampsRestoredWindow() {
+        let initial = Self.makeSource(
+            sourcePointSize: CGSize(width: 640, height: 360)
+        )
+        let shrunk = Self.makeSource(
+            sourcePointSize: CGSize(width: 240, height: 135),
+            stateRevision: 2
+        )
+        let controller = makeController(source: initial)
+        defer { controller.tearDown() }
+        guard let window = controller.window else {
+            Issue.record("Expected viewer window")
+            return
+        }
+        controller.setScaleMode(.native)
+        let initialFrame = window.frame
+
+        controller.windowWillEnterFullScreen(
+            Notification(name: NSWindow.willEnterFullScreenNotification, object: window)
+        )
+        controller.update(
+            ownerName: "Friend",
+            source: shrunk,
+            identityColor: .systemPink
+        )
+        #expect(window.frame == initialFrame)
+
+        controller.windowDidExitFullScreen(
+            Notification(name: NSWindow.didExitFullScreenNotification, object: window)
+        )
+        #expect(window.frame.width < initialFrame.width)
+        #expect(window.frame.height < initialFrame.height)
+    }
+
     @Test("Fullscreen overlays the header and fits video into the whole content area")
     func fullscreenUsesWholeContentArea() {
         let video = NSView()
@@ -386,13 +525,13 @@ struct NativeViewerWindowControllerTests {
         )
         controller.windowWillEnterFullScreen(notification)
 
-        let resizedSource = NativeViewerSourceSnapshot(
+        let grownSource = NativeViewerSourceSnapshot(
             sourceInstanceID: "source-1",
             streamID: "video0",
             applicationName: "Fixture",
             windowName: "Document",
-            pixelSize: CGSize(width: 1_600, height: 900),
-            sourcePointSize: CGSize(width: 800, height: 450),
+            pixelSize: CGSize(width: 2_400, height: 1_350),
+            sourcePointSize: CGSize(width: 1_200, height: 675),
             isFocused: true,
             isConnected: true,
             stateRevision: 2,
@@ -400,7 +539,7 @@ struct NativeViewerWindowControllerTests {
         )
         controller.update(
             ownerName: "Friend",
-            source: resizedSource,
+            source: grownSource,
             identityColor: .systemPink
         )
         controller.setScaleMode(.native)
@@ -410,27 +549,35 @@ struct NativeViewerWindowControllerTests {
         #expect(window.frame == originalFrame)
     }
 
-    private func makeController() -> NativeViewerWindowController {
+    private func makeController(
+        source: NativeViewerSourceSnapshot = Self.makeSource()
+    ) -> NativeViewerWindowController {
         NativeViewerWindowController(
-            id: .manual(sourceInstanceID: "source-1"),
+            id: .manual(sourceInstanceID: source.sourceInstanceID),
             ownerName: "Friend",
-            source: Self.makeSource(),
+            source: source,
             identityColor: .systemPink,
             videoView: NSView()
         )
     }
 
-    private static func makeSource() -> NativeViewerSourceSnapshot {
+    private static func makeSource(
+        sourcePointSize: CGSize = CGSize(width: 960, height: 540),
+        stateRevision: UInt64 = 1
+    ) -> NativeViewerSourceSnapshot {
         NativeViewerSourceSnapshot(
             sourceInstanceID: "source-1",
             streamID: "video0",
             applicationName: "Fixture",
             windowName: "Document",
-            pixelSize: CGSize(width: 1_920, height: 1_080),
-            sourcePointSize: CGSize(width: 960, height: 540),
+            pixelSize: CGSize(
+                width: sourcePointSize.width * 2,
+                height: sourcePointSize.height * 2
+            ),
+            sourcePointSize: sourcePointSize,
             isFocused: true,
             isConnected: true,
-            stateRevision: 1,
+            stateRevision: stateRevision,
             mode: .manual
         )
     }
