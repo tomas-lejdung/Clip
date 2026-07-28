@@ -771,9 +771,6 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
     ) {
         let token = UUID()
         let maximumHeight = maximumPopoverContentHeight()
-        let bootstrapHeight = popover.isShown
-            ? popover.contentSize.height
-            : (measuredFluidPopoverHeights[kind] ?? initialHeight)
         let reportContentHeight: (CGFloat) -> Void = { [weak self] idealHeight in
             guard let self, self.activeFluidPopoverSizingToken == token else { return }
             self.measuredFluidPopoverHeights[kind] = idealHeight
@@ -784,8 +781,24 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
                 token: token
             )
         }
-        installPopoverContent(
-            content(maximumHeight, reportContentHeight),
+        let hostedContent = NSHostingController(
+            rootView: content(maximumHeight, reportContentHeight)
+        )
+        hostedContent.loadView()
+        // Measure the destination before attaching it to the outgoing
+        // popover viewport. `fittingSize` preserves the ScrollView document's
+        // natural height; starting from `popover.contentSize` would make a
+        // recording-sized viewport rely on a later preference callback to grow.
+        let fittedHeight = hostedContent.view.fittingSize.height
+        let bootstrapHeight: CGFloat
+        if fittedHeight.isFinite, fittedHeight > 0 {
+            bootstrapHeight = ceil(fittedHeight)
+            measuredFluidPopoverHeights[kind] = bootstrapHeight
+        } else {
+            bootstrapHeight = measuredFluidPopoverHeights[kind] ?? initialHeight
+        }
+        installPopoverController(
+            hostedContent,
             size: PopoverSizingPolicy.contentSize(
                 width: width,
                 idealHeight: bootstrapHeight,
@@ -800,13 +813,25 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
         size: NSSize,
         fluidSizingToken: UUID? = nil
     ) {
+        installPopoverController(
+            NSHostingController(rootView: content),
+            size: size,
+            fluidSizingToken: fluidSizingToken
+        )
+    }
+
+    private func installPopoverController(
+        _ contentViewController: NSViewController,
+        size: NSSize,
+        fluidSizingToken: UUID? = nil
+    ) {
         let shouldAnimate = popover.isShown
         activeFluidPopoverSizingToken = fluidSizingToken
         if popover.contentViewController !== popoverContentController {
             popover.contentViewController = popoverContentController
         }
         popoverContentController.replaceContent(
-            with: NSHostingController(rootView: content)
+            with: contentViewController
         )
         // Install the incoming child at the current bounds first. The popover
         // then owns the only animated geometry change and the child follows it

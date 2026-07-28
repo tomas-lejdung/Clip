@@ -256,6 +256,71 @@ final class MenuBarPopoverModelTests: XCTestCase {
         XCTAssertLessThan(reportedHeight ?? .infinity, MenuBarPopoverView.contentSize.height)
     }
 
+    func testIdleMenuNaturalHeightCanGrowFromRecordingSizedViewport() {
+        let reported = expectation(description: "Idle menu grows beyond recording viewport")
+        var reportedHeight: CGFloat?
+        let model = MenuBarPopoverModel(
+            displays: [display(id: 1, name: "Studio Display", width: 5_120, height: 2_880)],
+            microphone: .init(),
+            systemAudio: .init(),
+            recentRecordings: (0..<MenuBarPopoverModel.recentRecordingLimit).map { index in
+                MenuBarRecentRecordingRow(
+                    id: RecordingID(),
+                    filename: "clip-\(index)",
+                    byteCount: Int64(index + 1) * 1_000_000
+                )
+            },
+            isLastAreaAvailable: true,
+            isFullscreenAvailable: true
+        )
+        let controller = NSHostingController(
+            rootView: MenuBarPopoverView(
+                model: model,
+                actions: MenuBarActions(
+                    captureArea: {},
+                    lastArea: {},
+                    fullscreen: {},
+                    openHistory: {},
+                    openSettings: {},
+                    quit: {}
+                ),
+                maximumHeight: 940,
+                onContentHeightChange: { height in
+                    guard reportedHeight == nil,
+                          height > RecordingStatusView.contentSize.height else {
+                        return
+                    }
+                    reportedHeight = height
+                    reported.fulfill()
+                }
+            )
+        )
+        let window = NSWindow(
+            contentRect: NSRect(
+                origin: .zero,
+                size: NSSize(
+                    width: MenuBarPopoverView.contentWidth,
+                    height: RecordingStatusView.contentSize.height
+                )
+            ),
+            styleMask: [.borderless],
+            backing: .buffered,
+            defer: false
+        )
+        window.contentViewController = controller
+        controller.view.layoutSubtreeIfNeeded()
+
+        XCTAssertGreaterThan(
+            controller.view.fittingSize.height,
+            RecordingStatusView.contentSize.height
+        )
+        XCTAssertEqual(XCTWaiter.wait(for: [reported], timeout: 1), .completed)
+        XCTAssertGreaterThan(
+            reportedHeight ?? 0,
+            RecordingStatusView.contentSize.height
+        )
+    }
+
     func testFluidPopoverReportsTheRecordingControlsNaturalHeight() {
         let reported = expectation(description: "Natural recording height reported")
         var reportedHeight: CGFloat?
