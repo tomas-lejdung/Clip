@@ -3,39 +3,31 @@
     <channel>
         <title>Clip</title>
         <item>
-            <title>1.3.12</title>
-            <pubDate>Tue, 28 Jul 2026 15:15:00 +0200</pubDate>
-            <sparkle:version>17</sparkle:version>
-            <sparkle:shortVersionString>1.3.12</sparkle:shortVersionString>
+            <title>1.3.13</title>
+            <pubDate>Tue, 28 Jul 2026 16:01:11 +0200</pubDate>
+            <sparkle:version>18</sparkle:version>
+            <sparkle:shortVersionString>1.3.13</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
             <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
-            <description sparkle:format="markdown"><![CDATA[# Clip 1.3.12
+            <description sparkle:format="markdown"><![CDATA[# Clip 1.3.13
 
-Clip 1.3.12 refreshes the menu-bar experience and gives fullscreen Live Share
-hosts control over which apps contribute audio.
-
-## Popovers and controls
-
-- Use one consistent card, row, toggle, navigation, and button system across
-  recording, Live Share, stream settings, and native viewer controls.
-- Keep popover height fluid as content changes, with compact spacing, aligned
-  controls, full-row hover feedback, and clear primary actions.
-- Simplify room preparation, source selection, viewer controls, and streaming
-  settings without changing their behavior.
+Clip 1.3.13 makes fullscreen Live Share audio exclusions clear and easy to
+control.
 
 ## Live Share audio
 
-- Exclude selected applications from fullscreen system-audio capture, helping
-  prevent callers from hearing their own Discord or conferencing audio.
-- Apply audio exclusions live and preserve the existing app-window audio
-  behavior.
+- Show **Exclude App Audio** as a full-size settings row with its current value
+  aligned on the right.
+- Display `None`, the selected application name, or the number of excluded apps
+  directly in the popover.
+- Keep the native application picker and live audio-exclusion behavior.
 
 ## Requirements
 
 Clip requires macOS 15 or later on Apple silicon. This build uses the same
 stable Apple Development identity as previous updater releases.
 ]]></description>
-            <enclosure url="https://github.com/tomas-lejdung/Clip/releases/download/v1.3.12/Clip-1.3.12.dmg" length="12384173" type="application/octet-stream" sparkle:edSignature="7aX7fgE7pD7+Y/UesgMWUwNQlSsY32YfVvAyEZsG1Q4OUV8XW0AohWpfcx3G1K1TWnPMmE/O6Z6mDH2zXBHwDQ=="/>
+            <enclosure url="https://github.com/tomas-lejdung/Clip/releases/download/v1.3.13/Clip-1.3.13.dmg" length="12375489" type="application/octet-stream" sparkle:edSignature="ogxwESmsU7Bdfav/c2ytP2b7JVo5INbunA6v2YpCtMXDydmaU2WgHQtNaUBKvmZrtGbNFtRROXNO4zGcPw96CA=="/>
         </item>
     </channel>
 </rss>
