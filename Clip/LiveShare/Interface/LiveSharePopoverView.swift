@@ -639,8 +639,6 @@ struct LiveSharePopoverView: View {
                    model.snapshot.settings.systemAudioEnabled {
                     ClipPopoverRowDivider()
                     audioExclusionMenu
-                        .padding(.horizontal, ClipPopoverDesign.rowHorizontalPadding)
-                        .padding(.vertical, ClipPopoverDesign.rowVerticalPadding)
                 }
             }
         }
@@ -921,7 +919,17 @@ struct LiveSharePopoverView: View {
     }
 
     private var audioExclusionMenu: some View {
-        Menu {
+        ClipPopoverMenuRow(
+            String(localized: "Exclude App Audio"),
+            value: model.snapshot.settings.audioExclusionSummary,
+            isEnabled:
+                model.snapshot.settings.canChangeAudioExclusions
+                && (
+                    !model.snapshot.settings.audioExclusionApplications.isEmpty
+                        || !model.snapshot.settings.excludedAudioApplicationIDs.isEmpty
+                ),
+            accessibilityIdentifier: "clip.liveShare.audioExclusions"
+        ) {
             if sortedAudioExclusionApplications.isEmpty {
                 Text("No other apps are running")
             } else {
@@ -941,35 +949,8 @@ struct LiveSharePopoverView: View {
                     model.setExcludedAudioApplicationIDs([])
                 }
             }
-        } label: {
-            HStack(spacing: 7) {
-                Image(systemName: "speaker.slash")
-                    .accessibilityHidden(true)
-                Text("Exclude Audio From…")
-                Spacer(minLength: 8)
-                Text(audioExclusionSummary)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                Image(systemName: "chevron.down")
-                    .font(.caption2.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                    .accessibilityHidden(true)
-            }
-            .font(.subheadline)
-            .contentShape(Rectangle())
         }
-        .menuStyle(.borderlessButton)
-        .disabled(
-            !model.snapshot.settings.canChangeAudioExclusions
-                || (
-                    model.snapshot.settings.audioExclusionApplications.isEmpty
-                        && model.snapshot.settings.excludedAudioApplicationIDs.isEmpty
-                )
-        )
         .help("Apps remain visible; only their audio is removed.")
-        .accessibilityLabel("Exclude Audio From")
-        .accessibilityValue(audioExclusionSummary)
-        .accessibilityIdentifier("clip.liveShare.audioExclusions")
     }
 
     private var sortedAudioExclusionApplications: [LiveShareAudioApplicationViewSnapshot] {
@@ -980,22 +961,6 @@ struct LiveSharePopoverView: View {
             }
             return nameOrder == .orderedAscending
         }
-    }
-
-    private var audioExclusionSummary: String {
-        let excludedIDs = model.snapshot.settings.excludedAudioApplicationIDs
-        guard !excludedIDs.isEmpty else {
-            return String(localized: "None")
-        }
-
-        if excludedIDs.count == 1,
-           let application = model.snapshot.settings.audioExclusionApplications.first(
-               where: { excludedIDs.contains($0.id) }
-           ) {
-            return application.name
-        }
-
-        return String(localized: "\(excludedIDs.count) apps")
     }
 
     private func audioExclusionBinding(for applicationID: String) -> Binding<Bool> {

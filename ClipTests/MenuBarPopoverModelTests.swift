@@ -499,6 +499,44 @@ final class MenuBarPopoverModelTests: XCTestCase {
         XCTAssertEqual(windowShareHeight, audioOffHeight, accuracy: 1)
     }
 
+    func testAudioExclusionSummaryShowsNoneAppNameAndCount() {
+        let discord = LiveShareAudioApplicationViewSnapshot(
+            id: "com.hnc.Discord",
+            name: "Discord",
+            bundleIdentifier: "com.hnc.Discord"
+        )
+        let music = LiveShareAudioApplicationViewSnapshot(
+            id: "com.apple.Music",
+            name: "Music",
+            bundleIdentifier: "com.apple.Music"
+        )
+
+        XCTAssertEqual(
+            LiveShareSettingsViewSnapshot().audioExclusionSummary,
+            "None"
+        )
+        XCTAssertEqual(
+            LiveShareSettingsViewSnapshot(
+                audioExclusionApplications: [discord, music],
+                excludedAudioApplicationIDs: [discord.id]
+            ).audioExclusionSummary,
+            "Discord"
+        )
+        XCTAssertEqual(
+            LiveShareSettingsViewSnapshot(
+                audioExclusionApplications: [discord, music],
+                excludedAudioApplicationIDs: [discord.id, music.id]
+            ).audioExclusionSummary,
+            "2 Apps"
+        )
+        XCTAssertEqual(
+            LiveShareSettingsViewSnapshot(
+                excludedAudioApplicationIDs: ["com.example.Unavailable"]
+            ).audioExclusionSummary,
+            "1 App"
+        )
+    }
+
     private func fittedLiveShareHeight(for snapshot: LiveShareViewSnapshot) -> CGFloat {
         let controller = NSHostingController(
             rootView: LiveSharePopoverView(

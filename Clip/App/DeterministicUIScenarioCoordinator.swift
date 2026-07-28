@@ -352,6 +352,7 @@ final class DeterministicUIScenarioCoordinator {
         case .liveShareReady,
              .liveShareLive,
              .liveShareLiveBottom,
+             .liveShareAudioExclusions,
              .liveShareReconnecting,
              .liveShareFailed:
             guard let snapshot = DeterministicLiveShareDemo.snapshot(for: scenario) else {
@@ -460,6 +461,7 @@ final class DeterministicUIScenarioCoordinator {
         case .liveShareReady,
              .liveShareLive,
              .liveShareLiveBottom,
+             .liveShareAudioExclusions,
              .liveShareReconnecting,
              .liveShareFailed:
             LiveSharePopoverView.contentSize
@@ -586,6 +588,7 @@ private extension DeterministicUIScenario {
              .liveShareReady,
              .liveShareLive,
              .liveShareLiveBottom,
+             .liveShareAudioExclusions,
              .liveShareReconnecting,
              .liveShareFailed,
              .liveShareOverlays,
@@ -680,6 +683,8 @@ enum DeterministicLiveShareDemo {
             readySnapshot()
         case .liveShareLive, .liveShareLiveBottom:
             liveSnapshot()
+        case .liveShareAudioExclusions:
+            audioExclusionSnapshot()
         case .liveShareReconnecting:
             reconnectingSnapshot()
         case .liveShareFailed:
@@ -712,6 +717,19 @@ enum DeterministicLiveShareDemo {
             applicationName: "Notes",
             windowTitle: "Release checklist",
             applicationPath: nil
+        ),
+    ]
+
+    private static let audioApplications = [
+        LiveShareAudioApplicationViewSnapshot(
+            id: "com.hnc.Discord",
+            name: "Discord",
+            bundleIdentifier: "com.hnc.Discord"
+        ),
+        LiveShareAudioApplicationViewSnapshot(
+            id: "com.apple.Music",
+            name: "Music",
+            bundleIdentifier: "com.apple.Music"
         ),
     ]
 
@@ -846,6 +864,34 @@ enum DeterministicLiveShareDemo {
                 prioritizeFocusedWindow: true,
                 mode: .quality,
                 autoShareFocusedWindows: false
+            ),
+            viewers: viewers,
+            statistics: statistics
+        )
+    }
+
+    private static func audioExclusionSnapshot() -> LiveShareViewSnapshot {
+        LiveShareViewSnapshot(
+            phase: .live(elapsedSeconds: 94),
+            sessionStage: .active,
+            room: room,
+            sources: [],
+            slots: [.init(index: 0, state: .live)],
+            fullscreen: .init(isOn: true, displayName: "Studio Display"),
+            canShareFocusedWindow: false,
+            availableWindows: availableWindows,
+            canAddWindow: false,
+            settings: .init(
+                quality: .ultra,
+                frameRate: .thirty,
+                codec: .init(codec: .h264, acceleration: .hardware),
+                systemAudioEnabled: true,
+                audioExclusionApplications: audioApplications,
+                excludedAudioApplicationIDs: [audioApplications[0].id],
+                prioritizeFocusedWindow: true,
+                mode: .quality,
+                autoShareFocusedWindows: false,
+                canChangeAudioExclusions: true
             ),
             viewers: viewers,
             statistics: statistics

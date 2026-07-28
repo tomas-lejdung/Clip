@@ -378,6 +378,25 @@ struct LiveShareSettingsViewSnapshot: Equatable, Sendable {
     }
 }
 
+extension LiveShareSettingsViewSnapshot {
+    var audioExclusionSummary: String {
+        guard !excludedAudioApplicationIDs.isEmpty else {
+            return String(localized: "None")
+        }
+
+        if excludedAudioApplicationIDs.count == 1 {
+            if let application = audioExclusionApplications.first(
+                where: { excludedAudioApplicationIDs.contains($0.id) }
+            ) {
+                return application.name
+            }
+            return String(localized: "1 App")
+        }
+
+        return String(localized: "\(excludedAudioApplicationIDs.count) Apps")
+    }
+}
+
 extension LiveShareColorMode {
     var title: String {
         switch self {

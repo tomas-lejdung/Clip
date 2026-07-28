@@ -536,6 +536,14 @@ struct LiveSharePresentationModelTests {
         #expect(live.settings.prioritizeFocusedWindow)
         #expect(live.settings.canChangeCodec)
 
+        let audioExclusions = try #require(
+            DeterministicLiveShareDemo.snapshot(for: .liveShareAudioExclusions)
+        )
+        #expect(audioExclusions.fullscreen.isOn)
+        #expect(audioExclusions.settings.systemAudioEnabled)
+        #expect(audioExclusions.settings.audioExclusionSummary == "Discord")
+        #expect(audioExclusions.settings.canChangeAudioExclusions)
+
         let reconnecting = try #require(
             DeterministicLiveShareDemo.snapshot(for: .liveShareReconnecting)
         )
@@ -563,6 +571,7 @@ struct LiveSharePresentationModelTests {
             .liveShareReady,
             .liveShareLive,
             .liveShareLiveBottom,
+            .liveShareAudioExclusions,
             .liveShareReconnecting,
             .liveShareFailed,
         ]

@@ -22,6 +22,7 @@ enum DeterministicUIScenario: String, CaseIterable, Equatable, Sendable {
     case liveShareReady = "live-share-ready"
     case liveShareLive = "live-share-live"
     case liveShareLiveBottom = "live-share-live-bottom"
+    case liveShareAudioExclusions = "live-share-audio-exclusions"
     case liveShareReconnecting = "live-share-reconnecting"
     case liveShareFailed = "live-share-failed"
     case liveShareOverlays = "live-share-overlays"

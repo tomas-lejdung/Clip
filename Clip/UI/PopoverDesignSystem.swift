@@ -526,6 +526,69 @@ struct ClipPopoverNavigationRow: View {
     }
 }
 
+/// A labeled row with a separate native menu control in its trailing column.
+/// Keeping the row label outside `Menu` is important on macOS: AppKit flattens
+/// complex menu labels and otherwise collapses the title, value, and indicator
+/// into one tiny intrinsic-width control.
+struct ClipPopoverMenuRow<MenuContent: View>: View {
+    let title: String
+    let subtitle: String?
+    let systemImage: String?
+    let value: String
+    let isEnabled: Bool
+    let accessibilityIdentifier: String?
+    private let menuContent: MenuContent
+
+    init(
+        _ title: String,
+        subtitle: String? = nil,
+        systemImage: String? = nil,
+        value: String,
+        isEnabled: Bool = true,
+        accessibilityIdentifier: String? = nil,
+        @ViewBuilder content: () -> MenuContent
+    ) {
+        self.title = title
+        self.subtitle = subtitle
+        self.systemImage = systemImage
+        self.value = value
+        self.isEnabled = isEnabled
+        self.accessibilityIdentifier = accessibilityIdentifier
+        self.menuContent = content()
+    }
+
+    var body: some View {
+        ClipPopoverRowLabel(
+            title: title,
+            subtitle: subtitle,
+            systemImage: systemImage
+        ) {
+            Menu {
+                menuContent
+            } label: {
+                Text(value)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.visible)
+            .fixedSize(horizontal: true, vertical: false)
+            .disabled(!isEnabled)
+            .modifier(ClipPopoverPointingHandCursorEffect(isEnabled: isEnabled))
+            .accessibilityLabel(title)
+            .accessibilityValue(value)
+            .modifier(
+                ClipOptionalAccessibilityIdentifier(
+                    identifier: accessibilityIdentifier
+                )
+            )
+        }
+        .opacity(isEnabled ? 1 : 0.45)
+    }
+}
+
 struct ClipPopoverToggleRow: View {
     let title: String
     let subtitle: String?
@@ -598,17 +661,19 @@ struct ClipPopoverRowDivider: View {
 private struct ClipPopoverRowLabel<Trailing: View>: View {
     let title: String
     let subtitle: String?
-    let systemImage: String
+    let systemImage: String?
     var appliesOuterPadding = true
     @ViewBuilder let trailing: () -> Trailing
 
     var body: some View {
         HStack(spacing: 10) {
-            Image(systemName: systemImage)
-                .font(.system(size: 14, weight: .medium))
-                .frame(width: 20)
-                .foregroundStyle(.secondary)
-                .accessibilityHidden(true)
+            if let systemImage {
+                Image(systemName: systemImage)
+                    .font(.system(size: 14, weight: .medium))
+                    .frame(width: 20)
+                    .foregroundStyle(.secondary)
+                    .accessibilityHidden(true)
+            }
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(title)
