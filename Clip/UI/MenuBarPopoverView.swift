@@ -4,6 +4,24 @@ import CoreGraphics
 import Foundation
 import SwiftUI
 
+enum PopoverLayoutMetrics {
+    /// Keep the total vertical inset unchanged while shifting whitespace
+    /// toward the visually tight top edge of the menu-bar popover.
+    static let contentInsets = EdgeInsets(
+        top: 20,
+        leading: 14,
+        bottom: 8,
+        trailing: 14
+    )
+
+    static let footerInsets = EdgeInsets(
+        top: 12,
+        leading: 12,
+        bottom: 8,
+        trailing: 12
+    )
+}
+
 enum MenuBarApplicationVersion {
     static var currentDisplayString: String? {
         displayString(infoDictionary: Bundle.main.infoDictionary ?? [:])
@@ -273,7 +291,6 @@ struct MenuBarPopoverView: View {
         FluidPopoverContent(
             width: Self.contentWidth,
             maximumHeight: maximumHeight,
-            initialHeight: Self.contentSize.height,
             onContentHeightChange: onContentHeightChange
         ) {
             VStack(alignment: .leading, spacing: 12) {
@@ -295,7 +312,7 @@ struct MenuBarPopoverView: View {
                 Divider()
                 footer
             }
-            .padding(14)
+            .padding(PopoverLayoutMetrics.contentInsets)
         }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("clip.menuBarPopover")

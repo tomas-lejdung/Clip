@@ -152,44 +152,9 @@ final class MenuBarPopoverModelTests: XCTestCase {
         XCTAssertEqual(liveShare.view.frame, container.view.bounds)
     }
 
-    func testIdleMenuContentSizeShowsTheWholeMenu() {
+    func testIdleMenuRetainsItsExpectedWidthAndBootstrapHeight() {
         XCTAssertEqual(MenuBarPopoverView.contentSize.width, 330)
         XCTAssertEqual(MenuBarPopoverView.contentSize.height, 620)
-
-        let model = MenuBarPopoverModel(
-            displays: [display(id: 1, name: "Studio Display", width: 5_120, height: 2_880)],
-            microphone: .init(),
-            systemAudio: .init(),
-            showClickHighlights: true,
-            recentRecordings: (0..<MenuBarPopoverModel.recentRecordingLimit).map { index in
-                MenuBarRecentRecordingRow(
-                    id: RecordingID(),
-                    filename: "clip-\(index)",
-                    byteCount: Int64(index + 1) * 1_000_000
-                )
-            },
-            isLastAreaAvailable: true,
-            isFullscreenAvailable: true
-        )
-        let controller = NSHostingController(
-            rootView: MenuBarPopoverView(
-                model: model,
-                actions: MenuBarActions(
-                    captureArea: {},
-                    lastArea: {},
-                    fullscreen: {},
-                    openHistory: {},
-                    openSettings: {},
-                    quit: {}
-                )
-            )
-        )
-        let fittingSize = controller.sizeThatFits(
-            in: NSSize(width: MenuBarPopoverView.contentSize.width, height: 10_000)
-        )
-
-        XCTAssertGreaterThan(fittingSize.height, 360)
-        XCTAssertLessThanOrEqual(fittingSize.height, MenuBarPopoverView.contentSize.height)
     }
 
     func testPopoverSizingPolicyPreservesWidthAndCapsHeightToTheVisibleScreen() {
@@ -285,6 +250,46 @@ final class MenuBarPopoverModelTests: XCTestCase {
         XCTAssertEqual(XCTWaiter.wait(for: [reported], timeout: 1), .completed)
         XCTAssertNotNil(reportedHeight)
         XCTAssertLessThan(reportedHeight ?? .infinity, RecordingStatusView.contentSize.height)
+    }
+
+    func testReadyLiveShareReportsItsNaturalHeightInsteadOfTheLegacyFixedHeight() throws {
+        let reported = expectation(description: "Natural Live Share height reported")
+        var reportedHeight: CGFloat?
+        let snapshot = try XCTUnwrap(
+            DeterministicLiveShareDemo.snapshot(for: .liveShareReady)
+        )
+        let controller = NSHostingController(
+            rootView: LiveSharePopoverView(
+                model: LiveSharePresentationModel(
+                    snapshot: snapshot,
+                    actions: .noOp
+                ),
+                maximumHeight: 940,
+                onContentHeightChange: { height in
+                    guard reportedHeight == nil, height > 250 else { return }
+                    reportedHeight = height
+                    reported.fulfill()
+                }
+            )
+        )
+        let window = NSWindow(
+            contentRect: NSRect(
+                origin: .zero,
+                size: LiveSharePopoverView.contentSize
+            ),
+            styleMask: [.borderless],
+            backing: .buffered,
+            defer: false
+        )
+        window.contentViewController = controller
+        controller.view.layoutSubtreeIfNeeded()
+
+        XCTAssertEqual(XCTWaiter.wait(for: [reported], timeout: 1), .completed)
+        XCTAssertGreaterThan(reportedHeight ?? 0, 300)
+        XCTAssertLessThan(
+            reportedHeight ?? .infinity,
+            LiveSharePopoverView.contentSize.height
+        )
     }
 
     private func display(

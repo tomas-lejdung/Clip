@@ -25,7 +25,6 @@ struct RecordingStatusView: View {
         FluidPopoverContent(
             width: Self.contentWidth,
             maximumHeight: maximumHeight,
-            initialHeight: Self.contentSize.height,
             onContentHeightChange: onContentHeightChange
         ) {
             VStack(alignment: .leading, spacing: 12) {
@@ -75,7 +74,7 @@ struct RecordingStatusView: View {
 
                 controls
             }
-            .padding(14)
+            .padding(PopoverLayoutMetrics.contentInsets)
         }
         .alert(
             String(localized: "Discard this recording?"),
