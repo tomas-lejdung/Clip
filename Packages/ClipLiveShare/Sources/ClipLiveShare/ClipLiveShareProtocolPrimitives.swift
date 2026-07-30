@@ -15,6 +15,7 @@ public enum ClipLiveShareV1 {
   public static let initialAnswerTimeoutSeconds = 15
 
   public static let ownerTokenByteCount = 32
+  public static let joinCapabilityByteCount = 32
   public static let routeIDByteCount = 16
   public static let challengeByteCount = 32
   public static let nonceByteCount = 12
@@ -24,6 +25,7 @@ public enum ClipLiveShareV1 {
 public enum ClipLiveShareProtocolError: Error, Equatable, Sendable {
   case invalidRoomName(String)
   case invalidOwnerToken
+  case invalidJoinCapability
   case invalidRouteID
   case invalidOpaqueIdentifier(String)
   case invalidPublicKey
@@ -39,6 +41,7 @@ public enum ClipLiveShareProtocolError: Error, Equatable, Sendable {
   case invalidNonceLength(Int)
   case authenticationFailed
   case accessCodeRequired
+  case invalidJoinProof
   case invalidAccessCodeProof
 }
 
@@ -49,6 +52,8 @@ extension ClipLiveShareProtocolError: LocalizedError {
       "Invalid Clip Live Share room name: \(value)"
     case .invalidOwnerToken:
       "The room owner token must contain exactly 32 random bytes."
+    case .invalidJoinCapability:
+      "The viewer join capability must contain exactly 32 random bytes."
     case .invalidRouteID:
       "The route identifier must contain exactly 16 random bytes."
     case let .invalidOpaqueIdentifier(name):
@@ -78,7 +83,9 @@ extension ClipLiveShareProtocolError: LocalizedError {
     case .authenticationFailed:
       "The encrypted message failed authentication."
     case .accessCodeRequired:
-      "An access code is required."
+      "An Access Word is required."
+    case .invalidJoinProof:
+      "The viewer join-capability proof is invalid."
     case .invalidAccessCodeProof:
       "The access-code proof is invalid."
     }
@@ -120,32 +127,6 @@ public struct ClipLiveShareRoomName: Codable, Equatable, Hashable,
 
   public var description: String { rawValue }
 
-  public static func random() -> Self {
-    var generator = SystemRandomNumberGenerator()
-    return random(using: &generator)
-  }
-
-  public static func random<R: RandomNumberGenerator>(using generator: inout R) -> Self {
-    let adjective = adjectives.randomElement(using: &generator) ?? "BRIGHT"
-    let noun = nouns.randomElement(using: &generator) ?? "OTTER"
-    let number = Int.random(in: 0...999, using: &generator)
-    // All source words and the numeric suffix are valid by construction.
-    return try! Self(rawValue: "\(adjective)-\(noun)-\(String(format: "%03d", number))")
-  }
-
-  private static let adjectives = [
-    "AMBER", "BRAVE", "BRIGHT", "CALM", "CLEAR", "CORAL", "CRISP", "EAGER",
-    "EMBER", "FAIR", "FROSTY", "GENTLE", "GOLDEN", "HAPPY", "JADE", "KEEN",
-    "LIVELY", "LUCID", "MELLOW", "MINT", "NIMBLE", "NOBLE", "PLUM", "QUICK",
-    "QUIET", "RAPID", "SILVER", "SOLAR", "SWIFT", "TIDY", "VIVID", "WARM",
-  ]
-
-  private static let nouns = [
-    "BADGER", "BEAR", "BISON", "CEDAR", "COMET", "CRANE", "DOLPHIN", "FALCON",
-    "FERN", "FINCH", "FOX", "GECKO", "HERON", "IBIS", "KOALA", "LARK",
-    "LYNX", "MAPLE", "MARTEN", "MOON", "ORCA", "OTTER", "OWL", "PANDA",
-    "PINE", "RAVEN", "ROBIN", "SEAL", "SPARROW", "TIGER", "WILLOW", "WREN",
-  ]
 }
 
 public struct ClipLiveShareOwnerToken: Codable, Equatable, Hashable, Sendable,
@@ -180,6 +161,52 @@ public struct ClipLiveShareOwnerToken: Codable, Equatable, Hashable, Sendable,
   public var sha256Digest: Data { Data(SHA256.hash(data: bytes)) }
   public var authorizationHeaderValue: String { "Bearer \(rawValue)" }
   public var description: String { "<redacted owner token>" }
+  public var debugDescription: String { description }
+
+  public init(from decoder: any Decoder) throws {
+    let container = try decoder.singleValueContainer()
+    try self.init(rawValue: container.decode(String.self))
+  }
+
+  public func encode(to encoder: any Encoder) throws {
+    var container = encoder.singleValueContainer()
+    try container.encode(rawValue)
+  }
+}
+
+public struct ClipLiveShareJoinCapability: Codable, Equatable, Hashable, Sendable,
+  CustomStringConvertible, CustomDebugStringConvertible
+{
+  private let bytes: Data
+
+  public init(bytes: Data) throws {
+    guard bytes.count == ClipLiveShareV1.joinCapabilityByteCount else {
+      throw ClipLiveShareProtocolError.invalidJoinCapability
+    }
+    self.bytes = bytes
+  }
+
+  public init(rawValue: String) throws {
+    guard let bytes = ClipLiveShareBase64URL.decode(rawValue) else {
+      throw ClipLiveShareProtocolError.invalidBase64URL
+    }
+    try self.init(bytes: bytes)
+  }
+
+  public static func random() -> Self {
+    var generator = SystemRandomNumberGenerator()
+    return random(using: &generator)
+  }
+
+  public static func random<R: RandomNumberGenerator>(using generator: inout R) -> Self {
+    try! Self(
+      bytes: Data.random(count: ClipLiveShareV1.joinCapabilityByteCount, using: &generator)
+    )
+  }
+
+  public var rawValue: String { ClipLiveShareBase64URL.encode(bytes) }
+  var keyMaterial: Data { bytes }
+  public var description: String { "<redacted join capability>" }
   public var debugDescription: String { description }
 
   public init(from decoder: any Decoder) throws {

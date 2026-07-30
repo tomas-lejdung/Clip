@@ -35,10 +35,20 @@ func makeDisplay(_ id: UInt32 = 1) -> LiveShareDisplaySource {
 }
 
 func makePublicRoom() throws -> ClipLiveSharePublicRoom {
-  ClipLiveSharePublicRoom(
+  let identity = try ClipLiveShareRoomIdentity(
+    privateKeyRawRepresentation: Data(repeating: 1, count: 32)
+  )
+  let joinCapability = try ClipLiveShareJoinCapability(
+    bytes: Data(0...31)
+  )
+  let baseURL = URL(
+    string: "https://clip.tineestudio.se/CRISP-FROG-042"
+  )!
+  return ClipLiveSharePublicRoom(
     name: try ClipLiveShareRoomName(rawValue: "CRISP-FROG-042"),
-    viewerURL: URL(
-      string: "https://clip.tineestudio.se/CRISP-FROG-042#v=1&key=fixture-public-key"
-    )!
+    viewerURL: try ClipLiveShareViewerFragment(
+      publicKey: identity.publicKey,
+      joinCapability: joinCapability
+    ).adding(to: baseURL)
   )
 }

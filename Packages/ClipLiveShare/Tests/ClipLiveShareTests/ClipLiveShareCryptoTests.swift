@@ -5,35 +5,118 @@ import Testing
 
 @Suite("Clip Live Share encrypted channel")
 struct ClipLiveShareCryptoTests {
-  @Test("access-code normalization and proof match the browser vector")
-  func accessCodeProofVector() throws {
-    let session = try ClipLiveShareSessionID(rawValue: "fixture-session")
-    let challenge = Data(repeating: 0, count: 32)
-    let proof = try ClipLiveShareAccessCodeProof.make(
-      accessCode: " abcd ",
-      challenge: challenge,
-      sessionID: session
+  @Test("join and access-code proofs match browser vectors and bind the full route")
+  func admissionProofVectors() throws {
+    let fixture = try Fixture()
+    let joinCapability = try ClipLiveShareJoinCapability(bytes: Data(0...31))
+    let challenge = try ClipLiveShareAuthChallenge(
+      sessionID: fixture.session,
+      challenge: Data(0xA0...0xBF),
+      accessCodeRequired: true
+    )
+    let response = try ClipLiveShareAdmissionProof.response(
+      to: challenge,
+      joinCapability: joinCapability,
+      accessCode: " calm-otter ",
+      room: fixture.room,
+      routeID: fixture.route,
+      viewerPublicKey: fixture.viewerIdentity.publicKey
     )
 
-    #expect(ClipLiveShareAccessCodeProof.normalize(" abcd \n") == "ABCD")
+    #expect(ClipLiveShareAdmissionProof.normalizeAccessCode(" calm-otter \n") == "CALM-OTTER")
     #expect(
-      ClipLiveShareBase64URL.encode(proof)
-        == "GGxWyuqbYQE6wenANE1t82NMizAF8LnO51AUwwOLLR0"
+      ClipLiveShareBase64URL.encode(response.joinProof)
+        == "mPeAY-l3NrXw9In9RHkEfX1uPC8965v12D09ZSOSbkw"
     )
     #expect(
-      ClipLiveShareAccessCodeProof.verify(
-        proof,
-        accessCode: "ABCD",
+      ClipLiveShareBase64URL.encode(try #require(response.accessCodeProof))
+        == "xKvexs9wSCp_jI2olL36pbcm3fy1ixB4hv-SJ6aSthw"
+    )
+    #expect(
+      ClipLiveShareAdmissionProof.verify(
+        response,
         challenge: challenge,
-        sessionID: session
+        joinCapability: joinCapability,
+        accessCode: "CALM-OTTER",
+        room: fixture.room,
+        routeID: fixture.route,
+        viewerPublicKey: fixture.viewerIdentity.publicKey
       )
     )
     #expect(
-      !ClipLiveShareAccessCodeProof.verify(
-        proof,
-        accessCode: "ABCE",
+      !ClipLiveShareAdmissionProof.verify(
+        response,
         challenge: challenge,
-        sessionID: session
+        joinCapability: try ClipLiveShareJoinCapability(bytes: Data(repeating: 9, count: 32)),
+        accessCode: "CALM-OTTER",
+        room: fixture.room,
+        routeID: fixture.route,
+        viewerPublicKey: fixture.viewerIdentity.publicKey
+      )
+    )
+    #expect(
+      !ClipLiveShareAdmissionProof.verify(
+        response,
+        challenge: challenge,
+        joinCapability: joinCapability,
+        accessCode: "CALM-OWL",
+        room: fixture.room,
+        routeID: fixture.route,
+        viewerPublicKey: fixture.viewerIdentity.publicKey
+      )
+    )
+    #expect(
+      !ClipLiveShareAdmissionProof.verify(
+        response,
+        challenge: challenge,
+        joinCapability: joinCapability,
+        accessCode: "CALM-OTTER",
+        room: fixture.room,
+        routeID: try ClipLiveShareRouteID(bytes: Data(repeating: 4, count: 16)),
+        viewerPublicKey: fixture.viewerIdentity.publicKey
+      )
+    )
+  }
+
+  @Test("join proof remains mandatory when no Access Word is configured")
+  func mandatoryJoinProofWithoutAccessCode() throws {
+    let fixture = try Fixture()
+    let joinCapability = try ClipLiveShareJoinCapability(bytes: Data(repeating: 6, count: 32))
+    let challenge = try ClipLiveShareAuthChallenge(
+      sessionID: fixture.session,
+      challenge: Data(repeating: 7, count: 32),
+      accessCodeRequired: false
+    )
+    let response = try ClipLiveShareAdmissionProof.response(
+      to: challenge,
+      joinCapability: joinCapability,
+      accessCode: nil,
+      room: fixture.room,
+      routeID: fixture.route,
+      viewerPublicKey: fixture.viewerIdentity.publicKey
+    )
+
+    #expect(response.accessCodeProof == nil)
+    #expect(
+      ClipLiveShareAdmissionProof.verify(
+        response,
+        challenge: challenge,
+        joinCapability: joinCapability,
+        accessCode: nil,
+        room: fixture.room,
+        routeID: fixture.route,
+        viewerPublicKey: fixture.viewerIdentity.publicKey
+      )
+    )
+    #expect(
+      !ClipLiveShareAdmissionProof.verify(
+        response,
+        challenge: challenge,
+        joinCapability: joinCapability,
+        accessCode: "newly-configured-code",
+        room: fixture.room,
+        routeID: fixture.route,
+        viewerPublicKey: fixture.viewerIdentity.publicKey
       )
     )
   }
@@ -57,7 +140,11 @@ struct ClipLiveShareCryptoTests {
     #expect(viewer.lastInboundSequence == 1)
 
     let response = ClipLiveShareInnerMessage.authResponse(
-      try ClipLiveShareAuthResponse(sessionID: fixture.session, proof: nil)
+      try ClipLiveShareAuthResponse(
+        sessionID: fixture.session,
+        joinProof: Data(repeating: 1, count: 32),
+        accessCodeProof: nil
+      )
     )
     let viewerEnvelope = try viewer.seal(response)
     #expect(viewerEnvelope.routeID == nil)

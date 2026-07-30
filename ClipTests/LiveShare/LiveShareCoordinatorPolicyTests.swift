@@ -1080,19 +1080,112 @@ struct LiveShareCoordinatorPolicyTests {
         ))
     }
 
+    @Test("anonymous admission always requires the fragment capability and viewer key")
+    func anonymousAdmissionBindsCapabilityAndViewerKey() throws {
+        let room = try makeNativeRoom(name: "LINK-CAPABILITY")
+        let routeID = ClipLiveShareRouteID.random()
+        let viewer = ClipLiveShareViewerIdentity()
+        let challenge = ClipLiveShareAuthChallenge.random(
+            sessionID: .random(),
+            accessCodeRequired: false
+        )
+        let valid = try ClipLiveShareAdmissionProof.response(
+            to: challenge,
+            joinCapability: room.joinCapability,
+            accessCode: nil,
+            room: room.room,
+            routeID: routeID,
+            viewerPublicKey: viewer.publicKey
+        )
+
+        #expect(LiveShareAnonymousViewerAdmissionPolicy.permits(
+            valid,
+            challenge: challenge,
+            room: room,
+            routeID: routeID,
+            viewerPublicKey: viewer.publicKey,
+            accessCode: nil
+        ))
+        #expect(!LiveShareAnonymousViewerAdmissionPolicy.permits(
+            valid,
+            challenge: challenge,
+            room: room,
+            routeID: routeID,
+            viewerPublicKey: ClipLiveShareViewerIdentity().publicKey,
+            accessCode: nil
+        ))
+
+        let wrongCapability = try ClipLiveShareAdmissionProof.response(
+            to: challenge,
+            joinCapability: .random(),
+            accessCode: nil,
+            room: room.room,
+            routeID: routeID,
+            viewerPublicKey: viewer.publicKey
+        )
+        #expect(!LiveShareAnonymousViewerAdmissionPolicy.permits(
+            wrongCapability,
+            challenge: challenge,
+            room: room,
+            routeID: routeID,
+            viewerPublicKey: viewer.publicKey,
+            accessCode: nil
+        ))
+    }
+
+    @Test("the access word is an additional anonymous admission proof")
+    func anonymousAdmissionAlsoRequiresEnabledAccessWord() throws {
+        let room = try makeNativeRoom(name: "ACCESS-WORD")
+        let routeID = ClipLiveShareRouteID.random()
+        let viewer = ClipLiveShareViewerIdentity()
+        let challenge = ClipLiveShareAuthChallenge.random(
+            sessionID: .random(),
+            accessCodeRequired: true
+        )
+        let valid = try ClipLiveShareAdmissionProof.response(
+            to: challenge,
+            joinCapability: room.joinCapability,
+            accessCode: "MELORIA",
+            room: room.room,
+            routeID: routeID,
+            viewerPublicKey: viewer.publicKey
+        )
+
+        #expect(LiveShareAnonymousViewerAdmissionPolicy.permits(
+            valid,
+            challenge: challenge,
+            room: room,
+            routeID: routeID,
+            viewerPublicKey: viewer.publicKey,
+            accessCode: "meloria"
+        ))
+        #expect(!LiveShareAnonymousViewerAdmissionPolicy.permits(
+            valid,
+            challenge: challenge,
+            room: room,
+            routeID: routeID,
+            viewerPublicKey: viewer.publicKey,
+            accessCode: "BABABA"
+        ))
+    }
+
     @Test("pre-Start viewer route is promoted exactly once after Start")
     func preparedViewerRouteDrainsIntoAdmission() {
         let routeID = ClipLiveShareRouteID.random()
-        var prepared: Set<ClipLiveShareRouteID> = []
+        let viewerPublicKey = ClipLiveShareViewerIdentity().publicKey
+        var prepared: [
+            ClipLiveShareRouteID: ClipLiveShareKeyAgreementPublicKey
+        ] = [:]
 
         #expect(LiveSharePreparedViewerRouteBuffer.retain(
             routeID,
+            viewerPublicKey: viewerPublicKey,
             in: &prepared,
             maximumCount: 8
         ))
         let routesToAdmit = LiveSharePreparedViewerRouteBuffer.drain(&prepared)
 
-        #expect(routesToAdmit == [routeID])
+        #expect(routesToAdmit == [routeID: viewerPublicKey])
         #expect(prepared.isEmpty)
         #expect(LiveSharePreparedViewerRouteBuffer.drain(&prepared).isEmpty)
     }
@@ -1101,14 +1194,20 @@ struct LiveShareCoordinatorPolicyTests {
     func preparedViewerRouteCancellation() {
         let cancelledRoute = ClipLiveShareRouteID.random()
         let waitingRoute = ClipLiveShareRouteID.random()
-        var prepared: Set<ClipLiveShareRouteID> = []
+        let cancelledKey = ClipLiveShareViewerIdentity().publicKey
+        let waitingKey = ClipLiveShareViewerIdentity().publicKey
+        var prepared: [
+            ClipLiveShareRouteID: ClipLiveShareKeyAgreementPublicKey
+        ] = [:]
         #expect(LiveSharePreparedViewerRouteBuffer.retain(
             cancelledRoute,
+            viewerPublicKey: cancelledKey,
             in: &prepared,
             maximumCount: 8
         ))
         #expect(LiveSharePreparedViewerRouteBuffer.retain(
             waitingRoute,
+            viewerPublicKey: waitingKey,
             in: &prepared,
             maximumCount: 8
         ))
@@ -1118,37 +1217,55 @@ struct LiveShareCoordinatorPolicyTests {
             in: &prepared
         )
 
-        #expect(LiveSharePreparedViewerRouteBuffer.drain(&prepared) == [waitingRoute])
+        #expect(
+            LiveSharePreparedViewerRouteBuffer.drain(&prepared)
+                == [waitingRoute: waitingKey]
+        )
     }
 
-    @Test("pre-Start viewer waiting is capacity bounded and idempotent")
+    @Test("pre-Start viewer waiting is bounded, idempotent, and key-pinned")
     func preparedViewerRouteCapacity() {
         let first = ClipLiveShareRouteID.random()
         let second = ClipLiveShareRouteID.random()
         let overflow = ClipLiveShareRouteID.random()
-        var prepared: Set<ClipLiveShareRouteID> = []
+        let firstKey = ClipLiveShareViewerIdentity().publicKey
+        let secondKey = ClipLiveShareViewerIdentity().publicKey
+        let overflowKey = ClipLiveShareViewerIdentity().publicKey
+        var prepared: [
+            ClipLiveShareRouteID: ClipLiveShareKeyAgreementPublicKey
+        ] = [:]
 
         #expect(LiveSharePreparedViewerRouteBuffer.retain(
             first,
+            viewerPublicKey: firstKey,
             in: &prepared,
             maximumCount: 2
         ))
         #expect(LiveSharePreparedViewerRouteBuffer.retain(
             second,
+            viewerPublicKey: secondKey,
             in: &prepared,
             maximumCount: 2
         ))
         #expect(LiveSharePreparedViewerRouteBuffer.retain(
             first,
+            viewerPublicKey: firstKey,
+            in: &prepared,
+            maximumCount: 2
+        ))
+        #expect(!LiveSharePreparedViewerRouteBuffer.retain(
+            first,
+            viewerPublicKey: overflowKey,
             in: &prepared,
             maximumCount: 2
         ))
         #expect(!LiveSharePreparedViewerRouteBuffer.retain(
             overflow,
+            viewerPublicKey: overflowKey,
             in: &prepared,
             maximumCount: 2
         ))
-        #expect(prepared == [first, second])
+        #expect(prepared == [first: firstKey, second: secondKey])
     }
 
     @Test("signaling handoff stays admission-pending until the host control channel opens")
@@ -2633,7 +2750,8 @@ private func makeNativeRoom(
         capabilities: .v1Default,
         room: try ClipLiveShareRoomName(rawValue: name),
         ownerToken: .random(),
-        identity: ClipLiveShareRoomIdentity()
+        identity: ClipLiveShareRoomIdentity(),
+        joinCapability: .random()
     )
 }
 

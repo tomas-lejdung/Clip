@@ -40,10 +40,15 @@ public enum LiveShareTransitionError: Error, Equatable, Sendable {
   case invalidReconnectAttempt(Int)
 }
 
-/// The share-link information the UI is allowed to render. Room ownership,
-/// the P-256 private key, encrypted-route state, and access-code challenges are
-/// deliberately kept out of the domain snapshot.
-public struct ClipLiveSharePublicRoom: Codable, Equatable, Hashable, Sendable {
+/// Ephemeral share-link information for in-memory UI rendering.
+///
+/// The viewer URL is a bearer invitation because its fragment contains the
+/// private join capability. This value deliberately is not `Codable`, and its
+/// descriptions redact the URL, so generic persistence and logging cannot
+/// accidentally copy that capability.
+public struct ClipLiveSharePublicRoom: Equatable, Hashable, Sendable,
+  CustomStringConvertible, CustomDebugStringConvertible
+{
   public let name: ClipLiveShareRoomName
   public let viewerURL: URL
 
@@ -51,10 +56,20 @@ public struct ClipLiveSharePublicRoom: Codable, Equatable, Hashable, Sendable {
     self.name = name
     self.viewerURL = viewerURL
   }
+
+  public var description: String {
+    "ClipLiveSharePublicRoom(name: \(name.rawValue), viewerURL: <redacted invite>)"
+  }
+
+  public var debugDescription: String { description }
 }
 
 /// A read-only value suitable for UI rendering and cross-actor delivery.
-public struct LiveShareSnapshot: Codable, Equatable, Hashable, Sendable {
+/// It is intentionally non-serializable because its room may contain a bearer
+/// invitation.
+public struct LiveShareSnapshot: Equatable, Hashable, Sendable,
+  CustomStringConvertible, CustomDebugStringConvertible
+{
   public let phase: LiveSharePhase
   public let sources: LiveShareSourceSelection
   public let room: ClipLiveSharePublicRoom?
@@ -67,6 +82,16 @@ public struct LiveShareSnapshot: Codable, Equatable, Hashable, Sendable {
   }
 
   public var isSharingMedia: Bool { phase == .starting || phase == .sharing }
+
+  public var description: String {
+    let roomName = room?.name.rawValue ?? "none"
+    let failureCode = failure?.code.rawValue ?? "none"
+    return "LiveShareSnapshot(phase: \(phase.rawValue), room: \(roomName), "
+      + "viewerCount: \(viewerCount), reconnectAttempt: \(reconnectAttempt), "
+      + "failure: \(failureCode))"
+  }
+
+  public var debugDescription: String { description }
 }
 
 /// A deterministic domain state machine. It performs no I/O and owns no capture,

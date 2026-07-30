@@ -38,20 +38,23 @@ public struct ClipLiveShareViewerIdentity: Sendable {
 }
 
 public struct ClipLiveShareViewerFragment: Equatable, Hashable, Sendable,
-  CustomStringConvertible
+  CustomStringConvertible, CustomDebugStringConvertible
 {
   public let version: Int
   public let publicKey: ClipLiveShareKeyAgreementPublicKey
+  public let joinCapability: ClipLiveShareJoinCapability
 
   public init(
     version: Int = ClipLiveShareV1.version,
-    publicKey: ClipLiveShareKeyAgreementPublicKey
+    publicKey: ClipLiveShareKeyAgreementPublicKey,
+    joinCapability: ClipLiveShareJoinCapability
   ) throws {
     guard version == ClipLiveShareV1.version else {
       throw ClipLiveShareProtocolError.unsupportedVersion(version)
     }
     self.version = version
     self.publicKey = publicKey
+    self.joinCapability = joinCapability
   }
 
   public init(fragment: String) throws {
@@ -67,17 +70,26 @@ public struct ClipLiveShareViewerFragment: Equatable, Hashable, Sendable,
       }
       let key = String(pair[0])
       let fieldValue = String(pair[1])
-      guard ["v", "key"].contains(key), fields.updateValue(fieldValue, forKey: key) == nil else {
+      guard
+        ["v", "key", "join"].contains(key),
+        fields.updateValue(fieldValue, forKey: key) == nil
+      else {
         throw ClipLiveShareProtocolError.invalidResource("invalid viewer URL fragment fields")
       }
     }
-    guard fields.count == 2, let versionValue = fields["v"], let version = Int(versionValue) else {
+    guard fields.count == 3, let versionValue = fields["v"], let version = Int(versionValue) else {
       throw ClipLiveShareProtocolError.invalidResource("incomplete viewer URL fragment")
     }
-    guard let keyValue = fields["key"] else {
-      throw ClipLiveShareProtocolError.invalidResource("viewer URL fragment has no key")
+    guard let keyValue = fields["key"], let joinValue = fields["join"] else {
+      throw ClipLiveShareProtocolError.invalidResource(
+        "viewer URL fragment has no key or join capability"
+      )
     }
-    try self.init(version: version, publicKey: ClipLiveShareKeyAgreementPublicKey(rawValue: keyValue))
+    try self.init(
+      version: version,
+      publicKey: ClipLiveShareKeyAgreementPublicKey(rawValue: keyValue),
+      joinCapability: ClipLiveShareJoinCapability(rawValue: joinValue)
+    )
   }
 
   public init(url: URL) throws {
@@ -87,8 +99,11 @@ public struct ClipLiveShareViewerFragment: Equatable, Hashable, Sendable,
     try self.init(fragment: fragment)
   }
 
-  public var rawValue: String { "v=\(version)&key=\(publicKey.rawValue)" }
-  public var description: String { "#\(rawValue)" }
+  public var rawValue: String {
+    "v=\(version)&key=\(publicKey.rawValue)&join=\(joinCapability.rawValue)"
+  }
+  public var description: String { "<redacted viewer fragment>" }
+  public var debugDescription: String { description }
 
   public func adding(to url: URL) throws -> URL {
     guard var components = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
@@ -105,50 +120,113 @@ public struct ClipLiveShareViewerFragment: Equatable, Hashable, Sendable,
   }
 }
 
-public enum ClipLiveShareAccessCodeProof {
-  public static func normalize(_ accessCode: String) -> String {
+public enum ClipLiveShareAdmissionProof {
+  private static let joinDomain = "clip-live-share-v1/join-proof"
+  private static let accessCodeDomain = "clip-live-share-v1/access-code-proof"
+
+  public static func normalizeAccessCode(_ accessCode: String) -> String {
     accessCode
       .trimmingCharacters(in: .whitespacesAndNewlines)
       .uppercased(with: Locale(identifier: "en_US_POSIX"))
   }
 
-  public static func make(
-    accessCode: String,
+  public static func makeJoinProof(
+    joinCapability: ClipLiveShareJoinCapability,
     challenge: Data,
-    sessionID: ClipLiveShareSessionID
+    room: ClipLiveShareRoomName,
+    sessionID: ClipLiveShareSessionID,
+    routeID: ClipLiveShareRouteID,
+    viewerPublicKey: ClipLiveShareKeyAgreementPublicKey
   ) throws -> Data {
-    guard challenge.count == ClipLiveShareV1.challengeByteCount else {
-      throw ClipLiveShareProtocolError.invalidResource("auth challenge must contain 32 bytes")
-    }
-    let normalized = normalize(accessCode)
-    guard !normalized.isEmpty else {
-      throw ClipLiveShareProtocolError.accessCodeRequired
-    }
-
-    let digest = SHA256.hash(data: Data(normalized.utf8))
-    let key = SymmetricKey(data: Data(digest))
-    var authenticatedData = challenge
-    authenticatedData.append(Data(sessionID.rawValue.utf8))
+    let authenticatedData = try authenticatedData(
+      domain: joinDomain,
+      challenge: challenge,
+      room: room,
+      sessionID: sessionID,
+      routeID: routeID,
+      viewerPublicKey: viewerPublicKey
+    )
+    let key = SymmetricKey(data: joinCapability.keyMaterial)
     return Data(HMAC<SHA256>.authenticationCode(for: authenticatedData, using: key))
   }
 
-  public static func verify(
+  public static func verifyJoinProof(
+    _ proof: Data,
+    joinCapability: ClipLiveShareJoinCapability,
+    challenge: Data,
+    room: ClipLiveShareRoomName,
+    sessionID: ClipLiveShareSessionID,
+    routeID: ClipLiveShareRouteID,
+    viewerPublicKey: ClipLiveShareKeyAgreementPublicKey
+  ) -> Bool {
+    guard proof.count == SHA256.byteCount else { return false }
+    guard
+      let authenticatedData = try? authenticatedData(
+        domain: joinDomain,
+        challenge: challenge,
+        room: room,
+        sessionID: sessionID,
+        routeID: routeID,
+        viewerPublicKey: viewerPublicKey
+      )
+    else { return false }
+    let key = SymmetricKey(data: joinCapability.keyMaterial)
+    return HMAC<SHA256>.isValidAuthenticationCode(
+      proof,
+      authenticating: authenticatedData,
+      using: key
+    )
+  }
+
+  public static func makeAccessCodeProof(
+    accessCode: String,
+    challenge: Data,
+    room: ClipLiveShareRoomName,
+    sessionID: ClipLiveShareSessionID,
+    routeID: ClipLiveShareRouteID,
+    viewerPublicKey: ClipLiveShareKeyAgreementPublicKey
+  ) throws -> Data {
+    let normalized = normalizeAccessCode(accessCode)
+    guard !normalized.isEmpty else {
+      throw ClipLiveShareProtocolError.accessCodeRequired
+    }
+    let authenticatedData = try authenticatedData(
+      domain: accessCodeDomain,
+      challenge: challenge,
+      room: room,
+      sessionID: sessionID,
+      routeID: routeID,
+      viewerPublicKey: viewerPublicKey
+    )
+    let digest = SHA256.hash(data: Data(normalized.utf8))
+    let key = SymmetricKey(data: Data(digest))
+    return Data(HMAC<SHA256>.authenticationCode(for: authenticatedData, using: key))
+  }
+
+  public static func verifyAccessCodeProof(
     _ proof: Data,
     accessCode: String,
     challenge: Data,
-    sessionID: ClipLiveShareSessionID
+    room: ClipLiveShareRoomName,
+    sessionID: ClipLiveShareSessionID,
+    routeID: ClipLiveShareRouteID,
+    viewerPublicKey: ClipLiveShareKeyAgreementPublicKey
   ) -> Bool {
+    guard proof.count == SHA256.byteCount else { return false }
+    let normalized = normalizeAccessCode(accessCode)
+    guard !normalized.isEmpty else { return false }
     guard
-      proof.count == 32,
-      challenge.count == ClipLiveShareV1.challengeByteCount,
-      !normalize(accessCode).isEmpty
-    else {
-      return false
-    }
-    let digest = SHA256.hash(data: Data(normalize(accessCode).utf8))
+      let authenticatedData = try? authenticatedData(
+        domain: accessCodeDomain,
+        challenge: challenge,
+        room: room,
+        sessionID: sessionID,
+        routeID: routeID,
+        viewerPublicKey: viewerPublicKey
+      )
+    else { return false }
+    let digest = SHA256.hash(data: Data(normalized.utf8))
     let key = SymmetricKey(data: Data(digest))
-    var authenticatedData = challenge
-    authenticatedData.append(Data(sessionID.rawValue.utf8))
     return HMAC<SHA256>.isValidAuthenticationCode(
       proof,
       authenticating: authenticatedData,
@@ -158,20 +236,109 @@ public enum ClipLiveShareAccessCodeProof {
 
   public static func response(
     to challenge: ClipLiveShareAuthChallenge,
-    accessCode: String?
+    joinCapability: ClipLiveShareJoinCapability,
+    accessCode: String?,
+    room: ClipLiveShareRoomName,
+    routeID: ClipLiveShareRouteID,
+    viewerPublicKey: ClipLiveShareKeyAgreementPublicKey
   ) throws -> ClipLiveShareAuthResponse {
+    let joinProof = try makeJoinProof(
+      joinCapability: joinCapability,
+      challenge: challenge.challenge,
+      room: room,
+      sessionID: challenge.sessionID,
+      routeID: routeID,
+      viewerPublicKey: viewerPublicKey
+    )
+    let accessCodeProof: Data?
     if challenge.accessCodeRequired {
       guard let accessCode else { throw ClipLiveShareProtocolError.accessCodeRequired }
-      return try ClipLiveShareAuthResponse(
+      accessCodeProof = try makeAccessCodeProof(
+        accessCode: accessCode,
+        challenge: challenge.challenge,
+        room: room,
         sessionID: challenge.sessionID,
-        proof: make(
-          accessCode: accessCode,
-          challenge: challenge.challenge,
-          sessionID: challenge.sessionID
-        )
+        routeID: routeID,
+        viewerPublicKey: viewerPublicKey
+      )
+    } else {
+      accessCodeProof = nil
+    }
+    return try ClipLiveShareAuthResponse(
+      sessionID: challenge.sessionID,
+      joinProof: joinProof,
+      accessCodeProof: accessCodeProof
+    )
+  }
+
+  public static func verify(
+    _ response: ClipLiveShareAuthResponse,
+    challenge: ClipLiveShareAuthChallenge,
+    joinCapability: ClipLiveShareJoinCapability,
+    accessCode: String?,
+    room: ClipLiveShareRoomName,
+    routeID: ClipLiveShareRouteID,
+    viewerPublicKey: ClipLiveShareKeyAgreementPublicKey
+  ) -> Bool {
+    guard response.sessionID == challenge.sessionID else { return false }
+    let configuredAccessCode = accessCode.map(normalizeAccessCode).flatMap {
+      $0.isEmpty ? nil : $0
+    }
+    guard challenge.accessCodeRequired == (configuredAccessCode != nil) else { return false }
+    guard verifyJoinProof(
+      response.joinProof,
+      joinCapability: joinCapability,
+      challenge: challenge.challenge,
+      room: room,
+      sessionID: challenge.sessionID,
+      routeID: routeID,
+      viewerPublicKey: viewerPublicKey
+    ) else { return false }
+
+    if challenge.accessCodeRequired {
+      guard
+        let configuredAccessCode,
+        let accessCodeProof = response.accessCodeProof
+      else { return false }
+      return verifyAccessCodeProof(
+        accessCodeProof,
+        accessCode: configuredAccessCode,
+        challenge: challenge.challenge,
+        room: room,
+        sessionID: challenge.sessionID,
+        routeID: routeID,
+        viewerPublicKey: viewerPublicKey
       )
     }
-    return try ClipLiveShareAuthResponse(sessionID: challenge.sessionID, proof: nil)
+    return response.accessCodeProof == nil
+  }
+
+  private static func authenticatedData(
+    domain: String,
+    challenge: Data,
+    room: ClipLiveShareRoomName,
+    sessionID: ClipLiveShareSessionID,
+    routeID: ClipLiveShareRouteID,
+    viewerPublicKey: ClipLiveShareKeyAgreementPublicKey
+  ) throws -> Data {
+    guard challenge.count == ClipLiveShareV1.challengeByteCount else {
+      throw ClipLiveShareProtocolError.invalidResource("auth challenge must contain 32 bytes")
+    }
+    let fields = [
+      Data(domain.utf8),
+      Data(room.rawValue.utf8),
+      Data(sessionID.rawValue.utf8),
+      Data(routeID.rawValue.utf8),
+      viewerPublicKey.x963Representation,
+      challenge,
+    ]
+    var data = Data()
+    for field in fields {
+      var length = UInt32(field.count).bigEndian
+      withUnsafeBytes(of: &length) { data.append(contentsOf: $0) }
+      data.append(field)
+    }
+    return data
   }
 }
 

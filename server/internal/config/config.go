@@ -14,46 +14,46 @@ import (
 )
 
 const (
-	defaultAddress                     = ":8080"
-	defaultMaximumRooms                = 1_024
-	defaultMaximumConnections          = 2_048
-	defaultReservedHostConnections     = 64
-	defaultMaximumConnectionsPerSource = 64
-	defaultRoomAdvertisementsPerMinute = 60
-	defaultWebSocketUpgradesPerMinute  = 240
-	defaultMaximumTrackedSources       = 4_096
-	defaultMaximumQueuedBytesPerSocket = 2 << 20
-	defaultMaximumQueuedBytesTotal     = 64 << 20
-	maximumConfiguredRooms             = 16_384
-	maximumConfiguredConnections       = 8_192
-	maximumConfiguredTrackedSources    = 65_536
-	maximumConfiguredQueuedBytes       = 512 << 20
+	defaultAddress                      = ":8080"
+	defaultMaximumRooms                 = 1_024
+	defaultMaximumConnections           = 2_048
+	defaultReservedHostConnections      = 64
+	defaultMaximumConnectionsPerSource  = 64
+	defaultRoomLeaseOperationsPerMinute = 60
+	defaultWebSocketUpgradesPerMinute   = 240
+	defaultMaximumTrackedSources        = 4_096
+	defaultMaximumQueuedBytesPerSocket  = 2 << 20
+	defaultMaximumQueuedBytesTotal      = 64 << 20
+	maximumConfiguredRooms              = 16_384
+	maximumConfiguredConnections        = 8_192
+	maximumConfiguredTrackedSources     = 65_536
+	maximumConfiguredQueuedBytes        = 512 << 20
 )
 
 type Config struct {
-	Address                     string
-	ServerVersion               string
-	LeaseDuration               time.Duration
-	ReconnectGrace              time.Duration
-	CleanupInterval             time.Duration
-	HelloTimeout                time.Duration
-	ReadTimeout                 time.Duration
-	WriteTimeout                time.Duration
-	PingInterval                time.Duration
-	RouteIdleTimeout            time.Duration
-	ShutdownTimeout             time.Duration
-	MaximumRooms                int
-	MaximumConnections          int
-	ReservedHostConnections     int
-	MaximumConnectionsPerSource int
-	RoomAdvertisementsPerMinute int
-	WebSocketUpgradesPerMinute  int
-	MaximumTrackedSources       int
-	MaximumQueuedBytesPerSocket int
-	MaximumQueuedBytesTotal     int
-	TrustedProxyCIDRs           []string
-	AllowedOrigins              []string
-	ICEServers                  []protocol.ICEServer
+	Address                      string
+	ServerVersion                string
+	LeaseDuration                time.Duration
+	ReconnectGrace               time.Duration
+	CleanupInterval              time.Duration
+	HelloTimeout                 time.Duration
+	ReadTimeout                  time.Duration
+	WriteTimeout                 time.Duration
+	PingInterval                 time.Duration
+	RouteIdleTimeout             time.Duration
+	ShutdownTimeout              time.Duration
+	MaximumRooms                 int
+	MaximumConnections           int
+	ReservedHostConnections      int
+	MaximumConnectionsPerSource  int
+	RoomLeaseOperationsPerMinute int
+	WebSocketUpgradesPerMinute   int
+	MaximumTrackedSources        int
+	MaximumQueuedBytesPerSocket  int
+	MaximumQueuedBytesTotal      int
+	TrustedProxyCIDRs            []string
+	AllowedOrigins               []string
+	ICEServers                   []protocol.ICEServer
 }
 
 func Default(serverVersion string) Config {
@@ -61,26 +61,26 @@ func Default(serverVersion string) Config {
 		serverVersion = "development"
 	}
 	return Config{
-		Address:                     defaultAddress,
-		ServerVersion:               serverVersion,
-		LeaseDuration:               5 * time.Minute,
-		ReconnectGrace:              30 * time.Second,
-		CleanupInterval:             5 * time.Second,
-		HelloTimeout:                protocol.InitialAnswerTimeoutSeconds * time.Second,
-		ReadTimeout:                 45 * time.Second,
-		WriteTimeout:                10 * time.Second,
-		PingInterval:                15 * time.Second,
-		RouteIdleTimeout:            2 * time.Minute,
-		ShutdownTimeout:             10 * time.Second,
-		MaximumRooms:                defaultMaximumRooms,
-		MaximumConnections:          defaultMaximumConnections,
-		ReservedHostConnections:     defaultReservedHostConnections,
-		MaximumConnectionsPerSource: defaultMaximumConnectionsPerSource,
-		RoomAdvertisementsPerMinute: defaultRoomAdvertisementsPerMinute,
-		WebSocketUpgradesPerMinute:  defaultWebSocketUpgradesPerMinute,
-		MaximumTrackedSources:       defaultMaximumTrackedSources,
-		MaximumQueuedBytesPerSocket: defaultMaximumQueuedBytesPerSocket,
-		MaximumQueuedBytesTotal:     defaultMaximumQueuedBytesTotal,
+		Address:                      defaultAddress,
+		ServerVersion:                serverVersion,
+		LeaseDuration:                5 * time.Minute,
+		ReconnectGrace:               30 * time.Second,
+		CleanupInterval:              5 * time.Second,
+		HelloTimeout:                 protocol.InitialAnswerTimeoutSeconds * time.Second,
+		ReadTimeout:                  45 * time.Second,
+		WriteTimeout:                 10 * time.Second,
+		PingInterval:                 15 * time.Second,
+		RouteIdleTimeout:             2 * time.Minute,
+		ShutdownTimeout:              10 * time.Second,
+		MaximumRooms:                 defaultMaximumRooms,
+		MaximumConnections:           defaultMaximumConnections,
+		ReservedHostConnections:      defaultReservedHostConnections,
+		MaximumConnectionsPerSource:  defaultMaximumConnectionsPerSource,
+		RoomLeaseOperationsPerMinute: defaultRoomLeaseOperationsPerMinute,
+		WebSocketUpgradesPerMinute:   defaultWebSocketUpgradesPerMinute,
+		MaximumTrackedSources:        defaultMaximumTrackedSources,
+		MaximumQueuedBytesPerSocket:  defaultMaximumQueuedBytesPerSocket,
+		MaximumQueuedBytesTotal:      defaultMaximumQueuedBytesTotal,
 		ICEServers: []protocol.ICEServer{
 			{URLs: []string{"stun:stun.l.google.com:19302"}},
 		},
@@ -125,7 +125,7 @@ func FromEnvironment(serverVersion string) (Config, error) {
 	if configuration.MaximumConnectionsPerSource, err = positiveIntegerEnvironment("CLIP_SERVER_MAXIMUM_CONNECTIONS_PER_SOURCE", min(configuration.MaximumConnectionsPerSource, configuration.MaximumConnections)); err != nil {
 		return Config{}, err
 	}
-	if configuration.RoomAdvertisementsPerMinute, err = positiveIntegerEnvironment("CLIP_SERVER_ROOM_ADVERTISEMENTS_PER_MINUTE", configuration.RoomAdvertisementsPerMinute); err != nil {
+	if configuration.RoomLeaseOperationsPerMinute, err = positiveIntegerEnvironment("CLIP_SERVER_ROOM_LEASE_OPERATIONS_PER_MINUTE", configuration.RoomLeaseOperationsPerMinute); err != nil {
 		return Config{}, err
 	}
 	if configuration.WebSocketUpgradesPerMinute, err = positiveIntegerEnvironment("CLIP_SERVER_WEBSOCKET_UPGRADES_PER_MINUTE", configuration.WebSocketUpgradesPerMinute); err != nil {
@@ -212,7 +212,7 @@ func (c Config) Validate() error {
 	if c.MaximumConnectionsPerSource <= 0 || c.MaximumConnectionsPerSource > c.MaximumConnections {
 		return errors.New("connections per source must be between 1 and maximum connections")
 	}
-	if c.RoomAdvertisementsPerMinute <= 0 || c.WebSocketUpgradesPerMinute <= 0 {
+	if c.RoomLeaseOperationsPerMinute <= 0 || c.WebSocketUpgradesPerMinute <= 0 {
 		return errors.New("source request rates must be positive")
 	}
 	if c.MaximumQueuedBytesPerSocket < protocol.MaximumMessageBytes || c.MaximumQueuedBytesPerSocket > maximumConfiguredQueuedBytes {

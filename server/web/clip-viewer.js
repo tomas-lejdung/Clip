@@ -5,12 +5,12 @@ import {
   canonicalSystemAudioState,
   CLIP_PROTOCOL_VERSION,
   ClipProtocolError,
-  createAuthProof,
+  createAuthResponse,
   createInnerProtocolFailure,
+  createViewerHello,
   createViewerKeyPair,
   decodeBase64URL,
   deriveRouteKeys,
-  encodeBase64URL,
   EncryptedRoute,
   fillPathTemplate,
   isOpaqueIdentifier,
@@ -114,6 +114,7 @@ let showStats = false;
 let currentScale = "native";
 let accessCode = "";
 let pendingAuthChallenge = null;
+let authAccessCodeRequired = false;
 let audioTrack = null;
 let sharedSystemAudioEnabled = false;
 let audioMuted = true;
@@ -190,7 +191,7 @@ function syncMainVideoPresentationSize() {
   mainVideo.style.height = `${height}px`;
 }
 
-// Password dialog elements
+// Access Word dialog elements
 const passwordDialog = document.getElementById("password-dialog");
 const passwordForm = document.getElementById("password-form");
 const passwordInput = document.getElementById("password-input");
@@ -1144,7 +1145,7 @@ mainVideo.addEventListener("leavepictureinpicture", () => {
 // Note: Scale mode, stats toggle, help toggle, keyboard shortcuts,
 // and button event listeners are defined in the Layout Management section below
 
-// Password dialog functions
+// Access Word dialog functions
 function showPasswordDialog(errorText = "") {
   waitingEl.classList.add("hidden");
   passwordDialog.classList.add("visible");
@@ -1160,23 +1161,29 @@ function hidePasswordDialog() {
   passwordError.textContent = "";
 }
 
-// Password form submission
+// Access Word form submission
 async function respondToAuthChallenge(challengeMessage) {
   assertInnerMessage(challengeMessage, sessionId);
-  let proof;
-  if (challengeMessage.accessCodeRequired) {
-    proof = await createAuthProof({
-      accessCode,
-      challenge: challengeMessage.challenge,
-      sessionId,
-    });
+  const route = encryptedRoute;
+  const keyPair = viewerKeyPair;
+  if (!route || !keyPair) {
+    throw new ClipProtocolError(
+      "route-not-ready",
+      "The encrypted route is not ready.",
+    );
   }
-  await sendInner({
-    type: "auth-response",
-    version: CLIP_PROTOCOL_VERSION,
+  const response = await createAuthResponse({
+    joinCapability: viewerFragment.joinCapability,
+    accessCode,
+    accessCodeRequired: challengeMessage.accessCodeRequired,
+    challenge: challengeMessage.challenge,
     sessionId,
-    ...(proof ? { proof } : {}),
+    room: roomCode,
+    routeId: route.routeId,
+    viewerPublicKey: keyPair.publicKey,
   });
+  if (encryptedRoute !== route || viewerKeyPair !== keyPair) return;
+  await sendInner(response, route);
   setStatus("Authorizing…", "connecting");
   setWaitingState("Authorizing", "Clip is approving this viewer…");
 }
@@ -1186,7 +1193,7 @@ passwordForm.addEventListener("submit", async (e) => {
   const value = normalizeAccessCode(passwordInput.value);
   if (!value) {
     passwordInput.classList.add("error");
-    passwordError.textContent = "Please enter an access code";
+    passwordError.textContent = "Please enter the Access Word";
     return;
   }
   accessCode = value;
@@ -1198,7 +1205,7 @@ passwordForm.addEventListener("submit", async (e) => {
       pendingAuthChallenge = null;
       await respondToAuthChallenge(challenge);
     } else {
-      restartSignaling("Retrying access code…");
+      restartSignaling("Retrying Access Word…");
     }
   } catch (error) {
     failViewer(error);
@@ -1645,12 +1652,27 @@ function sendOuter(message) {
   ws.send(encoded);
 }
 
-function sendInner(message) {
+function sendInner(message, expectedRoute = encryptedRoute) {
+  const route = expectedRoute;
+  const socket = ws;
+  if (!route || !socket) {
+    throw new ClipProtocolError("route-not-ready", "The encrypted route is not ready.");
+  }
   const task = outboundRelayChain.then(async () => {
-    if (!encryptedRoute) {
-      throw new ClipProtocolError("route-not-ready", "The encrypted route is not ready.");
+    if (encryptedRoute !== route || ws !== socket) {
+      throw new ClipProtocolError(
+        "route-superseded",
+        "The encrypted signaling route changed before the message was sent.",
+      );
     }
-    sendOuter(await encryptedRoute.seal(message));
+    const envelope = await route.seal(message);
+    if (encryptedRoute !== route || ws !== socket) {
+      throw new ClipProtocolError(
+        "route-superseded",
+        "The encrypted signaling route changed before the message was sent.",
+      );
+    }
+    sendOuter(envelope);
   });
   outboundRelayChain = task.catch(() => {});
   return task;
@@ -1757,6 +1779,7 @@ async function connect() {
   currentNegotiationId = null;
   pendingRemoteICE = [];
   pendingAuthChallenge = null;
+  authAccessCodeRequired = false;
   sentICECandidates = 0;
   receivedICECandidates = 0;
   outboundRelayChain = Promise.resolve();
@@ -1774,11 +1797,7 @@ async function connect() {
     socket.onopen = () => {
       if (ws !== socket) return;
       reconnectAttempts = 0;
-      sendOuter({
-        type: "viewer-hello",
-        version: CLIP_PROTOCOL_VERSION,
-        viewerKey: encodeBase64URL(viewerKeyPair.publicKey),
-      });
+      sendOuter(createViewerHello(viewerKeyPair.publicKey));
       setStatus("Securing connection…", "connecting");
       setWaitingState("Securing connection", "Performing private key agreement");
     };
@@ -1897,6 +1916,7 @@ async function handleInnerMessage(message) {
         throw new ClipProtocolError("invalid-challenge", "Clip sent an invalid authorization challenge.");
       }
       sessionId = message.sessionId;
+      authAccessCodeRequired = message.accessCodeRequired;
       pendingAuthChallenge = message;
       if (message.accessCodeRequired && !accessCode) {
         showPasswordDialog();
@@ -1915,8 +1935,15 @@ async function handleInnerMessage(message) {
       }
       if (!message.allowed) {
         pendingAuthChallenge = null;
-        showPasswordDialog(message.reason || "The access code was not accepted.");
-        return;
+        if (authAccessCodeRequired) {
+          accessCode = "";
+          showPasswordDialog("The Access Word was not accepted.");
+          return;
+        }
+        throw new ClipProtocolError(
+          "authorization-denied",
+          "This Live Share invitation is no longer valid.",
+        );
       }
       hidePasswordDialog();
       setStatus("Preparing stream…", "connecting");

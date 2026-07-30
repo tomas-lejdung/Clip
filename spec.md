@@ -57,8 +57,9 @@ Clip also provides a distinct **Live Share** workflow for sending one or more
 macOS windows, or one entire display, to native Clip viewers and browser
 viewers. Live Share uses Clip's in-repository Go room service, native viewer,
 and embedded browser fallback. The service routes bounded end-to-end-encrypted
-signaling and never receives plaintext access codes, friend names, trust
-decisions, SDP, ICE, stream metadata, media, or authoritative viewer state.
+signaling and never receives anonymous join capabilities, plaintext Access
+Words, friend names, trust decisions, SDP, ICE, stream metadata, media, or
+authoritative viewer state.
 
 ---
 
@@ -101,12 +102,14 @@ but does not capture or send pixels, publish native friend presence, or surface
 viewer approval requests. The preparation popover shows:
 
 - One self-contained **Copy Invite** action. The invite contains the configured
-  endpoint, room name, protocol version, and ephemeral P-256 public key and can
-  be opened by Clip or the browser fallback. A room-name-only copy action is not
-  shown because the room name cannot authenticate a host.
+  endpoint, server-allocated room name, protocol version, ephemeral P-256 public
+  key, and 256-bit anonymous join capability and can be opened by Clip or the
+  browser fallback. A room-name-only copy action is not shown because the room
+  name and public key cannot authorize a viewer.
 - A **New Room** action that atomically releases the old reservation and
-  regenerates the room name, owner capability, and P-256 key pair.
-- An optional generated guest access code that can be enabled, copied,
+  obtains a new server-allocated name while regenerating the owner capability,
+  join capability, and P-256 key pair.
+- An optional generated guest **Access Word** that can be enabled, copied,
   replaced, or disabled.
 - Friends who are actively sharing. Selecting one discards the unstarted host
   preparation and enters native viewer mode.
@@ -120,12 +123,12 @@ room active, publishes friend presence, promotes still-valid waiting routes,
 permits new admissions, and reveals Sources, Stream Settings, Viewers,
 Statistics, and Stop Sharing. Starting with zero sources is valid; connected
 viewers receive an explicit waiting state until a source is selected. The room
-name is locked while active. The guest access code may still be replaced for
+name is locked while active. The guest Access Word may still be replaced for
 future admissions and never ejects established viewers.
 
 Stopping the session removes native presence, invalidates its invite, stops
 capture and peers, and returns to an inactive state. A later share always uses
-a new room name, owner capability, and ephemeral key pair.
+a new room name, owner capability, join capability, and ephemeral key pair.
 
 Settings stores one validated Live Share server base address and derives the
 service endpoints from it. Changing that address affects the next room only;
@@ -133,10 +136,12 @@ an active room continues with the configuration it started with. A
 non-destructive connection test checks service reachability without reserving a
 room or starting a share.
 
-The access code is a cryptographically random, session-only value. Clip checks
-it locally through a random HMAC challenge inside the encrypted route; the
-service never receives the code or plaintext proof. Changing it applies to new
-viewer admissions and does not eject an already connected viewer.
+The mandatory 256-bit join capability is the cryptographic anonymous-admission
+credential. The optional Access Word is a short pronounceable 24-bit secondary
+confirmation shared separately. Clip checks both through context-bound HMAC
+proofs inside the encrypted route; the service never receives either secret or
+a plaintext proof. Changing the word applies to new viewer admissions and does
+not eject an already connected viewer.
 
 ## Native viewer and Friends
 
@@ -172,8 +177,8 @@ friend as Live. Selecting the friend opens a fresh signed and encrypted route.
 The host receives **Allow <friend device> to join?** and must explicitly allow
 or deny each connection. Offline friends cannot send or queue requests, and
 the service stores no pending offline invitations. Friend admission does not
-require the guest access code; persistent mutual identity plus the per-session
-host decision is the admission boundary.
+require the anonymous join capability or guest Access Word; persistent mutual
+identity plus the per-session host decision is the admission boundary.
 
 The native viewer uses one WebRTC peer connection and creates one independent
 macOS desktop window for each of up to four active manual remote sources. Auto
@@ -362,13 +367,21 @@ override.
 
 Clip Live Share Protocol v1 is the only supported signaling contract:
 
-- Clip advertises a client-generated room using
-  `PUT /api/v1/rooms/{room}` and authenticates the host WebSocket with a random
-  32-byte owner token. The server stores only the token's SHA-256 hash.
-- The browser link carries the host's ephemeral P-256 public key only in the
-  URL fragment. The fragment is not sent in the HTTP request. Every viewer
-  creates a fresh P-256 key and derives independent directional AES-GCM keys
-  with Clip through ECDH and HKDF-SHA256.
+- Clip sends only a random 32-byte owner token to `POST /api/v1/rooms`; the
+  server atomically allocates the public room name and stores only the token's
+  SHA-256 hash. Repeating the same allocation is idempotent and returns its
+  existing live lease. `PUT /api/v1/rooms/{room}` only renews an existing owned
+  lease and never creates an arbitrary client-selected room.
+- The browser link carries the host's ephemeral P-256 public key and a random
+  32-byte join capability only in the URL fragment. The fragment is not sent in
+  HTTP or WebSocket URLs. Every viewer creates a fresh P-256 key and derives
+  independent directional AES-GCM keys with Clip through ECDH and
+  HKDF-SHA256.
+- Every anonymous admission must provide a join-capability HMAC proof bound to
+  the room, session, route, exact viewer key, and fresh host challenge. An
+  enabled Access Word adds an independent proof over the same context. Thus all
+  server-visible room metadata is insufficient for the service to join as a
+  viewer.
 - Admission, SDP, ICE, source/control metadata, and codec negotiation are
   encrypted before crossing the server. The outer relay sees only bounded room,
   route, sequence, nonce, ciphertext-size, timing, and network metadata.
@@ -395,8 +408,8 @@ is active, that API stores one bounded signed session descriptor and otherwise
 relays only bounded temporary route payloads. The Go service deliberately does
 not parse the descriptor, but the descriptor is authenticated public/random
 routing metadata rather than ciphertext; a service operator can inspect it.
-It contains no password, friend label, trust decision, viewer identity, or
-admission capability. The per-friend proof and all SDP, ICE, and later control
+It contains no Access Word, friend label, trust decision, viewer identity, or
+join capability. The per-friend proof and all SDP, ICE, and later control
 messages remain encrypted end to end. A copied descriptor or a server-created
 replacement cannot approve a viewer or impersonate either saved identity.
 
@@ -1173,7 +1186,7 @@ Each permission should include a button that opens the relevant macOS System Set
 - Live Share server: `https://clip.tineestudio.se`.
 - Live Share video: VP8, Very High quality (`6 Mbps` ceiling), 30 FPS, Quality mode.
 - Live Share System Audio: Off.
-- Live Share access code: Off.
+- Live Share Access Word: Off.
 - Live Share Prioritize Focused Window: On.
 - Live Share Auto-share Focused Windows: Off.
 - History retention: 7 days.
@@ -1412,8 +1425,8 @@ package state is not accepted as release provenance.
   the room registry, opaque signaling relay, embedded browser viewer, tests,
   Dockerfile, and Docker Hub publication script.
 - Server room state is in-memory and intentionally single-replica in protocol
-  v1. A restart clears advertisements; an active Clip host reconnects and
-  re-advertises its room.
+  v1. A restart clears room leases. Existing P2P peers stay connected, but new
+  admissions require a newly allocated room.
 - Internet deployments terminate TLS at a reverse proxy and expose HTTPS/WSS.
   The service publishes validated ICE-server capabilities to both peers.
 - The container is CGO-free, non-root, health-checked, and published for
@@ -1607,7 +1620,7 @@ A separate Homebrew tap can be added later if needed.
   Clip, sent as one stable Opus track. No microphone audio is sent. Native and
   browser viewers provide session-wide mute and volume controls; the browser
   also provides autoplay unlock.
-- A Live Share-specific menu-bar popover, optional session access code,
+- A Live Share-specific menu-bar popover, optional session Access Word,
   connected-viewer state, stream settings/statistics, focused-window Share/Stop
   control, fixed source/viewer HUD, auto-share, reconnect, and Stop All without
   ending the room.

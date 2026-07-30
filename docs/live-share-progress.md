@@ -29,13 +29,13 @@ branch is not published and development does not replace `/Applications/Clip.app
 | LS-00 | Protocol and trust model | `DONE` | `clip-live-share` v1 is the sole contract. The server sees room/routing metadata and bounded ciphertext, while Clip owns admission, peer state and viewer count. Protocol limits, lifecycle and deployment trust are documented. |
 | LS-01 | Core crypto and messages | `DONE` | Swift P-256 ECDH, HKDF-SHA256, directional AES-GCM, typed identifiers/messages, strict limits, random stream identities and browser-compatible vectors have deterministic coverage. |
 | LS-02 | In-repo Go service | `DONE` | The top-level `server/` module implements in-memory leases, owner-token-hash authentication, host reconnect grace, route isolation, strict opaque relay, origin policy, capabilities, viewer embedding, health/version and graceful shutdown. |
-| LS-03 | Browser viewer | `DONE` | The embedded viewer performs fragment-pinned key agreement, encrypted admission/SDP/ICE, opaque manifest binding, reconnect, multi-stream presentation, system-audio playback, mute/volume and autoplay recovery. Node protocol tests cover crypto, tamper, replay and bounds. |
-| LS-04 | Native signaling transport | `DONE` | Clip advertises rooms, authenticates with an owner token, handles encrypted per-viewer routes, re-advertises indefinitely with a capped backoff, removes its room on stop, enforces negotiated limits, isolates hostile routes and keeps secrets out of public snapshots. Mock, hostile-input and real-WebKit integration coverage pass. |
-| LS-05 | Coordinator migration | `DONE` | Host-side access-code admission, encrypted initial negotiation, browser-reported handoff plus host-confirmed DataChannel readiness, peer-owned viewer counts, authoritative control manifests and peer survival across signaling outages are production-wired. Obsolete legacy code, fixtures, scripts and assumptions are removed. |
+| LS-03 | Browser viewer | `DONE` | The embedded viewer performs fragment-pinned key agreement, mandatory join-capability proof, optional Access Word proof, encrypted SDP/ICE, opaque manifest binding, reconnect, multi-stream presentation, system-audio playback, mute/volume and autoplay recovery. Node protocol tests cover crypto, tamper, replay, privacy and bounds. |
+| LS-04 | Native signaling transport | `DONE` | Clip asks the server to atomically allocate room names, authenticates and renews with an owner token, handles encrypted per-viewer routes, removes its room on stop, enforces negotiated limits, isolates hostile routes and keeps the join capability out of server-visible requests and public snapshots. Mock, hostile-input and real-WebKit integration coverage pass. |
+| LS-05 | Coordinator migration | `DONE` | Host-side mandatory join-capability admission, optional Access Word admission, encrypted initial negotiation, browser-reported handoff plus host-confirmed DataChannel readiness, peer-owned viewer counts, authoritative control manifests and peer survival across signaling outages are production-wired. Obsolete legacy code, fixtures, scripts and assumptions are removed. |
 | LS-06 | Native WebRTC media | `DONE` | Four random-identity video slots, random audio identity, exact H.264/VP8 choices, VP9/AV1 preference fallback, transactional live switching, RTP statistics, bounded frame delivery, reliable `clip-control-v1`, authoritative audio state, stereo music Opus input and peer-isolated teardown pass the package gate. |
 | LS-07 | Capture and streaming | `EXTERNAL_GATE` | Software VP8/VP9/AV1 preserve native geometry; oversized hardware H.264 is bounded without unbounded queues. Window-audio filters deduplicate owning applications; Fullscreen excludes Clip. Real desktop/audio/overload evidence remains controlled-Mac work. |
 | LS-08 | Live Share interface | `DONE` | Popover, endpoint settings, overlays, HUD, source controls, unavailable-link behavior and permission-free presentation tests use the native room/link model. Settings probes stream through a hard response-size bound. |
-| LS-09 | Privacy and reliability | `DONE` | The server cannot decrypt signaling; secrets are session-only; replay/tamper/size/route checks, persistent capped reconnect, per-peer failure isolation, admission timeouts, bounded queues and static log/storage scans pass. Runtime network/soak evidence remains under LS-12. |
+| LS-09 | Privacy and reliability | `DONE` | The server cannot decrypt signaling or actively join from server-visible metadata; join capability and Access Word are session-only; replay/tamper/size/route checks, persistent capped reconnect, per-peer failure isolation, admission timeouts, bounded queues and static log/storage scans pass. Runtime network/soak evidence remains under LS-12. |
 | LS-10 | Local acceptance | `DONE` | The unified pointer-free gate passes the hardened Go service, browser crypto/protocol tests, core tests, a real offscreen WebKit encrypted video flow with decoded stereo Opus waveform analysis, and the native WebRTC suite. The full hosted app suite and strict Swift 6 source/link/test-source gate also pass. |
 | LS-11 | Packaging and self-hosting | `EXTERNAL_GATE` | Non-root multi-architecture Docker build/publish support and deployment documentation exist. Stable local Apple Development signing is available; final feature-branch Release verification, container publication/inspection and DMG publication remain deliberate release actions. |
 | LS-12 | Controlled real-Mac acceptance | `EXTERNAL_GATE` | Requires privacy-authorized ScreenCaptureKit testing for real window/Fullscreen video and audio, two independently launched Clip GUI processes, native remote windows, mixed native/WebKit viewing, overlays, focus churn, sleep/wake and lifecycle soak. |
@@ -83,7 +83,7 @@ branch is not published and development does not replace `/Applications/Clip.app
 - The URL fragment contains the ephemeral room public key and is not included
   in the viewer's HTTP request. Per-route viewer ECDH derives independent
   directional AES-GCM keys.
-- The optional access code is checked by Clip through an encrypted random
+- The optional Access Word is checked by Clip through an encrypted random
   challenge/HMAC proof. Its value is never sent to the service or persisted.
 - After the ordered reliable DataChannel opens, the temporary viewer signaling
   route closes. Established peers are not dependent on the host signaling
@@ -183,10 +183,11 @@ These must not be inferred from loopback tests:
   verify backing-pixel sizing, colored borders, remote cursor alignment and no
   local focus theft with manual interaction.
 - [ ] Exercise sleep/wake, display/window removal, permission revocation,
-  server restart/re-advertisement, sustained overload, repeated start/stop and
+  server restart/new-room recovery, sustained overload, repeated start/stop and
   a ten-minute share while resources return to idle.
-- [ ] Scan runtime logs, preferences, History and caches for access-code text,
-  owner/private keys, SDP, ICE, decrypted control data, pixels or PCM.
+- [ ] Scan runtime logs, preferences, History and caches for join capabilities,
+  Access Words, owner/private keys, SDP, ICE, decrypted control data, pixels or
+  PCM.
 - [ ] Build and inspect the multi-architecture Docker image, then run the final
   stable-signed sandboxed Release DMG/Sparkle/provenance gate.
 

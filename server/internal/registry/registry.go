@@ -53,10 +53,11 @@ type ExpiredRoom struct {
 	Generation uint64
 }
 
-type Advertisement struct {
-	Created            bool
+type Lease struct {
+	Name               string
 	Lease              time.Duration
 	Generation         uint64
+	Existing           bool
 	ExpiredGenerations []ExpiredRoom
 }
 
@@ -79,37 +80,33 @@ func New(configuration Configuration) *Registry {
 	}
 }
 
-// Advertise atomically claims a room name. Repeating the operation with the
-// same capability is idempotent and renews an unattached lease.
-func (r *Registry) Advertise(name string, ownerHash [32]byte) (created bool, lease time.Duration, err error) {
-	advertisement, err := r.AdvertiseGeneration(name, ownerHash)
-	return advertisement.Created, advertisement.Lease, err
-}
-
-func (r *Registry) AdvertiseGeneration(name string, ownerHash [32]byte) (Advertisement, error) {
+// AllocateGeneration atomically claims an available server-generated room
+// name. Repeating an allocation with the same owner capability returns its
+// existing live lease, making a lost POST response safe to retry. A different
+// owner still conflicts with an occupied generated name.
+func (r *Registry) AllocateGeneration(name string, ownerHash [32]byte) (Lease, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	result := Advertisement{Lease: r.config.LeaseDuration}
+	result := Lease{Lease: r.config.LeaseDuration}
 	now := r.config.Now()
-	if existing, found := r.rooms[name]; found {
-		if r.expiredLocked(existing, now) {
-			delete(r.rooms, name)
-			result.ExpiredGenerations = append(result.ExpiredGenerations, ExpiredRoom{Name: name, Generation: existing.generation})
-		} else {
-			if !sameHash(existing.ownerHash, ownerHash) {
-				return result, ErrRoomConflict
-			}
+	result.ExpiredGenerations = append(
+		result.ExpiredGenerations,
+		r.purgeExpiredLocked(now)...,
+	)
+	for _, existing := range r.rooms {
+		if sameHash(existing.ownerHash, ownerHash) {
 			if !existing.hostConnected {
 				existing.expiresAt = now.Add(r.config.LeaseDuration)
 			}
+			result.Name = existing.name
 			result.Generation = existing.generation
+			result.Existing = true
 			return result, nil
 		}
 	}
-
-	if len(r.rooms) >= r.config.MaximumRooms {
-		result.ExpiredGenerations = append(result.ExpiredGenerations, r.purgeExpiredLocked(now)...)
+	if _, found := r.rooms[name]; found {
+		return result, ErrRoomConflict
 	}
 	if len(r.rooms) >= r.config.MaximumRooms {
 		return result, ErrRoomLimit
@@ -121,8 +118,38 @@ func (r *Registry) AdvertiseGeneration(name string, ownerHash [32]byte) (Adverti
 		generation: generation,
 		expiresAt:  now.Add(r.config.LeaseDuration),
 	}
-	result.Created = true
+	result.Name = name
 	result.Generation = generation
+	return result, nil
+}
+
+// RenewGeneration extends an existing unattached room lease after authenticating
+// the owner. It never creates or reclaims a room name.
+func (r *Registry) RenewGeneration(name string, ownerHash [32]byte) (Lease, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	result := Lease{Lease: r.config.LeaseDuration}
+	now := r.config.Now()
+	current, found := r.rooms[name]
+	if !found {
+		return result, ErrRoomNotFound
+	}
+	if r.expiredLocked(current, now) {
+		delete(r.rooms, name)
+		result.ExpiredGenerations = append(
+			result.ExpiredGenerations,
+			ExpiredRoom{Name: name, Generation: current.generation},
+		)
+		return result, ErrRoomNotFound
+	}
+	if !sameHash(current.ownerHash, ownerHash) {
+		return result, ErrUnauthorized
+	}
+	if !current.hostConnected {
+		current.expiresAt = now.Add(r.config.LeaseDuration)
+	}
+	result.Generation = current.generation
 	return result, nil
 }
 

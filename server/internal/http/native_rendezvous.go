@@ -35,7 +35,7 @@ func (s *Service) advertiseNativeRendezvous(writer http.ResponseWriter, request 
 	if !ok {
 		return
 	}
-	if !s.admission.allowAdvertisement(s.admission.source(request)) {
+	if !s.admission.allowRoomLeaseOperation(s.admission.source(request)) {
 		writer.Header().Set("Retry-After", "60")
 		writeError(writer, http.StatusTooManyRequests, "source_rate_limited")
 		return

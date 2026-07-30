@@ -279,7 +279,7 @@ struct LiveSharePopoverView: View {
 
                         ClipPopoverRowDivider()
                         ClipPopoverToggleRow(
-                            String(localized: "Access Code"),
+                            String(localized: "Access Word"),
                             systemImage: "lock",
                             isEnabled: model.snapshot.canChangeAccessCode,
                             accessibilityIdentifier: "clip.liveShare.accessCode.toggle",
@@ -318,7 +318,7 @@ struct LiveSharePopoverView: View {
                             .padding(.horizontal, ClipPopoverDesign.rowHorizontalPadding)
                             .padding(.bottom, ClipPopoverDesign.rowVerticalPadding)
 
-                            Text("Verified by this Mac; the server never receives the code.")
+                            Text("A separate one-word confirmation verified by this Mac; the server never receives it.")
                                 .font(.caption2)
                                 .foregroundStyle(.secondary)
                                 .fixedSize(horizontal: false, vertical: true)

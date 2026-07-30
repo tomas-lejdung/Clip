@@ -8,6 +8,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -58,17 +59,38 @@ func ownerToken(value byte) string {
 	return base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{value}, protocol.OwnerTokenBytes))
 }
 
-func advertise(t *testing.T, serverURL, room, token string) *http.Response {
+func allocateRoom(t *testing.T, serverURL, token string) (protocol.RoomResponse, int) {
 	t.Helper()
 	body, err := json.Marshal(protocol.OwnerRequest{OwnerToken: token})
 	if err != nil {
 		t.Fatal(err)
 	}
-	request, err := http.NewRequest(http.MethodPut, serverURL+"/api/v1/rooms/"+room, bytes.NewReader(body))
+	request, err := http.NewRequest(http.MethodPost, serverURL+"/api/v1/rooms", bytes.NewReader(body))
 	if err != nil {
 		t.Fatal(err)
 	}
 	request.Header.Set("Content-Type", "application/json")
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	var lease protocol.RoomResponse
+	if response.StatusCode == http.StatusCreated || response.StatusCode == http.StatusOK {
+		if err := json.NewDecoder(response.Body).Decode(&lease); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return lease, response.StatusCode
+}
+
+func renewRoom(t *testing.T, serverURL, room, token string) *http.Response {
+	t.Helper()
+	request, err := http.NewRequest(http.MethodPut, serverURL+"/api/v1/rooms/"+room, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Authorization", "Bearer "+token)
 	response, err := http.DefaultClient.Do(request)
 	if err != nil {
 		t.Fatal(err)
@@ -221,31 +243,53 @@ func TestCapabilitiesViewerAndSecurityHeaders(t *testing.T) {
 	}
 }
 
-func TestRoomAdvertisementOwnershipAndDeletion(t *testing.T) {
+func TestRoomAllocationRenewalOwnershipAndDeletion(t *testing.T) {
 	t.Parallel()
-	_, server := newHTTPTestServer(t)
+	service, server := newHTTPTestServer(t)
+	generatedNames := []string{
+		"CRISP-FROG-042",
+		"BRIGHT-OWL-999",
+		"CRISP-FROG-042",
+		"CALM-OTTER-007",
+	}
+	service.roomNameGenerator = func() (string, error) {
+		name := generatedNames[0]
+		generatedNames = generatedNames[1:]
+		return name, nil
+	}
 	token := ownerToken(1)
-	response := advertise(t, server.URL, "crisp-frog-042", token)
-	defer response.Body.Close()
-	var created protocol.RoomResponse
-	if err := json.NewDecoder(response.Body).Decode(&created); err != nil {
-		t.Fatal(err)
-	}
-	if response.StatusCode != http.StatusCreated || created.Room != "CRISP-FROG-042" || created.LeaseDurationSeconds != 120 {
-		t.Fatalf("created response = %d, %#v", response.StatusCode, created)
-	}
-	response = advertise(t, server.URL, "CRISP-FROG-042", token)
-	response.Body.Close()
-	if response.StatusCode != http.StatusOK {
-		t.Fatalf("idempotent status = %d", response.StatusCode)
-	}
-	response = advertise(t, server.URL, "CRISP-FROG-042", ownerToken(2))
-	response.Body.Close()
-	if response.StatusCode != http.StatusConflict {
-		t.Fatalf("conflict status = %d", response.StatusCode)
+	created, status := allocateRoom(t, server.URL, token)
+	if status != http.StatusCreated || created.Room != "CRISP-FROG-042" || created.LeaseDurationSeconds != 120 {
+		t.Fatalf("created response = %d, %#v", status, created)
 	}
 
-	request, _ := http.NewRequest(http.MethodDelete, server.URL+"/api/v1/rooms/CRISP-FROG-042", nil)
+	repeated, status := allocateRoom(t, server.URL, token)
+	if status != http.StatusOK || repeated.Room != created.Room {
+		t.Fatalf("idempotent allocation response = %d, %#v", status, repeated)
+	}
+
+	second, status := allocateRoom(t, server.URL, ownerToken(3))
+	if status != http.StatusCreated || second.Room != "CALM-OTTER-007" {
+		t.Fatalf("collision retry response = %d, %#v", status, second)
+	}
+
+	response := renewRoom(t, server.URL, created.Room, token)
+	response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("renewal status = %d", response.StatusCode)
+	}
+	response = renewRoom(t, server.URL, created.Room, ownerToken(2))
+	response.Body.Close()
+	if response.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("wrong-owner renewal status = %d", response.StatusCode)
+	}
+	response = renewRoom(t, server.URL, "BRIGHT-OWL-999", token)
+	response.Body.Close()
+	if response.StatusCode != http.StatusNotFound {
+		t.Fatalf("unknown-room renewal status = %d", response.StatusCode)
+	}
+
+	request, _ := http.NewRequest(http.MethodDelete, server.URL+"/api/v1/rooms/"+created.Room, nil)
 	request.Header.Set("Authorization", "Bearer "+ownerToken(2))
 	response, err := http.DefaultClient.Do(request)
 	if err != nil {
@@ -255,7 +299,7 @@ func TestRoomAdvertisementOwnershipAndDeletion(t *testing.T) {
 	if response.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("wrong-owner delete status = %d", response.StatusCode)
 	}
-	request, _ = http.NewRequest(http.MethodDelete, server.URL+"/api/v1/rooms/CRISP-FROG-042", nil)
+	request, _ = http.NewRequest(http.MethodDelete, server.URL+"/api/v1/rooms/"+created.Room, nil)
 	request.Header.Set("Authorization", "Bearer "+token)
 	response, err = http.DefaultClient.Do(request)
 	if err != nil {
@@ -267,13 +311,64 @@ func TestRoomAdvertisementOwnershipAndDeletion(t *testing.T) {
 	}
 }
 
+func TestRoomAllocationRejectsClientSelectedNamesAndViewerSecrets(t *testing.T) {
+	t.Parallel()
+	_, server := newHTTPTestServer(t)
+	token := ownerToken(2)
+
+	body := fmt.Sprintf(`{"ownerToken":%q}`, token)
+	request, err := http.NewRequest(
+		http.MethodPost,
+		server.URL+"/api/v1/rooms/CLIENT-CHOICE-001",
+		strings.NewReader(body),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Content-Type", "application/json")
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusMethodNotAllowed {
+		t.Fatalf("client-selected allocation status = %d", response.StatusCode)
+	}
+
+	body = fmt.Sprintf(
+		`{"ownerToken":%q,"joinCapability":%q}`,
+		token,
+		base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{9}, 32)),
+	)
+	response, err = http.Post(
+		server.URL+"/api/v1/rooms",
+		"application/json",
+		strings.NewReader(body),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusBadRequest {
+		t.Fatalf("server-visible join capability status = %d", response.StatusCode)
+	}
+
+	response = renewRoom(t, server.URL, "CLIENT-CHOICE-001", token)
+	response.Body.Close()
+	if response.StatusCode != http.StatusNotFound {
+		t.Fatalf("renewal created a client-selected room: %d", response.StatusCode)
+	}
+}
+
 func TestWebSocketRoutesOpaqueRelaysBothDirections(t *testing.T) {
 	_, server := newHTTPTestServer(t)
 	token := ownerToken(3)
-	response := advertise(t, server.URL, "ROUTE-ROOM", token)
-	response.Body.Close()
-	host := dialHost(t, server.URL, "ROUTE-ROOM", token)
-	viewer := dialViewer(t, server.URL, "ROUTE-ROOM")
+	lease, status := allocateRoom(t, server.URL, token)
+	if status != http.StatusCreated {
+		t.Fatalf("allocation status = %d", status)
+	}
+	host := dialHost(t, server.URL, lease.Room, token)
+	viewer := dialViewer(t, server.URL, lease.Room)
 	routeID := openRoute(t, host, viewer)
 
 	viewerRelay := relayEnvelope(1)
@@ -305,10 +400,12 @@ func TestWebSocketRoutesOpaqueRelaysBothDirections(t *testing.T) {
 func TestLateRouteRelayDoesNotDisconnectHostOrOtherRoutes(t *testing.T) {
 	_, server := newHTTPTestServer(t)
 	token := ownerToken(4)
-	response := advertise(t, server.URL, "RACE-ROOM", token)
-	response.Body.Close()
-	host := dialHost(t, server.URL, "RACE-ROOM", token)
-	viewerOne := dialViewer(t, server.URL, "RACE-ROOM")
+	lease, status := allocateRoom(t, server.URL, token)
+	if status != http.StatusCreated {
+		t.Fatalf("allocation status = %d", status)
+	}
+	host := dialHost(t, server.URL, lease.Room, token)
+	viewerOne := dialViewer(t, server.URL, lease.Room)
 	routeOne := openRoute(t, host, viewerOne)
 	if err := viewerOne.WriteJSON(protocol.Message{Type: protocol.MessageCloseRoute, RouteID: routeOne}); err != nil {
 		t.Fatal(err)
@@ -331,7 +428,7 @@ func TestLateRouteRelayDoesNotDisconnectHostOrOtherRoutes(t *testing.T) {
 		t.Fatalf("late relay result = %#v", routeError)
 	}
 
-	viewerTwo := dialViewer(t, server.URL, "RACE-ROOM")
+	viewerTwo := dialViewer(t, server.URL, lease.Room)
 	routeTwo := openRoute(t, host, viewerTwo)
 	secondRelay := relayEnvelope(1)
 	if err := viewerTwo.WriteJSON(secondRelay); err != nil {
@@ -349,10 +446,12 @@ func TestLateRouteRelayDoesNotDisconnectHostOrOtherRoutes(t *testing.T) {
 func TestSequenceFailureClosesOnlyAffectedRoute(t *testing.T) {
 	_, server := newHTTPTestServer(t)
 	token := ownerToken(5)
-	response := advertise(t, server.URL, "SEQUENCE-ROOM", token)
-	response.Body.Close()
-	host := dialHost(t, server.URL, "SEQUENCE-ROOM", token)
-	viewer := dialViewer(t, server.URL, "SEQUENCE-ROOM")
+	lease, status := allocateRoom(t, server.URL, token)
+	if status != http.StatusCreated {
+		t.Fatalf("allocation status = %d", status)
+	}
+	host := dialHost(t, server.URL, lease.Room, token)
+	viewer := dialViewer(t, server.URL, lease.Room)
 	routeID := openRoute(t, host, viewer)
 	skipped := relayEnvelope(2)
 	skipped.RouteID = routeID
@@ -367,7 +466,7 @@ func TestSequenceFailureClosesOnlyAffectedRoute(t *testing.T) {
 		t.Fatalf("sequence result = %#v", routeError)
 	}
 
-	secondViewer := dialViewer(t, server.URL, "SEQUENCE-ROOM")
+	secondViewer := dialViewer(t, server.URL, lease.Room)
 	_ = openRoute(t, host, secondViewer)
 }
 
@@ -375,9 +474,11 @@ func TestHostUnavailableAndOriginPolicy(t *testing.T) {
 	t.Parallel()
 	_, server := newHTTPTestServer(t)
 	token := ownerToken(6)
-	response := advertise(t, server.URL, "WAITING-ROOM", token)
-	response.Body.Close()
-	viewer := dialViewer(t, server.URL, "WAITING-ROOM")
+	lease, status := allocateRoom(t, server.URL, token)
+	if status != http.StatusCreated {
+		t.Fatalf("allocation status = %d", status)
+	}
+	viewer := dialViewer(t, server.URL, lease.Room)
 	var unavailable protocol.Message
 	if err := viewer.ReadJSON(&unavailable); err != nil {
 		t.Fatal(err)
@@ -389,7 +490,10 @@ func TestHostUnavailableAndOriginPolicy(t *testing.T) {
 	header := http.Header{}
 	header.Set("Origin", "https://attacker.example")
 	header.Set("Authorization", "Bearer "+token)
-	_, response, err := websocket.DefaultDialer.Dial(websocketURL(server.URL, "/api/v1/rooms/WAITING-ROOM/host"), header)
+	_, response, err := websocket.DefaultDialer.Dial(
+		websocketURL(server.URL, "/api/v1/rooms/"+lease.Room+"/host"),
+		header,
+	)
 	if err == nil {
 		t.Fatal("cross-origin websocket was accepted")
 	}
@@ -401,9 +505,11 @@ func TestHostUnavailableAndOriginPolicy(t *testing.T) {
 func TestUnknownAndOversizedWebSocketMessagesAreRejected(t *testing.T) {
 	_, server := newHTTPTestServer(t)
 	token := ownerToken(7)
-	response := advertise(t, server.URL, "BOUNDS-ROOM", token)
-	response.Body.Close()
-	host := dialHost(t, server.URL, "BOUNDS-ROOM", token)
+	lease, status := allocateRoom(t, server.URL, token)
+	if status != http.StatusCreated {
+		t.Fatalf("allocation status = %d", status)
+	}
+	host := dialHost(t, server.URL, lease.Room, token)
 	if err := host.WriteJSON(map[string]any{"type": "relay", "unknown": true}); err != nil {
 		t.Fatal(err)
 	}
@@ -415,7 +521,7 @@ func TestUnknownAndOversizedWebSocketMessagesAreRejected(t *testing.T) {
 		t.Fatalf("unknown field response = %#v", protocolError)
 	}
 
-	secondHost := dialHost(t, server.URL, "BOUNDS-ROOM", token)
+	secondHost := dialHost(t, server.URL, lease.Room, token)
 	oversized := bytes.Repeat([]byte("x"), protocol.MaximumMessageBytes+1)
 	if err := secondHost.WriteMessage(websocket.TextMessage, oversized); err != nil {
 		t.Fatal(err)
@@ -429,9 +535,11 @@ func TestUnknownAndOversizedWebSocketMessagesAreRejected(t *testing.T) {
 func TestServiceShutdownClosesActiveWebSocketsWithinDeadline(t *testing.T) {
 	service, server := newHTTPTestServer(t)
 	token := ownerToken(22)
-	response := advertise(t, server.URL, "SHUTDOWN-ROOM", token)
-	response.Body.Close()
-	host := dialHost(t, server.URL, "SHUTDOWN-ROOM", token)
+	lease, status := allocateRoom(t, server.URL, token)
+	if status != http.StatusCreated {
+		t.Fatalf("allocation status = %d", status)
+	}
+	host := dialHost(t, server.URL, lease.Room, token)
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()

@@ -141,13 +141,13 @@
     "A viewer connection couldn’t be established." : {
 
     },
-    "Access Code" : {
+    "Access Word" : {
 
     },
-    "Access code" : {
+    "Access word" : {
 
     },
-    "Access code required" : {
+    "Access word required" : {
 
     },
     "Actual" : {
@@ -480,7 +480,7 @@
     "Couldn’t create a share link. Try again." : {
 
     },
-    "Couldn’t update the access code. Try again." : {
+    "Couldn’t update the access word. Try again." : {
 
     },
     "Creating share link…" : {
@@ -1133,7 +1133,7 @@
     "Requested Bitrate Floor" : {
 
     },
-    "Require an access code" : {
+    "Require an access word" : {
 
     },
     "Reset" : {
@@ -1566,7 +1566,7 @@
     "This removes the managed recording from Clip History. Files previously saved or shared are not deleted." : {
 
     },
-    "This share requires the code provided by the host." : {
+    "Enter the word provided separately by the host." : {
 
     },
     "Tokens: YYYY year, MM month, DD day, HH hour, mm minute, and ss second. They are case-sensitive; .mp4 is added automatically." : {
@@ -1608,7 +1608,7 @@
     "Uptime %@" : {
 
     },
-    "Verified by this Mac; the server never receives the code." : {
+    "A separate one-word confirmation verified by this Mac; the server never receives it." : {
 
     },
     "Very High" : {

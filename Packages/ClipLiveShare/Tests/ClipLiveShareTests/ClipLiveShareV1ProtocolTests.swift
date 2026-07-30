@@ -5,7 +5,7 @@ import Testing
 
 @Suite("Clip Live Share v1 protocol")
 struct ClipLiveShareV1ProtocolTests {
-  @Test("room names normalize, validate, and are generated entirely client-side")
+  @Test("server-allocated room names normalize and validate")
   func roomNames() throws {
     #expect(try ClipLiveShareRoomName(rawValue: " calm-otter-042 \n").rawValue == "CALM-OTTER-042")
 
@@ -14,21 +14,21 @@ struct ClipLiveShareV1ProtocolTests {
         try ClipLiveShareRoomName(rawValue: invalid)
       }
     }
-
-    var generator = SeededRandomNumberGenerator(state: 42)
-    var secondGenerator = SeededRandomNumberGenerator(state: 42)
-    let generated = ClipLiveShareRoomName.random(using: &generator)
-    #expect(generated == ClipLiveShareRoomName.random(using: &secondGenerator))
-    #expect(try ClipLiveShareRoomName(rawValue: generated.rawValue) == generated)
   }
 
-  @Test("owner and route secrets use exact canonical base64url resources")
+  @Test("owner, join, and route secrets use exact canonical base64url resources")
   func binaryIdentifiers() throws {
     let owner = try ClipLiveShareOwnerToken(bytes: Data(repeating: 0, count: 32))
     #expect(owner.rawValue == "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")
     #expect(owner.authorizationHeaderValue == "Bearer \(owner.rawValue)")
     #expect(owner.sha256Digest.hex == "66687aadf862bd776c8fc18b8e9f8e20089714856ee233b3902a591d0d5f2925")
     #expect(try ClipLiveShareOwnerToken(rawValue: owner.rawValue) == owner)
+
+    let joinCapability = try ClipLiveShareJoinCapability(bytes: Data(0...31))
+    #expect(joinCapability.rawValue == "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8")
+    #expect(try ClipLiveShareJoinCapability(rawValue: joinCapability.rawValue) == joinCapability)
+    #expect(!joinCapability.description.contains(joinCapability.rawValue))
+    #expect(!joinCapability.debugDescription.contains(joinCapability.rawValue))
 
     let route = try ClipLiveShareRouteID(bytes: Data(0...15))
     #expect(route.rawValue == "AAECAwQFBgcICQoLDA0ODw")
@@ -37,11 +37,38 @@ struct ClipLiveShareV1ProtocolTests {
     #expect(throws: ClipLiveShareProtocolError.invalidOwnerToken) {
       try ClipLiveShareOwnerToken(bytes: Data(repeating: 0, count: 31))
     }
+    #expect(throws: ClipLiveShareProtocolError.invalidJoinCapability) {
+      try ClipLiveShareJoinCapability(bytes: Data(repeating: 0, count: 31))
+    }
     #expect(throws: ClipLiveShareProtocolError.invalidRouteID) {
       try ClipLiveShareRouteID(rawValue: "AA")
     }
     #expect(ClipLiveShareBase64URL.decode("AA==") == nil)
     #expect(ClipLiveShareBase64URL.decode("+/8") == nil)
+  }
+
+  @Test("room configuration descriptions redact every client capability")
+  func roomConfigurationDescriptionIsRedacted() throws {
+    let owner = try ClipLiveShareOwnerToken(bytes: Data(repeating: 7, count: 32))
+    let joinCapability = try ClipLiveShareJoinCapability(bytes: Data(repeating: 8, count: 32))
+    let configuration = ClipLiveShareRoomConfiguration(
+      endpoint: try ClipLiveShareServerEndpoint(
+        rootURL: URL(string: "https://share.example")!
+      ),
+      capabilities: .v1Default,
+      room: try ClipLiveShareRoomName(rawValue: "CLEAR-LARK-271"),
+      ownerToken: owner,
+      identity: try ClipLiveShareRoomIdentity(
+        privateKeyRawRepresentation: Data(repeating: 9, count: 32)
+      ),
+      joinCapability: joinCapability
+    )
+
+    #expect(!configuration.description.contains(owner.rawValue))
+    #expect(!configuration.description.contains(joinCapability.rawValue))
+    #expect(!configuration.debugDescription.contains(owner.rawValue))
+    #expect(!configuration.debugDescription.contains(joinCapability.rawValue))
+    #expect(configuration.description.contains("<redacted>"))
   }
 
   @Test("official and development endpoints derive all v1 resources")
@@ -53,7 +80,11 @@ struct ClipLiveShareV1ProtocolTests {
         == "https://clip.tineestudio.se/.well-known/clip-live-share"
     )
     #expect(
-      ClipLiveShareServerEndpoint.official.advertiseRoomURL(room).absoluteString
+      ClipLiveShareServerEndpoint.official.allocateRoomURL.absoluteString
+        == "https://clip.tineestudio.se/api/v1/rooms"
+    )
+    #expect(
+      ClipLiveShareServerEndpoint.official.renewRoomURL(room).absoluteString
         == "https://clip.tineestudio.se/api/v1/rooms/CALM-OTTER-042"
     )
     #expect(
@@ -110,12 +141,12 @@ struct ClipLiveShareV1ProtocolTests {
     }
   }
 
-  @Test("room advertisement request and response have stable field names")
-  func advertisementSchema() throws {
+  @Test("room allocation request and lease have stable field names")
+  func allocationSchema() throws {
     let room = try ClipLiveShareRoomName(rawValue: "CALM-OTTER-042")
     let owner = try ClipLiveShareOwnerToken(bytes: Data(repeating: 7, count: 32))
-    let request = ClipLiveShareAdvertiseRoomRequest(ownerToken: owner)
-    let response = try ClipLiveShareRoomAdvertisement(room: room, leaseDurationSeconds: 30)
+    let request = ClipLiveShareAllocateRoomRequest(ownerToken: owner)
+    let response = try ClipLiveShareRoomLease(room: room, leaseDurationSeconds: 30)
 
     let requestObject = try #require(
       JSONSerialization.jsonObject(with: JSONEncoder().encode(request)) as? [String: Any]
@@ -124,8 +155,37 @@ struct ClipLiveShareV1ProtocolTests {
       JSONSerialization.jsonObject(with: JSONEncoder().encode(response)) as? [String: Any]
     )
     #expect(requestObject["ownerToken"] as? String == owner.rawValue)
+    #expect(requestObject.count == 1)
     #expect(responseObject["room"] as? String == room.rawValue)
     #expect(responseObject["leaseDurationSeconds"] as? Int == 30)
+  }
+
+  @Test("auth response requires explicit join proof and has no legacy proof field")
+  func authResponseSchema() throws {
+    let session = try ClipLiveShareSessionID(rawValue: "fixture-session")
+    let message = ClipLiveShareInnerMessage.authResponse(
+      try ClipLiveShareAuthResponse(
+        sessionID: session,
+        joinProof: Data(repeating: 1, count: 32),
+        accessCodeProof: Data(repeating: 2, count: 32)
+      )
+    )
+    let encoded = try ClipLiveShareMessageCodec.encodeInner(message)
+    let object = try #require(
+      JSONSerialization.jsonObject(with: encoded) as? [String: Any]
+    )
+
+    #expect(object["joinProof"] as? String == "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE")
+    #expect(object["accessCodeProof"] as? String == "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI")
+    #expect(object["proof"] == nil)
+    #expect(try ClipLiveShareMessageCodec.decodeInner(encoded) == message)
+
+    let legacy = Data(
+      #"{"type":"auth-response","version":1,"sessionId":"fixture-session","proof":"AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE"}"#.utf8
+    )
+    #expect(throws: DecodingError.self) {
+      try ClipLiveShareMessageCodec.decodeInner(legacy)
+    }
   }
 
   @Test("viewer fragment round-trips without exposing key material to HTTP")
@@ -133,16 +193,28 @@ struct ClipLiveShareV1ProtocolTests {
     let identity = try ClipLiveShareRoomIdentity(
       privateKeyRawRepresentation: Data(repeating: 1, count: 32)
     )
-    let fragment = try ClipLiveShareViewerFragment(publicKey: identity.publicKey)
+    let joinCapability = try ClipLiveShareJoinCapability(bytes: Data(0...31))
+    let fragment = try ClipLiveShareViewerFragment(
+      publicKey: identity.publicKey,
+      joinCapability: joinCapability
+    )
     let base = URL(string: "https://clip.example/CALM-OTTER-042")!
     let url = try fragment.adding(to: base)
 
     #expect(url.absoluteString.hasPrefix("https://clip.example/CALM-OTTER-042#v=1&key="))
+    #expect(url.absoluteString.hasSuffix("&join=\(joinCapability.rawValue)"))
     #expect(try ClipLiveShareViewerFragment(url: url) == fragment)
     #expect(url.path == "/CALM-OTTER-042")
     #expect(url.query == nil)
+    #expect(!fragment.description.contains(joinCapability.rawValue))
+    #expect(!fragment.debugDescription.contains(joinCapability.rawValue))
     #expect(throws: ClipLiveShareProtocolError.self) {
-      try ClipLiveShareViewerFragment(fragment: "v=2&key=\(identity.publicKey.rawValue)")
+      try ClipLiveShareViewerFragment(
+        fragment: "v=2&key=\(identity.publicKey.rawValue)&join=\(joinCapability.rawValue)"
+      )
+    }
+    #expect(throws: ClipLiveShareProtocolError.self) {
+      try ClipLiveShareViewerFragment(fragment: "v=1&key=\(identity.publicKey.rawValue)")
     }
   }
 
@@ -218,7 +290,11 @@ struct ClipLiveShareV1ProtocolTests {
         )
       ),
       .authResponse(
-        try ClipLiveShareAuthResponse(sessionID: session, proof: Data(repeating: 1, count: 32))
+        try ClipLiveShareAuthResponse(
+          sessionID: session,
+          joinProof: Data(repeating: 1, count: 32),
+          accessCodeProof: Data(repeating: 2, count: 32)
+        )
       ),
       .authResult(try ClipLiveShareAuthResult(sessionID: session, allowed: true)),
       .offer(description),

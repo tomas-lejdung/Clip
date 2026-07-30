@@ -101,7 +101,9 @@ struct LiveShareFriendViewSnapshot: Equatable, Identifiable, Sendable {
     }
 }
 
-struct LiveShareRoomViewSnapshot: Equatable, Sendable {
+struct LiveShareRoomViewSnapshot: Equatable, Sendable,
+    CustomStringConvertible, CustomDebugStringConvertible
+{
     let viewerURL: URL
     let roomCode: String
     let isAvailable: Bool
@@ -115,6 +117,13 @@ struct LiveShareRoomViewSnapshot: Equatable, Sendable {
         self.roomCode = roomCode
         self.isAvailable = isAvailable
     }
+
+    var description: String {
+        "LiveShareRoomViewSnapshot(roomCode: \(roomCode), "
+            + "viewerURL: <redacted invite>, isAvailable: \(isAvailable))"
+    }
+
+    var debugDescription: String { description }
 }
 
 enum LiveShareSourceViewStatus: String, Equatable, Sendable {
@@ -618,7 +627,9 @@ struct LiveShareCapturePressureWarningSnapshot: Equatable, Sendable {
     }
 }
 
-struct LiveShareViewSnapshot: Equatable, Sendable {
+struct LiveShareViewSnapshot: Equatable, Sendable,
+    CustomStringConvertible, CustomDebugStringConvertible
+{
     let phase: LiveShareViewPhase
     let sessionStage: LiveShareSessionStage
     let canStartSharing: Bool
@@ -704,6 +715,14 @@ struct LiveShareViewSnapshot: Equatable, Sendable {
     var canStopSession: Bool {
         phase != .inactive && phase != .stopping
     }
+
+    var description: String {
+        "LiveShareViewSnapshot(phase: \(phase.statusText), "
+            + "room: \(room?.roomCode ?? "none"), Access Word: <redacted>, "
+            + "sources: \(sources.count), viewers: \(connectedViewerCount))"
+    }
+
+    var debugDescription: String { description }
 
     private static func normalizedSlots(
         _ supplied: [LiveShareSourceSlotViewSnapshot]

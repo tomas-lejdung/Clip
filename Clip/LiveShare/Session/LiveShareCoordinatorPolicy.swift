@@ -771,6 +771,27 @@ enum LiveShareViewerAdmissionCapacity {
     }
 }
 
+enum LiveShareAnonymousViewerAdmissionPolicy {
+    static func permits(
+        _ response: ClipLiveShareAuthResponse,
+        challenge: ClipLiveShareAuthChallenge,
+        room: ClipLiveShareRoomConfiguration,
+        routeID: ClipLiveShareRouteID,
+        viewerPublicKey: ClipLiveShareKeyAgreementPublicKey,
+        accessCode: String?
+    ) -> Bool {
+        ClipLiveShareAdmissionProof.verify(
+            response,
+            challenge: challenge,
+            joinCapability: room.joinCapability,
+            accessCode: accessCode,
+            room: room.room,
+            routeID: routeID,
+            viewerPublicKey: viewerPublicKey
+        )
+    }
+}
+
 /// Keeps browser/native-v1 introduction routes alive while the host is ready
 /// but has not pressed Start yet. The relay route carries no authentication or
 /// media in this phase; it is only a bounded rendezvous placeholder that can be
@@ -778,29 +799,38 @@ enum LiveShareViewerAdmissionCapacity {
 enum LiveSharePreparedViewerRouteBuffer {
     static func retain(
         _ routeID: ClipLiveShareRouteID,
-        in routeIDs: inout Set<ClipLiveShareRouteID>,
+        viewerPublicKey: ClipLiveShareKeyAgreementPublicKey,
+        in routes: inout [
+            ClipLiveShareRouteID: ClipLiveShareKeyAgreementPublicKey
+        ],
         maximumCount: Int
     ) -> Bool {
-        if routeIDs.contains(routeID) { return true }
-        guard maximumCount > 0, routeIDs.count < maximumCount else {
+        if let retainedKey = routes[routeID] {
+            return retainedKey == viewerPublicKey
+        }
+        guard maximumCount > 0, routes.count < maximumCount else {
             return false
         }
-        routeIDs.insert(routeID)
+        routes[routeID] = viewerPublicKey
         return true
     }
 
     static func cancel(
         _ routeID: ClipLiveShareRouteID,
-        in routeIDs: inout Set<ClipLiveShareRouteID>
+        in routes: inout [
+            ClipLiveShareRouteID: ClipLiveShareKeyAgreementPublicKey
+        ]
     ) {
-        routeIDs.remove(routeID)
+        routes[routeID] = nil
     }
 
     static func drain(
-        _ routeIDs: inout Set<ClipLiveShareRouteID>
-    ) -> Set<ClipLiveShareRouteID> {
-        defer { routeIDs.removeAll() }
-        return routeIDs
+        _ routes: inout [
+            ClipLiveShareRouteID: ClipLiveShareKeyAgreementPublicKey
+        ]
+    ) -> [ClipLiveShareRouteID: ClipLiveShareKeyAgreementPublicKey] {
+        defer { routes.removeAll() }
+        return routes
     }
 }
 

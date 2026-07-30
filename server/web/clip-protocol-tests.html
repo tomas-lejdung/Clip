@@ -9,7 +9,7 @@
     <script type="module">
       import {
         canonicalManifest,
-        createAuthProof,
+        createAuthResponse,
         createViewerKeyPair,
         decodeBase64URL,
         deriveRouteKeys,
@@ -69,12 +69,22 @@
         });
         assert(opened.type === "fixture", "encrypts and authenticates a route message");
 
-        const proof = await createAuthProof({
+        const response = await createAuthResponse({
+          joinCapability: new Uint8Array(32).fill(5),
           accessCode: " abcd ",
+          accessCodeRequired: true,
           challenge: encodeBase64URL(new Uint8Array(32)),
           sessionId: "fixture-session",
+          room: "ABC",
+          routeId,
+          viewerPublicKey: viewer.publicKey,
         });
-        assert(decodeBase64URL(proof, 32).length === 32, "creates a 256-bit access-code proof");
+        assert(
+          decodeBase64URL(response.joinProof, 32).length === 32 &&
+            decodeBase64URL(response.accessCodeProof, 32).length === 32 &&
+            !("proof" in response),
+          "creates independent encrypted join and access-code proofs",
+        );
 
         const manifest = canonicalManifest({
           streams: [

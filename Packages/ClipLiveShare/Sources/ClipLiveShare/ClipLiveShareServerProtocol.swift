@@ -78,7 +78,11 @@ public struct ClipLiveShareServerEndpoint: Codable, Equatable, Hashable, Sendabl
   public var healthURL: URL { url(path: "/healthz") }
   public var versionURL: URL { url(path: "/version") }
 
-  public func advertiseRoomURL(_ room: ClipLiveShareRoomName) -> URL {
+  public var allocateRoomURL: URL {
+    url(path: "/api/v1/rooms")
+  }
+
+  public func renewRoomURL(_ room: ClipLiveShareRoomName) -> URL {
     url(path: "/api/v1/rooms/\(room.rawValue)")
   }
 
@@ -283,7 +287,7 @@ public struct ClipLiveShareCapabilities: Codable, Equatable, Hashable, Sendable 
   }
 }
 
-public struct ClipLiveShareAdvertiseRoomRequest: Codable, Equatable, Hashable, Sendable {
+public struct ClipLiveShareAllocateRoomRequest: Codable, Equatable, Hashable, Sendable {
   public let ownerToken: ClipLiveShareOwnerToken
 
   public init(ownerToken: ClipLiveShareOwnerToken) {
@@ -291,7 +295,7 @@ public struct ClipLiveShareAdvertiseRoomRequest: Codable, Equatable, Hashable, S
   }
 }
 
-public struct ClipLiveShareRoomAdvertisement: Codable, Equatable, Hashable, Sendable {
+public struct ClipLiveShareRoomLease: Codable, Equatable, Hashable, Sendable {
   public let room: ClipLiveShareRoomName
   public let leaseDurationSeconds: Int
 
@@ -312,28 +316,33 @@ public struct ClipLiveShareRoomAdvertisement: Codable, Equatable, Hashable, Send
   }
 }
 
-public struct ClipLiveShareRoomConfiguration: Sendable {
+public struct ClipLiveShareRoomConfiguration: Sendable,
+  CustomStringConvertible, CustomDebugStringConvertible
+{
   public let endpoint: ClipLiveShareServerEndpoint
   public let capabilities: ClipLiveShareCapabilities
   public let room: ClipLiveShareRoomName
   public let ownerToken: ClipLiveShareOwnerToken
   public let identity: ClipLiveShareRoomIdentity
+  public let joinCapability: ClipLiveShareJoinCapability
 
   public init(
     endpoint: ClipLiveShareServerEndpoint,
     capabilities: ClipLiveShareCapabilities,
     room: ClipLiveShareRoomName,
     ownerToken: ClipLiveShareOwnerToken,
-    identity: ClipLiveShareRoomIdentity
+    identity: ClipLiveShareRoomIdentity,
+    joinCapability: ClipLiveShareJoinCapability
   ) {
     self.endpoint = endpoint
     self.capabilities = capabilities
     self.room = room
     self.ownerToken = ownerToken
     self.identity = identity
+    self.joinCapability = joinCapability
   }
 
-  public var advertiseURL: URL { endpoint.advertiseRoomURL(room) }
+  public var renewURL: URL { endpoint.renewRoomURL(room) }
 
   public var hostWebSocketURL: URL {
     get throws {
@@ -350,9 +359,19 @@ public struct ClipLiveShareRoomConfiguration: Sendable {
   public var viewerURL: URL {
     get throws {
       let base = try endpoint.url(for: capabilities.viewerPathTemplate, room: room)
-      return try ClipLiveShareViewerFragment(publicKey: identity.publicKey).adding(to: base)
+      return try ClipLiveShareViewerFragment(
+        publicKey: identity.publicKey,
+        joinCapability: joinCapability
+      ).adding(to: base)
     }
   }
+
+  public var description: String {
+    "ClipLiveShareRoomConfiguration(endpoint: \(endpoint), room: \(room.rawValue), "
+      + "secrets: <redacted>)"
+  }
+
+  public var debugDescription: String { description }
 }
 
 private enum ClipLiveSharePathTemplate {

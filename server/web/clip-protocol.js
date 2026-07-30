@@ -5,6 +5,10 @@ export const MAX_INNER_MESSAGE_BYTES = 196_400;
 export const MAX_ICE_CANDIDATES = 256;
 export const MAX_SESSION_DESCRIPTION_BYTES = 190_000;
 export const MAX_ICE_CANDIDATE_BYTES = 16_384;
+export const JOIN_CAPABILITY_BYTES = 32;
+
+const JOIN_PROOF_DOMAIN = "clip-live-share-v1/join-proof";
+const ACCESS_CODE_PROOF_DOMAIN = "clip-live-share-v1/access-code-proof";
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder("utf-8", { fatal: true });
@@ -83,12 +87,12 @@ export function parseViewerFragment(hash = window.location.hash) {
     }
     const name = component.slice(0, separator);
     const fieldValue = component.slice(separator + 1);
-    if ((name !== "v" && name !== "key") || fields.has(name)) {
+    if ((name !== "v" && name !== "key" && name !== "join") || fields.has(name)) {
       throw new ClipProtocolError("invalid-fragment", "This share link has invalid URL fragment fields.");
     }
     fields.set(name, fieldValue);
   }
-  if (fields.size !== 2 || !fields.has("v") || !fields.has("key")) {
+  if (fields.size !== 3 || !fields.has("v") || !fields.has("key") || !fields.has("join")) {
     throw new ClipProtocolError("invalid-fragment", "This share link has an incomplete URL fragment.");
   }
   const versionValue = fields.get("v");
@@ -106,7 +110,15 @@ export function parseViewerFragment(hash = window.location.hash) {
   if (roomPublicKey[0] !== 0x04) {
     throw new ClipProtocolError("invalid-room-key", "This share link contains an invalid room key.");
   }
-  return { version: CLIP_PROTOCOL_VERSION, roomPublicKey };
+  const encodedJoinCapability = fields.get("join");
+  if (!encodedJoinCapability) {
+    throw new ClipProtocolError(
+      "missing-join-capability",
+      "This share link is missing its private join capability.",
+    );
+  }
+  const joinCapability = decodeBase64URL(encodedJoinCapability, JOIN_CAPABILITY_BYTES);
+  return { version: CLIP_PROTOCOL_VERSION, roomPublicKey, joinCapability };
 }
 
 export function fillPathTemplate(template, room) {
@@ -224,6 +236,18 @@ export async function createViewerKeyPair(subtle = crypto.subtle) {
     throw new ClipProtocolError("key-generation-failed", "The browser generated an invalid viewer key.");
   }
   return { privateKey: keyPair.privateKey, publicKey };
+}
+
+export function createViewerHello(viewerPublicKey) {
+  const publicKey = requireBytes(viewerPublicKey, 65, "invalid-viewer-key");
+  if (publicKey[0] !== 0x04) {
+    throw new ClipProtocolError("invalid-viewer-key", "The browser has an invalid viewer key.");
+  }
+  return {
+    type: "viewer-hello",
+    version: CLIP_PROTOCOL_VERSION,
+    viewerKey: encodeBase64URL(publicKey),
+  };
 }
 
 export async function deriveRouteKeys({
@@ -353,30 +377,189 @@ export class EncryptedRoute {
   }
 }
 
-export async function createAuthProof({
+export async function createJoinCapabilityProof({
+  joinCapability,
+  challenge,
+  sessionId,
+  room,
+  routeId,
+  viewerPublicKey,
+  subtle = crypto.subtle,
+}) {
+  const capability = requireBytes(
+    joinCapability,
+    JOIN_CAPABILITY_BYTES,
+    "invalid-join-capability",
+  );
+  return createChallengeProof({
+    domain: JOIN_PROOF_DOMAIN,
+    keyBytes: capability,
+    challenge,
+    sessionId,
+    room,
+    routeId,
+    viewerPublicKey,
+    subtle,
+  });
+}
+
+export async function createAccessCodeProof({
   accessCode,
   challenge,
   sessionId,
+  room,
+  routeId,
+  viewerPublicKey,
   subtle = crypto.subtle,
 }) {
   const normalizedCode = normalizeAccessCode(accessCode);
   if (!normalizedCode) {
-    throw new ClipProtocolError("missing-access-code", "Enter the access code to continue.");
+    throw new ClipProtocolError("missing-access-code", "Enter the Access Word to continue.");
   }
   const codeHash = await subtle.digest("SHA-256", encoder.encode(normalizedCode));
+  return createChallengeProof({
+    domain: ACCESS_CODE_PROOF_DOMAIN,
+    keyBytes: new Uint8Array(codeHash),
+    challenge,
+    sessionId,
+    room,
+    routeId,
+    viewerPublicKey,
+    subtle,
+  });
+}
+
+export async function createAuthResponse({
+  joinCapability,
+  accessCode,
+  accessCodeRequired,
+  challenge,
+  sessionId,
+  room,
+  routeId,
+  viewerPublicKey,
+  subtle = crypto.subtle,
+}) {
+  if (typeof accessCodeRequired !== "boolean") {
+    throw new ClipProtocolError(
+      "invalid-challenge",
+      "Clip sent an invalid authorization challenge.",
+    );
+  }
+  const proofContext = {
+    challenge,
+    sessionId,
+    room,
+    routeId,
+    viewerPublicKey,
+    subtle,
+  };
+  const joinProof = await createJoinCapabilityProof({
+    joinCapability,
+    ...proofContext,
+  });
+  const accessCodeProof = accessCodeRequired
+    ? await createAccessCodeProof({ accessCode, ...proofContext })
+    : null;
+  return {
+    type: "auth-response",
+    version: CLIP_PROTOCOL_VERSION,
+    sessionId,
+    joinProof,
+    ...(accessCodeProof ? { accessCodeProof } : {}),
+  };
+}
+
+async function createChallengeProof({
+  domain,
+  keyBytes,
+  challenge,
+  sessionId,
+  room,
+  routeId,
+  viewerPublicKey,
+  subtle,
+}) {
+  const input = challengeProofInput({
+    domain,
+    challenge,
+    sessionId,
+    room,
+    routeId,
+    viewerPublicKey,
+  });
   const key = await subtle.importKey(
     "raw",
-    codeHash,
+    keyBytes,
     { name: "HMAC", hash: "SHA-256" },
     false,
     ["sign"],
   );
-  const challengeBytes = decodeBase64URL(challenge, 32);
-  const sessionBytes = encoder.encode(String(sessionId));
-  const input = new Uint8Array(challengeBytes.length + sessionBytes.length);
-  input.set(challengeBytes, 0);
-  input.set(sessionBytes, challengeBytes.length);
   return encodeBase64URL(await subtle.sign("HMAC", key, input));
+}
+
+function challengeProofInput({
+  domain,
+  challenge,
+  sessionId,
+  room,
+  routeId,
+  viewerPublicKey,
+}) {
+  const normalizedRoom = normalizeRoom(room);
+  if (!isOpaqueIdentifier(sessionId)) {
+    throw new ClipProtocolError("invalid-session", "The viewer has no valid Clip session.");
+  }
+  const canonicalRouteId = String(routeId);
+  decodeBase64URL(canonicalRouteId, 16);
+  const publicKey = requireBytes(viewerPublicKey, 65, "invalid-viewer-key");
+  if (publicKey[0] !== 0x04) {
+    throw new ClipProtocolError("invalid-viewer-key", "The browser has an invalid viewer key.");
+  }
+  const challengeBytes =
+    typeof challenge === "string"
+      ? decodeBase64URL(challenge, 32)
+      : requireBytes(challenge, 32, "invalid-challenge");
+  return lengthPrefixed([
+    encoder.encode(domain),
+    encoder.encode(normalizedRoom),
+    encoder.encode(sessionId),
+    encoder.encode(canonicalRouteId),
+    publicKey,
+    challengeBytes,
+  ]);
+}
+
+function lengthPrefixed(fields) {
+  const byteLength = fields.reduce((total, field) => total + 4 + field.length, 0);
+  const output = new Uint8Array(byteLength);
+  const view = new DataView(output.buffer, output.byteOffset, output.byteLength);
+  let offset = 0;
+  for (const field of fields) {
+    view.setUint32(offset, field.length, false);
+    offset += 4;
+    output.set(field, offset);
+    offset += field.length;
+  }
+  return output;
+}
+
+function requireBytes(value, expectedLength, code) {
+  let bytes;
+  if (value instanceof Uint8Array) {
+    bytes = new Uint8Array(value);
+  } else if (value instanceof ArrayBuffer) {
+    bytes = new Uint8Array(value.slice(0));
+  } else {
+    throw new ClipProtocolError(code, "A private signaling value has an invalid encoding.");
+  }
+  if (bytes.length !== expectedLength) {
+    throw new ClipProtocolError(
+      code,
+      `A private signaling value has ${bytes.length} bytes; expected ${expectedLength}.`,
+    );
+  }
+  return bytes;
 }
 
 export function utf8Length(value) {

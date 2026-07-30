@@ -14,7 +14,7 @@ enum NativeViewerSessionPhase: Equatable, Sendable {
         case .connecting:
             String(localized: "Connecting…")
         case .waitingForAccessCode:
-            String(localized: "Access code required")
+            String(localized: "Access word required")
         case .waitingForHostApproval:
             String(localized: "Waiting for host approval…")
         case .live:

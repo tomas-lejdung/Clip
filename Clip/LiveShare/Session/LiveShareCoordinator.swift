@@ -84,6 +84,7 @@ enum LiveShareCaptureCursorPolicy {
 
 private struct LiveSharePendingViewerRoute {
     let routeID: ClipLiveShareRouteID
+    let viewerPublicKey: ClipLiveShareKeyAgreementPublicKey
     let sessionID: ClipLiveShareSessionID
     let challenge: ClipLiveShareAuthChallenge
     let accessCode: String?
@@ -1593,7 +1594,9 @@ final class LiveShareCoordinator {
     private var accessCodeError: String?
     private var roomConfiguration: ClipLiveShareRoomConfiguration?
     private var signalingIsAvailable = false
-    private var preparedViewerRouteIDs: Set<ClipLiveShareRouteID> = []
+    private var preparedViewerRoutes: [
+        ClipLiveShareRouteID: ClipLiveShareKeyAgreementPublicKey
+    ] = [:]
     private var pendingViewerRoutes: [
         ClipLiveShareRouteID: LiveSharePendingViewerRoute
     ] = [:]
@@ -2241,10 +2244,16 @@ final class LiveShareCoordinator {
                 fail(code: .signalingFailed, error: error)
             }
 
-        case let .routeOpened(routeID):
+        case let .routeOpened(routeID, viewerPublicKey):
             if sharingHasStarted {
-                await beginViewerAdmission(routeID: routeID)
-            } else if !retainPreparedViewerRoute(routeID) {
+                await beginViewerAdmission(
+                    routeID: routeID,
+                    viewerPublicKey: viewerPublicKey
+                )
+            } else if !retainPreparedViewerRoute(
+                routeID,
+                viewerPublicKey: viewerPublicKey
+            ) {
                 await signaling.closeRoute(routeID)
             }
 
@@ -2254,7 +2263,7 @@ final class LiveShareCoordinator {
         case let .routeClosed(routeID, reason):
             LiveSharePreparedViewerRouteBuffer.cancel(
                 routeID,
-                in: &preparedViewerRouteIDs
+                in: &preparedViewerRoutes
             )
             if reason == "viewer completed signaling" {
                 // The browser can observe its DataChannel opening a few
@@ -2273,7 +2282,7 @@ final class LiveShareCoordinator {
         case let .routeRejected(routeID, _):
             LiveSharePreparedViewerRouteBuffer.cancel(
                 routeID,
-                in: &preparedViewerRouteIDs
+                in: &preparedViewerRoutes
             )
             await removePendingRoute(routeID, removesPeer: true)
 
@@ -2480,36 +2489,44 @@ final class LiveShareCoordinator {
     }
 
     private func retainPreparedViewerRoute(
-        _ routeID: ClipLiveShareRouteID
+        _ routeID: ClipLiveShareRouteID,
+        viewerPublicKey: ClipLiveShareKeyAgreementPublicKey
     ) -> Bool {
         guard !isEnding,
               signalingIsAvailable,
               state.snapshot.phase == .ready else { return false }
         return LiveSharePreparedViewerRouteBuffer.retain(
             routeID,
-            in: &preparedViewerRouteIDs,
+            viewerPublicKey: viewerPublicKey,
+            in: &preparedViewerRoutes,
             maximumCount: WebRTCPeerResourceLimits.clipDefault
                 .maximumViewerCount
         )
     }
 
     private func admitPreparedViewerRoutes() async {
-        let routeIDs = LiveSharePreparedViewerRouteBuffer.drain(
-            &preparedViewerRouteIDs
+        let routes = LiveSharePreparedViewerRouteBuffer.drain(
+            &preparedViewerRoutes
         )
-        for routeID in routeIDs {
+        for (routeID, viewerPublicKey) in routes {
             guard sharingHasStarted, peerHost != nil, !isEnding else {
                 await signaling.closeRoute(routeID)
                 continue
             }
-            await beginViewerAdmission(routeID: routeID)
+            await beginViewerAdmission(
+                routeID: routeID,
+                viewerPublicKey: viewerPublicKey
+            )
         }
     }
 
-    private func beginViewerAdmission(routeID: ClipLiveShareRouteID) async {
+    private func beginViewerAdmission(
+        routeID: ClipLiveShareRouteID,
+        viewerPublicKey: ClipLiveShareKeyAgreementPublicKey
+    ) async {
         LiveSharePreparedViewerRouteBuffer.cancel(
             routeID,
-            in: &preparedViewerRouteIDs
+            in: &preparedViewerRoutes
         )
         guard sharingHasStarted, peerHost != nil else {
             await signaling.closeRoute(routeID)
@@ -2538,6 +2555,7 @@ final class LiveShareCoordinator {
         )
         pendingViewerRoutes[routeID] = LiveSharePendingViewerRoute(
             routeID: routeID,
+            viewerPublicKey: viewerPublicKey,
             sessionID: sessionID,
             challenge: challenge,
             accessCode: code
@@ -2558,7 +2576,7 @@ final class LiveShareCoordinator {
               message.sessionID == route.sessionID else {
             LiveSharePreparedViewerRouteBuffer.cancel(
                 routeID,
-                in: &preparedViewerRouteIDs
+                in: &preparedViewerRoutes
             )
             await signaling.closeRoute(routeID)
             await removePendingRoute(routeID, removesPeer: true)
@@ -2588,26 +2606,26 @@ final class LiveShareCoordinator {
         _ response: ClipLiveShareAuthResponse,
         route: LiveSharePendingViewerRoute
     ) async {
-        let isAllowed: Bool
-        if let code = route.accessCode {
-            isAllowed = response.proof.map {
-                ClipLiveShareAccessCodeProof.verify(
-                    $0,
-                    accessCode: code,
-                    challenge: route.challenge.challenge,
-                    sessionID: route.sessionID
-                )
-            } ?? false
-        } else {
-            isAllowed = response.proof == nil
+        guard let roomConfiguration else {
+            await signaling.closeRoute(route.routeID)
+            await removePendingRoute(route.routeID, removesPeer: true)
+            return
         }
+        let isAllowed = LiveShareAnonymousViewerAdmissionPolicy.permits(
+            response,
+            challenge: route.challenge,
+            room: roomConfiguration,
+            routeID: route.routeID,
+            viewerPublicKey: route.viewerPublicKey,
+            accessCode: route.accessCode
+        )
 
         do {
             try await signaling.send(
                 .authResult(try ClipLiveShareAuthResult(
                     sessionID: route.sessionID,
                     allowed: isAllowed,
-                    reason: isAllowed ? nil : "invalid-access-code"
+                    reason: isAllowed ? nil : "invalid-admission-proof"
                 )),
                 to: route.routeID
             )
@@ -3299,7 +3317,7 @@ final class LiveShareCoordinator {
     ) async {
         LiveSharePreparedViewerRouteBuffer.cancel(
             routeID,
-            in: &preparedViewerRouteIDs
+            in: &preparedViewerRoutes
         )
         admissionTimeoutTasks.removeValue(forKey: routeID)?.cancel()
         pendingViewerRoutes[routeID] = nil
@@ -3386,7 +3404,7 @@ final class LiveShareCoordinator {
     private func cancelAdmissionTimeouts() {
         for task in admissionTimeoutTasks.values { task.cancel() }
         admissionTimeoutTasks.removeAll()
-        preparedViewerRouteIDs.removeAll()
+        preparedViewerRoutes.removeAll()
     }
 
     private func clearNativeViewerState() {
@@ -4200,9 +4218,9 @@ final class LiveShareCoordinator {
                 await removePendingRoute(routeID, removesPeer: true)
             }
         } catch {
-            accessCodeError = String(localized: "Couldn’t update the access code. Try again.")
+            accessCodeError = String(localized: "Couldn’t update the access word. Try again.")
             Self.logger.error(
-                "Could not update the Live Share access code: \(error.localizedDescription, privacy: .public)"
+                "Could not update the Live Share access word: \(error.localizedDescription, privacy: .public)"
             )
         }
         accessCodeIsUpdating = false

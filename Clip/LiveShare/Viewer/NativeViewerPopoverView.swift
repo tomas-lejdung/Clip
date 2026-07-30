@@ -89,14 +89,14 @@ struct NativeViewerPopoverView: View {
 
     private var accessCodeSection: some View {
         ClipPopoverSection(
-            String(localized: "Access Code"),
+            String(localized: "Access Word"),
             contentInsets: EdgeInsets(top: 12, leading: 12, bottom: 12, trailing: 12)
         ) {
             VStack(alignment: .leading, spacing: 10) {
-                Text("This share requires the code provided by the host.")
+                Text("Enter the word provided separately by the host.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                SecureField("Access code", text: $accessCode)
+                SecureField("Access word", text: $accessCode)
                     .textFieldStyle(.roundedBorder)
                     .onSubmit { model.submitAccessCode(accessCode) }
                 ClipPopoverButton(

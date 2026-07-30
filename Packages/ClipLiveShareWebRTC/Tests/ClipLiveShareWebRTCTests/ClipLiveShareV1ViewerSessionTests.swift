@@ -49,6 +49,9 @@ struct ClipLiveShareV1ViewerSessionTests {
     #expect(connected.endpoint == fixture.endpoint)
     #expect(connected.room == fixture.room)
     #expect(connected.fragment == fixture.fragment)
+    #expect(!connected.description.contains(fixture.joinCapability.rawValue))
+    #expect(!connected.debugDescription.contains(fixture.joinCapability.rawValue))
+    #expect(connected.description.contains("<redacted>"))
 
     let sent = try await socket.decodedOuterMessages()
     guard case let .viewerHello(hello) = try #require(sent.first) else {
@@ -121,7 +124,7 @@ struct ClipLiveShareV1ViewerSessionTests {
     #expect(peer.closeCount() == 1)
   }
 
-  @Test("viewer hello, route crypto, access code, offer, handoff, and teardown complete")
+  @Test("viewer hello, route crypto, Access Word, offer, handoff, and teardown complete")
   func authenticatedHandoff() async throws {
     let fixture = try V1ViewerSessionFixture()
     let socket = V1ViewerSessionTestWebSocket()
@@ -189,11 +192,14 @@ struct ClipLiveShareV1ViewerSessionTests {
     }
     #expect(response.sessionID == fixture.sessionID)
     #expect(
-      ClipLiveShareAccessCodeProof.verify(
-        try #require(response.proof),
+      ClipLiveShareAdmissionProof.verify(
+        response,
+        challenge: challenge,
+        joinCapability: fixture.joinCapability,
         accessCode: "SKY-42",
-        challenge: challenge.challenge,
-        sessionID: fixture.sessionID
+        room: fixture.room,
+        routeID: fixture.routeID,
+        viewerPublicKey: hello.viewerKey
       )
     )
 
@@ -417,6 +423,66 @@ struct ClipLiveShareV1ViewerSessionTests {
     #expect(peer.closeCount() == 1)
   }
 
+  @Test("join-only rejection is reported as an invalid invitation")
+  func joinCapabilityRejected() async throws {
+    let fixture = try V1ViewerSessionFixture()
+    let socket = V1ViewerSessionTestWebSocket()
+    let peer = V1ViewerSessionTestPeer()
+    let session = ClipLiveShareV1ViewerSession(
+      httpTransport: fixture.http,
+      webSocketFactory: V1ViewerSessionTestWebSocketFactory(socket: socket),
+      peerViewerFactory: V1ViewerSessionTestPeerFactory(peer: peer),
+      eventQueue: DispatchQueue(label: "clip.viewer-session.join-rejection-test")
+    )
+    let recorder = V1ViewerSessionEventRecorder()
+    let stream = await session.events()
+    let recording = Task {
+      for await event in stream { await recorder.append(event) }
+    }
+    defer { recording.cancel() }
+
+    try await session.start(inviteURL: fixture.inviteURL)
+    let messages = try await socket.decodedOuterMessages()
+    guard case let .viewerHello(hello) = try #require(messages.first) else {
+      Issue.record("Expected viewer hello")
+      return
+    }
+    var hostChannel = try ClipLiveShareEncryptedChannel(
+      host: fixture.roomIdentity,
+      viewerPublicKey: hello.viewerKey,
+      room: fixture.room,
+      routeID: fixture.routeID
+    )
+    try await socket.enqueueOuter(.routeOpened(.init(routeID: fixture.routeID)))
+    try await v1ViewerEventually { await socket.receiveCount() >= 2 }
+    let challenge = try ClipLiveShareAuthChallenge(
+      sessionID: fixture.sessionID,
+      challenge: Data(repeating: 0x34, count: ClipLiveShareV1.challengeByteCount),
+      accessCodeRequired: false
+    )
+    try await socket.enqueueOuter(.relay(hostChannel.seal(.authChallenge(challenge))))
+    try await v1ViewerEventually { await socket.sentPayloadCount() == 2 }
+
+    try await socket.enqueueOuter(
+      .relay(
+        hostChannel.seal(
+          .authResult(
+            try .init(
+              sessionID: fixture.sessionID,
+              allowed: false,
+              reason: "invalid-admission-proof"
+            ))))
+    )
+    try await v1ViewerEventually {
+      await recorder.failures().contains(.admissionRejected)
+    }
+    let failures = await recorder.failures()
+    #expect(!failures.contains(.accessCodeRejected))
+    #expect(!failures.contains(.invalidSignalingMessage))
+    #expect(await socket.closeCount() == 1)
+    #expect(peer.closeCount() == 1)
+  }
+
   @Test("close supersedes an in-flight invite without reviving stale resources")
   func closeSupersedesStart() async throws {
     let fixture = try V1ViewerSessionFixture()
@@ -462,6 +528,7 @@ private struct V1ViewerSessionFixture: Sendable {
   let endpoint: ClipLiveShareServerEndpoint
   let room: ClipLiveShareRoomName
   let roomIdentity: ClipLiveShareRoomIdentity
+  let joinCapability: ClipLiveShareJoinCapability
   let fragment: ClipLiveShareViewerFragment
   let inviteURL: URL
   let inviteURLWithoutFragment: URL
@@ -475,7 +542,13 @@ private struct V1ViewerSessionFixture: Sendable {
     endpoint = try ClipLiveShareServerEndpoint(userInput: "https://share.example")
     room = try ClipLiveShareRoomName(rawValue: "AMBER-PINE-119")
     roomIdentity = ClipLiveShareRoomIdentity()
-    fragment = try ClipLiveShareViewerFragment(publicKey: roomIdentity.publicKey)
+    joinCapability = try ClipLiveShareJoinCapability(
+      bytes: Data(repeating: 0x6a, count: ClipLiveShareV1.joinCapabilityByteCount)
+    )
+    fragment = try ClipLiveShareViewerFragment(
+      publicKey: roomIdentity.publicKey,
+      joinCapability: joinCapability
+    )
     inviteURLWithoutFragment = try #require(
       URL(string: "https://share.example/watch/AMBER-PINE-119")
     )

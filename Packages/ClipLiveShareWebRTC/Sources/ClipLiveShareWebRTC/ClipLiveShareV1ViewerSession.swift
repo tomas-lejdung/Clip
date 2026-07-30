@@ -1,7 +1,9 @@
 import ClipLiveShare
 import Foundation
 
-public struct ClipLiveShareV1ViewerInvite: Equatable, Sendable {
+public struct ClipLiveShareV1ViewerInvite: Equatable, Sendable,
+  CustomStringConvertible, CustomDebugStringConvertible
+{
   public let originalURL: URL
   public let endpoint: ClipLiveShareServerEndpoint
   public let room: ClipLiveShareRoomName
@@ -21,6 +23,13 @@ public struct ClipLiveShareV1ViewerInvite: Equatable, Sendable {
     self.fragment = fragment
     self.capabilities = capabilities
   }
+
+  public var description: String {
+    "ClipLiveShareV1ViewerInvite(endpoint: \(endpoint), room: \(room.rawValue), "
+      + "URL and fragment: <redacted>)"
+  }
+
+  public var debugDescription: String { description }
 }
 
 public enum ClipLiveShareV1ViewerSessionError: Error, Equatable, Sendable,
@@ -33,6 +42,7 @@ public enum ClipLiveShareV1ViewerSessionError: Error, Equatable, Sendable,
   case hostUnavailable
   case accessCodeRequired
   case accessCodeRejected
+  case admissionRejected
   case invalidSignalingMessage
   case unexpectedSignalingMessage
   case peerFailure(String)
@@ -52,9 +62,11 @@ public enum ClipLiveShareV1ViewerSessionError: Error, Equatable, Sendable,
     case .hostUnavailable:
       "The Live Share host is not available."
     case .accessCodeRequired:
-      "This share requires an access code."
+      "This share requires an Access Word."
     case .accessCodeRejected:
-      "The access code was not accepted."
+      "The Access Word was not accepted."
+    case .admissionRejected:
+      "This Live Share invitation is no longer valid."
     case .invalidSignalingMessage:
       "The Live Share server returned an invalid message."
     case .unexpectedSignalingMessage:
@@ -384,7 +396,7 @@ public actor ClipLiveShareV1ViewerSession {
 
   private static func nonemptyAccessCode(_ accessCode: String?) -> String? {
     guard let accessCode else { return nil }
-    let normalized = ClipLiveShareAccessCodeProof.normalize(accessCode)
+    let normalized = ClipLiveShareAdmissionProof.normalizeAccessCode(accessCode)
     return normalized.isEmpty ? nil : normalized
   }
 
@@ -616,7 +628,9 @@ public actor ClipLiveShareV1ViewerSession {
         throw ClipLiveShareV1ViewerSessionError.unexpectedSignalingMessage
       }
       guard result.allowed else {
-        throw ClipLiveShareV1ViewerSessionError.accessCodeRejected
+        throw pendingChallenge?.accessCodeRequired == true
+          ? ClipLiveShareV1ViewerSessionError.accessCodeRejected
+          : ClipLiveShareV1ViewerSessionError.admissionRejected
       }
       pendingChallenge = nil
       phase = .negotiating
@@ -679,9 +693,16 @@ public actor ClipLiveShareV1ViewerSession {
   private func sendAuthenticationResponse(
     _ challenge: ClipLiveShareAuthChallenge
   ) async throws {
-    let response = try ClipLiveShareAccessCodeProof.response(
+    guard let invite, let routeID, let identity else {
+      throw ClipLiveShareV1ViewerSessionError.signalingUnavailable
+    }
+    let response = try ClipLiveShareAdmissionProof.response(
       to: challenge,
-      accessCode: suppliedAccessCode
+      joinCapability: invite.fragment.joinCapability,
+      accessCode: suppliedAccessCode,
+      room: invite.room,
+      routeID: routeID,
+      viewerPublicKey: identity.publicKey
     )
     try await sendEncrypted(.authResponse(response))
   }

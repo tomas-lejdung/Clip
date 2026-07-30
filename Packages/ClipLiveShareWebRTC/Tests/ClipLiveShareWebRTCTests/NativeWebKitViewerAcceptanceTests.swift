@@ -367,6 +367,8 @@ private actor NativeWebKitHostHarness {
     private var eventTask: Task<Void, Never>?
     private var room: ClipLiveShareRoomConfiguration?
     private var routeID: ClipLiveShareRouteID?
+    private var viewerPublicKey: ClipLiveShareKeyAgreementPublicKey?
+    private var admissionChallenge: ClipLiveShareAuthChallenge?
     private var viewerID: String?
     private var sessionID: ClipLiveShareSessionID?
     private var negotiationID: ClipLiveShareNegotiationID?
@@ -628,8 +630,11 @@ private actor NativeWebKitHostHarness {
     private func receiveSignalingEvent(_ event: ClipLiveShareSignalingEvent) async {
         do {
             switch event {
-            case .routeOpened(let openedRouteID):
-                try await beginEncryptedAdmission(on: openedRouteID)
+            case .routeOpened(let openedRouteID, let openedViewerPublicKey):
+                try await beginEncryptedAdmission(
+                    on: openedRouteID,
+                    viewerPublicKey: openedViewerPublicKey
+                )
 
             case .message(let messageRouteID, let message):
                 try await receiveEncryptedMessage(
@@ -674,7 +679,8 @@ private actor NativeWebKitHostHarness {
     }
 
     private func beginEncryptedAdmission(
-        on openedRouteID: ClipLiveShareRouteID
+        on openedRouteID: ClipLiveShareRouteID,
+        viewerPublicKey: ClipLiveShareKeyAgreementPublicKey
     ) async throws {
         guard routeID == nil else {
             await signaling.closeRoute(openedRouteID)
@@ -684,13 +690,16 @@ private actor NativeWebKitHostHarness {
         }
         let sessionID = ClipLiveShareSessionID.random()
         routeID = openedRouteID
+        self.viewerPublicKey = viewerPublicKey
         viewerID = openedRouteID.rawValue
         self.sessionID = sessionID
+        let challenge = ClipLiveShareAuthChallenge.random(
+            sessionID: sessionID,
+            accessCodeRequired: false
+        )
+        admissionChallenge = challenge
         try await signaling.send(
-            .authChallenge(.random(
-                sessionID: sessionID,
-                accessCodeRequired: false
-            )),
+            .authChallenge(challenge),
             to: openedRouteID
         )
     }
@@ -707,9 +716,20 @@ private actor NativeWebKitHostHarness {
         }
         switch message {
         case .authResponse(let response):
-            guard response.proof == nil else {
+            guard let room,
+                  let challenge = admissionChallenge,
+                  let viewerPublicKey,
+                  ClipLiveShareAdmissionProof.verify(
+                    response,
+                    challenge: challenge,
+                    joinCapability: room.joinCapability,
+                    accessCode: nil,
+                    room: room.room,
+                    routeID: messageRouteID,
+                    viewerPublicKey: viewerPublicKey
+                  ) else {
                 throw NativeWebKitAcceptanceError.runtime(
-                    "The no-code acceptance viewer sent an unexpected proof."
+                    "The browser join-capability proof was rejected."
                 )
             }
             try await admitViewer(on: messageRouteID)

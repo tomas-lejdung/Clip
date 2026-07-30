@@ -32,13 +32,11 @@ struct LiveShareStateMachineTests {
     try machine.beginRoomReservation()
     #expect(machine.snapshot.phase == .reservingRoom)
 
-    try machine.receiveRoom(makePublicRoom())
+    let room = try makePublicRoom()
+    try machine.receiveRoom(room)
     #expect(machine.snapshot.phase == .connecting)
-    #expect(machine.snapshot.room?.name.rawValue == "CRISP-FROG-042")
-    #expect(
-      machine.snapshot.room?.viewerURL.absoluteString
-        == "https://clip.tineestudio.se/CRISP-FROG-042#v=1&key=fixture-public-key"
-    )
+    #expect(machine.snapshot.room == room)
+    #expect(try ClipLiveShareViewerFragment(url: room.viewerURL).version == 1)
 
     try machine.markSignalingConnected()
     #expect(machine.snapshot.phase == .ready)
@@ -252,35 +250,18 @@ struct LiveShareStateMachineTests {
     #expect(machine.snapshot == LiveShareStateMachine().snapshot)
   }
 
-  @Test("Snapshots round-trip through Codable independently of the machine")
-  func snapshotCodable() throws {
-    var machine = try readyMachine()
-    machine.addSource(.window(makeWindow(4)))
-    try machine.updateViewerCount(2)
-    let snapshot = machine.snapshot
-    let decoded = try JSONDecoder().decode(
-      LiveShareSnapshot.self,
-      from: JSONEncoder().encode(snapshot)
-    )
-    #expect(decoded == snapshot)
-  }
-
-  @Test("Public snapshots serialize only the room name and viewer URL")
-  func snapshotExcludesRoomSecrets() throws {
+  @Test("Public room and snapshot descriptions redact the bearer invite")
+  func snapshotDescriptionsRedactInvite() throws {
     let snapshot = try readyMachine().snapshot
-    let data = try JSONEncoder().encode(snapshot)
-    let root = try #require(
-      JSONSerialization.jsonObject(with: data) as? [String: Any]
-    )
-    let room = try #require(root["room"] as? [String: Any])
+    let room = try #require(snapshot.room)
+    let capability = try ClipLiveShareViewerFragment(
+      url: room.viewerURL
+    ).joinCapability.rawValue
 
-    #expect(Set(room.keys) == ["name", "viewerURL"])
-    #expect(room["name"] as? String == "CRISP-FROG-042")
-
-    let json = try #require(String(data: data, encoding: .utf8))
-    #expect(!json.contains("ownerToken"))
-    #expect(!json.contains("privateKey"))
-    #expect(!json.contains("password"))
-    #expect(!json.contains("accessCode"))
+    #expect(!room.description.contains(capability))
+    #expect(!room.debugDescription.contains(capability))
+    #expect(!snapshot.description.contains(capability))
+    #expect(!snapshot.debugDescription.contains(capability))
+    #expect(room.description.contains("<redacted invite>"))
   }
 }

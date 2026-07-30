@@ -27,7 +27,7 @@ unparsed bytes. The signed descriptor is not confidential from the server
 operator: it contains public/random routing and authentication metadata,
 including public keys and the persistent rendezvous-to-identity link. It grants
 no admission. The service has no indexed fields for friend names, passwords,
-access codes, media metadata, or established viewer count. Friend labels and
+Access Words, media metadata, or established viewer count. Friend labels and
 trust decisions remain local to Clip. Friend proof, admission, SDP/ICE, and
 application data are end-to-end encrypted inside relay payloads.
 

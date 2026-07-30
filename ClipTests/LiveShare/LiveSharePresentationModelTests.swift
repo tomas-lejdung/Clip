@@ -40,6 +40,35 @@ struct LiveSharePresentationModelTests {
     }
 
     @Test
+    func testSnapshotDescriptionsRedactInviteAndAccessWord() {
+        let inviteSecret = "PRIVATE-JOIN-CAPABILITY"
+        let accessWord = "MELORIA"
+        let room = LiveShareRoomViewSnapshot(
+            viewerURL: URL(
+                string: "https://share.example/ROOM#v=1&key=PUBLIC&join=\(inviteSecret)"
+            )!,
+            roomCode: "ROOM"
+        )
+        let snapshot = LiveShareViewSnapshot(
+            phase: .ready,
+            room: room,
+            accessCodeEnabled: true,
+            accessCode: accessWord
+        )
+
+        for value in [
+            room.description,
+            room.debugDescription,
+            snapshot.description,
+            snapshot.debugDescription,
+        ] {
+            #expect(!value.contains(inviteSecret))
+            #expect(!value.contains(accessWord))
+            #expect(value.contains("<redacted"))
+        }
+    }
+
+    @Test
     func testOnlyConnectedWebRTCPeersCountAsViewers() {
         let snapshot = LiveShareViewSnapshot(
             phase: .ready,
@@ -273,11 +302,13 @@ struct LiveSharePresentationModelTests {
         )
 
         model.copyLink()
-        #expect(copied == ["https://clip.tineestudio.se/CRISP-FROG-042#v=1&key=fixture"])
+        #expect(copied == [
+            "https://clip.tineestudio.se/CRISP-FROG-042#v=1&key=fixture&join=capability",
+        ])
         #expect(model.copiedItem == .link)
 
         model.copyAccessCode()
-        #expect(copied.last == "tiger-42")
+        #expect(copied.last == "MELORIA")
         #expect(model.copiedItem == .accessCode)
     }
 
@@ -360,7 +391,7 @@ struct LiveSharePresentationModelTests {
                 phase: .live(elapsedSeconds: 12),
                 room: LiveShareRoomViewSnapshot(
                     viewerURL: URL(
-                        string: "https://clip.tineestudio.se/CRISP-FROG-042#v=1&key=fixture"
+                        string: "https://clip.tineestudio.se/CRISP-FROG-042#v=1&key=fixture&join=capability"
                     )!,
                     roomCode: "CRISP-FROG-042",
                     isAvailable: false
@@ -531,7 +562,7 @@ struct LiveSharePresentationModelTests {
         #expect(live.slots.map(\.state) == [.live, .starting, .live, .empty])
         #expect(live.connectedViewerCount == 2)
         #expect(live.statistics.streams.count == 3)
-        #expect(live.accessCode == "orbit-mint-72")
+        #expect(live.accessCode == "MELORIA")
         #expect(live.settings.codec.codec == .h264)
         #expect(live.settings.prioritizeFocusedWindow)
         #expect(live.settings.canChangeCodec)
@@ -588,11 +619,13 @@ struct LiveSharePresentationModelTests {
         LiveShareViewSnapshot(
             phase: .ready,
             room: LiveShareRoomViewSnapshot(
-                viewerURL: URL(string: "https://clip.tineestudio.se/CRISP-FROG-042#v=1&key=fixture")!,
+                viewerURL: URL(
+                    string: "https://clip.tineestudio.se/CRISP-FROG-042#v=1&key=fixture&join=capability"
+                )!,
                 roomCode: "CRISP-FROG-042"
             ),
             accessCodeEnabled: true,
-            accessCode: "tiger-42"
+            accessCode: "MELORIA"
         )
     }
 }

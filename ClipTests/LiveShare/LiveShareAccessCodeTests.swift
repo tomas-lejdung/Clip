@@ -3,13 +3,29 @@ import Testing
 
 @Suite("Live Share access codes")
 struct LiveShareAccessCodeTests {
-    @Test("codes are high-entropy uppercase hex values")
-    func format() throws {
-        let first = try LiveShareAccessCode.generate()
-        let second = try LiveShareAccessCode.generate()
-        #expect(first.count == 20)
-        #expect(first.allSatisfy { $0.isNumber || ("A" ... "F").contains(String($0)) })
-        #expect(first != second)
+    @Test("syllable tables provide 24 bits without modulo bias")
+    func syllables() {
+        #expect(LiveShareAccessCode.onsets.count == 16)
+        #expect(Set(LiveShareAccessCode.onsets).count == 16)
+        #expect(LiveShareAccessCode.rimes.count == 16)
+        #expect(Set(LiveShareAccessCode.rimes).count == 16)
+    }
+
+    @Test("three secure random bytes produce one uppercase pronounceable word")
+    func deterministicSelection() throws {
+        let first = try LiveShareAccessCode.generate { buffer in
+            buffer.initializeMemory(as: UInt8.self, repeating: 0)
+            return 0
+        }
+        let last = try LiveShareAccessCode.generate { buffer in
+            buffer.initializeMemory(as: UInt8.self, repeating: .max)
+            return 0
+        }
+
+        #expect(first == "BABABA")
+        #expect(last == "VOOVOOVOO")
+        #expect(first.allSatisfy { $0.isUppercase })
+        #expect(last.allSatisfy { $0.isUppercase })
     }
 
     @Test("secure random failures are reported instead of crashing Clip")

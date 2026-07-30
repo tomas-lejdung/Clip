@@ -59,7 +59,7 @@ sleep/wake behavior or soak stability.
 | UI and capture | Deterministic state/policy tests for popover, overlays, source rules, geometry and audio filters. | Production ScreenCaptureKit permission, Spaces/displays, click consumption and capture exclusion. |
 | Distribution | Source audits cover dependency pins, sandbox entitlements and server container structure. | Final signed DMG, published image provenance and notarization. |
 
-The optional access code is generated and checked by Clip inside an encrypted
+The optional Access Word is generated and checked by Clip inside an encrypted
 route; its text is never sent to the server. Changing it applies to new
 admissions and does not eject a connected peer. Window sharing captures audio
 at application scope for unique owning apps, while Fullscreen captures system

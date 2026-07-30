@@ -38,14 +38,23 @@ public struct ClipLiveShareAuthChallenge: Equatable, Hashable, Sendable {
 
 public struct ClipLiveShareAuthResponse: Equatable, Hashable, Sendable {
   public let sessionID: ClipLiveShareSessionID
-  public let proof: Data?
+  public let joinProof: Data
+  public let accessCodeProof: Data?
 
-  public init(sessionID: ClipLiveShareSessionID, proof: Data?) throws {
-    guard proof == nil || proof?.count == 32 else {
+  public init(
+    sessionID: ClipLiveShareSessionID,
+    joinProof: Data,
+    accessCodeProof: Data?
+  ) throws {
+    guard joinProof.count == 32 else {
+      throw ClipLiveShareProtocolError.invalidJoinProof
+    }
+    guard accessCodeProof == nil || accessCodeProof?.count == 32 else {
       throw ClipLiveShareProtocolError.invalidAccessCodeProof
     }
     self.sessionID = sessionID
-    self.proof = proof
+    self.joinProof = joinProof
+    self.accessCodeProof = accessCodeProof
   }
 }
 
@@ -437,7 +446,8 @@ extension ClipLiveShareInnerMessage: Codable {
     case sessionID = "sessionId"
     case challenge
     case accessCodeRequired
-    case proof
+    case joinProof
+    case accessCodeProof
     case allowed
     case reason
     case negotiationID = "negotiationId"
@@ -481,7 +491,8 @@ extension ClipLiveShareInnerMessage: Codable {
       self = .authResponse(
         try ClipLiveShareAuthResponse(
           sessionID: sessionID,
-          proof: Self.decodeOptionalBase64URL(container, forKey: .proof)
+          joinProof: Self.decodeBase64URL(container, forKey: .joinProof),
+          accessCodeProof: Self.decodeOptionalBase64URL(container, forKey: .accessCodeProof)
         )
       )
     case "auth-result":
@@ -596,8 +607,12 @@ extension ClipLiveShareInnerMessage: Codable {
       try container.encode(ClipLiveShareBase64URL.encode(value.challenge), forKey: .challenge)
       try container.encode(value.accessCodeRequired, forKey: .accessCodeRequired)
     case let .authResponse(value):
-      if let proof = value.proof {
-        try container.encode(ClipLiveShareBase64URL.encode(proof), forKey: .proof)
+      try container.encode(ClipLiveShareBase64URL.encode(value.joinProof), forKey: .joinProof)
+      if let accessCodeProof = value.accessCodeProof {
+        try container.encode(
+          ClipLiveShareBase64URL.encode(accessCodeProof),
+          forKey: .accessCodeProof
+        )
       }
     case let .authResult(value):
       try container.encode(value.allowed, forKey: .allowed)

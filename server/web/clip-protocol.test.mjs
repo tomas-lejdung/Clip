@@ -7,12 +7,17 @@ import {
   canonicalSystemAudioState,
   ClipProtocolError,
   createInnerProtocolFailure,
-  createAuthProof,
+  createAccessCodeProof,
+  createAuthResponse,
+  createJoinCapabilityProof,
+  createViewerHello,
   createViewerKeyPair,
   decodeBase64URL,
   deriveRouteKeys,
   encodeBase64URL,
   EncryptedRoute,
+  fillPathTemplate,
+  JOIN_CAPABILITY_BYTES,
   MAX_INNER_MESSAGE_BYTES,
   normalizeRoom,
   parseViewerFragment,
@@ -22,6 +27,7 @@ import {
   formatQualityDiagnostics,
   signalingAAD,
   validateCapabilities,
+  websocketURL,
 } from "./clip-protocol.js";
 import {
   AUDIO_JITTER_BUFFER_TARGET_MILLISECONDS,
@@ -170,24 +176,53 @@ test("room and base64url values are canonical and bounded", () => {
   assert.equal(MAX_INNER_MESSAGE_BYTES, 196_400);
 });
 
-test("viewer fragments contain exactly one version and one canonical key", () => {
+test("viewer fragments require one version, room key, and private join capability", () => {
   const publicKey = new Uint8Array(65);
   publicKey[0] = 0x04;
   const encodedKey = encodeBase64URL(publicKey);
+  const joinCapability = Uint8Array.from(
+    { length: JOIN_CAPABILITY_BYTES },
+    (_, index) => index,
+  );
+  const encodedJoinCapability = encodeBase64URL(joinCapability);
+  const parsed = parseViewerFragment(
+    `#v=1&key=${encodedKey}&join=${encodedJoinCapability}`,
+  );
   assert.deepEqual(
-    parseViewerFragment(`#v=1&key=${encodedKey}`).roomPublicKey,
+    parsed.roomPublicKey,
     publicKey,
   );
+  assert.deepEqual(parsed.joinCapability, joinCapability);
   assert.throws(
-    () => parseViewerFragment(`#v=1&key=${encodedKey}&extra=value`),
+    () =>
+      parseViewerFragment(
+        `#v=1&key=${encodedKey}&join=${encodedJoinCapability}&extra=value`,
+      ),
     ClipProtocolError,
   );
   assert.throws(
-    () => parseViewerFragment(`#v=1&v=1&key=${encodedKey}`),
+    () =>
+      parseViewerFragment(
+        `#v=1&v=1&key=${encodedKey}&join=${encodedJoinCapability}`,
+      ),
     ClipProtocolError,
   );
   assert.throws(
-    () => parseViewerFragment(`#v=1&key=%30${encodedKey.slice(1)}`),
+    () =>
+      parseViewerFragment(
+        `#v=1&key=%30${encodedKey.slice(1)}&join=${encodedJoinCapability}`,
+      ),
+    ClipProtocolError,
+  );
+  assert.throws(
+    () => parseViewerFragment(`#v=1&key=${encodedKey}`),
+    ClipProtocolError,
+  );
+  assert.throws(
+    () =>
+      parseViewerFragment(
+        `#v=1&key=${encodedKey}&join=${encodeBase64URL(joinCapability.slice(1))}`,
+      ),
     ClipProtocolError,
   );
 });
@@ -224,13 +259,180 @@ test("server capabilities preserve only bounded v1 routes and ICE configuration"
   );
 });
 
-test("access-code proof matches the Swift interoperability vector", async () => {
-  const proof = await createAuthProof({
-    accessCode: " abcd ",
-    challenge: encodeBase64URL(new Uint8Array(32)),
+test("join and access-code proofs match route-bound Swift interoperability vectors", async () => {
+  const context = {
+    room: "CALM-OTTER-042",
     sessionId: "fixture-session",
+    routeId: "AAECAwQFBgcICQoLDA0ODw",
+    viewerPublicKey: decodeBase64URL(
+      "BFUPRxAD89-Xw99QaseX9nIfsaH7e49vg9IkSYplyI4kE2CT1wEuUJpzcVy9CwCjzA_0tcAbP_oZarH7MnA2uOY",
+      65,
+    ),
+    challenge: encodeBase64URL(
+      Uint8Array.from({ length: 32 }, (_, index) => 0xa0 + index),
+    ),
+  };
+  const joinCapability = Uint8Array.from({ length: 32 }, (_, index) => index);
+  const joinProof = await createJoinCapabilityProof({
+    ...context,
+    joinCapability,
   });
-  assert.equal(proof, "GGxWyuqbYQE6wenANE1t82NMizAF8LnO51AUwwOLLR0");
+  const accessCodeProof = await createAccessCodeProof({
+    ...context,
+    accessCode: " calm-otter ",
+  });
+
+  assert.equal(joinProof, "mPeAY-l3NrXw9In9RHkEfX1uPC8965v12D09ZSOSbkw");
+  assert.equal(accessCodeProof, "xKvexs9wSCp_jI2olL36pbcm3fy1ixB4hv-SJ6aSthw");
+  assert.notEqual(
+    await createJoinCapabilityProof({
+      ...context,
+      routeId: encodeBase64URL(new Uint8Array(16).fill(7)),
+      joinCapability,
+    }),
+    joinProof,
+  );
+  assert.notEqual(accessCodeProof, joinProof, "proof factors must use distinct domains");
+});
+
+test("browser auth messages expose no join capability or legacy proof field", async () => {
+  const viewerPublicKey = decodeBase64URL(
+    "BFUPRxAD89-Xw99QaseX9nIfsaH7e49vg9IkSYplyI4kE2CT1wEuUJpzcVy9CwCjzA_0tcAbP_oZarH7MnA2uOY",
+    65,
+  );
+  const joinCapability = Uint8Array.from({ length: 32 }, (_, index) => index);
+  const context = {
+    joinCapability,
+    challenge: encodeBase64URL(new Uint8Array(32).fill(9)),
+    sessionId: "fixture-session",
+    room: "CALM-OTTER-042",
+    routeId: "AAECAwQFBgcICQoLDA0ODw",
+    viewerPublicKey,
+  };
+
+  assert.deepEqual(createViewerHello(viewerPublicKey), {
+    type: "viewer-hello",
+    version: 1,
+    viewerKey:
+      "BFUPRxAD89-Xw99QaseX9nIfsaH7e49vg9IkSYplyI4kE2CT1wEuUJpzcVy9CwCjzA_0tcAbP_oZarH7MnA2uOY",
+  });
+  const joinOnly = await createAuthResponse({
+    ...context,
+    accessCode: "",
+    accessCodeRequired: false,
+  });
+  assert.deepEqual(Object.keys(joinOnly).sort(), [
+    "joinProof",
+    "sessionId",
+    "type",
+    "version",
+  ]);
+  assert.equal("proof" in joinOnly, false);
+  assert.equal("joinCapability" in joinOnly, false);
+  assert.equal(
+    JSON.stringify(joinOnly).includes(encodeBase64URL(joinCapability)),
+    false,
+  );
+
+  const twoFactor = await createAuthResponse({
+    ...context,
+    accessCode: "calm-otter",
+    accessCodeRequired: true,
+  });
+  assert.deepEqual(Object.keys(twoFactor).sort(), [
+    "accessCodeProof",
+    "joinProof",
+    "sessionId",
+    "type",
+    "version",
+  ]);
+  assert.equal("proof" in twoFactor, false);
+  assert.equal(JSON.stringify(twoFactor).includes("CALM-OTTER"), false);
+
+  const encodedJoinCapability = encodeBase64URL(joinCapability);
+  const viewerPath = fillPathTemplate(
+    "/api/v1/rooms/{room}/viewer",
+    context.room,
+  );
+  assert.equal(viewerPath, "/api/v1/rooms/CALM-OTTER-042/viewer");
+  assert.equal(viewerPath.includes(encodedJoinCapability), false);
+  const socketURL = websocketURL(viewerPath, {
+    protocol: "https:",
+    host: "share.example.test",
+  });
+  assert.equal(
+    socketURL,
+    "wss://share.example.test/api/v1/rooms/CALM-OTTER-042/viewer",
+  );
+  assert.equal(socketURL.includes(encodedJoinCapability), false);
+
+  const hostIdentity = await createViewerKeyPair();
+  const viewerIdentity = await createViewerKeyPair();
+  const keys = await deriveRouteKeys({
+    privateKey: viewerIdentity.privateKey,
+    roomPublicKey: hostIdentity.publicKey,
+    room: context.room,
+    routeId: context.routeId,
+  });
+  const outerEnvelope = await new EncryptedRoute({
+    room: context.room,
+    routeId: context.routeId,
+    ...keys,
+  }).seal(twoFactor);
+  assert.deepEqual(Object.keys(outerEnvelope).sort(), [
+    "ciphertext",
+    "nonce",
+    "sequence",
+    "type",
+  ]);
+  assert.equal("routeId" in outerEnvelope, false);
+  assert.equal("joinProof" in outerEnvelope, false);
+  assert.equal("accessCodeProof" in outerEnvelope, false);
+  assert.equal("joinCapability" in outerEnvelope, false);
+  assert.equal("accessCode" in outerEnvelope, false);
+});
+
+test("auth responses require a valid capability and only require a code for two-factor rooms", async () => {
+  const context = {
+    challenge: encodeBase64URL(new Uint8Array(32).fill(9)),
+    sessionId: "fixture-session",
+    room: "CALM-OTTER-042",
+    routeId: "AAECAwQFBgcICQoLDA0ODw",
+    viewerPublicKey: decodeBase64URL(
+      "BFUPRxAD89-Xw99QaseX9nIfsaH7e49vg9IkSYplyI4kE2CT1wEuUJpzcVy9CwCjzA_0tcAbP_oZarH7MnA2uOY",
+      65,
+    ),
+  };
+
+  await assert.rejects(
+    () =>
+      createAuthResponse({
+        ...context,
+        joinCapability: new Uint8Array(JOIN_CAPABILITY_BYTES - 1),
+        accessCodeRequired: false,
+      }),
+    (error) => error instanceof ClipProtocolError && error.code === "invalid-join-capability",
+  );
+  await assert.rejects(
+    () =>
+      createAuthResponse({
+        ...context,
+        joinCapability: new Uint8Array(JOIN_CAPABILITY_BYTES),
+        accessCode: " \n ",
+        accessCodeRequired: true,
+      }),
+    (error) => error instanceof ClipProtocolError && error.code === "missing-access-code",
+  );
+  await assert.rejects(
+    () =>
+      createAuthResponse({
+        ...context,
+        joinCapability: new Uint8Array(JOIN_CAPABILITY_BYTES),
+        accessCode: "unused",
+        accessCodeRequired: "false",
+      }),
+    (error) => error instanceof ClipProtocolError && error.code === "invalid-challenge",
+  );
 });
 
 test("protocol failures use the shared ASCII and UTF-8 bounds", () => {

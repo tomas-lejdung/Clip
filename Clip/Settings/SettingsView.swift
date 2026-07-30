@@ -741,7 +741,7 @@ struct SettingsView: View {
 
             Section {
                 Toggle(
-                    "Require an access code",
+                    "Require an access word",
                     isOn: liveShareSetting(\.accessCodeEnabled)
                 )
                 .accessibilityIdentifier("clip.settings.liveShare.accessCode")

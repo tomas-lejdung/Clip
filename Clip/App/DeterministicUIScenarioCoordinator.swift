@@ -695,7 +695,9 @@ enum DeterministicLiveShareDemo {
     }
 
     private static let room = LiveShareRoomViewSnapshot(
-        viewerURL: URL(string: "https://clip.tineestudio.se/CRISP-FROG-042#v=1&key=fixture")!,
+        viewerURL: URL(
+            string: "https://clip.tineestudio.se/CRISP-FROG-042#v=1&key=fixture&join=capability"
+        )!,
         roomCode: "CRISP-FROG-042"
     )
 
@@ -849,7 +851,7 @@ enum DeterministicLiveShareDemo {
             sessionStage: .active,
             room: room,
             accessCodeEnabled: true,
-            accessCode: "orbit-mint-72",
+            accessCode: "MELORIA",
             sources: sources,
             slots: slots,
             fullscreen: .init(isOn: false, displayName: "Studio Display"),
@@ -904,7 +906,7 @@ enum DeterministicLiveShareDemo {
             sessionStage: .active,
             room: room,
             accessCodeEnabled: true,
-            accessCode: "orbit-mint-72",
+            accessCode: "MELORIA",
             canChangeAccessCode: false,
             sources: sources.map {
                 LiveShareSourceViewSnapshot(
@@ -948,9 +950,9 @@ enum DeterministicLiveShareDemo {
             sessionStage: .active,
             room: room,
             accessCodeEnabled: true,
-            accessCode: "orbit-mint-72",
+            accessCode: "MELORIA",
             canChangeAccessCode: false,
-            accessCodeError: "The access code could not be refreshed while offline.",
+            accessCodeError: "The access word could not be refreshed while offline.",
             sources: [
                 LiveShareSourceViewSnapshot(
                     id: "window-safari",

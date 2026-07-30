@@ -15,24 +15,24 @@ import (
 
 func TestSourceRateLimitsResetAfterWindow(t *testing.T) {
 	configuration := config.Default("test")
-	configuration.RoomAdvertisementsPerMinute = 2
+	configuration.RoomLeaseOperationsPerMinute = 2
 	configuration.WebSocketUpgradesPerMinute = 2
 	admission := newSourceAdmission(configuration)
 	now := time.Unix(1_000, 0)
 	admission.now = func() time.Time { return now }
 
-	if !admission.allowAdvertisement("198.51.100.1") || !admission.allowAdvertisement("198.51.100.1") {
-		t.Fatal("allowed advertisement burst was rejected")
+	if !admission.allowRoomLeaseOperation("198.51.100.1") || !admission.allowRoomLeaseOperation("198.51.100.1") {
+		t.Fatal("allowed room-lease operation burst was rejected")
 	}
-	if admission.allowAdvertisement("198.51.100.1") {
-		t.Fatal("advertisement rate limit was not enforced")
+	if admission.allowRoomLeaseOperation("198.51.100.1") {
+		t.Fatal("room-lease operation rate limit was not enforced")
 	}
-	if !admission.allowAdvertisement("198.51.100.2") {
+	if !admission.allowRoomLeaseOperation("198.51.100.2") {
 		t.Fatal("one source consumed another source's rate limit")
 	}
 	now = now.Add(time.Minute)
-	if !admission.allowAdvertisement("198.51.100.1") {
-		t.Fatal("advertisement limit did not reset")
+	if !admission.allowRoomLeaseOperation("198.51.100.1") {
+		t.Fatal("room-lease operation limit did not reset")
 	}
 }
 
@@ -145,17 +145,21 @@ func TestForwardedSourceRequiresExplicitTrustedProxy(t *testing.T) {
 	}
 }
 
-func TestAdvertisementHandlerReturnsTooManyRequestsPerSource(t *testing.T) {
+func TestRoomLeaseHandlerReturnsTooManyRequestsPerSource(t *testing.T) {
 	configuration := testConfiguration()
-	configuration.RoomAdvertisementsPerMinute = 2
+	configuration.RoomLeaseOperationsPerMinute = 2
 	service, err := New(configuration, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer service.Close()
 	body := fmt.Sprintf(`{"ownerToken":%q}`, ownerToken(21))
-	for attempt, expected := range []int{http.StatusCreated, http.StatusOK, http.StatusTooManyRequests} {
-		request := httptest.NewRequest(http.MethodPut, "/api/v1/rooms/RATE-ROOM", strings.NewReader(body))
+	for attempt, expected := range []int{
+		http.StatusCreated,
+		http.StatusOK,
+		http.StatusTooManyRequests,
+	} {
+		request := httptest.NewRequest(http.MethodPost, "/api/v1/rooms", strings.NewReader(body))
 		request.RemoteAddr = "198.51.100.44:1234"
 		recorder := httptest.NewRecorder()
 		service.Handler().ServeHTTP(recorder, request)

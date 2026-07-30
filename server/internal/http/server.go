@@ -48,6 +48,7 @@ type Service struct {
 	shutdownDone      chan struct{}
 	closeOnce         sync.Once
 	logger            *slog.Logger
+	roomNameGenerator func() (string, error)
 }
 
 func New(configuration config.Config, logger *slog.Logger) (*Service, error) {
@@ -100,6 +101,7 @@ func NewWithDependencies(configuration config.Config, roomRegistry *registry.Reg
 		cleanupDone:       make(chan struct{}),
 		shutdownDone:      make(chan struct{}),
 		logger:            logger,
+		roomNameGenerator: cryptographicRoomName,
 	}
 	service.admission = newSourceAdmission(configuration)
 	service.upgrader = websocket.Upgrader{
@@ -178,7 +180,8 @@ func (s *Service) routes() http.Handler {
 	mux.HandleFunc("GET /.well-known/clip-native-rendezvous", s.nativeCapabilities)
 	mux.HandleFunc("GET /healthz", s.health)
 	mux.HandleFunc("GET /version", s.version)
-	mux.HandleFunc("PUT /api/v1/rooms/{room}", s.advertiseRoom)
+	mux.HandleFunc("POST /api/v1/rooms", s.allocateRoom)
+	mux.HandleFunc("PUT /api/v1/rooms/{room}", s.renewRoom)
 	mux.HandleFunc("DELETE /api/v1/rooms/{room}", s.removeRoom)
 	mux.HandleFunc("GET /api/v1/rooms/{room}/host", s.hostWebSocket)
 	mux.HandleFunc("GET /api/v1/rooms/{room}/viewer", s.viewerWebSocket)
@@ -222,13 +225,8 @@ func (s *Service) version(writer http.ResponseWriter, _ *http.Request) {
 	})
 }
 
-func (s *Service) advertiseRoom(writer http.ResponseWriter, request *http.Request) {
-	roomName, err := protocol.NormalizeRoomName(request.PathValue("room"))
-	if err != nil {
-		writeError(writer, http.StatusBadRequest, "invalid_room")
-		return
-	}
-	if !s.admission.allowAdvertisement(s.admission.source(request)) {
+func (s *Service) allocateRoom(writer http.ResponseWriter, request *http.Request) {
+	if !s.admission.allowRoomLeaseOperation(s.admission.source(request)) {
 		writer.Header().Set("Retry-After", "60")
 		writeError(writer, http.StatusTooManyRequests, "source_rate_limited")
 		return
@@ -243,14 +241,36 @@ func (s *Service) advertiseRoom(writer http.ResponseWriter, request *http.Reques
 		writeError(writer, http.StatusBadRequest, "invalid_owner_token")
 		return
 	}
-	advertisement, err := s.registry.AdvertiseGeneration(roomName, ownerHash)
-	for _, expired := range advertisement.ExpiredGenerations {
-		s.hub.CloseRoomGeneration(expired.Name, expired.Generation, "room lease expired")
-	}
-	if err != nil {
+
+	for range maximumRoomAllocationAttempts {
+		generated, err := s.roomNameGenerator()
+		if err != nil {
+			writeError(writer, http.StatusInternalServerError, "room_allocation_failed")
+			return
+		}
+		roomName, err := protocol.NormalizeRoomName(generated)
+		if err != nil {
+			writeError(writer, http.StatusInternalServerError, "room_allocation_failed")
+			return
+		}
+		lease, err := s.registry.AllocateGeneration(roomName, ownerHash)
+		for _, expired := range lease.ExpiredGenerations {
+			s.hub.CloseRoomGeneration(expired.Name, expired.Generation, "room lease expired")
+		}
+		if err == nil {
+			status := http.StatusCreated
+			if lease.Existing {
+				status = http.StatusOK
+			}
+			writeJSON(writer, status, protocol.RoomResponse{
+				Room:                 lease.Name,
+				LeaseDurationSeconds: int64(lease.Lease / time.Second),
+			})
+			return
+		}
 		switch {
 		case errors.Is(err, registry.ErrRoomConflict):
-			writeError(writer, http.StatusConflict, "room_name_unavailable")
+			continue
 		case errors.Is(err, registry.ErrRoomLimit):
 			writeError(writer, http.StatusServiceUnavailable, "room_capacity_reached")
 		default:
@@ -258,13 +278,43 @@ func (s *Service) advertiseRoom(writer http.ResponseWriter, request *http.Reques
 		}
 		return
 	}
-	status := http.StatusOK
-	if advertisement.Created {
-		status = http.StatusCreated
+	writeError(writer, http.StatusServiceUnavailable, "room_allocation_failed")
+}
+
+func (s *Service) renewRoom(writer http.ResponseWriter, request *http.Request) {
+	roomName, err := protocol.NormalizeRoomName(request.PathValue("room"))
+	if err != nil {
+		writeError(writer, http.StatusBadRequest, "invalid_room")
+		return
 	}
-	writeJSON(writer, status, protocol.RoomResponse{
+	if !s.admission.allowRoomLeaseOperation(s.admission.source(request)) {
+		writer.Header().Set("Retry-After", "60")
+		writeError(writer, http.StatusTooManyRequests, "source_rate_limited")
+		return
+	}
+	ownerHash, err := ownerHashFromAuthorization(request)
+	if err != nil {
+		writeError(writer, http.StatusUnauthorized, "owner_unauthorized")
+		return
+	}
+	lease, err := s.registry.RenewGeneration(roomName, ownerHash)
+	for _, expired := range lease.ExpiredGenerations {
+		s.hub.CloseRoomGeneration(expired.Name, expired.Generation, "room lease expired")
+	}
+	if err != nil {
+		switch {
+		case errors.Is(err, registry.ErrRoomNotFound):
+			writeError(writer, http.StatusNotFound, "room_not_found")
+		case errors.Is(err, registry.ErrUnauthorized):
+			writeError(writer, http.StatusUnauthorized, "owner_unauthorized")
+		default:
+			writeError(writer, http.StatusInternalServerError, "server_error")
+		}
+		return
+	}
+	writeJSON(writer, http.StatusOK, protocol.RoomResponse{
 		Room:                 roomName,
-		LeaseDurationSeconds: int64(advertisement.Lease / time.Second),
+		LeaseDurationSeconds: int64(lease.Lease / time.Second),
 	})
 }
 

@@ -29,7 +29,7 @@ contract: `clip-live-share` version 1. There is no compatibility fallback.
 
 ```mermaid
 flowchart LR
-    C["Clip host"] -->|"advertise room + encrypted envelopes"| S["Clip Go service"]
+    C["Clip host"] -->|"allocate/renew room + encrypted envelopes"| S["Clip Go service"]
     B["Browser viewer"] -->|"load viewer + encrypted envelopes"| S
     C <-->|"WebRTC DTLS-SRTP + clip-control-v1"| B
     C -.->|"encrypted media when direct ICE fails"| T["Optional TURN relay"]
@@ -90,7 +90,7 @@ History, or export caches.
 | `ClipLiveShare` | Typed identifiers, encryption, message validation, state machine and source-slot policy | AppKit, ScreenCaptureKit or concrete sockets |
 | `ClipLiveShareWebRTC` | HTTP/WebSocket signaling adapter, ICE, SDP, peers, codecs, RTP stats, Opus and DataChannel | Source-selection policy or SwiftUI |
 | Live Share coordinator | Admission, authoritative sources, capture-to-peer mapping, reconnect and teardown | Persistent media or server-side viewer truth |
-| Go server | Room-name leases, owner-token hashes, viewer routes and bounded ciphertext relay | Access codes, SDP, ICE, stream metadata, media or viewer count |
+| Go server | Room-name leases, owner-token hashes, viewer routes and bounded ciphertext relay | Join capabilities, Access Words, SDP, ICE, stream metadata, media or viewer count |
 | Browser viewer | Key agreement, admission UI, peer answer, stream presentation, audio playback and control state | Host source authority or server room ownership |
 
 ## Room creation and ownership
@@ -98,20 +98,23 @@ History, or export caches.
 Clip fetches `/.well-known/clip-live-share`, validates protocol version 1 and
 resource limits, then generates:
 
-- a memorable, normalized room name;
 - a random 32-byte owner token; and
-- an ephemeral P-256 room key pair.
+- an ephemeral P-256 room key pair; and
+- a random 32-byte anonymous-viewer join capability.
 
-`PUT /api/v1/rooms/{room}` advertises the room with the owner token. The server
-stores only SHA-256 of that token. The token authenticates the host WebSocket,
-idempotent re-advertisement, reconnect, and room deletion. It is not placed in
-the viewer URL or persisted after the session.
+`POST /api/v1/rooms` sends only the owner token. The server atomically allocates
+a memorable normalized routing name and returns its lease. Repeating the same
+owner token returns that live lease rather than consuming a second room, making
+an uncertain POST response safe to retry. The server stores only SHA-256 of the
+owner token. The token authenticates the host WebSocket, lease renewal, and
+room deletion. It is not placed in the viewer URL or
+persisted after the session.
 
 Room state is memory-only. An advertisement has a bounded lease, a connected
 host renews it, and a brief disconnect grace lets the same owner reclaim it.
 Pending viewer routes close on host loss. A server restart deliberately clears
-rooms; Clip reconnects and re-advertises the active room using the same owner
-capability.
+rooms. Established P2P peers do not depend on that state, but a cleared lease
+cannot admit new viewers and the host must allocate a new room.
 
 The initial deployment uses one server replica. Horizontal replication would
 require shared ephemeral routing or connection affinity and is outside v1.
@@ -121,12 +124,14 @@ require shared ephemeral routing or connection affinity and is outside v1.
 The share URL has this shape:
 
 ```text
-https://share.example/ROOM#v=1&key=<P-256-public-key>
+https://share.example/ROOM#v=1&key=<P-256-public-key>&join=<32-byte-capability>
 ```
 
-The value after `#` is a URL fragment. A browser uses it locally but does not
-include it in the HTTP request for `/ROOM`. It is the host's ephemeral public
-key, not the owner token, access code, or a symmetric encryption secret.
+The values after `#` are a URL fragment. A browser uses them locally but does
+not include them in the HTTP request for `/ROOM`. `key` pins the host's
+ephemeral public key. `join` is a 256-bit bearer capability used only to prove
+anonymous admission; it never appears in room allocation, native descriptors,
+WebSocket URLs, viewer hello, or outer relay metadata.
 
 For every route, the browser creates its own P-256 key pair and sends only its
 public key through the relay. Browser and host perform ECDH and derive separate
@@ -141,8 +146,11 @@ as the loaded viewer code follows the protocol.
 
 This boundary is important:
 
-- The fragment is not a password. A room without an access code intentionally
-  admits anyone who has a working share link and whom the host accepts.
+- The room name and public key are not passwords. Even with both, a server
+  operator cannot create a valid anonymous admission without `join`.
+- The complete URL is a bearer invitation. Anyone who receives it can prove
+  possession of `join`; the optional Access Word adds a separately shared
+  human confirmation factor.
 - The browser viewer is trusted as part of the selected deployment. A server
   operator who replaces the top-level HTML or JavaScript can read
   `location.hash` before cryptography runs.
@@ -156,23 +164,28 @@ This boundary is important:
 
 ## Viewer admission
 
-The server does not know whether a room uses an access code. Admission happens
+The server does not know whether a room uses an Access Word. Admission happens
 inside the encrypted route before Clip allocates a peer:
 
-1. Clip sends a random 32-byte challenge and whether a code is required.
-2. The viewer asks locally for the code when required.
-3. The browser returns an HMAC-SHA256 proof over the challenge and per-route
-   session identifier, keyed from the normalized code.
-4. Clip verifies the proof in constant time and sends the result.
+1. Clip sends a random 32-byte challenge and whether an Access Word is required.
+2. Every anonymous viewer returns a `joinProof` keyed by the 32-byte fragment
+   capability. If required, it also asks locally for the Access Word and returns
+   an independent `accessCodeProof`.
+3. Both proofs bind a domain, room, session, route, exact viewer ephemeral key,
+   and challenge through a canonical length-prefixed encoding.
+4. Clip verifies every required proof in constant time and sends one generic
+   admission result.
 5. Only an allowed route proceeds to SDP negotiation.
 
-Changing the code affects new admissions. It does not eject an already
+Changing the Access Word affects new admissions. It does not eject an already
 connected peer. Attempts, pending routes, message sizes, ICE candidates and
-answer time are bounded. Code text and plaintext proofs never reach the
+answer time are bounded. Word text and plaintext proofs never reach the
 server.
 
-The access code is a convenient host-side gate, not an account system. It is
-session-only and never written to preferences, History, caches or normal logs.
+The Access Word is a short 24-bit pronounceable secondary gate, not the primary
+credential or an account system. The 256-bit join capability is the
+cryptographic admission secret. Both are session-only and never written to
+preferences, History, caches, or normal logs.
 
 ## Encrypted signaling lifecycle
 
@@ -347,15 +360,17 @@ without FFmpeg, libx264, or a helper media process.
 ## Privacy and persistence
 
 The service may observe room names, IP addresses, connection times, temporary
-route identifiers and envelope sizes. It does not receive plaintext access
-codes, SDP, ICE candidates, codecs, source names, stream manifests, cursor
-positions, media, or authoritative viewer count.
+route identifiers, viewer public keys, and envelope sizes. It does not receive
+the private join capability, plaintext Access Words, SDP, ICE candidates,
+codecs, source names, stream manifests, cursor positions, media, or
+authoritative viewer count.
 
 No Live Share frame, PCM sample or network encoding is persisted. Owner tokens,
-room private keys, viewer keys, challenges and access codes remain session
-memory only. Ordinary logs contain bounded error categories and identifiers,
-not ciphertext contents or secrets. Stopping a session tears down capture,
-audio, observers, overlays, peers, routes and the room advertisement.
+join capabilities, room private keys, viewer private keys, challenges, and
+Access Words remain session memory only. Ordinary logs contain bounded error
+categories and identifiers, not ciphertext contents or secrets. Stopping a
+session tears down capture, audio, observers, overlays, peers, routes, and the
+room advertisement.
 
 ## Explicit non-goals
 

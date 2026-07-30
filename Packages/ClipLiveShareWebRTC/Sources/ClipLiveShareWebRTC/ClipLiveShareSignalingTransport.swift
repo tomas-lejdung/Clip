@@ -198,7 +198,6 @@ public enum ClipLiveShareNetworkError: Error, Equatable, Sendable, LocalizedErro
     case messageTooLarge(maximumBytes: Int)
     case incompatibleServer
     case rejected(statusCode: Int)
-    case roomNameTaken
     case connectionAlreadyActive
     case connectionFailed
     case notConnected
@@ -207,8 +206,7 @@ public enum ClipLiveShareNetworkError: Error, Equatable, Sendable, LocalizedErro
     case invalidMessage
     case eventBufferOverflow
     case invalidCapabilities
-    case invalidRoomResponse
-    case roomCreationExhausted
+    case invalidRoomLease
     case routeNotFound
     case routeRejected
 
@@ -226,8 +224,6 @@ public enum ClipLiveShareNetworkError: Error, Equatable, Sendable, LocalizedErro
             "This server does not support Clip Live Share Protocol v1."
         case .rejected(let statusCode):
             "The Live Share server rejected the request (HTTP \(statusCode))."
-        case .roomNameTaken:
-            "That Live Share room name is already in use."
         case .connectionAlreadyActive:
             "A Live Share signaling connection is already active."
         case .connectionFailed:
@@ -244,10 +240,8 @@ public enum ClipLiveShareNetworkError: Error, Equatable, Sendable, LocalizedErro
             "The Live Share signaling event queue overflowed."
         case .invalidCapabilities:
             "The server returned an invalid Clip Live Share capability document."
-        case .invalidRoomResponse:
-            "The server returned an invalid room advertisement."
-        case .roomCreationExhausted:
-            "Clip could not find an available Live Share room name."
+        case .invalidRoomLease:
+            "The server returned an invalid Live Share room lease."
         case .routeNotFound:
             "The viewer signaling route is no longer available."
         case .routeRejected:
@@ -315,7 +309,10 @@ public enum ClipLiveShareSignalingDisconnectReason: Equatable, Sendable {
 public enum ClipLiveShareSignalingEvent: Equatable, Sendable {
     case connecting(room: ClipLiveShareRoomName, reconnectAttempt: Int)
     case connected(room: ClipLiveShareRoomName, reconnectAttempt: Int)
-    case routeOpened(routeID: ClipLiveShareRouteID)
+    case routeOpened(
+        routeID: ClipLiveShareRouteID,
+        viewerPublicKey: ClipLiveShareKeyAgreementPublicKey
+    )
     case message(routeID: ClipLiveShareRouteID, message: ClipLiveShareInnerMessage)
     case routeClosed(routeID: ClipLiveShareRouteID, reason: String?)
     case routeRejected(routeID: ClipLiveShareRouteID, reason: String)
@@ -331,7 +328,7 @@ public enum ClipLiveShareSignalingLogEntry: Equatable, Sendable,
     CustomStringConvertible
 {
     case capabilitiesLoaded
-    case roomAdvertised(ClipLiveShareRoomName)
+    case roomAllocated(ClipLiveShareRoomName)
     case connecting(ClipLiveShareRoomName, attempt: Int)
     case connected(ClipLiveShareRoomName, attempt: Int)
     case routeOpened(ClipLiveShareRouteID)
@@ -344,8 +341,8 @@ public enum ClipLiveShareSignalingLogEntry: Equatable, Sendable,
         switch self {
         case .capabilitiesLoaded:
             "Clip Live Share server capabilities loaded"
-        case .roomAdvertised(let room):
-            "Clip Live Share room advertised: \(room.rawValue)"
+        case .roomAllocated(let room):
+            "Clip Live Share room allocated: \(room.rawValue)"
         case .connecting(let room, let attempt):
             "Connecting Clip Live Share room \(room.rawValue), attempt \(attempt)"
         case .connected(let room, let attempt):
@@ -365,7 +362,7 @@ public enum ClipLiveShareSignalingLogEntry: Equatable, Sendable,
 }
 
 /// Owns the authenticated host WebSocket and its short-lived encrypted viewer
-/// routes. Access codes, SDP, ICE, stream metadata, and peer state exist only
+/// routes. Access Words, SDP, ICE, stream metadata, and peer state exist only
 /// inside the encrypted inner messages delivered by this actor.
 public actor ClipLiveShareSignalingClient {
     public typealias Logger = @Sendable (ClipLiveShareSignalingLogEntry) -> Void
@@ -377,7 +374,7 @@ public actor ClipLiveShareSignalingClient {
     private let logger: Logger
 
     private var sessionGeneration: UInt64 = 0
-    private var advertisedRoomConfiguration: ClipLiveShareRoomConfiguration?
+    private var allocatedRoomConfiguration: ClipLiveShareRoomConfiguration?
     private var roomConfiguration: ClipLiveShareRoomConfiguration?
     private var openingConnection: (
         id: UUID,
@@ -470,15 +467,13 @@ public actor ClipLiveShareSignalingClient {
         }
     }
 
-    /// Creates a client-owned room identity and claims an available memorable
-    /// room name. Neither private room key nor owner token is persisted by the
-    /// signaling service.
+    /// Creates client-owned cryptographic room state and asks the rendezvous
+    /// service to allocate its public routing name. The private room key and
+    /// join capability never cross this client boundary.
     public func createRoom(
-        at endpoint: ClipLiveShareServerEndpoint = .official,
-        preferredRoomName: ClipLiveShareRoomName? = nil,
-        maximumNameAttempts: Int = 12
+        at endpoint: ClipLiveShareServerEndpoint = .official
     ) async throws -> ClipLiveShareRoomConfiguration {
-        guard advertisedRoomConfiguration == nil,
+        guard allocatedRoomConfiguration == nil,
               roomConfiguration == nil,
               connection == nil,
               openingConnection == nil else {
@@ -491,49 +486,102 @@ public actor ClipLiveShareSignalingClient {
         }
         let ownerToken = ClipLiveShareOwnerToken.random()
         let identity = ClipLiveShareRoomIdentity()
-        let attempts = min(32, max(1, maximumNameAttempts))
-
-        for attempt in 0..<attempts {
-            let room = attempt == 0 ? (preferredRoomName ?? .random()) : .random()
-            let configuration = ClipLiveShareRoomConfiguration(
-                endpoint: endpoint,
-                capabilities: capabilities,
-                room: room,
-                ownerToken: ownerToken,
-                identity: identity
-            )
-            do {
-                _ = try await advertise(
-                    configuration,
-                    expectedGeneration: creationGeneration
-                )
-                return configuration
-            } catch ClipLiveShareNetworkError.roomNameTaken {
-                continue
-            }
-        }
-        throw ClipLiveShareNetworkError.roomCreationExhausted
-    }
-
-    @discardableResult
-    public func advertise(
-        _ room: ClipLiveShareRoomConfiguration
-    ) async throws -> ClipLiveShareRoomAdvertisement {
-        try await advertise(room, expectedGeneration: nil)
-    }
-
-    private func advertise(
-        _ room: ClipLiveShareRoomConfiguration,
-        expectedGeneration: UInt64?
-    ) async throws -> ClipLiveShareRoomAdvertisement {
-        var request = URLRequest(url: room.advertiseURL)
-        request.httpMethod = "PUT"
+        let joinCapability = ClipLiveShareJoinCapability.random()
+        var request = URLRequest(url: endpoint.allocateRoomURL)
+        request.httpMethod = "POST"
         request.timeoutInterval = 5
         request.cachePolicy = .reloadIgnoringLocalAndRemoteCacheData
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try JSONEncoder().encode(
-            ClipLiveShareAdvertiseRoomRequest(ownerToken: room.ownerToken)
+            ClipLiveShareAllocateRoomRequest(ownerToken: ownerToken)
+        )
+
+        let result = try await executeRoomAllocationRequest(
+            request,
+            expectedGeneration: creationGeneration
+        )
+        guard result.statusCode == 200 || result.statusCode == 201 else {
+            throw ClipLiveShareNetworkError.rejected(statusCode: result.statusCode)
+        }
+        guard !result.data.isEmpty,
+              result.data.count <= ClipLiveShareSignalingResourceLimits.maximumRoomResponseBytes
+        else {
+            throw ClipLiveShareNetworkError.invalidRoomLease
+        }
+        do {
+            let lease = try JSONDecoder().decode(
+                ClipLiveShareRoomLease.self,
+                from: result.data
+            )
+            let configuration = ClipLiveShareRoomConfiguration(
+                endpoint: endpoint,
+                capabilities: capabilities,
+                room: lease.room,
+                ownerToken: ownerToken,
+                identity: identity,
+                joinCapability: joinCapability
+            )
+            if sessionGeneration != creationGeneration {
+                // A stop can interleave while the POST is awaiting its HTTP
+                // response. Remove the just-created lease with its owner
+                // capability instead of orphaning it on the service.
+                try? await removeRoom(for: configuration)
+                throw ClipLiveShareNetworkError.connectionFailed
+            }
+            allocatedRoomConfiguration = configuration
+            logger(.roomAllocated(configuration.room))
+            return configuration
+        } catch let error as ClipLiveShareNetworkError {
+            throw error
+        } catch {
+            throw ClipLiveShareNetworkError.invalidRoomLease
+        }
+    }
+
+    /// A room-allocation POST is safe to repeat because the service keys its
+    /// in-memory idempotency by the owner-token hash. Retry once with the exact
+    /// same body when transport failure leaves delivery unknown.
+    private func executeRoomAllocationRequest(
+        _ request: URLRequest,
+        expectedGeneration: UInt64
+    ) async throws -> ClipLiveShareHTTPResult {
+        for attempt in 0..<2 {
+            guard sessionGeneration == expectedGeneration else {
+                throw ClipLiveShareNetworkError.connectionFailed
+            }
+            do {
+                return try await httpTransport.execute(request)
+            } catch let error as ClipLiveShareNetworkError {
+                guard attempt == 0 else { throw error }
+                switch error {
+                case .requestFailed, .invalidHTTPResponse:
+                    continue
+                default:
+                    throw error
+                }
+            } catch {
+                guard attempt == 0 else {
+                    throw ClipLiveShareNetworkError.requestFailed
+                }
+            }
+        }
+        throw ClipLiveShareNetworkError.requestFailed
+    }
+
+    @discardableResult
+    private func renewRoom(
+        _ room: ClipLiveShareRoomConfiguration,
+        expectedGeneration: UInt64
+    ) async throws -> ClipLiveShareRoomLease {
+        var request = URLRequest(url: room.renewURL)
+        request.httpMethod = "PUT"
+        request.timeoutInterval = 5
+        request.cachePolicy = .reloadIgnoringLocalAndRemoteCacheData
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.setValue(
+            room.ownerToken.authorizationHeaderValue,
+            forHTTPHeaderField: "Authorization"
         )
 
         let result: ClipLiveShareHTTPResult
@@ -544,40 +592,31 @@ public actor ClipLiveShareSignalingClient {
         } catch {
             throw ClipLiveShareNetworkError.requestFailed
         }
-        if result.statusCode == 409 {
-            throw ClipLiveShareNetworkError.roomNameTaken
-        }
-        guard result.statusCode == 200 || result.statusCode == 201 else {
+        guard result.statusCode == 200 else {
             throw ClipLiveShareNetworkError.rejected(statusCode: result.statusCode)
         }
         guard !result.data.isEmpty,
               result.data.count <= ClipLiveShareSignalingResourceLimits.maximumRoomResponseBytes
         else {
-            throw ClipLiveShareNetworkError.invalidRoomResponse
+            throw ClipLiveShareNetworkError.invalidRoomLease
         }
         do {
-            let advertisement = try JSONDecoder().decode(
-                ClipLiveShareRoomAdvertisement.self,
+            let lease = try JSONDecoder().decode(
+                ClipLiveShareRoomLease.self,
                 from: result.data
             )
-            guard advertisement.room == room.room else {
-                throw ClipLiveShareNetworkError.invalidRoomResponse
+            guard lease.room == room.room else {
+                throw ClipLiveShareNetworkError.invalidRoomLease
             }
-            if let expectedGeneration,
-               sessionGeneration != expectedGeneration {
-                // A stop can interleave while the PUT is awaiting its HTTP
-                // response. Remove the just-created lease with its owner
-                // capability instead of orphaning it on the service.
-                try? await removeAdvertisement(for: room)
+            guard sessionGeneration == expectedGeneration else {
                 throw ClipLiveShareNetworkError.connectionFailed
             }
-            advertisedRoomConfiguration = room
-            logger(.roomAdvertised(room.room))
-            return advertisement
+            allocatedRoomConfiguration = room
+            return lease
         } catch let error as ClipLiveShareNetworkError {
             throw error
         } catch {
-            throw ClipLiveShareNetworkError.invalidRoomResponse
+            throw ClipLiveShareNetworkError.invalidRoomLease
         }
     }
 
@@ -586,14 +625,14 @@ public actor ClipLiveShareSignalingClient {
               openingConnection == nil,
               reconnectTask == nil,
               roomConfiguration == nil,
-              advertisedRoomConfiguration.map({
+              allocatedRoomConfiguration.map({
                   $0.room == room.room
                     && $0.endpoint == room.endpoint
                     && $0.ownerToken == room.ownerToken
               }) ?? true else {
             throw ClipLiveShareNetworkError.connectionAlreadyActive
         }
-        advertisedRoomConfiguration = room
+        allocatedRoomConfiguration = room
         sessionGeneration &+= 1
         let generation = sessionGeneration
         roomConfiguration = room
@@ -691,17 +730,17 @@ public actor ClipLiveShareSignalingClient {
         }
     }
 
-    /// Stops signaling and removes the room advertisement. Existing P2P media
+    /// Stops signaling and releases the room lease. Existing P2P media
     /// is expected to be closed by the coordinator before this call.
-    public func stop(removeAdvertisement removesAdvertisement: Bool = true) async {
+    public func stop(removeRoomLease: Bool = true) async {
         sessionGeneration &+= 1
-        let room = roomConfiguration ?? advertisedRoomConfiguration
+        let room = roomConfiguration ?? allocatedRoomConfiguration
         let opening = openingConnection
         let active = connection
         openingConnection = nil
         connection = nil
         roomConfiguration = nil
-        advertisedRoomConfiguration = nil
+        allocatedRoomConfiguration = nil
         encryptedRoutes.removeAll()
         resetPerConnectionRejectionState()
         reconnectToken = nil
@@ -713,15 +752,15 @@ public actor ClipLiveShareSignalingClient {
         logger(.stopped)
         if let opening { await opening.socket.close() }
         if let active { await active.socket.close() }
-        if removesAdvertisement, let room {
-            try? await removeAdvertisement(for: room)
+        if removeRoomLease, let room {
+            try? await removeRoom(for: room)
         }
     }
 
-    private func removeAdvertisement(
+    private func removeRoom(
         for room: ClipLiveShareRoomConfiguration
     ) async throws {
-        var request = URLRequest(url: room.advertiseURL)
+        var request = URLRequest(url: room.renewURL)
         request.httpMethod = "DELETE"
         request.timeoutInterval = 5
         request.cachePolicy = .reloadIgnoringLocalAndRemoteCacheData
@@ -744,9 +783,9 @@ public actor ClipLiveShareSignalingClient {
             throw ClipLiveShareNetworkError.connectionFailed
         }
         if reconnectAttempt > 0 {
-            // A process restart loses the in-memory lease. Re-advertising with
-            // the same owner capability is also an idempotent lease renewal.
-            _ = try await advertise(room, expectedGeneration: generation)
+            // A disconnected host lease expires after a bounded grace period.
+            // Renew it with the owner capability before replacing the socket.
+            _ = try await renewRoom(room, expectedGeneration: generation)
             guard isCurrentSession(generation) else {
                 throw ClipLiveShareNetworkError.connectionFailed
             }
@@ -822,7 +861,7 @@ public actor ClipLiveShareSignalingClient {
 
     private var negotiatedMaximumMessageBytes: Int {
         roomConfiguration?.capabilities.limits.maximumMessageBytes
-            ?? advertisedRoomConfiguration?.capabilities.limits.maximumMessageBytes
+            ?? allocatedRoomConfiguration?.capabilities.limits.maximumMessageBytes
             ?? ClipLiveShareSignalingResourceLimits.maximumMessageBytes
     }
 
@@ -919,7 +958,10 @@ public actor ClipLiveShareSignalingClient {
                 room: room.room,
                 routeID: opened.routeID
             )
-            emit(.routeOpened(routeID: opened.routeID))
+            emit(.routeOpened(
+                routeID: opened.routeID,
+                viewerPublicKey: viewerKey
+            ))
             logger(.routeOpened(opened.routeID))
         } catch {
             await rejectUnknownRouteOnce(opened.routeID, socket: socket)

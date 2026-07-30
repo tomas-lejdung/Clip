@@ -331,13 +331,12 @@ func TestNativeMalformedPayloadsAreRejectedWithoutChangingBrowserV1(t *testing.T
 
 	// The original browser v1 surface remains independently functional.
 	roomToken := ownerToken(36)
-	roomResponse := advertise(t, server.URL, "COEXIST-ROOM", roomToken)
-	roomResponse.Body.Close()
-	if roomResponse.StatusCode != http.StatusCreated {
-		t.Fatalf("browser room create = %d", roomResponse.StatusCode)
+	roomLease, roomStatus := allocateRoom(t, server.URL, roomToken)
+	if roomStatus != http.StatusCreated {
+		t.Fatalf("browser room create = %d", roomStatus)
 	}
-	browserHost := dialHost(t, server.URL, "COEXIST-ROOM", roomToken)
-	browserViewer := dialViewer(t, server.URL, "COEXIST-ROOM")
+	browserHost := dialHost(t, server.URL, roomLease.Room, roomToken)
+	browserViewer := dialViewer(t, server.URL, roomLease.Room)
 	routeID := openRoute(t, browserHost, browserViewer)
 	relay := relayEnvelope(1)
 	if err := browserViewer.WriteJSON(relay); err != nil {

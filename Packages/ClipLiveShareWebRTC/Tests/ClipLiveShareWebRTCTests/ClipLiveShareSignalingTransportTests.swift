@@ -6,25 +6,20 @@ import Testing
 
 @Suite("Clip Live Share native signaling transport")
 struct ClipLiveShareSignalingTransportTests {
-    @Test("capabilities are discovered and a colliding preferred room is retried")
-    func capabilitiesAndRoomCollision() async throws {
+    @Test("capabilities are discovered before the server allocates a room name")
+    func capabilitiesAndRoomAllocation() async throws {
         let capabilities = ClipLiveShareCapabilities.v1Default
-        let preferred = try ClipLiveShareRoomName(rawValue: "CRISP-OTTER-042")
+        let allocatedName = try ClipLiveShareRoomName(rawValue: "CRISP-OTTER-042")
         let http = NativeMockHTTPTransport { request, index in
             switch index {
             case 0:
                 return .init(statusCode: 200, data: try encodeJSON(capabilities))
-            case 1:
-                #expect(request.url?.path == "/api/v1/rooms/CRISP-OTTER-042")
-                return .init(statusCode: 409, data: Data())
             default:
-                let room = try ClipLiveShareRoomName(
-                    rawValue: try #require(request.url?.lastPathComponent)
-                )
+                #expect(request.url?.path == "/api/v1/rooms")
                 return .init(
                     statusCode: 201,
-                    data: try encodeJSON(ClipLiveShareRoomAdvertisement(
-                        room: room,
+                    data: try encodeJSON(ClipLiveShareRoomLease(
+                        room: allocatedName,
                         leaseDurationSeconds: 300
                     ))
                 )
@@ -32,50 +27,84 @@ struct ClipLiveShareSignalingTransportTests {
         }
         let client = makeNativeClient(http: http)
 
-        let room = try await client.createRoom(
-            at: .localDevelopment,
-            preferredRoomName: preferred,
-            maximumNameAttempts: 2
-        )
+        let room = try await client.createRoom(at: .localDevelopment)
 
-        #expect(room.room != preferred)
+        #expect(room.room == allocatedName)
         #expect(room.capabilities == capabilities)
+        #expect(room.joinCapability.rawValue.utf8.count == 43)
         let requests = await http.recordedRequests()
-        #expect(requests.count == 3)
+        #expect(requests.count == 2)
         #expect(requests[0].url == URL(string:
             "http://localhost:8080/.well-known/clip-live-share"
         ))
         #expect(requests[0].httpMethod == "GET")
-        #expect(requests[1].httpMethod == "PUT")
-        #expect(requests[2].httpMethod == "PUT")
-        let firstBody = try JSONDecoder().decode(
-            ClipLiveShareAdvertiseRoomRequest.self,
+        #expect(requests[1].httpMethod == "POST")
+        let allocation = try JSONDecoder().decode(
+            ClipLiveShareAllocateRoomRequest.self,
             from: try #require(requests[1].httpBody)
         )
-        let secondBody = try JSONDecoder().decode(
-            ClipLiveShareAdvertiseRoomRequest.self,
-            from: try #require(requests[2].httpBody)
-        )
-        #expect(firstBody.ownerToken == room.ownerToken)
-        #expect(secondBody.ownerToken == room.ownerToken)
+        #expect(allocation.ownerToken == room.ownerToken)
+        let allocationBody = try #require(requests[1].httpBody)
+        let body = try #require(JSONSerialization.jsonObject(
+            with: allocationBody
+        ) as? [String: Any])
+        #expect(Set(body.keys) == ["ownerToken"])
     }
 
-    @Test("stop racing a successful room advertisement removes the new lease")
-    func stopDuringRoomAdvertisementDeletesLease() async throws {
+    @Test("an uncertain allocation response retries the identical idempotent request")
+    func roomAllocationRetryIsIdempotent() async throws {
         let capabilities = ClipLiveShareCapabilities.v1Default
-        let preferred = try ClipLiveShareRoomName(rawValue: "CRISP-OTTER-042")
-        let putGate = NativeAsyncGate()
+        let allocatedName = try ClipLiveShareRoomName(rawValue: "CALM-RAVEN-314")
         let http = NativeMockHTTPTransport { request, index in
             switch index {
             case 0:
                 return .init(statusCode: 200, data: try encodeJSON(capabilities))
             case 1:
-                #expect(request.httpMethod == "PUT")
-                await putGate.wait()
+                #expect(request.httpMethod == "POST")
+                throw NativeMockFailure.connectionFailed
+            default:
+                #expect(request.httpMethod == "POST")
+                return .init(
+                    statusCode: 200,
+                    data: try encodeJSON(ClipLiveShareRoomLease(
+                        room: allocatedName,
+                        leaseDurationSeconds: 300
+                    ))
+                )
+            }
+        }
+        let client = makeNativeClient(http: http)
+
+        let room = try await client.createRoom(at: .localDevelopment)
+
+        #expect(room.room == allocatedName)
+        let requests = await http.recordedRequests()
+        #expect(requests.count == 3)
+        #expect(requests[1].url == requests[2].url)
+        #expect(requests[1].httpBody == requests[2].httpBody)
+        let allocation = try JSONDecoder().decode(
+            ClipLiveShareAllocateRoomRequest.self,
+            from: try #require(requests[1].httpBody)
+        )
+        #expect(allocation.ownerToken == room.ownerToken)
+    }
+
+    @Test("stop racing a successful room allocation removes the new lease")
+    func stopDuringRoomAllocationDeletesLease() async throws {
+        let capabilities = ClipLiveShareCapabilities.v1Default
+        let allocatedName = try ClipLiveShareRoomName(rawValue: "CRISP-OTTER-042")
+        let postGate = NativeAsyncGate()
+        let http = NativeMockHTTPTransport { request, index in
+            switch index {
+            case 0:
+                return .init(statusCode: 200, data: try encodeJSON(capabilities))
+            case 1:
+                #expect(request.httpMethod == "POST")
+                await postGate.wait()
                 return .init(
                     statusCode: 201,
-                    data: try encodeJSON(ClipLiveShareRoomAdvertisement(
-                        room: preferred,
+                    data: try encodeJSON(ClipLiveShareRoomLease(
+                        room: allocatedName,
                         leaseDurationSeconds: 300
                     ))
                 )
@@ -86,32 +115,28 @@ struct ClipLiveShareSignalingTransportTests {
         }
         let client = makeNativeClient(http: http)
         let creation = Task {
-            try await client.createRoom(
-                at: .localDevelopment,
-                preferredRoomName: preferred,
-                maximumNameAttempts: 1
-            )
+            try await client.createRoom(at: .localDevelopment)
         }
         try await eventuallyNative { await http.recordedRequests().count == 2 }
 
         await client.stop()
-        await putGate.open()
+        await postGate.open()
         await #expect(throws: ClipLiveShareNetworkError.connectionFailed) {
             try await creation.value
         }
         try await eventuallyNative { await http.recordedRequests().count == 3 }
 
         let requests = await http.recordedRequests()
-        let put = requests[1]
+        let post = requests[1]
         let delete = requests[2]
-        let advertised = try JSONDecoder().decode(
-            ClipLiveShareAdvertiseRoomRequest.self,
-            from: try #require(put.httpBody)
+        let allocation = try JSONDecoder().decode(
+            ClipLiveShareAllocateRoomRequest.self,
+            from: try #require(post.httpBody)
         )
-        #expect(delete.url == put.url)
+        #expect(delete.url?.path == "/api/v1/rooms/CRISP-OTTER-042")
         #expect(delete.httpMethod == "DELETE")
         #expect(delete.value(forHTTPHeaderField: "Authorization")
-            == advertised.ownerToken.authorizationHeaderValue)
+            == allocation.ownerToken.authorizationHeaderValue)
         #expect(delete.httpBody == nil)
     }
 
@@ -139,7 +164,7 @@ struct ClipLiveShareSignalingTransportTests {
             ))
         }
 
-        await client.stop(removeAdvertisement: false)
+        await client.stop(removeRoomLease: false)
         #expect(await socket.closeCount() == 1)
     }
 
@@ -160,7 +185,10 @@ struct ClipLiveShareSignalingTransportTests {
             viewerKey: viewer.publicKey
         ))))
         try await eventuallyNative {
-            await recorder.snapshot().contains(.routeOpened(routeID: routeID))
+            await recorder.snapshot().contains(.routeOpened(
+                routeID: routeID,
+                viewerPublicKey: viewer.publicKey
+            ))
         }
 
         var viewerChannel = try ClipLiveShareEncryptedChannel(
@@ -202,7 +230,7 @@ struct ClipLiveShareSignalingTransportTests {
         await #expect(throws: ClipLiveShareNetworkError.routeNotFound) {
             try await client.send(toViewer, to: routeID)
         }
-        await client.stop(removeAdvertisement: false)
+        await client.stop(removeRoomLease: false)
     }
 
     @Test("concurrent encrypted sends stay ordered and a concurrent close cannot resurrect route state")
@@ -224,7 +252,10 @@ struct ClipLiveShareSignalingTransportTests {
             viewerKey: viewer.publicKey
         ))))
         try await eventuallyNative {
-            await recorder.snapshot().contains(.routeOpened(routeID: routeID))
+            await recorder.snapshot().contains(.routeOpened(
+                routeID: routeID,
+                viewerPublicKey: viewer.publicKey
+            ))
         }
 
         let sessionID = ClipLiveShareSessionID.random()
@@ -274,13 +305,13 @@ struct ClipLiveShareSignalingTransportTests {
         await #expect(throws: ClipLiveShareNetworkError.routeNotFound) {
             try await client.send(firstMessage, to: routeID)
         }
-        await client.stop(removeAdvertisement: false)
+        await client.stop(removeRoomLease: false)
     }
 
     @Test("tampered encrypted traffic fails closed for its route without killing the host socket")
     func tamperRejectsRoute() async throws {
         let fixture = try await connectedEncryptedRoute()
-        defer { Task { await fixture.client.stop(removeAdvertisement: false) } }
+        defer { Task { await fixture.client.stop(removeRoomLease: false) } }
 
         var viewerChannel = fixture.viewerChannel
         let message = ClipLiveShareInnerMessage.sharingState(.init(
@@ -313,7 +344,7 @@ struct ClipLiveShareSignalingTransportTests {
     @Test("replayed encrypted traffic is rejected by the monotonic route sequence")
     func replayRejectsRoute() async throws {
         let fixture = try await connectedEncryptedRoute()
-        defer { Task { await fixture.client.stop(removeAdvertisement: false) } }
+        defer { Task { await fixture.client.stop(removeRoomLease: false) } }
 
         var viewerChannel = fixture.viewerChannel
         let message = ClipLiveShareInnerMessage.sharingState(.init(
@@ -341,7 +372,7 @@ struct ClipLiveShareSignalingTransportTests {
         }
     }
 
-    @Test("connection loss re-advertises the lease and reconnects with a fresh bearer socket")
+    @Test("connection loss renews the lease and reconnects with a fresh bearer socket")
     func reconnectsAndRenewsLease() async throws {
         let first = NativeMockWebSocket()
         let second = NativeMockWebSocket()
@@ -354,7 +385,7 @@ struct ClipLiveShareSignalingTransportTests {
                 rawValue: try #require(request.url?.lastPathComponent)
             )
             return .init(statusCode: 200, data: try encodeJSON(
-                ClipLiveShareRoomAdvertisement(
+                ClipLiveShareRoomLease(
                     room: advertisedRoom,
                     leaseDurationSeconds: 300
                 )
@@ -386,7 +417,7 @@ struct ClipLiveShareSignalingTransportTests {
         let secondRequest = try #require(await factory.recordedRequests().last)
         #expect(secondRequest.value(forHTTPHeaderField: "Authorization")
             == room.ownerToken.authorizationHeaderValue)
-        await client.stop(removeAdvertisement: false)
+        await client.stop(removeRoomLease: false)
     }
 
     @Test("persistent recovery outlives its initial backoff and reconnects after service restore")
@@ -405,7 +436,7 @@ struct ClipLiveShareSignalingTransportTests {
                 rawValue: try #require(request.url?.lastPathComponent)
             )
             return .init(statusCode: 200, data: try encodeJSON(
-                ClipLiveShareRoomAdvertisement(
+                ClipLiveShareRoomLease(
                     room: advertisedRoom,
                     leaseDurationSeconds: 300
                 )
@@ -442,7 +473,7 @@ struct ClipLiveShareSignalingTransportTests {
             reason: .reconnectExhausted,
             willReconnect: false
         )))
-        await client.stop(removeAdvertisement: false)
+        await client.stop(removeRoomLease: false)
     }
 
     @Test("stop invalidates a reconnect suspended in the socket factory")
@@ -459,7 +490,7 @@ struct ClipLiveShareSignalingTransportTests {
                 rawValue: try #require(request.url?.lastPathComponent)
             )
             return .init(statusCode: 200, data: try encodeJSON(
-                ClipLiveShareRoomAdvertisement(
+                ClipLiveShareRoomLease(
                     room: advertisedRoom,
                     leaseDurationSeconds: 300
                 )
@@ -476,7 +507,7 @@ struct ClipLiveShareSignalingTransportTests {
         await first.failReceive()
         try await eventuallyNative { await factory.recordedRequests().count == 2 }
 
-        await client.stop(removeAdvertisement: false)
+        await client.stop(removeRoomLease: false)
         await gate.open()
         try await eventuallyNative { await stale.closeCount() == 1 }
 
@@ -527,7 +558,7 @@ struct ClipLiveShareSignalingTransportTests {
         }
         #expect(ClipLiveShareSignalingResourceLimits.maximumMessageBytes == 262_144)
         #expect(ClipLiveShareSignalingResourceLimits.maximumDecryptedMessageBytes == 196_400)
-        await client.stop(removeAdvertisement: false)
+        await client.stop(removeRoomLease: false)
     }
 
     @Test("negotiated low message ceiling isolates oversized send and receive to one viewer")
@@ -556,8 +587,14 @@ struct ClipLiveShareSignalingTransportTests {
         }
         try await eventuallyNative {
             let events = await recorder.snapshot()
-            return events.contains(.routeOpened(routeID: oversizedRoute))
-                && events.contains(.routeOpened(routeID: healthyRoute))
+            return events.contains(.routeOpened(
+                routeID: oversizedRoute,
+                viewerPublicKey: oversizedViewer.publicKey
+            ))
+                && events.contains(.routeOpened(
+                    routeID: healthyRoute,
+                    viewerPublicKey: healthyViewer.publicKey
+                ))
         }
 
         let sessionID = ClipLiveShareSessionID.random()
@@ -623,13 +660,13 @@ struct ClipLiveShareSignalingTransportTests {
             return false
         })
         #expect(await socket.closeCount() == 0)
-        await client.stop(removeAdvertisement: false)
+        await client.stop(removeRoomLease: false)
     }
 
     @Test("hostile invalid relay bursts are bounded and preserve an established route")
     func hostileRelayBurstIsCoalesced() async throws {
         let fixture = try await connectedEncryptedRoute()
-        defer { Task { await fixture.client.stop(removeAdvertisement: false) } }
+        defer { Task { await fixture.client.stop(removeRoomLease: false) } }
 
         for _ in 0..<200 {
             let unknown = try ClipLiveShareRelayEnvelope(
@@ -716,7 +753,7 @@ struct ClipLiveShareSignalingTransportTests {
         for await event in stream { observed.append(event) }
         #expect(observed.count <= 128)
         #expect(observed.last == .eventBufferOverflow)
-        await client.stop(removeAdvertisement: false)
+        await client.stop(removeRoomLease: false)
     }
 }
 
@@ -743,7 +780,10 @@ private func connectedEncryptedRoute() async throws -> ConnectedEncryptedRouteFi
         viewerKey: viewer.publicKey
     ))))
     try await eventuallyNative {
-        await recorder.snapshot().contains(.routeOpened(routeID: routeID))
+        await recorder.snapshot().contains(.routeOpened(
+            routeID: routeID,
+            viewerPublicKey: viewer.publicKey
+        ))
     }
     return ConnectedEncryptedRouteFixture(
         client: client,
@@ -783,7 +823,10 @@ private func makeNativeRoom(
         capabilities: capabilities,
         room: try! ClipLiveShareRoomName(rawValue: "CRISP-OTTER-042"),
         ownerToken: try! ClipLiveShareOwnerToken(bytes: Data(repeating: 0x2a, count: 32)),
-        identity: ClipLiveShareRoomIdentity()
+        identity: ClipLiveShareRoomIdentity(),
+        joinCapability: try! ClipLiveShareJoinCapability(
+            bytes: Data(repeating: 0x4a, count: 32)
+        )
     )
 }
 

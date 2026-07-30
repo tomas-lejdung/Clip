@@ -22,34 +22,34 @@ type fixedWindow struct {
 }
 
 type sourceState struct {
-	advertisements fixedWindow
-	webSockets     fixedWindow
-	connections    int
-	lastSeen       time.Time
+	roomLeaseOperations fixedWindow
+	webSockets          fixedWindow
+	connections         int
+	lastSeen            time.Time
 }
 
 // sourceAdmission keys on the directly connected peer by default. Forwarded
 // addresses are considered only when the immediate peer belongs to an
 // explicitly configured trusted proxy network.
 type sourceAdmission struct {
-	mu                   sync.Mutex
-	entries              map[string]*sourceState
-	maximumEntries       int
-	maximumConnections   int
-	advertisementsPerMin int
-	webSocketsPerMin     int
-	trustedProxies       []*net.IPNet
-	now                  func() time.Time
+	mu                        sync.Mutex
+	entries                   map[string]*sourceState
+	maximumEntries            int
+	maximumConnections        int
+	roomLeaseOperationsPerMin int
+	webSocketsPerMin          int
+	trustedProxies            []*net.IPNet
+	now                       func() time.Time
 }
 
 func newSourceAdmission(configuration config.Config) *sourceAdmission {
 	admission := &sourceAdmission{
-		entries:              make(map[string]*sourceState),
-		maximumEntries:       configuration.MaximumTrackedSources,
-		maximumConnections:   configuration.MaximumConnectionsPerSource,
-		advertisementsPerMin: configuration.RoomAdvertisementsPerMinute,
-		webSocketsPerMin:     configuration.WebSocketUpgradesPerMinute,
-		now:                  time.Now,
+		entries:                   make(map[string]*sourceState),
+		maximumEntries:            configuration.MaximumTrackedSources,
+		maximumConnections:        configuration.MaximumConnectionsPerSource,
+		roomLeaseOperationsPerMin: configuration.RoomLeaseOperationsPerMinute,
+		webSocketsPerMin:          configuration.WebSocketUpgradesPerMinute,
+		now:                       time.Now,
 	}
 	for _, value := range configuration.TrustedProxyCIDRs {
 		_, network, err := net.ParseCIDR(value)
@@ -60,8 +60,12 @@ func newSourceAdmission(configuration config.Config) *sourceAdmission {
 	return admission
 }
 
-func (a *sourceAdmission) allowAdvertisement(source string) bool {
-	return a.allow(source, func(state *sourceState) *fixedWindow { return &state.advertisements }, a.advertisementsPerMin)
+func (a *sourceAdmission) allowRoomLeaseOperation(source string) bool {
+	return a.allow(
+		source,
+		func(state *sourceState) *fixedWindow { return &state.roomLeaseOperations },
+		a.roomLeaseOperationsPerMin,
+	)
 }
 
 func (a *sourceAdmission) allowWebSocket(source string) bool {

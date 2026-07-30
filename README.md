@@ -174,8 +174,9 @@ endpoints, and serves deployment capabilities at
 
 For a self-hosted deployment, terminate TLS at a reverse proxy and expose the
 service through HTTPS/WSS. A single server instance is intentional for v1; a
-restart clears its in-memory room registry and Clip re-advertises. Build the
-non-root container locally with:
+restart clears its in-memory room registry. Existing P2P peers stay connected,
+but new admissions require a newly allocated room. Build the non-root container
+locally with:
 
 ```bash
 cd server
@@ -188,14 +189,16 @@ docker run --rm -p 8080:8080 clip-live-share-server
 origin policy, leases, resource ceilings, and STUN/TURN capabilities, is in
 [`server/README.md`](server/README.md).
 
-The viewer link contains the room's ephemeral P-256 public key in the URL
-fragment (`#v=1&key=...`). Browsers do not send URL fragments in HTTP requests,
-so the signaling service does not receive that key through normal routing. The
-viewer combines it with a fresh private key to derive per-viewer AES-GCM keys;
-this prevents an honest-but-curious relay from reading or changing signaling.
-The fragment is not a password, and the viewer HTML is trusted as part of the
-chosen deployment: an operator who replaces that JavaScript can read the page's
-fragment. Users who do not trust the hosted deployment can run the same server
+The viewer link contains the room's ephemeral P-256 public key and a mandatory
+random 256-bit join capability in the URL fragment
+(`#v=1&key=...&join=...`). Browsers do not send URL fragments in HTTP or
+WebSocket requests. The public key derives per-viewer AES-GCM signaling keys;
+the private join capability produces a route-bound admission proof. Therefore
+the room name, public key, and all other server-visible metadata are
+insufficient for the service to join as a viewer. The complete link is a bearer
+invitation. Viewer HTML is trusted as part of the chosen deployment: an
+operator who replaces that JavaScript can read `location.hash`. Users who do
+not trust the hosted viewer can join through native Clip or run the same server
 and embedded viewer themselves.
 
 ## Create the local DMG
