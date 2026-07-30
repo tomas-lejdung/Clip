@@ -344,7 +344,8 @@ final class NativeLiveShareViewerCoordinator {
     private var acceptedFriendCommitReceiptDigest: ClipLiveShareNativeDigest?
     private var friendReplayGuard = try! ClipLiveShareNativeFriendReplayGuard()
     private var windowCoordinator: NativeViewerWindowCoordinator?
-    private var remoteStreams: [String: WebRTCRemoteVideoStream] = [:]
+    private var remoteParticipantPresentation:
+        RemoteParticipantPresentation<WebRTCRemoteVideoStream>?
     private var phase: NativeViewerSessionPhase = .connecting
     private var route: NativeViewerTransportRoute = .unknown
     private var audioTrackAvailable = false
@@ -402,6 +403,7 @@ final class NativeLiveShareViewerCoordinator {
         self.localServerEndpoint = localServerEndpoint
         self.onSessionEnded = onSessionEnded
         self.onMenuBarStatusChanged = onMenuBarStatusChanged
+        remoteParticipantPresentation = RemoteParticipantPresentation()
         friendship = joinMode.initialFriendship
     }
 
@@ -421,6 +423,9 @@ final class NativeLiveShareViewerCoordinator {
         self.localServerEndpoint = localServerEndpoint
         self.onSessionEnded = onSessionEnded
         self.onMenuBarStatusChanged = onMenuBarStatusChanged
+        remoteParticipantPresentation = RemoteParticipantPresentation(
+            participantNamespace: friend.identity.x963Representation
+        )
         friendship = joinMode.initialFriendship
     }
 
@@ -442,7 +447,7 @@ final class NativeLiveShareViewerCoordinator {
     }
 
     func hideForApplicationTermination() {
-        windowCoordinator?.tearDown()
+        tearDownRemoteParticipantPresentation()
     }
 
     func cancelForApplicationStop() {
@@ -456,8 +461,7 @@ final class NativeLiveShareViewerCoordinator {
         statisticsTask = nil
         friendAcknowledgementRetryTask?.cancel()
         friendAcknowledgementRetryTask = nil
-        windowCoordinator?.tearDown()
-        windowCoordinator = nil
+        tearDownRemoteParticipantPresentation()
         let inviteSession = inviteSession
         let friendSession = friendSession
         self.inviteSession = nil
@@ -558,6 +562,9 @@ final class NativeLiveShareViewerCoordinator {
 
         case .signalingConnected(let invite):
             resolvedInvite = invite
+            remoteParticipantPresentation?.replaceParticipantNamespace(
+                invite.fragment.publicKey.x963Representation
+            )
             publish()
 
         case .accessCodeRequired:
@@ -597,11 +604,16 @@ final class NativeLiveShareViewerCoordinator {
 
         case .remoteVideoStreamAdded(let stream),
              .remoteVideoStreamUpdated(let stream):
-            remoteStreams[stream.id.rawValue] = stream
+            remoteParticipantPresentation?.upsertRemoteTrack(
+                stream,
+                streamID: stream.id.rawValue
+            )
             reconcileWindows()
 
         case .remoteVideoStreamRemoved(let streamID):
-            remoteStreams[streamID.rawValue] = nil
+            remoteParticipantPresentation?.removeRemoteTrack(
+                streamID: streamID.rawValue
+            )
             reconcileWindows()
 
         case .systemAudioTrackAvailable:
@@ -644,6 +656,9 @@ final class NativeLiveShareViewerCoordinator {
 
         case .descriptorAccepted(let descriptor):
             signedHostDescriptor = descriptor
+            remoteParticipantPresentation?.replaceParticipantNamespace(
+                descriptor.descriptor.hostIdentity.x963Representation
+            )
             if joinMode.permitsRequesterHandshakeRecovery {
                 friendship = .pending
                 await resumeRequesterHandshakeIfPresent(for: descriptor)
@@ -685,11 +700,16 @@ final class NativeLiveShareViewerCoordinator {
 
         case .remoteVideoStreamAdded(let stream),
              .remoteVideoStreamUpdated(let stream):
-            remoteStreams[stream.id.rawValue] = stream
+            remoteParticipantPresentation?.upsertRemoteTrack(
+                stream,
+                streamID: stream.id.rawValue
+            )
             reconcileWindows()
 
         case .remoteVideoStreamRemoved(let streamID):
-            remoteStreams[streamID.rawValue] = nil
+            remoteParticipantPresentation?.removeRemoteTrack(
+                streamID: streamID.rawValue
+            )
             reconcileWindows()
 
         case .systemAudioTrackAvailable:
@@ -1258,6 +1278,15 @@ final class NativeLiveShareViewerCoordinator {
               let resolvedOwnerIdentity = ownerIdentity ?? self.resolvedOwnerIdentity else {
             return
         }
+        if remoteParticipantPresentation == nil {
+            remoteParticipantPresentation = RemoteParticipantPresentation(
+                participantNamespace: resolvedOwnerIdentity
+            )
+        } else {
+            remoteParticipantPresentation?.replaceParticipantNamespace(
+                resolvedOwnerIdentity
+            )
+        }
         let coordinator = NativeViewerWindowCoordinator(
             sessionID: sessionID.rawValue,
             ownerName: ownerName ?? resolvedOwnerName,
@@ -1269,7 +1298,8 @@ final class NativeLiveShareViewerCoordinator {
                     bind: { [weak self, weak videoView] source in
                         guard let self,
                               let videoView,
-                              let stream = remoteStreams[source.streamID] else {
+                              let stream = remoteParticipantPresentation?
+                                .remoteTrack(forStreamID: source.streamID) else {
                             throw NativeViewerSurfaceBindingError.unavailable(
                                 source.streamID
                             )
@@ -1300,7 +1330,8 @@ final class NativeLiveShareViewerCoordinator {
     }
 
     private func reconcileWindows() {
-        guard let windowCoordinator else {
+        guard let windowCoordinator,
+              var remoteParticipantPresentation else {
             publish()
             return
         }
@@ -1315,16 +1346,54 @@ final class NativeLiveShareViewerCoordinator {
         } else {
             authoritativeSources = controlState?.sourceSnapshots ?? []
         }
-        let sources = authoritativeSources.filter {
-            remoteStreams[$0.streamID] != nil
-        }
+        remoteParticipantPresentation.rememberLocalPresentation(
+            windowCoordinator.windowSnapshots
+        )
+        let sources = remoteParticipantPresentation
+            .replaceAuthoritativeSources(authoritativeSources)
+        self.remoteParticipantPresentation = remoteParticipantPresentation
         do {
             try windowCoordinator.reconcile(sources)
         } catch {
             fail(message: error.localizedDescription)
             return
         }
+        restoreLocalPresentation(for: sources)
         publish()
+    }
+
+    private func restoreLocalPresentation(
+        for sources: [NativeViewerSourceSnapshot]
+    ) {
+        guard let windowCoordinator,
+              let remoteParticipantPresentation else { return }
+        for source in sources {
+            guard
+                let saved = remoteParticipantPresentation.localPresentation(
+                    for: source
+                ),
+                let current = windowCoordinator.windowSnapshots.first(where: {
+                    $0.source.sourceInstanceID == source.sourceInstanceID
+                })
+            else { continue }
+            if current.scaleMode != saved.scaleMode {
+                windowCoordinator.setScaleMode(
+                    saved.scaleMode,
+                    sourceInstanceID: source.sourceInstanceID
+                )
+            }
+            if current.isVisible != saved.isVisible {
+                windowCoordinator.setSourceVisible(
+                    saved.isVisible,
+                    sourceInstanceID: source.sourceInstanceID
+                )
+            }
+            if current.isFullScreen != saved.isFullScreen {
+                windowCoordinator.toggleFullScreen(
+                    sourceInstanceID: source.sourceInstanceID
+                )
+            }
+        }
     }
 
     private func submitAccessCode(_ value: String) {
@@ -1467,9 +1536,7 @@ final class NativeLiveShareViewerCoordinator {
         statisticsTask = nil
         friendAcknowledgementRetryTask?.cancel()
         friendAcknowledgementRetryTask = nil
-        windowCoordinator?.tearDown()
-        windowCoordinator = nil
-        remoteStreams.removeAll()
+        tearDownRemoteParticipantPresentation()
         controlState = nil
         nativeControlState = nil
         signedHostDescriptor = nil
@@ -1482,6 +1549,7 @@ final class NativeLiveShareViewerCoordinator {
         hostSystemAudioEnabled = false
         latestStatistics = .init()
         priorStatistics = nil
+        remoteParticipantPresentation = RemoteParticipantPresentation()
         let inviteSession = inviteSession
         let friendSession = friendSession
         self.inviteSession = nil
@@ -1511,15 +1579,13 @@ final class NativeLiveShareViewerCoordinator {
         statisticsTask = nil
         friendAcknowledgementRetryTask?.cancel()
         friendAcknowledgementRetryTask = nil
-        windowCoordinator?.tearDown()
-        windowCoordinator = nil
+        tearDownRemoteParticipantPresentation()
         let inviteSession = inviteSession
         let friendSession = friendSession
         self.inviteSession = nil
         self.friendSession = nil
         await inviteSession?.close()
         await friendSession?.close()
-        remoteStreams.removeAll()
         controlState = nil
         nativeControlState = nil
         signedHostDescriptor = nil
@@ -1531,6 +1597,19 @@ final class NativeLiveShareViewerCoordinator {
             didNotifyEnd = true
             onSessionEnded()
         }
+    }
+
+    private func tearDownRemoteParticipantPresentation() {
+        if var remoteParticipantPresentation {
+            let shouldTearDownWindows = remoteParticipantPresentation.tearDown()
+            self.remoteParticipantPresentation = nil
+            if shouldTearDownWindows {
+                windowCoordinator?.tearDown()
+            }
+        } else {
+            windowCoordinator?.tearDown()
+        }
+        windowCoordinator = nil
     }
 
     private func fail(message: String) {
@@ -1727,14 +1806,12 @@ final class NativeLiveShareViewerCoordinator {
     private func reinstallWindowCoordinatorForVerifiedHost() {
         guard let host = signedHostDescriptor?.descriptor,
               let sessionID = controlState?.sessionID else { return }
-        let localPresentation = windowCoordinator?.windowSnapshots.reduce(
-            into: [String: (mode: NativeViewerScaleMode, isVisible: Bool)]()
-        ) { result, snapshot in
-            result[snapshot.source.sourceInstanceID] = (
-                mode: snapshot.scaleMode,
-                isVisible: snapshot.isVisible
-            )
-        } ?? [:]
+        if let windows = windowCoordinator?.windowSnapshots {
+            remoteParticipantPresentation?.rememberLocalPresentation(windows)
+        }
+        remoteParticipantPresentation?.replaceParticipantNamespace(
+            host.hostIdentity.x963Representation
+        )
         windowCoordinator?.tearDown()
         windowCoordinator = nil
         installWindowCoordinator(
@@ -1743,17 +1820,5 @@ final class NativeLiveShareViewerCoordinator {
             ownerIdentity: host.hostIdentity.x963Representation
         )
         reconcileWindows()
-        for (sourceInstanceID, presentation) in localPresentation {
-            windowCoordinator?.setScaleMode(
-                presentation.mode,
-                sourceInstanceID: sourceInstanceID
-            )
-            if !presentation.isVisible {
-                windowCoordinator?.setSourceVisible(
-                    false,
-                    sourceInstanceID: sourceInstanceID
-                )
-            }
-        }
     }
 }

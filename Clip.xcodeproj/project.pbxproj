@@ -125,6 +125,8 @@
 		V2B100000000000000000008 /* NativeViewerV1ControlStateTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = V2F100000000000000000008 /* NativeViewerV1ControlStateTests.swift */; };
 		V2B100000000000000000009 /* NativeFriendPresenceMonitorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = V2F100000000000000000009 /* NativeFriendPresenceMonitorTests.swift */; };
 		V2B10000000000000000000A /* ApplicationLiveShareRoleGateTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = V2F10000000000000000000A /* ApplicationLiveShareRoleGateTests.swift */; };
+		M3B100000000000000000001 /* RemoteParticipantPresentation.swift in Sources */ = {isa = PBXBuildFile; fileRef = M3F100000000000000000001 /* RemoteParticipantPresentation.swift */; };
+		M3B100000000000000000002 /* RemoteParticipantPresentationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = M3F100000000000000000002 /* RemoteParticipantPresentationTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -259,6 +261,8 @@
 		V2F100000000000000000008 /* NativeViewerV1ControlStateTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeViewerV1ControlStateTests.swift; sourceTree = "<group>"; };
 		V2F100000000000000000009 /* NativeFriendPresenceMonitorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeFriendPresenceMonitorTests.swift; sourceTree = "<group>"; };
 		V2F10000000000000000000A /* ApplicationLiveShareRoleGateTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ApplicationLiveShareRoleGateTests.swift; sourceTree = "<group>"; };
+		M3F100000000000000000001 /* RemoteParticipantPresentation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteParticipantPresentation.swift; sourceTree = "<group>"; };
+		M3F100000000000000000002 /* RemoteParticipantPresentationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteParticipantPresentationTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -569,6 +573,7 @@
 				V1F100000000000000000003 /* NativeViewerWindowState.swift */,
 				V1F100000000000000000005 /* NativeViewerWindowController.swift */,
 				V1F100000000000000000007 /* NativeViewerWindowCoordinator.swift */,
+				M3F100000000000000000001 /* RemoteParticipantPresentation.swift */,
 			);
 			path = Viewer;
 			sourceTree = "<group>";
@@ -612,6 +617,7 @@
 				V1F10000000000000000000B /* NativeFriendRepositoryTests.swift */,
 				V2F100000000000000000007 /* NativeViewerPresentationModelTests.swift */,
 				V2F100000000000000000008 /* NativeViewerV1ControlStateTests.swift */,
+				M3F100000000000000000002 /* RemoteParticipantPresentationTests.swift */,
 			);
 			path = LiveShare;
 			sourceTree = "<group>";
@@ -841,6 +847,7 @@
 				V1B100000000000000000003 /* NativeViewerWindowState.swift in Sources */,
 				V1B100000000000000000005 /* NativeViewerWindowController.swift in Sources */,
 				V1B100000000000000000007 /* NativeViewerWindowCoordinator.swift in Sources */,
+				M3B100000000000000000001 /* RemoteParticipantPresentation.swift in Sources */,
 				V1B100000000000000000008 /* NativeDeviceIdentityRepository.swift in Sources */,
 				V1B10000000000000000000A /* NativeFriendRepository.swift in Sources */,
 				V1B10000000000000000000C /* NativeFriendModel.swift in Sources */,
@@ -913,6 +920,7 @@
 				V1B100000000000000000002 /* NativeViewerResolutionPolicyTests.swift in Sources */,
 				V1B100000000000000000004 /* NativeViewerWindowStateTests.swift in Sources */,
 				V1B100000000000000000006 /* NativeViewerWindowControllerTests.swift in Sources */,
+				M3B100000000000000000002 /* RemoteParticipantPresentationTests.swift in Sources */,
 				V1B100000000000000000009 /* NativeDeviceIdentityRepositoryTests.swift in Sources */,
 				V1B10000000000000000000B /* NativeFriendRepositoryTests.swift in Sources */,
 				L2B10000000000000000000B /* LiveShareAccessCodeTests.swift in Sources */,

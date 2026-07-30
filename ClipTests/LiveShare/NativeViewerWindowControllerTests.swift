@@ -451,7 +451,13 @@ struct NativeViewerWindowControllerTests {
         #expect(content.videoViewportFrame == content.bounds)
         #expect(content.headerFrame.maxY <= content.bounds.maxY)
         #expect(content.headerFrame.intersects(content.videoViewportFrame))
-        #expect(video.frame == CGRect(x: 0, y: 63, width: 1_200, height: 675))
+        // AppKit aligns the centered frame to the current backing scale. A 1×
+        // test environment rounds 62.5 points to 63, while a 2× environment
+        // represents the mathematically exact half point.
+        #expect(video.frame.width == 1_200)
+        #expect(video.frame.height == 675)
+        #expect(video.frame.minX == 0)
+        #expect(abs(video.frame.midY - content.bounds.midY) <= 0.5)
         #expect(content.isFullScreenHeaderVisible)
 
         content.hideFullScreenHeaderForInactivity()
