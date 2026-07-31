@@ -7,10 +7,10 @@ enum NativeViewerWindowCloseDisposition: Sendable {
 }
 
 private enum NativeViewerHeaderAction {
-    case followHost
+    case followSource
     case native
     case fit
-    case matchHostSize
+    case matchSourceSize
     case toggleFullScreen
     case close
 }
@@ -96,7 +96,7 @@ private final class NativeViewerHeaderView: NSView {
         zoomButton.title = "100%"
         zoomButton.image = NSImage(systemSymbolName: "magnifyingglass", accessibilityDescription: nil)
         zoomButton.imagePosition = .imageLeading
-        zoomButton.setAccessibilityLabel("Viewer zoom")
+        zoomButton.setAccessibilityLabel(String(localized: "Shared-window zoom"))
         zoomButton.setAccessibilityIdentifier("clip.nativeViewer.zoom")
         addSubview(zoomButton)
 
@@ -251,9 +251,9 @@ private final class NativeViewerHeaderView: NSView {
     }
 
     @objc private func showZoomMenu() {
-        let menu = NSMenu(title: "Viewer Zoom")
+        let menu = NSMenu(title: String(localized: "Shared Window Zoom"))
         let follow = NSMenuItem(
-            title: String(localized: "Follow Host"),
+            title: String(localized: "Follow Source"),
             action: #selector(selectFollow),
             keyEquivalent: ""
         )
@@ -282,8 +282,8 @@ private final class NativeViewerHeaderView: NSView {
         menu.addItem(.separator())
 
         let match = NSMenuItem(
-            title: String(localized: "Match Host Size"),
-            action: #selector(matchHostSize),
+            title: String(localized: "Match Source Size"),
+            action: #selector(matchSourceSize),
             keyEquivalent: ""
         )
         match.target = self
@@ -306,7 +306,7 @@ private final class NativeViewerHeaderView: NSView {
     }
 
     @objc private func selectFollow() {
-        onAction?(.followHost)
+        onAction?(.followSource)
     }
 
     @objc private func selectFit() {
@@ -317,8 +317,8 @@ private final class NativeViewerHeaderView: NSView {
         onAction?(.native)
     }
 
-    @objc private func matchHostSize() {
-        onAction?(.matchHostSize)
+    @objc private func matchSourceSize() {
+        onAction?(.matchSourceSize)
     }
 
     @objc private func toggleFullScreen() {
@@ -339,11 +339,12 @@ final class NativeViewerContentView: NSView {
     static var verticalChrome: CGFloat { identityBorderWidth * 2 + headerHeight }
 
     let videoView: NSView
+    let collaborationOverlayView = NativeViewerCollaborationOverlayView(frame: .zero)
 
-    var onFollowHost: (() -> Void)?
+    var onFollowSource: (() -> Void)?
     var onFitToWindow: (() -> Void)?
     var onNativeSize: (() -> Void)?
-    var onMatchHostSize: (() -> Void)?
+    var onMatchSourceSize: (() -> Void)?
     var onToggleFullScreen: (() -> Void)?
     var onClose: (() -> Void)?
 
@@ -403,17 +404,21 @@ final class NativeViewerContentView: NSView {
         cursorLayer.isHidden = true
         videoViewport.layer?.addSublayer(cursorLayer)
 
+        collaborationOverlayView.translatesAutoresizingMaskIntoConstraints = true
+        collaborationOverlayView.autoresizingMask = [.width, .height]
+        videoViewport.addSubview(collaborationOverlayView)
+
         headerView.onAction = { [weak self] action in
             guard let self else { return }
             switch action {
-            case .followHost:
-                onFollowHost?()
+            case .followSource:
+                onFollowSource?()
             case .fit:
                 onFitToWindow?()
             case .native:
                 onNativeSize?()
-            case .matchHostSize:
-                onMatchHostSize?()
+            case .matchSourceSize:
+                onMatchSourceSize?()
             case .toggleFullScreen:
                 onToggleFullScreen?()
             case .close:
@@ -475,6 +480,7 @@ final class NativeViewerContentView: NSView {
                 height: min(Self.headerHeight, bounds.height)
             )
             cursorLayer.frame = videoViewport.bounds
+            collaborationOverlayView.frame = videoViewport.bounds
             layoutVideoSurface()
             return
         }
@@ -492,6 +498,7 @@ final class NativeViewerContentView: NSView {
             height: max(0, bounds.height - border * 2 - Self.headerHeight)
         )
         cursorLayer.frame = videoViewport.bounds
+        collaborationOverlayView.frame = videoViewport.bounds
         layoutVideoSurface()
     }
 
@@ -582,6 +589,18 @@ final class NativeViewerContentView: NSView {
         }
     }
 
+    func setCollaborationOverlay(
+        _ snapshot: NativeViewerCollaborationOverlaySnapshot
+    ) {
+        collaborationOverlayView.update(snapshot)
+    }
+
+    func setCollaborationInteractionMode(
+        _ mode: NativeViewerCollaborationInteractionMode
+    ) {
+        collaborationOverlayView.interactionMode = mode
+    }
+
     static func cursorPoint(
         normalizedX: CGFloat,
         normalizedY: CGFloat,
@@ -645,6 +664,7 @@ final class NativeViewerContentView: NSView {
     private func layoutVideoSurface() {
         guard videoViewport.bounds.width > 0, videoViewport.bounds.height > 0 else {
             videoView.frame = .zero
+            collaborationOverlayView.contentFrame = .zero
             return
         }
         if !isFullScreenPresentation,
@@ -696,6 +716,7 @@ final class NativeViewerContentView: NSView {
                 backingScale: effectiveBackingScale
             )
         }
+        collaborationOverlayView.contentFrame = videoView.frame
         updateZoomIndicator()
         layoutCursor()
     }
@@ -793,6 +814,7 @@ final class NativeViewerContentView: NSView {
             ),
             size: alignedSize
         )
+        collaborationOverlayView.contentFrame = videoView.frame
         layoutCursor()
     }
 
@@ -972,10 +994,7 @@ final class NativeViewerWindowController: NSWindowController, NSWindowDelegate {
         viewerWindowID = id
         self.source = source
         content = NativeViewerContentView(videoView: videoView, identityColor: identityColor)
-        let initialSourceSize = source.sourcePointSize ?? CGSize(
-            width: source.pixelSize.width / 2,
-            height: source.pixelSize.height / 2
-        )
+        let initialSourceSize = source.sourcePointSize
         let initialScale = min(
             1,
             960 / initialSourceSize.width,
@@ -1020,7 +1039,7 @@ final class NativeViewerWindowController: NSWindowController, NSWindowDelegate {
         window.minSize = Self.defaultMinimumFrameSize
         window.setAccessibilitySubrole(.standardWindow)
 
-        content.onFollowHost = { [weak self] in
+        content.onFollowSource = { [weak self] in
             self?.setUserScaleMode(.follow)
         }
         content.onFitToWindow = { [weak self] in
@@ -1029,8 +1048,8 @@ final class NativeViewerWindowController: NSWindowController, NSWindowDelegate {
         content.onNativeSize = { [weak self] in
             self?.setUserScaleMode(.native)
         }
-        content.onMatchHostSize = { [weak self] in
-            self?.matchHostSize()
+        content.onMatchSourceSize = { [weak self] in
+            self?.matchSourceSize()
         }
         content.onToggleFullScreen = { [weak self] in
             self?.toggleFullScreen()
@@ -1294,7 +1313,7 @@ final class NativeViewerWindowController: NSWindowController, NSWindowDelegate {
         onScaleModeChanged?(self, mode)
     }
 
-    private func matchHostSize() {
+    private func matchSourceSize() {
         if let committed = dimensionStabilizer.committedPixelSize {
             resizeVideoContent(for: committed)
         }
@@ -1526,16 +1545,9 @@ final class NativeViewerWindowController: NSWindowController, NSWindowDelegate {
 
     private static func resolvedSourceLogicalSize(
         source: NativeViewerSourceSnapshot,
-        destinationBackingScale: CGFloat
+        destinationBackingScale _: CGFloat
     ) -> CGSize {
-        if let sourcePointSize = source.sourcePointSize {
-            return sourcePointSize
-        }
-        let scale = max(1, destinationBackingScale)
-        return CGSize(
-            width: source.pixelSize.width / scale,
-            height: source.pixelSize.height / scale
-        )
+        source.sourcePointSize
     }
 
     private static func title(

@@ -32,12 +32,14 @@ public struct ClipNativeRendezvousHTTPClient: Sendable {
             result.data,
             allowedKeys: [
                 "protocol", "apiVersion", "messageVersion", "serverVersion",
-                "rendezvousPathTemplate", "hostWebSocketPathTemplate",
-                "viewerWebSocketPathTemplate", "maximumMessageBytes",
+                "rendezvousPathTemplate", "ownerWebSocketPathTemplate",
+                "candidateWebSocketPathTemplate", "maximumMessageBytes",
                 "maximumDescriptorBytes", "maximumOpaquePayloadBytes",
                 "maximumPendingRoutes", "maximumRendezvous",
+                "iceServers",
             ]
         )
+        try validateICEServerShape(result.data)
         guard raw.protocolIdentifier == "clip-native-rendezvous" else {
             throw ClipNativeRendezvousError.incompatibleServer
         }
@@ -47,13 +49,20 @@ public struct ClipNativeRendezvousHTTPClient: Sendable {
                 messageVersion: raw.messageVersion,
                 serverVersion: raw.serverVersion,
                 rendezvousPathTemplate: raw.rendezvousPathTemplate,
-                hostWebSocketPathTemplate: raw.hostWebSocketPathTemplate,
-                viewerWebSocketPathTemplate: raw.viewerWebSocketPathTemplate,
+                ownerWebSocketPathTemplate: raw.ownerWebSocketPathTemplate,
+                candidateWebSocketPathTemplate: raw.candidateWebSocketPathTemplate,
                 maximumMessageBytes: raw.maximumMessageBytes,
                 maximumDescriptorBytes: raw.maximumDescriptorBytes,
                 maximumOpaquePayloadBytes: raw.maximumOpaquePayloadBytes,
                 maximumPendingRoutes: raw.maximumPendingRoutes,
-                maximumRendezvous: raw.maximumRendezvous
+                maximumRendezvous: raw.maximumRendezvous,
+                iceServers: try raw.iceServers.map {
+                    try ClipNativeRendezvousICEServer(
+                        urls: $0.urls,
+                        username: $0.username,
+                        credential: $0.credential
+                    )
+                }
             )
         } catch {
             throw ClipNativeRendezvousError.invalidCapabilities
@@ -155,7 +164,7 @@ public struct ClipNativeRendezvousHTTPClient: Sendable {
         case 404:
             throw ClipNativeRendezvousError.rendezvousNotFound
         case 409:
-            throw ClipNativeRendezvousError.hostOffline
+            throw ClipNativeRendezvousError.ownerOffline
         default:
             throw ClipNativeRendezvousError.rejected(statusCode: result.statusCode)
         }
@@ -239,6 +248,35 @@ public struct ClipNativeRendezvousHTTPClient: Sendable {
             throw ClipNativeRendezvousError.invalidResponse
         }
     }
+
+    private func validateICEServerShape(_ data: Data) throws {
+        guard
+            let object = try JSONSerialization.jsonObject(with: data)
+                as? [String: Any],
+            let servers = object["iceServers"] as? [[String: Any]],
+            (1...ClipNativeRendezvousLimits.maximumICEServers)
+                .contains(servers.count)
+        else {
+            throw ClipNativeRendezvousError.invalidCapabilities
+        }
+        let allowedKeys: Set<String> = [
+            "urls", "username", "credential",
+        ]
+        for server in servers {
+            guard
+                Set(server.keys).isSubset(of: allowedKeys),
+                let urls = server["urls"] as? [String],
+                (1...ClipNativeRendezvousLimits.maximumICEURLsPerServer)
+                    .contains(urls.count),
+                server["username"] == nil
+                    || server["username"] is String,
+                server["credential"] == nil
+                    || server["credential"] is String
+            else {
+                throw ClipNativeRendezvousError.invalidCapabilities
+            }
+        }
+    }
 }
 
 private struct CapabilitiesResponse: Decodable {
@@ -247,13 +285,20 @@ private struct CapabilitiesResponse: Decodable {
     let messageVersion: Int
     let serverVersion: String
     let rendezvousPathTemplate: String
-    let hostWebSocketPathTemplate: String
-    let viewerWebSocketPathTemplate: String
+    let ownerWebSocketPathTemplate: String
+    let candidateWebSocketPathTemplate: String
     let maximumMessageBytes: Int
     let maximumDescriptorBytes: Int
     let maximumOpaquePayloadBytes: Int
     let maximumPendingRoutes: Int
     let maximumRendezvous: Int
+    let iceServers: [ICEServer]
+
+    struct ICEServer: Decodable {
+        let urls: [String]
+        let username: String?
+        let credential: String?
+    }
 
     enum CodingKeys: String, CodingKey {
         case protocolIdentifier = "protocol"
@@ -261,13 +306,14 @@ private struct CapabilitiesResponse: Decodable {
         case messageVersion
         case serverVersion
         case rendezvousPathTemplate
-        case hostWebSocketPathTemplate
-        case viewerWebSocketPathTemplate
+        case ownerWebSocketPathTemplate
+        case candidateWebSocketPathTemplate
         case maximumMessageBytes
         case maximumDescriptorBytes
         case maximumOpaquePayloadBytes
         case maximumPendingRoutes
         case maximumRendezvous
+        case iceServers
     }
 }
 

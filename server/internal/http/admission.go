@@ -22,34 +22,34 @@ type fixedWindow struct {
 }
 
 type sourceState struct {
-	roomLeaseOperations fixedWindow
-	webSockets          fixedWindow
-	connections         int
-	lastSeen            time.Time
+	rendezvousLeaseOperations fixedWindow
+	webSockets                fixedWindow
+	connections               int
+	lastSeen                  time.Time
 }
 
 // sourceAdmission keys on the directly connected peer by default. Forwarded
 // addresses are considered only when the immediate peer belongs to an
 // explicitly configured trusted proxy network.
 type sourceAdmission struct {
-	mu                        sync.Mutex
-	entries                   map[string]*sourceState
-	maximumEntries            int
-	maximumConnections        int
-	roomLeaseOperationsPerMin int
-	webSocketsPerMin          int
-	trustedProxies            []*net.IPNet
-	now                       func() time.Time
+	mu                              sync.Mutex
+	entries                         map[string]*sourceState
+	maximumEntries                  int
+	maximumConnections              int
+	rendezvousLeaseOperationsPerMin int
+	webSocketsPerMin                int
+	trustedProxies                  []*net.IPNet
+	now                             func() time.Time
 }
 
 func newSourceAdmission(configuration config.Config) *sourceAdmission {
 	admission := &sourceAdmission{
-		entries:                   make(map[string]*sourceState),
-		maximumEntries:            configuration.MaximumTrackedSources,
-		maximumConnections:        configuration.MaximumConnectionsPerSource,
-		roomLeaseOperationsPerMin: configuration.RoomLeaseOperationsPerMinute,
-		webSocketsPerMin:          configuration.WebSocketUpgradesPerMinute,
-		now:                       time.Now,
+		entries:                         make(map[string]*sourceState),
+		maximumEntries:                  configuration.MaximumTrackedSources,
+		maximumConnections:              configuration.MaximumConnectionsPerSource,
+		rendezvousLeaseOperationsPerMin: configuration.RendezvousLeaseOperationsPerMinute,
+		webSocketsPerMin:                configuration.WebSocketUpgradesPerMinute,
+		now:                             time.Now,
 	}
 	for _, value := range configuration.TrustedProxyCIDRs {
 		_, network, err := net.ParseCIDR(value)
@@ -60,11 +60,13 @@ func newSourceAdmission(configuration config.Config) *sourceAdmission {
 	return admission
 }
 
-func (a *sourceAdmission) allowRoomLeaseOperation(source string) bool {
+func (a *sourceAdmission) allowRendezvousLeaseOperation(source string) bool {
 	return a.allow(
 		source,
-		func(state *sourceState) *fixedWindow { return &state.roomLeaseOperations },
-		a.roomLeaseOperationsPerMin,
+		func(state *sourceState) *fixedWindow {
+			return &state.rendezvousLeaseOperations
+		},
+		a.rendezvousLeaseOperationsPerMin,
 	)
 }
 
@@ -189,7 +191,7 @@ func (a *sourceAdmission) isTrustedProxy(address net.IP) bool {
 	return false
 }
 
-func (s *Service) acquireHostConnection(source string) bool {
+func (s *Service) acquireCoordinatorConnection(source string) bool {
 	if !s.admission.acquireConnection(source) {
 		return false
 	}
@@ -202,23 +204,26 @@ func (s *Service) acquireHostConnection(source string) bool {
 	}
 }
 
-func (s *Service) releaseHostConnection(source string) {
+func (s *Service) releaseCoordinatorConnection(source string) {
 	<-s.connections
 	s.admission.releaseConnection(source)
 }
 
-func (s *Service) acquireViewerConnection(source, room string) bool {
+func (s *Service) acquireCandidateConnection(
+	source,
+	rendezvousID string,
+) bool {
 	if !s.admission.acquireConnection(source) {
 		return false
 	}
-	if !s.acquireViewerRoomSlot(room) {
+	if !s.acquireCandidateRouteSlot(rendezvousID) {
 		s.admission.releaseConnection(source)
 		return false
 	}
 	select {
-	case s.viewerConnections <- struct{}{}:
+	case s.candidateConnections <- struct{}{}:
 	default:
-		s.releaseViewerRoomSlot(room)
+		s.releaseCandidateRouteSlot(rendezvousID)
 		s.admission.releaseConnection(source)
 		return false
 	}
@@ -226,36 +231,36 @@ func (s *Service) acquireViewerConnection(source, room string) bool {
 	case s.connections <- struct{}{}:
 		return true
 	default:
-		<-s.viewerConnections
-		s.releaseViewerRoomSlot(room)
+		<-s.candidateConnections
+		s.releaseCandidateRouteSlot(rendezvousID)
 		s.admission.releaseConnection(source)
 		return false
 	}
 }
 
-func (s *Service) releaseViewerConnection(source, room string) {
+func (s *Service) releaseCandidateConnection(source, rendezvousID string) {
 	<-s.connections
-	<-s.viewerConnections
-	s.releaseViewerRoomSlot(room)
+	<-s.candidateConnections
+	s.releaseCandidateRouteSlot(rendezvousID)
 	s.admission.releaseConnection(source)
 }
 
-func (s *Service) acquireViewerRoomSlot(room string) bool {
-	s.viewerRoomsMu.Lock()
-	defer s.viewerRoomsMu.Unlock()
-	if s.viewerRooms[room] >= protocol.MaximumPendingViewersPerRoom {
+func (s *Service) acquireCandidateRouteSlot(rendezvousID string) bool {
+	s.candidateRoutesMu.Lock()
+	defer s.candidateRoutesMu.Unlock()
+	if s.candidateRoutes[rendezvousID] >= protocol.MaximumPendingRoutes {
 		return false
 	}
-	s.viewerRooms[room]++
+	s.candidateRoutes[rendezvousID]++
 	return true
 }
 
-func (s *Service) releaseViewerRoomSlot(room string) {
-	s.viewerRoomsMu.Lock()
-	defer s.viewerRoomsMu.Unlock()
-	if s.viewerRooms[room] <= 1 {
-		delete(s.viewerRooms, room)
+func (s *Service) releaseCandidateRouteSlot(rendezvousID string) {
+	s.candidateRoutesMu.Lock()
+	defer s.candidateRoutesMu.Unlock()
+	if s.candidateRoutes[rendezvousID] <= 1 {
+		delete(s.candidateRoutes, rendezvousID)
 		return
 	}
-	s.viewerRooms[room]--
+	s.candidateRoutes[rendezvousID]--
 }

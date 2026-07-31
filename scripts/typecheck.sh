@@ -45,15 +45,69 @@ swift test \
   --package-path "$ROOT/Packages/ClipLiveShareWebRTC" \
   --manifest-cache none
 
-# Resolve object globs only after SwiftPM has created a clean package build.
-# Expanding them at script startup leaves literal `*.o` arguments whenever the
-# package cache is initially absent, which makes the later manual link fail.
-CORE_OBJECTS=("$ROOT"/Packages/ClipCore/.build/arm64-apple-macosx/debug/ClipCore.build/*.swift.o)
-MEDIA_OBJECTS=("$ROOT"/Packages/ClipMedia/.build/arm64-apple-macosx/debug/ClipMedia.build/*.swift.o)
-CAPTURE_OBJECTS=("$LIVE_SHARE_BUILD"/ClipCapture.build/*.swift.o)
-LIVE_SHARE_OBJECTS=("$LIVE_SHARE_BUILD"/ClipLiveShare.build/*.swift.o)
-LIVE_SHARE_WEBRTC_OBJECTS=("$LIVE_SHARE_BUILD"/ClipLiveShareWebRTC.build/*.swift.o)
-LIVE_SHARE_AUDIO_BRIDGE_OBJECTS=("$LIVE_SHARE_AUDIO_BRIDGE_BUILD"/*.o)
+# Resolve only objects corresponding to files that still exist in each target.
+# SwiftPM intentionally keeps incremental objects for deleted sources, so a
+# wildcard can resurrect a removed connection generation during this manual
+# link even though the current package itself built successfully.
+CORE_OBJECTS=()
+while IFS= read -r -d '' source; do
+  object="$ROOT/Packages/ClipCore/.build/arm64-apple-macosx/debug/ClipCore.build/$(basename "$source").o"
+  [[ -f "$object" ]] || {
+    echo "Missing current ClipCore object: $object" >&2
+    exit 1
+  }
+  CORE_OBJECTS+=("$object")
+done < <(find "$ROOT/Packages/ClipCore/Sources/ClipCore" -type f -name '*.swift' -print0)
+
+MEDIA_OBJECTS=()
+while IFS= read -r -d '' source; do
+  object="$ROOT/Packages/ClipMedia/.build/arm64-apple-macosx/debug/ClipMedia.build/$(basename "$source").o"
+  [[ -f "$object" ]] || {
+    echo "Missing current ClipMedia object: $object" >&2
+    exit 1
+  }
+  MEDIA_OBJECTS+=("$object")
+done < <(find "$ROOT/Packages/ClipMedia/Sources/ClipMedia" -type f -name '*.swift' -print0)
+
+CAPTURE_OBJECTS=()
+while IFS= read -r -d '' source; do
+  object="$LIVE_SHARE_BUILD/ClipCapture.build/$(basename "$source").o"
+  [[ -f "$object" ]] || {
+    echo "Missing current ClipCapture object: $object" >&2
+    exit 1
+  }
+  CAPTURE_OBJECTS+=("$object")
+done < <(find "$ROOT/Packages/ClipCapture/Sources/ClipCapture" -type f -name '*.swift' -print0)
+
+LIVE_SHARE_OBJECTS=()
+while IFS= read -r -d '' source; do
+  object="$LIVE_SHARE_BUILD/ClipLiveShare.build/$(basename "$source").o"
+  [[ -f "$object" ]] || {
+    echo "Missing current ClipLiveShare object: $object" >&2
+    exit 1
+  }
+  LIVE_SHARE_OBJECTS+=("$object")
+done < <(find "$ROOT/Packages/ClipLiveShare/Sources/ClipLiveShare" -type f -name '*.swift' -print0)
+
+LIVE_SHARE_WEBRTC_OBJECTS=()
+while IFS= read -r -d '' source; do
+  object="$LIVE_SHARE_BUILD/ClipLiveShareWebRTC.build/$(basename "$source").o"
+  [[ -f "$object" ]] || {
+    echo "Missing current ClipLiveShareWebRTC object: $object" >&2
+    exit 1
+  }
+  LIVE_SHARE_WEBRTC_OBJECTS+=("$object")
+done < <(find "$ROOT/Packages/ClipLiveShareWebRTC/Sources/ClipLiveShareWebRTC" -type f -name '*.swift' -print0)
+
+LIVE_SHARE_AUDIO_BRIDGE_OBJECTS=()
+while IFS= read -r -d '' source; do
+  object="$LIVE_SHARE_AUDIO_BRIDGE_BUILD/$(basename "$source").o"
+  [[ -f "$object" ]] || {
+    echo "Missing current audio bridge object: $object" >&2
+    exit 1
+  }
+  LIVE_SHARE_AUDIO_BRIDGE_OBJECTS+=("$object")
+done < <(find "$ROOT/Packages/ClipLiveShareWebRTC/Sources/ClipLiveShareWebRTCAudioBridge" -type f -name '*.m' -print0)
 
 WEBRTC_SEARCH_ROOT="$ROOT/Packages/ClipLiveShareWebRTC/.build/artifacts"
 if [[ -d "$ROOT/Packages/ClipLiveShareWebRTC/Vendor/WebRTC.xcframework" ]]; then

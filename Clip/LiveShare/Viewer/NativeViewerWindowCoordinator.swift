@@ -1,5 +1,16 @@
 import AppKit
 
+enum NativeViewerSurfaceBindingError: LocalizedError {
+    case unavailable(String)
+
+    var errorDescription: String? {
+        switch self {
+        case let .unavailable(streamID):
+            "The remote video stream \(streamID) is not available."
+        }
+    }
+}
+
 enum NativeViewerCursorFocusPolicy {
     static func shouldPresentCursor(
         streamID: String,
@@ -73,7 +84,6 @@ final class NativeViewerWindowCoordinator {
     private var entries: [NativeViewerWindowID: Entry] = [:]
 
     init(
-        sessionID: String,
         ownerName: String,
         ownerPublicIdentity: Data,
         surfaceFactory: @escaping SurfaceFactory
@@ -83,7 +93,7 @@ final class NativeViewerWindowCoordinator {
             .stable(for: ownerPublicIdentity)
             .appKitColor
         self.surfaceFactory = surfaceFactory
-        registry = NativeViewerWindowRegistry(sessionID: sessionID)
+        registry = NativeViewerWindowRegistry()
     }
 
     var visibleWindowCount: Int { registry.visibleWindowCount }
@@ -231,6 +241,39 @@ final class NativeViewerWindowCoordinator {
         }
     }
 
+    func setCollaborationOverlay(
+        _ snapshot: NativeViewerCollaborationOverlaySnapshot,
+        sourceInstanceID: String
+    ) {
+        guard
+            let id = windowID(sourceInstanceID: sourceInstanceID),
+            let content = entries[id]?.controller.content
+        else {
+            return
+        }
+        content.setCollaborationOverlay(snapshot)
+    }
+
+    func setCollaborationInteraction(
+        _ mode: NativeViewerCollaborationInteractionMode,
+        sourceInstanceID: String,
+        actions: NativeViewerCollaborationActions = .init()
+    ) {
+        guard
+            let id = windowID(sourceInstanceID: sourceInstanceID),
+            let content = entries[id]?.controller.content
+        else {
+            return
+        }
+        let overlay = content.collaborationOverlayView
+        overlay.onPointerChanged = actions.pointerChanged
+        overlay.onPing = actions.ping
+        overlay.onStrokeBegan = actions.strokeBegan
+        overlay.onStrokePoints = actions.strokePoints
+        overlay.onStrokeEnded = actions.strokeEnded
+        content.setCollaborationInteractionMode(mode)
+    }
+
     func markDisconnected() {
         let disconnected = registry.windows.values.map { snapshot in
             NativeViewerSourceSnapshot(
@@ -242,8 +285,7 @@ final class NativeViewerWindowCoordinator {
                 sourcePointSize: snapshot.source.sourcePointSize,
                 isFocused: snapshot.source.isFocused,
                 isConnected: false,
-                stateRevision: snapshot.source.stateRevision,
-                mode: snapshot.source.mode
+                stateRevision: snapshot.source.stateRevision
             )
         }
         try? reconcile(disconnected)
@@ -255,7 +297,7 @@ final class NativeViewerWindowCoordinator {
             entry.controller.tearDown()
         }
         entries.removeAll()
-        registry = NativeViewerWindowRegistry(sessionID: registry.sessionID)
+        registry = NativeViewerWindowRegistry()
     }
 
     private func create(_ snapshot: NativeViewerWindowSnapshot) throws {

@@ -8,6 +8,7 @@ struct NativeViewerResolutionPolicyTests {
     func followUsesNativeRenderingWhenItFits() throws {
         let result = try #require(NativeViewerResolutionPolicy.resolve(.init(
             decodedPixelSize: CGSize(width: 2_560, height: 1_440),
+            sourcePointSize: CGSize(width: 1_280, height: 720),
             destinationBackingScale: 2,
             maximumContentSize: CGSize(width: 1_500, height: 900),
             mode: .follow
@@ -59,6 +60,7 @@ struct NativeViewerResolutionPolicyTests {
     func followCapsOversizedViewportWithoutScaling() throws {
         let result = try #require(NativeViewerResolutionPolicy.resolve(.init(
             decodedPixelSize: CGSize(width: 3_840, height: 2_160),
+            sourcePointSize: CGSize(width: 3_840, height: 2_160),
             destinationBackingScale: 1,
             maximumContentSize: CGSize(width: 1_600, height: 900),
             mode: .follow
@@ -94,19 +96,6 @@ struct NativeViewerResolutionPolicyTests {
         }
     }
 
-    @Test("Native keeps the legacy decoded-pixel fallback for old hosts")
-    func nativeLegacyHostFallbackUsesViewerBackingScale() throws {
-        let result = try #require(NativeViewerResolutionPolicy.resolve(.init(
-            decodedPixelSize: CGSize(width: 1_600, height: 1_200),
-            destinationBackingScale: 2,
-            maximumContentSize: CGSize(width: 2_000, height: 1_500),
-            mode: .native
-        )))
-
-        #expect(result.contentSize == CGSize(width: 800, height: 600))
-        #expect(!result.isFitted)
-    }
-
     @Test("Follow, Native, and Fit agree at the exact host size")
     func allModesAgreeAtHostSize() throws {
         let modes: [NativeViewerScaleMode] = [.follow, .native, .fit]
@@ -125,22 +114,11 @@ struct NativeViewerResolutionPolicyTests {
         #expect(results.allSatisfy { !$0.isFitted })
     }
 
-    @Test("Legacy hosts retain decoded-pixel sizing")
-    func legacyHostFallback() throws {
-        let result = try #require(NativeViewerResolutionPolicy.resolve(.init(
-            decodedPixelSize: CGSize(width: 1_600, height: 1_200),
-            destinationBackingScale: 1,
-            maximumContentSize: CGSize(width: 2_000, height: 1_500),
-            mode: .follow
-        )))
-
-        #expect(result.contentSize == CGSize(width: 1_600, height: 1_200))
-    }
-
     @Test("Fit never enlarges a small source")
     func fitNeverUpscales() throws {
         let result = try #require(NativeViewerResolutionPolicy.resolve(.init(
             decodedPixelSize: CGSize(width: 640, height: 360),
+            sourcePointSize: CGSize(width: 320, height: 180),
             destinationBackingScale: 2,
             maximumContentSize: CGSize(width: 1_600, height: 900),
             mode: .fit
@@ -155,6 +133,7 @@ struct NativeViewerResolutionPolicyTests {
     func rejectsInvalidGeometry() {
         #expect(NativeViewerResolutionPolicy.resolve(.init(
             decodedPixelSize: .zero,
+            sourcePointSize: CGSize(width: 320, height: 180),
             destinationBackingScale: 2,
             maximumContentSize: CGSize(width: 1_600, height: 900),
             mode: .follow

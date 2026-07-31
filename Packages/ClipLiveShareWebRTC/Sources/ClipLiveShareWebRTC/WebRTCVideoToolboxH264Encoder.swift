@@ -1074,7 +1074,8 @@ private extension WebRTCVideoToolboxH264Encoder {
 
 /// Converts VideoToolbox's length-prefixed H.264 sample into the Annex-B form
 /// expected by libwebrtc. IDR access units include their negotiated SPS/PPS so
-/// a newly joined viewer and every PLI response are independently decodable.
+/// a newly joined participant and every PLI response are independently
+/// decodable.
 struct H264AnnexBAccessUnit: Equatable, Sendable {
     static let startCode = Data([0, 0, 0, 1])
 

@@ -1,3 +1,4 @@
+import ClipLiveShare
 import Testing
 @testable import Clip
 
@@ -33,5 +34,27 @@ struct LiveShareAccessCodeTests {
         #expect(throws: LiveShareAccessCodeError.secureRandomFailure(-50)) {
             try LiveShareAccessCode.generate { _ in -50 }
         }
+    }
+
+    @Test("new rooms honor the persisted Access Word default")
+    @MainActor
+    func initialRoomAccessWordDefault() {
+        var generationCount = 0
+        let enabled = ApplicationCoordinator.initialMeshAccessWord(
+            for: .init(accessCodeEnabled: true)
+        ) {
+            generationCount += 1
+            return "CALMOTTER"
+        }
+        let disabled = ApplicationCoordinator.initialMeshAccessWord(
+            for: .init(accessCodeEnabled: false)
+        ) {
+            generationCount += 1
+            return "SHOULDNOTGENERATE"
+        }
+
+        #expect(enabled == "CALMOTTER")
+        #expect(disabled == nil)
+        #expect(generationCount == 1)
     }
 }

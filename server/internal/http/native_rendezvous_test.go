@@ -29,7 +29,7 @@ func advertiseNative(t *testing.T, serverURL, rendezvousID, token string) *http.
 	if err != nil {
 		t.Fatal(err)
 	}
-	request, err := http.NewRequest(http.MethodPut, serverURL+"/api/native/v1/rendezvous/"+rendezvousID, bytes.NewReader(body))
+	request, err := http.NewRequest(http.MethodPut, serverURL+"/api/native/v3/rendezvous/"+rendezvousID, bytes.NewReader(body))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -41,17 +41,17 @@ func advertiseNative(t *testing.T, serverURL, rendezvousID, token string) *http.
 	return response
 }
 
-func dialNativeHost(t *testing.T, serverURL, rendezvousID, token string) *websocket.Conn {
+func dialNativeOwner(t *testing.T, serverURL, rendezvousID, token string) *websocket.Conn {
 	t.Helper()
 	header := http.Header{}
 	header.Set("Authorization", "Bearer "+token)
 	connection, response, err := websocket.DefaultDialer.Dial(
-		websocketURL(serverURL, "/api/native/v1/rendezvous/"+rendezvousID+"/host"),
+		websocketURL(serverURL, "/api/native/v3/rendezvous/"+rendezvousID+"/owner"),
 		header,
 	)
 	if err != nil {
 		if response != nil {
-			t.Fatalf("native host websocket status %d: %v", response.StatusCode, err)
+			t.Fatalf("native owner websocket status %d: %v", response.StatusCode, err)
 		}
 		t.Fatal(err)
 	}
@@ -59,15 +59,15 @@ func dialNativeHost(t *testing.T, serverURL, rendezvousID, token string) *websoc
 	return connection
 }
 
-func dialNativeViewer(t *testing.T, serverURL, rendezvousID string) *websocket.Conn {
+func dialNativeCandidate(t *testing.T, serverURL, rendezvousID string) *websocket.Conn {
 	t.Helper()
 	connection, response, err := websocket.DefaultDialer.Dial(
-		websocketURL(serverURL, "/api/native/v1/rendezvous/"+rendezvousID+"/viewer"),
+		websocketURL(serverURL, "/api/native/v3/rendezvous/"+rendezvousID+"/candidate"),
 		nil,
 	)
 	if err != nil {
 		if response != nil {
-			t.Fatalf("native viewer websocket status %d: %v", response.StatusCode, err)
+			t.Fatalf("native candidate websocket status %d: %v", response.StatusCode, err)
 		}
 		t.Fatal(err)
 	}
@@ -83,7 +83,7 @@ func activateNative(t *testing.T, serverURL, rendezvousID, token, descriptor str
 	}
 	request, err := http.NewRequest(
 		http.MethodPut,
-		serverURL+"/api/native/v1/rendezvous/"+rendezvousID+"/session",
+		serverURL+"/api/native/v3/rendezvous/"+rendezvousID+"/session",
 		bytes.NewReader(body),
 	)
 	if err != nil {
@@ -102,7 +102,7 @@ func waitNativeState(t *testing.T, serverURL, rendezvousID string, expected sign
 	t.Helper()
 	deadline := time.Now().Add(2 * time.Second)
 	for {
-		response, err := http.Get(serverURL + "/api/native/v1/rendezvous/" + rendezvousID)
+		response, err := http.Get(serverURL + "/api/native/v3/rendezvous/" + rendezvousID)
 		if err == nil {
 			var status protocol.NativeRendezvousStatus
 			decodeErr := json.NewDecoder(response.Body).Decode(&status)
@@ -135,13 +135,42 @@ func TestNativeCapabilitiesOwnershipAndNotLiveGate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	capabilityBody, err := io.ReadAll(capabilityResponse.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
 	var capabilities protocol.NativeRendezvousCapabilities
-	if err := json.NewDecoder(capabilityResponse.Body).Decode(&capabilities); err != nil {
+	if err := json.Unmarshal(capabilityBody, &capabilities); err != nil {
 		t.Fatal(err)
 	}
 	capabilityResponse.Body.Close()
-	if capabilityResponse.StatusCode != http.StatusOK || capabilities.APIVersion != 1 || capabilities.MessageVersion != protocol.NativeMessageVersion {
+	if capabilityResponse.StatusCode != http.StatusOK ||
+		capabilities.APIVersion != protocol.NativeRendezvousAPIVersion ||
+		capabilities.MessageVersion != protocol.NativeMessageVersion ||
+		capabilities.RendezvousPathTemplate != "/api/native/v3/rendezvous/{rendezvous}" ||
+		capabilities.OwnerWebSocketPathTemplate != "/api/native/v3/rendezvous/{rendezvous}/owner" ||
+		capabilities.CandidateWebSocketPathTemplate != "/api/native/v3/rendezvous/{rendezvous}/candidate" {
 		t.Fatalf("native capabilities = %d, %#v", capabilityResponse.StatusCode, capabilities)
+	}
+	var capabilityKeys map[string]json.RawMessage
+	if err := json.Unmarshal(capabilityBody, &capabilityKeys); err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{
+		"ownerWebSocketPathTemplate",
+		"candidateWebSocketPathTemplate",
+	} {
+		if _, found := capabilityKeys[key]; !found {
+			t.Fatalf("native capabilities omitted %q", key)
+		}
+	}
+	for _, legacyKey := range []string{
+		"hostWebSocketPathTemplate",
+		"viewerWebSocketPathTemplate",
+	} {
+		if _, found := capabilityKeys[legacyKey]; found {
+			t.Fatalf("native capabilities retained legacy key %q", legacyKey)
+		}
 	}
 
 	rendezvousID := testNativeRendezvousID(1)
@@ -173,20 +202,20 @@ func TestNativeCapabilitiesOwnershipAndNotLiveGate(t *testing.T) {
 		t.Fatalf("activate while offline = %d", response.StatusCode)
 	}
 
-	_, viewerResponse, err := websocket.DefaultDialer.Dial(
-		websocketURL(server.URL, "/api/native/v1/rendezvous/"+rendezvousID+"/viewer"),
+	_, candidateResponse, err := websocket.DefaultDialer.Dial(
+		websocketURL(server.URL, "/api/native/v3/rendezvous/"+rendezvousID+"/candidate"),
 		nil,
 	)
 	if err == nil {
-		t.Fatal("native viewer reached admission before activation")
+		t.Fatal("native candidate reached admission before activation")
 	}
-	if viewerResponse == nil || viewerResponse.StatusCode != http.StatusConflict {
-		t.Fatalf("not-live viewer response = %#v, %v", viewerResponse, err)
+	if candidateResponse == nil || candidateResponse.StatusCode != http.StatusConflict {
+		t.Fatalf("not-live candidate response = %#v, %v", candidateResponse, err)
 	}
-	viewerResponse.Body.Close()
+	candidateResponse.Body.Close()
 
-	host := dialNativeHost(t, server.URL, rendezvousID, token)
-	_ = host
+	ownerConnection := dialNativeOwner(t, server.URL, rendezvousID, token)
+	_ = ownerConnection
 	waitNativeState(t, server.URL, rendezvousID, signaling.NativeRendezvousPreparing)
 }
 
@@ -196,7 +225,7 @@ func TestNativeWebSocketRoutesOpaqueMessagesAndStopIsAtomic(t *testing.T) {
 	token := ownerToken(33)
 	response := advertiseNative(t, server.URL, rendezvousID, token)
 	response.Body.Close()
-	host := dialNativeHost(t, server.URL, rendezvousID, token)
+	ownerConnection := dialNativeOwner(t, server.URL, rendezvousID, token)
 	waitNativeState(t, server.URL, rendezvousID, signaling.NativeRendezvousPreparing)
 	descriptor := nativeSessionDescriptor(4)
 	response = activateNative(t, server.URL, rendezvousID, token, descriptor)
@@ -206,49 +235,49 @@ func TestNativeWebSocketRoutesOpaqueMessagesAndStopIsAtomic(t *testing.T) {
 	}
 	waitNativeState(t, server.URL, rendezvousID, signaling.NativeRendezvousActive)
 
-	viewer := dialNativeViewer(t, server.URL, rendezvousID)
-	var viewerOpened protocol.Message
-	if err := viewer.ReadJSON(&viewerOpened); err != nil {
+	candidateConnection := dialNativeCandidate(t, server.URL, rendezvousID)
+	var candidateOpened protocol.Message
+	if err := candidateConnection.ReadJSON(&candidateOpened); err != nil {
 		t.Fatal(err)
 	}
-	var hostOpened protocol.Message
-	if err := host.ReadJSON(&hostOpened); err != nil {
+	var ownerOpened protocol.Message
+	if err := ownerConnection.ReadJSON(&ownerOpened); err != nil {
 		t.Fatal(err)
 	}
-	if viewerOpened.Type != protocol.MessageNativeRouteOpened || viewerOpened.Payload != descriptor || viewerOpened.RouteID == "" {
-		t.Fatalf("native viewer route-opened = %#v", viewerOpened)
+	if candidateOpened.Type != protocol.MessageNativeRouteOpened || candidateOpened.Payload != descriptor || candidateOpened.RouteID == "" {
+		t.Fatalf("native candidate route-opened = %#v", candidateOpened)
 	}
-	if hostOpened.Type != protocol.MessageNativeRouteOpened || hostOpened.Payload != "" || hostOpened.RouteID != viewerOpened.RouteID {
-		t.Fatalf("native host route-opened = %#v", hostOpened)
+	if ownerOpened.Type != protocol.MessageNativeRouteOpened || ownerOpened.Payload != "" || ownerOpened.RouteID != candidateOpened.RouteID {
+		t.Fatalf("native owner route-opened = %#v", ownerOpened)
 	}
 
-	viewerRelay := nativeRelayEnvelope(1, 5)
-	if err := viewer.WriteJSON(viewerRelay); err != nil {
+	candidateRelay := nativeRelayEnvelope(1, 5)
+	if err := candidateConnection.WriteJSON(candidateRelay); err != nil {
 		t.Fatal(err)
 	}
-	var hostReceived protocol.Message
-	if err := host.ReadJSON(&hostReceived); err != nil {
+	var ownerReceived protocol.Message
+	if err := ownerConnection.ReadJSON(&ownerReceived); err != nil {
 		t.Fatal(err)
 	}
-	if hostReceived.Payload != viewerRelay.Payload || hostReceived.RouteID != viewerOpened.RouteID {
-		t.Fatalf("host received = %#v", hostReceived)
+	if ownerReceived.Payload != candidateRelay.Payload || ownerReceived.RouteID != candidateOpened.RouteID {
+		t.Fatalf("owner received = %#v", ownerReceived)
 	}
-	hostRelay := nativeRelayEnvelope(1, 6)
-	hostRelay.RouteID = viewerOpened.RouteID
-	if err := host.WriteJSON(hostRelay); err != nil {
+	ownerRelay := nativeRelayEnvelope(1, 6)
+	ownerRelay.RouteID = candidateOpened.RouteID
+	if err := ownerConnection.WriteJSON(ownerRelay); err != nil {
 		t.Fatal(err)
 	}
-	var viewerReceived protocol.Message
-	if err := viewer.ReadJSON(&viewerReceived); err != nil {
+	var candidateReceived protocol.Message
+	if err := candidateConnection.ReadJSON(&candidateReceived); err != nil {
 		t.Fatal(err)
 	}
-	if viewerReceived != hostRelay {
-		t.Fatalf("viewer received = %#v", viewerReceived)
+	if candidateReceived != ownerRelay {
+		t.Fatalf("candidate received = %#v", candidateReceived)
 	}
 
 	request, _ := http.NewRequest(
 		http.MethodDelete,
-		server.URL+"/api/native/v1/rendezvous/"+rendezvousID+"/session",
+		server.URL+"/api/native/v3/rendezvous/"+rendezvousID+"/session",
 		nil,
 	)
 	request.Header.Set("Authorization", "Bearer "+token)
@@ -261,25 +290,25 @@ func TestNativeWebSocketRoutesOpaqueMessagesAndStopIsAtomic(t *testing.T) {
 		t.Fatalf("deactivate status = %d", response.StatusCode)
 	}
 	waitNativeState(t, server.URL, rendezvousID, signaling.NativeRendezvousPreparing)
-	_ = viewer.SetReadDeadline(time.Now().Add(time.Second))
+	_ = candidateConnection.SetReadDeadline(time.Now().Add(time.Second))
 	var stopped protocol.Message
-	if err := viewer.ReadJSON(&stopped); err != nil || stopped.Type != protocol.MessageNativeRouteClosed {
+	if err := candidateConnection.ReadJSON(&stopped); err != nil || stopped.Type != protocol.MessageNativeRouteClosed {
 		t.Fatalf("deactivate notice = %#v, %v", stopped, err)
 	}
-	if _, _, err := viewer.ReadMessage(); err == nil {
-		t.Fatal("deactivate sent a notice but left native viewer route open")
+	if _, _, err := candidateConnection.ReadMessage(); err == nil {
+		t.Fatal("deactivate sent a notice but left native candidate route open")
 	}
-	_, viewerResponse, err := websocket.DefaultDialer.Dial(
-		websocketURL(server.URL, "/api/native/v1/rendezvous/"+rendezvousID+"/viewer"),
+	_, candidateResponse, err := websocket.DefaultDialer.Dial(
+		websocketURL(server.URL, "/api/native/v3/rendezvous/"+rendezvousID+"/candidate"),
 		nil,
 	)
-	if err == nil || viewerResponse == nil || viewerResponse.StatusCode != http.StatusConflict {
-		t.Fatalf("viewer admitted after stop = %#v, %v", viewerResponse, err)
+	if err == nil || candidateResponse == nil || candidateResponse.StatusCode != http.StatusConflict {
+		t.Fatalf("candidate admitted after stop = %#v, %v", candidateResponse, err)
 	}
-	viewerResponse.Body.Close()
+	candidateResponse.Body.Close()
 }
 
-func TestNativeMalformedPayloadsAreRejectedWithoutChangingBrowserV1(t *testing.T) {
+func TestNativeMalformedPayloadsAreRejected(t *testing.T) {
 	_, server := newHTTPTestServer(t)
 	invalidResponse := advertiseNative(t, server.URL, "short", ownerToken(34))
 	invalidResponse.Body.Close()
@@ -291,8 +320,8 @@ func TestNativeMalformedPayloadsAreRejectedWithoutChangingBrowserV1(t *testing.T
 	token := ownerToken(35)
 	request, _ := http.NewRequest(
 		http.MethodPut,
-		server.URL+"/api/native/v1/rendezvous/"+rendezvousID,
-		bytes.NewBufferString(`{"ownerToken":"`+token+`","friendName":"must-not-be-stored"}`),
+		server.URL+"/api/native/v3/rendezvous/"+rendezvousID,
+		bytes.NewBufferString(`{"ownerToken":"`+token+`","participantName":"must-not-be-stored"}`),
 	)
 	response, err := http.DefaultClient.Do(request)
 	if err != nil {
@@ -304,16 +333,16 @@ func TestNativeMalformedPayloadsAreRejectedWithoutChangingBrowserV1(t *testing.T
 	}
 	response = advertiseNative(t, server.URL, rendezvousID, token)
 	response.Body.Close()
-	host := dialNativeHost(t, server.URL, rendezvousID, token)
+	ownerConnection := dialNativeOwner(t, server.URL, rendezvousID, token)
 	waitNativeState(t, server.URL, rendezvousID, signaling.NativeRendezvousPreparing)
 	response = activateNative(t, server.URL, rendezvousID, token, nativeSessionDescriptor(8))
 	response.Body.Close()
-	viewer := dialNativeViewer(t, server.URL, rendezvousID)
+	candidateConnection := dialNativeCandidate(t, server.URL, rendezvousID)
 	var opened protocol.Message
-	_ = viewer.ReadJSON(&opened)
-	var hostOpened protocol.Message
-	_ = host.ReadJSON(&hostOpened)
-	if err := viewer.WriteJSON(map[string]any{
+	_ = candidateConnection.ReadJSON(&opened)
+	var ownerOpened protocol.Message
+	_ = ownerConnection.ReadJSON(&ownerOpened)
+	if err := candidateConnection.WriteJSON(map[string]any{
 		"type":     protocol.MessageNativeRelay,
 		"version":  protocol.NativeMessageVersion,
 		"sequence": 1,
@@ -322,45 +351,24 @@ func TestNativeMalformedPayloadsAreRejectedWithoutChangingBrowserV1(t *testing.T
 		t.Fatal(err)
 	}
 	var nativeError protocol.Message
-	if err := viewer.ReadJSON(&nativeError); err != nil {
+	if err := candidateConnection.ReadJSON(&nativeError); err != nil {
 		t.Fatal(err)
 	}
 	if nativeError.Type != protocol.MessageNativeError || nativeError.Code != "protocol_error" {
 		t.Fatalf("malformed native relay response = %#v", nativeError)
 	}
-
-	// The original browser v1 surface remains independently functional.
-	roomToken := ownerToken(36)
-	roomLease, roomStatus := allocateRoom(t, server.URL, roomToken)
-	if roomStatus != http.StatusCreated {
-		t.Fatalf("browser room create = %d", roomStatus)
-	}
-	browserHost := dialHost(t, server.URL, roomLease.Room, roomToken)
-	browserViewer := dialViewer(t, server.URL, roomLease.Room)
-	routeID := openRoute(t, browserHost, browserViewer)
-	relay := relayEnvelope(1)
-	if err := browserViewer.WriteJSON(relay); err != nil {
-		t.Fatal(err)
-	}
-	var received protocol.Message
-	if err := browserHost.ReadJSON(&received); err != nil {
-		t.Fatal(err)
-	}
-	if received.Type != protocol.MessageRelay || received.RouteID != routeID {
-		t.Fatalf("browser relay after native use = %#v", received)
-	}
 }
 
-func TestNativeDeleteRemovesRendezvousAndClosesHost(t *testing.T) {
+func TestNativeDeleteRemovesRendezvousAndClosesOwner(t *testing.T) {
 	_, server := newHTTPTestServer(t)
 	rendezvousID := testNativeRendezvousID(9)
 	token := ownerToken(37)
 	response := advertiseNative(t, server.URL, rendezvousID, token)
 	response.Body.Close()
-	host := dialNativeHost(t, server.URL, rendezvousID, token)
+	ownerConnection := dialNativeOwner(t, server.URL, rendezvousID, token)
 	waitNativeState(t, server.URL, rendezvousID, signaling.NativeRendezvousPreparing)
 
-	request, _ := http.NewRequest(http.MethodDelete, server.URL+"/api/native/v1/rendezvous/"+rendezvousID, nil)
+	request, _ := http.NewRequest(http.MethodDelete, server.URL+"/api/native/v3/rendezvous/"+rendezvousID, nil)
 	request.Header.Set("Authorization", "Bearer "+token)
 	response, err := http.DefaultClient.Do(request)
 	if err != nil {
@@ -371,11 +379,11 @@ func TestNativeDeleteRemovesRendezvousAndClosesHost(t *testing.T) {
 	if response.StatusCode != http.StatusNoContent {
 		t.Fatalf("native delete = %d", response.StatusCode)
 	}
-	_ = host.SetReadDeadline(time.Now().Add(time.Second))
-	if _, _, err := host.ReadMessage(); err == nil {
-		t.Fatal("native delete left host open")
+	_ = ownerConnection.SetReadDeadline(time.Now().Add(time.Second))
+	if _, _, err := ownerConnection.ReadMessage(); err == nil {
+		t.Fatal("native delete left owner open")
 	}
-	statusResponse, err := http.Get(server.URL + "/api/native/v1/rendezvous/" + rendezvousID)
+	statusResponse, err := http.Get(server.URL + "/api/native/v3/rendezvous/" + rendezvousID)
 	if err != nil {
 		t.Fatal(err)
 	}

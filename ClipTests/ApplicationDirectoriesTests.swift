@@ -324,6 +324,321 @@ struct ApplicationDirectoriesTests {
         #expect(!configuration.isUITesting)
         #expect(!configuration.completesOnboarding)
         #expect(configuration.allowsSystemIntegrations)
+        #expect(configuration.nativeV3MeshAcceptanceRequest == .none)
+    }
+
+    @Test("Native v3 mesh acceptance requires every guard and isolates each participant")
+    func nativeV3MeshAcceptanceIsGuardedAndParticipantIsolated() throws {
+        let temporaryDirectory = URL(fileURLWithPath: "/tmp/clip-launch-tests")
+        let arguments = [
+            "Clip",
+            AppLaunchConfiguration.uiTestingArgument,
+            AppLaunchConfiguration.nativeV3MeshAcceptanceArgument,
+            AppLaunchConfiguration.nativeV3MeshAcceptanceAcknowledgementArgument,
+            "\(AppLaunchConfiguration.nativeV3MeshParticipantArgumentPrefix)participant-a",
+        ]
+        let isolationIdentifier = AppLaunchConfiguration.isolationIdentifier(
+            for: arguments
+        )
+        let configuration = AppLaunchConfiguration.resolve(
+            arguments: arguments,
+            temporaryDirectory: temporaryDirectory,
+            isolationIdentifier: isolationIdentifier
+        )
+
+        #expect(configuration.mode == .nativeV3MeshAcceptance)
+        #expect(
+            configuration.nativeV3MeshAcceptanceRequest
+                == .participant("participant-a")
+        )
+        #expect(
+            configuration.nativeV3MeshAcceptanceParticipantIdentifier
+                == "participant-a"
+        )
+        #expect(isolationIdentifier == "native-v3-mesh-participant-a")
+        #expect(
+            configuration.isolatedStateRoot
+                == temporaryDirectory
+                    .appendingPathComponent("Clip-UI-Testing", isDirectory: true)
+                    .appendingPathComponent(
+                        "native-v3-mesh-participant-a",
+                        isDirectory: true
+                    )
+        )
+        #expect(configuration.completesOnboarding)
+        #expect(configuration.isUITesting)
+        #expect(!configuration.allowsSystemIntegrations)
+        #expect(!configuration.resetsIsolatedStateOnLaunch)
+        #expect(!configuration.launchesDeterministicUIScenario)
+        #expect(configuration.uiScenarioRequest == .none)
+    }
+
+    @Test("Native v3 mesh acceptance flags fail closed when incomplete or ambiguous")
+    func nativeV3MeshAcceptanceRejectsInvalidLaunches() {
+        let temporaryDirectory = URL(fileURLWithPath: "/tmp/clip-launch-tests")
+        let valid = [
+            "Clip",
+            AppLaunchConfiguration.uiTestingArgument,
+            AppLaunchConfiguration.nativeV3MeshAcceptanceArgument,
+            AppLaunchConfiguration.nativeV3MeshAcceptanceAcknowledgementArgument,
+            "\(AppLaunchConfiguration.nativeV3MeshParticipantArgumentPrefix)participant-a",
+        ]
+        let invalidArguments = [
+            Array(valid.dropLast()),
+            valid.filter {
+                $0 != AppLaunchConfiguration.nativeV3MeshAcceptanceAcknowledgementArgument
+            },
+            valid + [AppLaunchConfiguration.nativeV3MeshAcceptanceArgument],
+            valid + [
+                "\(AppLaunchConfiguration.nativeV3MeshParticipantArgumentPrefix)participant-b",
+            ],
+            [
+                "Clip",
+                AppLaunchConfiguration.uiTestingArgument,
+                AppLaunchConfiguration.nativeV3MeshAcceptanceArgument,
+                AppLaunchConfiguration.nativeV3MeshAcceptanceAcknowledgementArgument,
+                "\(AppLaunchConfiguration.nativeV3MeshParticipantArgumentPrefix)-participant",
+            ],
+            [
+                "Clip",
+                AppLaunchConfiguration.uiTestingArgument,
+                AppLaunchConfiguration.nativeV3MeshAcceptanceArgument,
+                AppLaunchConfiguration.nativeV3MeshAcceptanceAcknowledgementArgument,
+                "\(AppLaunchConfiguration.nativeV3MeshParticipantArgumentPrefix)participant/escape",
+            ],
+            [
+                "Clip",
+                AppLaunchConfiguration.uiTestingArgument,
+                AppLaunchConfiguration.nativeV3MeshAcceptanceArgument,
+                AppLaunchConfiguration.nativeV3MeshAcceptanceAcknowledgementArgument,
+                "\(AppLaunchConfiguration.nativeV3MeshParticipantArgumentPrefix)participant_underscore",
+            ],
+            [
+                "Clip",
+                AppLaunchConfiguration.uiTestingArgument,
+                AppLaunchConfiguration.nativeV3MeshAcceptanceArgument,
+                AppLaunchConfiguration.nativeV3MeshAcceptanceAcknowledgementArgument,
+                "\(AppLaunchConfiguration.nativeV3MeshParticipantArgumentPrefix)pärticipant",
+            ],
+            [
+                "Clip",
+                AppLaunchConfiguration.uiTestingArgument,
+                AppLaunchConfiguration.nativeV3MeshAcceptanceArgument,
+                AppLaunchConfiguration.nativeV3MeshAcceptanceAcknowledgementArgument,
+                "\(AppLaunchConfiguration.nativeV3MeshParticipantArgumentPrefix)participant-",
+            ],
+            [
+                "Clip",
+                AppLaunchConfiguration.uiTestingArgument,
+                AppLaunchConfiguration.nativeV3MeshAcceptanceArgument,
+                AppLaunchConfiguration.nativeV3MeshAcceptanceAcknowledgementArgument,
+                "\(AppLaunchConfiguration.nativeV3MeshParticipantArgumentPrefix)participant-identifier-over-32-chars",
+            ],
+            valid + [AppLaunchConfiguration.realCaptureAcceptanceArgument],
+        ]
+
+        for arguments in invalidArguments {
+            let configuration = AppLaunchConfiguration.resolve(
+                arguments: arguments,
+                temporaryDirectory: temporaryDirectory,
+                isolationIdentifier: AppLaunchConfiguration.isolationIdentifier(
+                    for: arguments
+                )
+            )
+            #expect(configuration.nativeV3MeshAcceptanceRequest == .invalid)
+            #expect(
+                configuration.nativeV3MeshAcceptanceParticipantIdentifier == nil
+            )
+        }
+
+        let flagsWithoutUIGuard = Array(valid.dropFirst(2))
+        let production = AppLaunchConfiguration.resolve(
+            arguments: ["Clip"] + flagsWithoutUIGuard,
+            temporaryDirectory: temporaryDirectory,
+            isolationIdentifier: "production"
+        )
+        #expect(production.mode == .standard)
+        #expect(production.nativeV3MeshAcceptanceRequest == .none)
+        #expect(production.isolatedStateRoot == nil)
+    }
+
+    @Test("Native v3 mesh reporting is paired, private-rooted, and participant-bound")
+    func nativeV3MeshAcceptanceReportingLaunchGuard() throws {
+        let temporaryDirectory = URL(
+            fileURLWithPath: "/tmp/clip-launch-tests",
+            isDirectory: true
+        )
+        let runDirectory = temporaryDirectory.appendingPathComponent(
+            "native-v3-run",
+            isDirectory: true
+        )
+        let base = [
+            "Clip",
+            AppLaunchConfiguration.uiTestingArgument,
+            AppLaunchConfiguration.nativeV3MeshAcceptanceArgument,
+            AppLaunchConfiguration
+                .nativeV3MeshAcceptanceAcknowledgementArgument,
+            "\(AppLaunchConfiguration.nativeV3MeshParticipantArgumentPrefix)participant-a",
+        ]
+        let reporting = [
+            "\(AppLaunchConfiguration.nativeV3MeshReportRunArgumentPrefix)native-v3-acceptance-run-0001",
+            "\(AppLaunchConfiguration.nativeV3MeshReportDirectoryArgumentPrefix)\(runDirectory.path)",
+        ]
+        let arguments = base + reporting
+        let configuration = AppLaunchConfiguration.resolve(
+            arguments: arguments,
+            temporaryDirectory: temporaryDirectory,
+            isolationIdentifier: AppLaunchConfiguration.isolationIdentifier(
+                for: arguments
+            )
+        )
+
+        #expect(
+            configuration.nativeV3MeshAcceptanceReportingRequest
+                == NativeV3MeshAcceptanceReportingRequest(
+                    runIdentifier: "native-v3-acceptance-run-0001",
+                    processLabel: "participant-a",
+                    runDirectory: runDirectory
+                )
+        )
+
+        let invalidReportingArguments = [
+            base + [reporting[0]],
+            base + [reporting[1]],
+            base + reporting + [reporting[0]],
+            base + [
+                "\(AppLaunchConfiguration.nativeV3MeshReportRunArgumentPrefix)short",
+                reporting[1],
+            ],
+            base + [
+                reporting[0],
+                "\(AppLaunchConfiguration.nativeV3MeshReportDirectoryArgumentPrefix)relative",
+            ],
+            base + [
+                reporting[0],
+                "\(AppLaunchConfiguration.nativeV3MeshReportDirectoryArgumentPrefix)/tmp/outside-run-root",
+            ],
+        ]
+        for invalid in invalidReportingArguments {
+            let resolved = AppLaunchConfiguration.resolve(
+                arguments: invalid,
+                temporaryDirectory: temporaryDirectory,
+                isolationIdentifier:
+                    AppLaunchConfiguration.isolationIdentifier(for: invalid)
+            )
+            #expect(resolved.nativeV3MeshAcceptanceRequest == .invalid)
+            #expect(
+                resolved.nativeV3MeshAcceptanceReportingRequest == nil
+            )
+        }
+    }
+
+    @Test("Native v3 final evidence freezes the largest fully published membership")
+    func nativeV3MeshAcceptanceReadyEvidencePolicy() {
+        #expect(
+            !NativeV3MeshAcceptanceReadyEvidencePolicy.shouldReplace(
+                currentMemberCount: nil,
+                membershipMatchesCurrent: false,
+                incomingMemberCount: 3,
+                localSourceCount: 0,
+                remoteSourceCounts: [1, 1],
+                transportIsReady: true
+            )
+        )
+        #expect(
+            NativeV3MeshAcceptanceReadyEvidencePolicy.shouldReplace(
+                currentMemberCount: nil,
+                membershipMatchesCurrent: false,
+                incomingMemberCount: 3,
+                localSourceCount: 1,
+                remoteSourceCounts: [1, 1],
+                transportIsReady: true
+            )
+        )
+        #expect(
+            NativeV3MeshAcceptanceReadyEvidencePolicy.shouldReplace(
+                currentMemberCount: 3,
+                membershipMatchesCurrent: false,
+                incomingMemberCount: 4,
+                localSourceCount: 1,
+                remoteSourceCounts: [1, 1, 1],
+                transportIsReady: true
+            )
+        )
+        #expect(
+            !NativeV3MeshAcceptanceReadyEvidencePolicy.shouldReplace(
+                currentMemberCount: 4,
+                membershipMatchesCurrent: false,
+                incomingMemberCount: 3,
+                localSourceCount: 1,
+                remoteSourceCounts: [1, 1],
+                transportIsReady: true
+            )
+        )
+        #expect(
+            !NativeV3MeshAcceptanceReadyEvidencePolicy.shouldReplace(
+                currentMemberCount: 3,
+                membershipMatchesCurrent: false,
+                incomingMemberCount: 3,
+                localSourceCount: 1,
+                remoteSourceCounts: [1, 1],
+                transportIsReady: true
+            )
+        )
+        #expect(
+            NativeV3MeshAcceptanceReadyEvidencePolicy.shouldReplace(
+                currentMemberCount: 3,
+                membershipMatchesCurrent: true,
+                incomingMemberCount: 3,
+                localSourceCount: 1,
+                remoteSourceCounts: [1, 1],
+                transportIsReady: true
+            )
+        )
+    }
+
+    @Test("Native v3 mesh acceptance state persists while ordinary UI state resets")
+    func nativeV3MeshAcceptanceStatePersistenceIsNarrowlyScoped() throws {
+        let temporaryDirectory = URL(fileURLWithPath: "/tmp/clip-launch-tests")
+        let meshArguments = [
+            "Clip",
+            AppLaunchConfiguration.uiTestingArgument,
+            AppLaunchConfiguration.nativeV3MeshAcceptanceArgument,
+            AppLaunchConfiguration.nativeV3MeshAcceptanceAcknowledgementArgument,
+            "\(AppLaunchConfiguration.nativeV3MeshParticipantArgumentPrefix)participant-a",
+        ]
+        let meshConfiguration = AppLaunchConfiguration.resolve(
+            arguments: meshArguments,
+            temporaryDirectory: temporaryDirectory,
+            isolationIdentifier: AppLaunchConfiguration.isolationIdentifier(
+                for: meshArguments
+            )
+        )
+        let meshSuite = try #require(meshConfiguration.defaultsSuiteName)
+        defer { UserDefaults.standard.removePersistentDomain(forName: meshSuite) }
+        let firstMeshDefaults = try meshConfiguration.makeUserDefaults()
+        firstMeshDefaults.set("persists", forKey: "mesh-acceptance-marker")
+        let secondMeshDefaults = try meshConfiguration.makeUserDefaults()
+        #expect(
+            secondMeshDefaults.string(forKey: "mesh-acceptance-marker")
+                == "persists"
+        )
+
+        let ordinaryArguments = [
+            "Clip",
+            AppLaunchConfiguration.uiTestingArgument,
+        ]
+        let ordinaryConfiguration = AppLaunchConfiguration.resolve(
+            arguments: ordinaryArguments,
+            temporaryDirectory: temporaryDirectory,
+            isolationIdentifier: "ordinary-ui"
+        )
+        let ordinarySuite = try #require(ordinaryConfiguration.defaultsSuiteName)
+        defer { UserDefaults.standard.removePersistentDomain(forName: ordinarySuite) }
+        let firstOrdinaryDefaults = try ordinaryConfiguration.makeUserDefaults()
+        firstOrdinaryDefaults.set("removed", forKey: "ordinary-marker")
+        let secondOrdinaryDefaults = try ordinaryConfiguration.makeUserDefaults()
+        #expect(secondOrdinaryDefaults.string(forKey: "ordinary-marker") == nil)
     }
 
     @Test("Every deterministic UI scenario is guarded and receives its own isolated state")
@@ -712,11 +1027,6 @@ struct ApplicationDirectoriesTests {
             applicationSupportDirectory: directories.applicationSupport
         )
         let liveShareIdentity = NativeDeviceIdentityRepository()
-        let nativeFriends = NativeFriendModel(
-            repository: try NativeFriendRepository(
-                applicationSupportDirectory: directories.applicationSupport
-            )
-        )
         let permissions = FakePermissionService()
         let audio = FakeAudioService()
         let pasteboard = FakePasteboardService()
@@ -742,7 +1052,6 @@ struct ApplicationDirectoriesTests {
             settings: settings,
             liveSharePreferences: liveSharePreferences,
             liveShareIdentity: liveShareIdentity,
-            nativeFriends: nativeFriends,
             permissions: permissions,
             audio: audio,
             pasteboard: pasteboard,

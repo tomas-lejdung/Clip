@@ -14,8 +14,7 @@ let package = Package(
         .target(name: "ClipLiveShare"),
         .testTarget(
             name: "ClipLiveShareTests",
-            dependencies: ["ClipLiveShare"],
-            resources: [.process("Fixtures")]
+            dependencies: ["ClipLiveShare"]
         ),
     ],
     swiftLanguageModes: [.v6]

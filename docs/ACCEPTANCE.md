@@ -8,71 +8,171 @@ Run the deterministic, pointer-free in-repository lane with:
 ./scripts/run-live-share-acceptance.sh
 ```
 
-The script needs no sibling checkout. It runs the complete Go server suite and
-browser protocol tests, builds the real `server/cmd/clip-live-share-server`
-binary, launches it on an unused loopback port, and validates `/healthz`,
-`/version`, `/.well-known/clip-live-share`, and the embedded viewer. It then
-runs the `ClipLiveShare` and `ClipLiveShareWebRTC` Swift package suites against
-the same repository source. The WebRTC suite receives the loopback endpoint
-through `CLIP_LIVE_SHARE_ACCEPTANCE_ENDPOINT` and enables its offscreen native
-WebKit end-to-end case with `CLIP_RUN_NATIVE_WEBKIT_ACCEPTANCE=1`.
+The script needs no sibling checkout. It runs the Go opaque-rendezvous suite,
+builds the real `server/cmd/clip-live-share-server` binary, launches it on an
+unused loopback port, and validates its health, version, capabilities, bounded
+lease, and encrypted route behavior. It then runs the `ClipLiveShare`,
+`ClipLiveShareWebRTC`, app-hosted mesh, presentation, and clean-entry suites
+against the same source.
 
-The Go tests include actual localhost WebSocket routing and cover room
-advertisement, owner-token-hash authentication, leases, reconnect grace,
-pending-route isolation, monotonic relay sequences, origin policy, security
-headers, strict JSON and resource ceilings. Swift and browser tests share
-deterministic P-256 ECDH, HKDF-SHA256 and AES-GCM vectors. They verify
-directional keys, authenticated route context, tamper/replay/sequence rejection,
-encrypted admission/SDP/ICE envelopes and the exact 196,400-byte inner-message
-ceiling.
+### Current local result — `DONE`
 
-Native WebRTC coverage includes four random-identity video transceivers, exact
-H.264/VP8 choices, preferred VP9 → VP8 and AV1 → VP9 → VP8 chains, one
-Opus system-audio send track, transactional live codec switching, actual
-outbound-codec statistics, bounded SDP/ICE/control input, reliable ordered
-`clip-control-v1`, authoritative low-water replay and idempotent teardown. The
-viewer tests cover encrypted host admission, opaque manifest-to-track binding,
-focus/cursor state, audio attachment, mute/volume and autoplay recovery.
+The frozen-tree lane passed on 2026-07-31 and ended
+`Clip native-v3 local acceptance passed`. Recorded evidence:
 
-The offscreen WebKit case also sends phase-continuous, independent 440 Hz and
-997 Hz stereo PCM through the production native audio bridge and Opus sender,
-then analyses the browser's decoded waveform through a zero-gain Web Audio
-node. It rejects silence, clipping, mono collapse, channel corruption, wrong
-frequencies, dropped source frames, and damaged Opus negotiation without
-producing audible output.
+- server tests plus real loopback server launch and opaque encrypted route
+  checks;
+- 72 focused native-v3 protocol, security, membership, authority, leadership,
+  and lifecycle tests;
+- 8 native rendezvous transport tests;
+- WebRTC mesh-manager and real WebRTC loopback package gates;
+- the app-hosted bootstrap, encrypted-rendezvous, room-session, runtime,
+  presentation, clean-entry, and three/four-participant mesh suites;
+- strict package totals of ClipCore 81, ClipMedia 74, ClipCapture 37,
+  ClipLiveShare 97, and ClipLiveShareWebRTC 66; and
+- `go test -race ./...` plus `go vet ./...`.
 
-The offscreen WebKit viewer does not expose or move a pointer. The lane never
-opens the installed app, calls ScreenCaptureKit, requests a
+The complete stable-signed hosted app suite separately passed 364 of 365 tests
+with zero failures. Its one deliberate skip is an external acceptance lane; it
+is not evidence of a product or deterministic-test failure.
+
+This is a native-v3-only gate. It does not run a browser participant, protocol
+negotiation, compatibility fallback, role upgrade, media mirror, or separate
+host/viewer application path. Static source acceptance fails when shipped
+**Create Room** or **Join Invite** depends on any connection path other than the
+common native-v3 participant session.
+
+The Go tests use actual localhost WebSockets and prove that the service remains
+an opaque transport: random rendezvous and route allocation, bounded leases,
+route isolation, monotonic relay sequences, origin policy, security headers,
+strict JSON, encrypted payload ceilings, and idempotent cleanup. The service
+must not parse or own admission, participant identity, membership, peer-link
+topology, source state, collaboration state, or media.
+
+Native protocol tests cover:
+
+- P-256 identity and ECDH, HKDF-SHA256, AES-GCM, deterministic signing vectors,
+  directional keys, authenticated context, replay/tamper/sequence rejection,
+  and strict native-v3 envelopes.
+- A self-contained invite, mandatory join-capability proof, optional independent
+  Access Word proof, explicit leader approval/denial, bounded provisional
+  admission, and cleanup on timeout or failure.
+- Short-lived credentials, canonical signed membership snapshots, independent
+  membership/publisher/peer-link revisions, participant/source namespacing, and
+  transactional commit.
+- Graceful leadership transfer, one deterministic strict-majority successor
+  after unexpected leader loss, complete authority-chain catch-up across missed
+  ordinary membership and multiple leadership terms, fork/rollback rejection,
+  and `leaderlessLocked` behavior without quorum.
+- Current-leader authority locks below strict-majority reachability. Admission,
+  invite/access-word changes, and membership mutation remain closed until a
+  ready quorum confirms the exact current authority chain.
+- Rejection of wrong-session, wrong-route, wrong-leader, wrong-pair, expired,
+  duplicate-identity, stale-revision, over-capacity, malformed, and unsigned
+  input.
+
+Native WebRTC tests cover one direct authenticated peer connection and one
+ordered native-v3 DataChannel per pair; four random-identity video slots and one
+optional Opus audio track per participant direction; exact H.264/VP8 choices;
+VP9 → VP8 and AV1 → VP9 → VP8 fallback; transactional codec switching;
+bounded SDP/ICE/control/collaboration input; directional RTP statistics;
+low-water state replay; and idempotent teardown.
+
+The deterministic topology suite proves:
+
+- Two participants: one peer link.
+- Three participants: three independent peer links.
+- Four participants: all six independent peer links.
+- Every participant can publish four source slots and one audio track while
+  receiving every other participant.
+- A slow, disconnected, renegotiating, or removed peer does not backpressure or
+  corrupt another link.
+- Provisional media stays quarantined until membership commits.
+
+Presentation tests cover one common participant popover; `Your Share`; remote
+sources grouped by participant; independent per-participant audio mute/volume;
+directional diagnostics; source add/update/remove; Fit, Native, Follow and
+fullscreen; hide/reopen and bring-to-front; source-aware 1×/Retina geometry;
+focus and native cursor context; exact participant cleanup; and the
+room-global final-video-window prompt, which offers Stay Connected or Leave
+Room only while a remote audio track remains.
+
+Collaboration tests cover explicit pointer reveal, pings, and bounded temporary
+vector strokes. They require source/participant attribution, normalized
+coordinate mapping across Fit/Native/Follow and Retina scales, stale/wrong
+source rejection, rate and size ceilings, clear/expiry semantics, and
+capture-excluded local overlays. They never inject keyboard or pointer input
+into another Mac.
+
+The lane never opens the installed app, calls ScreenCaptureKit, requests a
 privacy permission, uses the general clipboard, or controls the keyboard or
 pointer. It does not establish production service availability, real desktop
 quality, audible hardware output, overlay exclusion, remote Internet ICE, TURN,
-sleep/wake behavior or soak stability.
+sleep/wake behavior, or soak stability.
 
 ### Live Share evidence map
 
-| Surface | Current automated evidence | Not established by that evidence |
+| Surface | Completed automated evidence | Not established by that evidence |
 | --- | --- | --- |
-| Encrypted protocol | Cross-language crypto vectors, typed bounds, replay/tamper rejection, encrypted admission/SDP/ICE, opaque random stream identities and DataChannel handoff. | A malicious viewer deployment, traffic-analysis resistance or service availability. |
-| Go service | In-memory ownership/leases, authenticated host replacement, route isolation, strict opaque relay, origin policy, embedded assets and real localhost WebSockets. | Multi-replica routing, production TLS/reverse proxy or remote NAT traversal. |
-| Native WebRTC | Per-viewer negotiation, documented codec fallbacks, bounded capture/control queues, RTP statistics, and decoded stereo Opus waveform quality through WebKit. | Four simultaneous real browser-rendered sources, real ScreenCaptureKit system audio or controlled TURN. |
-| Browser viewer | Protocol crypto, admission UI, opaque manifest binding, multi-stream state, audio controls, reconnect behavior and deterministic decoded-audio analysis. | Subjective quality on physical speakers or every target browser/OS combination. |
-| UI and capture | Deterministic state/policy tests for popover, overlays, source rules, geometry and audio filters. | Production ScreenCaptureKit permission, Spaces/displays, click consumption and capture exclusion. |
-| Distribution | Source audits cover dependency pins, sandbox entitlements and server container structure. | Final signed DMG, published image provenance and notarization. |
+| Native-v3 protocol | Canonical crypto vectors, typed bounds, invite/Access Word proof, explicit admission, signed membership, leadership, replay/tamper rejection and transactional teardown. | Traffic-analysis resistance, production service availability or private-key compromise. |
+| Go service | Bounded opaque leases/routes, strict ciphertext relay, origin policy, security headers and real localhost WebSockets without participant state. | Multi-replica routing, production TLS/reverse proxy or remote NAT traversal. |
+| Mesh WebRTC | 1/3/6 authenticated links, independent negotiation and congestion, reserved source/audio tracks, codec fallback, RTP statistics and decoded stereo Opus quality. | Real ScreenCaptureKit system audio, controlled TURN, physical thermal behavior or four independently signed GUI processes. |
+| Participant UI | Common room model, local and grouped remote sources, per-participant audio/diagnostics, admissions, leadership, window modes and collaboration overlays. | Production Spaces/displays, native window ordering, click consumption or capture exclusion. |
+| Distribution | Native-v3-only source audit, dependency pins, sandbox entitlements and opaque service container structure. | Final signed DMG, published image provenance and notarization. |
 
-The optional Access Word is generated and checked by Clip inside an encrypted
-route; its text is never sent to the server. Changing it applies to new
-admissions and does not eject a connected peer. Window sharing captures audio
-at application scope for unique owning apps, while Fullscreen captures system
-audio excluding Clip. The embedded viewer attaches the stable Opus track and
-offers mute, volume and autoplay-unlock controls. Live Share never captures a
-microphone.
+The optional Access Word is checked by Clip inside the encrypted admission
+route; its text is never sent to the service. Changing it applies to future
+admissions and does not eject a member. Each participant's exact-window audio
+is application-scoped; Fullscreen audio excludes Clip plus its selected
+applications. Every receiver gets one independently controllable Opus track per
+remote participant. Live Share never captures a microphone.
 
-Before release, the controlled-Mac lane must share real ScreenCaptureKit content
-through the production coordinator, exercise one through four windows plus
-Fullscreen and resize, verify synchronized browser audio, prove both overlays
-are absent from shared pixels, and stop cleanly. Remote Internet/TURN traversal,
-repeated start/stop, and a ten-minute soak remain separate gates. Until those
-run, loopback must not be described as complete real-world Live Share evidence.
+Before release, the controlled-Mac lane must run two, three, and four
+independently launched signed Clip GUI processes. All participants must share
+and receive privacy-authorized real ScreenCaptureKit content concurrently;
+exercise one through four windows, Fullscreen, resize, per-participant real
+system audio and exclusions; prove pointer/ping/ink and capture exclusion;
+transfer leadership; recover one leader crash with quorum; and stop cleanly.
+Four participants must establish all six links. Physical multi-display/Spaces
+and Retina/non-Retina combinations, direct Internet ICE, controlled TURN,
+repeated churn, CPU/upstream/thermal/audio-mix observation, and the required
+soak remain mandatory separate gates. Loopback is never described as complete
+real-world Live Share evidence.
+
+### Signed three/four-process report gate — `EXTERNAL_GATE`
+
+The report harness and validator are implemented, but no three/four-process
+signed GUI report is recorded as passed for this frozen tree yet.
+
+The smallest machine-validated real-app gate launches three signed participants
+by default (or four with `--participants 4`):
+
+```sh
+./scripts/launch-native-v3-mesh-acceptance.sh \
+  --allow-native-v3-mesh-multi-instance \
+  /absolute/path/to/Clip.app \
+  --participants 3
+```
+
+The launcher accepts only Clip's exact stable certificate-based designated
+requirement, leaf-certificate fingerprint, and Team ID; creates one private
+temporary run directory; and assigns fixed sanitized process labels. This is
+the same requirement macOS uses to preserve Clip's privacy grants across
+signed updates. The owner then uses only the production Create Room, Join
+Invite, admission, source, and audio controls. Every participant must publish
+at least one video source. Audio is an explicit gate: omit
+`--require-system-audio` to require zero tracks, or include it to require
+exactly one system-audio track from every participant.
+
+Each app writes an owner-only report signed by its participant identity and
+bound to its locally committed leader-signed membership. The cross-process
+validator requires one session/revision/leader/term, all `n × (n - 1)` local
+ready link views, symmetric concrete direct/TURN routes, and publication counts
+that every receiver agrees with. Connected apps with no published video cannot
+pass. A private control file then asks all apps to terminate through AppKit;
+the final stage requires every signed report to retain the proven-ready
+topology and record a clean `ended` state. No invite, access word, owner
+capability, or private identity is exported.
 
 The default acceptance lane is deterministic and permission-free:
 

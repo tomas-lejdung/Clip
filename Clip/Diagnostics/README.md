@@ -80,3 +80,74 @@ present. They also reject conflicting diagnostic modes.
 These diagnostics are distinct from the Swift package tests, `ClipTests`, and
 `ClipUITests`. Those suites remain in their conventional test targets because
 they do not need Clip's production Screen Recording identity.
+
+## Native-v3 signed multi-process mesh acceptance
+
+The native-v3 mesh needs distinct participant identities even when several
+copies of the same signed Clip bundle run on one Mac. The guarded launcher
+starts exactly three or four normal app coordinators with isolated state:
+
+```sh
+./scripts/launch-native-v3-mesh-acceptance.sh \
+  --allow-native-v3-mesh-multi-instance \
+  /absolute/path/to/Clip.app \
+  --participants 3
+```
+
+Add `--require-system-audio` when every participant must publish one system
+audio track. Without that flag the explicit expected audio count is zero.
+Regardless of the audio setting, every participant must publish at least one
+video source; an empty but connected mesh cannot pass.
+
+The launcher verifies Clip's exact stable, certificate-based designated
+requirement, leaf-certificate fingerprint, and Team ID; rejects ad-hoc or
+differently signed apps; refuses an existing Clip process; and creates one
+owner-only temporary run directory. The designated requirement is the identity
+macOS uses to preserve Clip's privacy grants across builds. Each process
+requires all private launch guards:
+
+- `--ui-testing`
+- `--native-v3-mesh-acceptance` plus its acknowledgement
+- one strictly sanitized `--native-v3-mesh-participant=<id>`
+- one launcher-generated run identifier and private report directory
+
+The participant ID selects a persistent directory below Clip's temporary
+UI-test root. Its Live Share signing key and capabilities are stored in an
+owner-only file there instead of the production Keychain item. Normal launches
+and real-capture acceptance continue to use the production Keychain.
+
+This changes application state, not executable identity. Every process still
+runs the exact same signed bundle identifier, so macOS Screen Recording
+permission remains associated with that one signed Clip build. The launcher
+prints only non-secret participant labels; it never prints private identities,
+owner capabilities, access words, or room invites.
+
+### Evidence contract
+
+`NativeV3MeshAcceptanceReporter.swift` is compiled into the signed app because
+the report must observe the production `ApplicationCoordinator`,
+`MeshParticipantCoordinator`, participant identity, and AppKit termination
+path. Normal launches never construct it.
+
+Every independently launched process atomically writes an owner-only JSON
+report signed by its persistent participant identity. The report embeds the
+exact leader-signed membership and records:
+
+- run/process/participant identity, session and membership revision;
+- committed member count, current leader, leadership term, and room phase;
+- every local peer link's readiness and direct/TURN route;
+- local publication counts and per-remote received video/audio counts;
+- failures, whether ready was ever reached, and clean teardown.
+
+The launcher validates all reports as one set. It rejects missing/forged/stale
+reports, inconsistent membership or leadership, missing links, unknown routes,
+media counts that do not match the corresponding publisher, zero-source
+participants, the wrong explicit audio count, and unclean termination. Once
+the ready set passes, the launcher places a private termination request and
+each app exits through AppKit's normal asynchronous cleanup path. Final reports
+retain the last signed ready topology while proving the app reached `ended`.
+
+This lane remains deliberately interactive for the real product entry points:
+the owner creates one room, joins the other participants, approves admission,
+and chooses actual sources/audio. The reporting code observes those production
+actions; it never manufactures a room, bypasses admission, or injects media.

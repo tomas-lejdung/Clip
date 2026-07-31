@@ -5,6 +5,29 @@ enum AppLaunchMode: Equatable, Sendable {
     case standard
     case uiTesting
     case realCaptureAcceptance
+    case nativeV3MeshAcceptance
+}
+
+enum NativeV3MeshAcceptanceRequest: Equatable, Sendable {
+    case none
+    case participant(String)
+    case invalid
+}
+
+struct NativeV3MeshAcceptanceReportingRequest: Equatable, Sendable {
+    let runIdentifier: String
+    let processLabel: String
+    let runDirectory: URL
+
+    var reportsDirectory: URL {
+        runDirectory.appendingPathComponent("reports", isDirectory: true)
+    }
+
+    var terminationRequestURL: URL {
+        runDirectory
+            .appendingPathComponent("control", isDirectory: true)
+            .appendingPathComponent("terminate.request", isDirectory: false)
+    }
 }
 
 /// Production views that can be launched with deterministic, inert state for UI-source
@@ -19,15 +42,6 @@ enum DeterministicUIScenario: String, CaseIterable, Equatable, Sendable {
     case preview
     case history
     case historyExports = "history-exports"
-    case liveShareReady = "live-share-ready"
-    case liveShareLive = "live-share-live"
-    case liveShareLiveBottom = "live-share-live-bottom"
-    case liveShareAudioExclusions = "live-share-audio-exclusions"
-    case liveShareReconnecting = "live-share-reconnecting"
-    case liveShareFailed = "live-share-failed"
-    case liveShareOverlays = "live-share-overlays"
-    case nativeViewerWaiting = "native-viewer-waiting"
-    case nativeViewerLive = "native-viewer-live"
     case settings
     case settingsRecording = "settings-recording"
     case settingsLiveShare = "settings-live-share"
@@ -78,6 +92,15 @@ struct RealCaptureAcceptanceOverrides: Equatable, Sendable {
 struct AppLaunchConfiguration: Equatable, Sendable {
     static let uiTestingArgument = "--ui-testing"
     static let realCaptureAcceptanceArgument = "--real-capture-acceptance"
+    static let nativeV3MeshAcceptanceArgument = "--native-v3-mesh-acceptance"
+    static let nativeV3MeshAcceptanceAcknowledgementArgument =
+        "--acknowledge-native-v3-mesh-acceptance"
+    static let nativeV3MeshParticipantArgumentPrefix =
+        "--native-v3-mesh-participant="
+    static let nativeV3MeshReportRunArgumentPrefix =
+        "--native-v3-mesh-report-run="
+    static let nativeV3MeshReportDirectoryArgumentPrefix =
+        "--native-v3-mesh-report-directory="
     static let realMicrophoneAcceptanceArgument = "--real-capture-audio=microphone"
     static let realSystemAudioAcceptanceArgument = "--real-capture-audio=system"
     static let realCombinedAudioAcceptanceArgument = "--real-capture-audio=both"
@@ -98,6 +121,9 @@ struct AppLaunchConfiguration: Equatable, Sendable {
     let realCaptureAudioConfiguration: AudioConfiguration?
     let realCaptureOverrides: RealCaptureAcceptanceOverrides
     let uiScenarioRequest: DeterministicUIScenarioRequest
+    let nativeV3MeshAcceptanceRequest: NativeV3MeshAcceptanceRequest
+    let nativeV3MeshAcceptanceReportingRequest:
+        NativeV3MeshAcceptanceReportingRequest?
 
     static func current(
         processInfo: ProcessInfo = .processInfo,
@@ -124,18 +150,44 @@ struct AppLaunchConfiguration: Equatable, Sendable {
                 defaultsSuiteName: nil,
                 realCaptureAudioConfiguration: nil,
                 realCaptureOverrides: .none,
-                uiScenarioRequest: .none
+                uiScenarioRequest: .none,
+                nativeV3MeshAcceptanceRequest: .none,
+                nativeV3MeshAcceptanceReportingRequest: nil
             )
         }
 
         let isRealCaptureAcceptance = arguments.contains(realCaptureAcceptanceArgument)
-        let uiScenarioRequest = resolveUIScenarioRequest(
+        var nativeV3MeshAcceptanceRequest = resolveNativeV3MeshAcceptanceRequest(
             arguments: arguments,
             isRealCaptureAcceptance: isRealCaptureAcceptance
         )
-        let mode: AppLaunchMode = isRealCaptureAcceptance
-            ? .realCaptureAcceptance
-            : .uiTesting
+        let nativeV3MeshAcceptanceReportingRequest:
+            NativeV3MeshAcceptanceReportingRequest?
+        do {
+            nativeV3MeshAcceptanceReportingRequest =
+                try resolveNativeV3MeshAcceptanceReportingRequest(
+                    arguments: arguments,
+                    temporaryDirectory: temporaryDirectory,
+                    nativeV3MeshAcceptanceRequest:
+                        nativeV3MeshAcceptanceRequest
+                )
+        } catch {
+            nativeV3MeshAcceptanceRequest = .invalid
+            nativeV3MeshAcceptanceReportingRequest = nil
+        }
+        let uiScenarioRequest = resolveUIScenarioRequest(
+            arguments: arguments,
+            isRealCaptureAcceptance: isRealCaptureAcceptance,
+            nativeV3MeshAcceptanceRequest: nativeV3MeshAcceptanceRequest
+        )
+        let mode: AppLaunchMode
+        if isRealCaptureAcceptance {
+            mode = .realCaptureAcceptance
+        } else if case .participant = nativeV3MeshAcceptanceRequest {
+            mode = .nativeV3MeshAcceptance
+        } else {
+            mode = .uiTesting
+        }
         let realCaptureAudioConfiguration: AudioConfiguration?
         if isRealCaptureAcceptance,
            arguments.contains(realCombinedAudioAcceptanceArgument),
@@ -170,12 +222,27 @@ struct AppLaunchConfiguration: Equatable, Sendable {
             defaultsSuiteName: "\(ApplicationDirectories.bundleIdentifier).ui-testing.\(isolationIdentifier)",
             realCaptureAudioConfiguration: realCaptureAudioConfiguration,
             realCaptureOverrides: realCaptureOverrides,
-            uiScenarioRequest: uiScenarioRequest
+            uiScenarioRequest: uiScenarioRequest,
+            nativeV3MeshAcceptanceRequest: nativeV3MeshAcceptanceRequest,
+            nativeV3MeshAcceptanceReportingRequest:
+                nativeV3MeshAcceptanceReportingRequest
         )
     }
 
     static func isolationIdentifier(for arguments: [String]) -> String {
         guard arguments.contains(uiTestingArgument) else { return "ui-testing" }
+        let nativeV3MeshRequest = resolveNativeV3MeshAcceptanceRequest(
+            arguments: arguments,
+            isRealCaptureAcceptance: arguments.contains(realCaptureAcceptanceArgument)
+        )
+        switch nativeV3MeshRequest {
+        case let .participant(identifier):
+            return "native-v3-mesh-\(identifier)"
+        case .invalid:
+            return "native-v3-mesh-invalid"
+        case .none:
+            break
+        }
         guard !arguments.contains(realCaptureAcceptanceArgument) else {
             if let identifier = realCaptureStateIdentifier(in: arguments) {
                 return "real-capture-\(identifier)"
@@ -185,7 +252,8 @@ struct AppLaunchConfiguration: Equatable, Sendable {
 
         switch resolveUIScenarioRequest(
             arguments: arguments,
-            isRealCaptureAcceptance: false
+            isRealCaptureAcceptance: false,
+            nativeV3MeshAcceptanceRequest: .none
         ) {
         case .none:
             return "ui-testing"
@@ -198,9 +266,13 @@ struct AppLaunchConfiguration: Equatable, Sendable {
 
     private static func resolveUIScenarioRequest(
         arguments: [String],
-        isRealCaptureAcceptance: Bool
+        isRealCaptureAcceptance: Bool,
+        nativeV3MeshAcceptanceRequest: NativeV3MeshAcceptanceRequest
     ) -> DeterministicUIScenarioRequest {
-        guard !isRealCaptureAcceptance else { return .none }
+        guard !isRealCaptureAcceptance,
+              nativeV3MeshAcceptanceRequest == .none else {
+            return .none
+        }
         let scenarioArguments = arguments.filter {
             $0 == "--ui-scenario" || $0.hasPrefix(DeterministicUIScenario.argumentPrefix)
         }
@@ -217,6 +289,148 @@ struct AppLaunchConfiguration: Equatable, Sendable {
             return .invalid
         }
         return .scenario(scenario)
+    }
+
+    private static func resolveNativeV3MeshAcceptanceRequest(
+        arguments: [String],
+        isRealCaptureAcceptance: Bool
+    ) -> NativeV3MeshAcceptanceRequest {
+        let modeArguments = arguments.filter {
+            $0 == nativeV3MeshAcceptanceArgument
+        }
+        let acknowledgementArguments = arguments.filter {
+            $0 == nativeV3MeshAcceptanceAcknowledgementArgument
+        }
+        let participantArguments = arguments.filter {
+            $0 == "--native-v3-mesh-participant"
+                || $0.hasPrefix(nativeV3MeshParticipantArgumentPrefix)
+        }
+        let includesAnyMeshArgument = !modeArguments.isEmpty
+            || !acknowledgementArguments.isEmpty
+            || !participantArguments.isEmpty
+        guard includesAnyMeshArgument else { return .none }
+        guard !isRealCaptureAcceptance,
+              arguments.filter({ $0 == uiTestingArgument }).count == 1,
+              modeArguments.count == 1,
+              acknowledgementArguments.count == 1,
+              participantArguments.count == 1,
+              participantArguments[0].hasPrefix(nativeV3MeshParticipantArgumentPrefix) else {
+            return .invalid
+        }
+
+        let identifier = String(
+            participantArguments[0].dropFirst(
+                nativeV3MeshParticipantArgumentPrefix.count
+            )
+        )
+        guard isValidNativeV3MeshParticipantIdentifier(identifier) else {
+            return .invalid
+        }
+        return .participant(identifier)
+    }
+
+    private static func resolveNativeV3MeshAcceptanceReportingRequest(
+        arguments: [String],
+        temporaryDirectory: URL,
+        nativeV3MeshAcceptanceRequest: NativeV3MeshAcceptanceRequest
+    ) throws -> NativeV3MeshAcceptanceReportingRequest? {
+        let runArguments = arguments.filter {
+            $0 == "--native-v3-mesh-report-run"
+                || $0.hasPrefix(nativeV3MeshReportRunArgumentPrefix)
+        }
+        let directoryArguments = arguments.filter {
+            $0 == "--native-v3-mesh-report-directory"
+                || $0.hasPrefix(
+                    nativeV3MeshReportDirectoryArgumentPrefix
+                )
+        }
+        guard !runArguments.isEmpty || !directoryArguments.isEmpty else {
+            return nil
+        }
+        guard
+            case let .participant(processLabel) =
+                nativeV3MeshAcceptanceRequest,
+            runArguments.count == 1,
+            directoryArguments.count == 1,
+            runArguments[0].hasPrefix(
+                nativeV3MeshReportRunArgumentPrefix
+            ),
+            directoryArguments[0].hasPrefix(
+                nativeV3MeshReportDirectoryArgumentPrefix
+            )
+        else {
+            throw AppLaunchConfigurationError
+                .invalidNativeV3MeshAcceptanceRequest
+        }
+
+        let runIdentifier = String(
+            runArguments[0].dropFirst(
+                nativeV3MeshReportRunArgumentPrefix.count
+            )
+        )
+        let allowedRunCharacters = CharacterSet(
+            charactersIn:
+                "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-"
+        )
+        guard
+            (16...128).contains(runIdentifier.count),
+            runIdentifier.unicodeScalars.allSatisfy(
+                allowedRunCharacters.contains
+            )
+        else {
+            throw AppLaunchConfigurationError
+                .invalidNativeV3MeshAcceptanceRequest
+        }
+
+        let rawDirectory = String(
+            directoryArguments[0].dropFirst(
+                nativeV3MeshReportDirectoryArgumentPrefix.count
+            )
+        )
+        guard rawDirectory.hasPrefix("/") else {
+            throw AppLaunchConfigurationError
+                .invalidNativeV3MeshAcceptanceRequest
+        }
+        let directory = URL(
+            fileURLWithPath: rawDirectory,
+            isDirectory: true
+        ).standardizedFileURL
+        let temporaryRoot = temporaryDirectory.standardizedFileURL
+        let rootPath = temporaryRoot.path.hasSuffix("/")
+            ? temporaryRoot.path
+            : temporaryRoot.path + "/"
+        guard
+            directory.path != temporaryRoot.path,
+            directory.path.hasPrefix(rootPath)
+        else {
+            throw AppLaunchConfigurationError
+                .invalidNativeV3MeshAcceptanceRequest
+        }
+        return NativeV3MeshAcceptanceReportingRequest(
+            runIdentifier: runIdentifier,
+            processLabel: processLabel,
+            runDirectory: directory
+        )
+    }
+
+    private static func isValidNativeV3MeshParticipantIdentifier(
+        _ identifier: String
+    ) -> Bool {
+        let asciiLetters = CharacterSet(
+            charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
+        )
+        let asciiNumbers = CharacterSet(charactersIn: "0123456789")
+        let allowed = asciiLetters
+            .union(asciiNumbers)
+            .union(CharacterSet(charactersIn: "-"))
+        guard (1...32).contains(identifier.count),
+              let first = identifier.unicodeScalars.first,
+              let last = identifier.unicodeScalars.last,
+              asciiLetters.contains(first),
+              asciiLetters.union(asciiNumbers).contains(last) else {
+            return false
+        }
+        return identifier.unicodeScalars.allSatisfy(allowed.contains)
     }
 
     private static func resolveRealCaptureOverrides(
@@ -299,7 +513,9 @@ struct AppLaunchConfiguration: Equatable, Sendable {
     }
 
     var isUITesting: Bool { mode != .standard }
-    var completesOnboarding: Bool { mode == .realCaptureAcceptance }
+    var completesOnboarding: Bool {
+        mode == .realCaptureAcceptance || mode == .nativeV3MeshAcceptance
+    }
     var uiScenario: DeterministicUIScenario? {
         guard case let .scenario(scenario) = uiScenarioRequest else { return nil }
         return scenario
@@ -315,7 +531,19 @@ struct AppLaunchConfiguration: Equatable, Sendable {
     var allowsSystemIntegrations: Bool { mode == .standard }
 
     var resetsIsolatedStateOnLaunch: Bool {
-        !realCaptureOverrides.preservesIsolatedState
+        switch mode {
+        case .nativeV3MeshAcceptance:
+            false
+        case .standard, .uiTesting, .realCaptureAcceptance:
+            !realCaptureOverrides.preservesIsolatedState
+        }
+    }
+
+    var nativeV3MeshAcceptanceParticipantIdentifier: String? {
+        guard case let .participant(identifier) = nativeV3MeshAcceptanceRequest else {
+            return nil
+        }
+        return identifier
     }
 
     func makeUserDefaults() throws -> UserDefaults {
@@ -355,11 +583,14 @@ struct AppLaunchConfiguration: Equatable, Sendable {
 
 enum AppLaunchConfigurationError: LocalizedError, Equatable {
     case unavailableDefaultsSuite(String)
+    case invalidNativeV3MeshAcceptanceRequest
 
     var errorDescription: String? {
         switch self {
         case let .unavailableDefaultsSuite(suiteName):
             "Clip could not create its isolated UI-test defaults suite \(suiteName)."
+        case .invalidNativeV3MeshAcceptanceRequest:
+            "Clip rejected an invalid native-v3 mesh acceptance launch request."
         }
     }
 }

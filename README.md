@@ -5,48 +5,48 @@ Clip is a native Apple-Silicon macOS menu-bar recorder for short screen clips. I
 > Select an area or application, record, trim, then drag or copy an MP4.
 
 Recordings remain local: Clip has no account, cloud upload, analytics, or AI
-processing. Live Share is a separate, explicit network mode that sends transient
-screen frames and optional system audio to viewers over WebRTC. Clip's in-repo
-Go service advertises rooms, serves the browser viewer, and relays only bounded
-end-to-end-encrypted signaling; Live Share never writes media to History. See
+processing. Live Share is a separate, explicit native collaboration mode:
+every admitted Clip participant can publish up to four sources while receiving
+every other participant over a complete peer-to-peer WebRTC mesh. Clip's
+in-repo Go service provides only bounded opaque rendezvous and ICE discovery;
+it never receives room authority, participant state, source metadata, or
+media. Live Share never writes media to History. See
 [spec.md](spec.md) for the product contract,
 [ARCHITECTURE.md](ARCHITECTURE.md) for recording boundaries, and
-[docs/live-share-architecture.md](docs/live-share-architecture.md) for the
-network protocol and trust boundary.
+[docs/native-participant-mesh-progress.md](docs/native-participant-mesh-progress.md)
+for the native-v3 protocol, topology, and evidence boundary. The service's
+protocol-neutral bootstrap boundary is documented in
+[docs/clip-native-rendezvous-v3.md](docs/clip-native-rendezvous-v3.md).
 
-Live Share can send up to four application windows or one fullscreen display.
+Each participant can send up to four application windows or one fullscreen
+display.
 It uses native Swift/AppKit/SwiftUI and ScreenCaptureKit, with a pinned native
 WebRTC framework. VP8 remains the default. The live codec picker selects a
 preference: H.264 and VP8 are exact choices, VP9 may fall back to VP8, and AV1
-may fall back to VP9 and then VP8. Each browser viewer negotiates independently,
-so the actual outbound RTP codec shown in Statistics is authoritative. H.264
+may fall back to VP9 and then VP8. Each participant pair negotiates
+independently, so the actual directional RTP codec shown in Statistics is
+authoritative. H.264
 uses hardware encoding and caps oversized capture geometry; software VP8, VP9
 profile 0, and AV1 retain native capture geometry. AV1 can consume substantially
-more CPU. SDP, ICE, access-code proofs, stream metadata, and control state are
-encrypted between the browser and Clip before reaching the signaling service.
-Once the reliable `clip-control-v1` DataChannel opens, signaling for that viewer
-closes and subsequent control and renegotiation are peer-to-peer. A configured
-TURN relay may still carry encrypted WebRTC traffic when a direct route is not
-possible.
+more CPU. Admission, membership, targeted SDP/ICE, source state, diagnostics,
+and collaboration events use the signed and encrypted native-v3 protocol.
+Established pairs use one reliable ordered native-v3 DataChannel. A configured
+TURN relay may carry encrypted WebRTC traffic when a direct route is not
+possible, but it gains no room authority.
 
-The pointer-free acceptance lane builds the in-repo server and viewer, exercises
-the encrypted signaling protocol and browser cryptography on loopback, and runs
-the native package suites without opening the installed app or controlling the
-pointer. Codec tests keep a browser viewer, session, and set of tracks alive
-while switching H.264 → VP8 → VP9 → AV1 → H.264, accept only the
-documented per-viewer fallbacks, and verify the codec reported by outbound
-WebRTC statistics. Real desktop Live Share capture,
-overlay exclusion, remote Internet/TURN traversal, soak, and lifecycle stress
-remain separate controlled gates; the stable-signed, sandboxed Release DMG has
-passed its clean-source packaging gate. See the [Live Share progress
-board](docs/live-share-progress.md). Live Share system audio defaults to Off and
-persists independently from recording settings. Window sharing captures audio
-at application scope for the unique owning apps; Fullscreen captures system
-audio while excluding Clip. ScreenCaptureKit's 48 kHz stereo samples
-feed one stable Opus WebRTC send track through Clip's native bridge. There is no
-microphone sharing. The embedded viewer attaches the received audio track and
-provides mute and volume controls, with an explicit click-to-enable path when a
-browser blocks autoplay. Thirty FPS is the supported default, 15 FPS is
+The pointer-free Live Share lane builds the opaque rendezvous service, exercises
+native-v3 admission, membership, two/three/four-participant mesh topology,
+leadership, collaboration, WebRTC, and presentation state without opening the
+installed app or controlling the pointer. Real ScreenCaptureKit sharing,
+remote Internet/TURN traversal, four signed GUI processes, soak, and physical
+audio remain separate controlled gates. See the [mesh progress
+board](docs/native-participant-mesh-progress.md). Live Share system audio
+defaults to Off and persists independently from recording settings. Window
+sharing captures audio at application scope for the owning apps; Fullscreen
+captures system audio while excluding Clip and any user-selected applications.
+Each participant sends at most one stable 48 kHz stereo Opus track, and every
+receiver has independent mute and volume controls per remote participant.
+There is no microphone sharing. Thirty FPS is the supported default, 15 FPS is
 selectable, and 60 FPS is an optional capability rather than a release
 requirement.
 
@@ -63,9 +63,9 @@ Accessibility permission.
 - No paid Apple Developer membership is required; permission-free builds need
   no Team ID, while a free Personal Team can provide stable signing for real
   permission-backed testing
-- Go 1.25 or newer and Node.js are required only for the in-repository Live
-  Share server/viewer acceptance lane; Docker Buildx is optional for publishing
-  the self-hosted service image
+- Go 1.25 or newer is required only for the in-repository native rendezvous
+  acceptance lane; Docker Buildx is optional for publishing the self-hosted
+  service image
 
 If a newly updated Xcode reports that first-launch components are missing, initialize it once from an administrator account:
 
@@ -97,7 +97,7 @@ The repository keeps generated build output under `.build/`.
 # Permission-free objective master/Crisp/Compact fidelity gate
 ./scripts/run-quality-acceptance.sh
 
-# In-repo encrypted Live Share server/viewer and native transport acceptance
+# In-repo native-v3 mesh and opaque rendezvous acceptance
 ./scripts/run-live-share-acceptance.sh
 
 # Opt-in Release benchmark for Preview readiness and Compact export
@@ -125,7 +125,7 @@ The repository keeps generated build output under `.build/`.
 
 `verify-release.sh` is the single unattended release-candidate command. It
 combines the strict source gate, package and app unit tests, deterministic media
-acceptance, in-repository Live Share server/viewer/WebKit acceptance, Release
+acceptance, in-repository native-v3 mesh/rendezvous acceptance, Release
 packaging, read-only DMG mounting/inspection, signature and entitlement checks,
 and a SHA-256 checksum. It never starts XCTest UI
 automation; the pointer-driving lanes remain separate and explicitly opt-in.
@@ -155,11 +155,11 @@ system-audio-only, and combined recording. Both wrappers require their explicit
 permission-and-pointer acknowledgement; the fixture contains synthetic content
 only, and seeing it during a run is expected.
 
-## Run the Live Share service
+## Run the Live Share rendezvous service
 
-The complete privacy-minimal signaling service and browser viewer live in the
-top-level [`server`](server) folder. They do not depend on another checkout.
-For local development:
+The bounded opaque native rendezvous service lives in the top-level
+[`server`](server) folder. It does not serve a viewer and does not understand
+admission, membership, sources, collaboration, or media. For local development:
 
 ```bash
 cd server
@@ -168,15 +168,16 @@ go run ./cmd/clip-live-share-server
 
 The default address is `http://localhost:8080`. Set that address in Clip's Live
 Share Settings, then use **Test Connection**. The server keeps room
-advertisements in memory, exposes process-only `/healthz` and `/version`
-endpoints, and serves deployment capabilities at
-`/.well-known/clip-live-share`.
+leases in memory, exposes `/healthz` and `/version`, and serves native
+rendezvous bounds plus STUN/TURN configuration at
+`/.well-known/clip-native-rendezvous`.
+See [the native rendezvous v3 contract](docs/clip-native-rendezvous-v3.md) for
+the exact owner/candidate HTTP and WebSocket surface.
 
 For a self-hosted deployment, terminate TLS at a reverse proxy and expose the
-service through HTTPS/WSS. A single server instance is intentional for v1; a
-restart clears its in-memory room registry. Existing P2P peers stay connected,
-but new admissions require a newly allocated room. Build the non-root container
-locally with:
+service through HTTPS/WSS. A restart clears in-memory rendezvous leases.
+Existing P2P peers stay connected, but new admissions require a new advertised
+invite. Build the non-root container locally with:
 
 ```bash
 cd server
@@ -188,18 +189,6 @@ docker run --rm -p 8080:8080 clip-live-share-server
 `linux/arm64` images through Docker Buildx. Full configuration, including
 origin policy, leases, resource ceilings, and STUN/TURN capabilities, is in
 [`server/README.md`](server/README.md).
-
-The viewer link contains the room's ephemeral P-256 public key and a mandatory
-random 256-bit join capability in the URL fragment
-(`#v=1&key=...&join=...`). Browsers do not send URL fragments in HTTP or
-WebSocket requests. The public key derives per-viewer AES-GCM signaling keys;
-the private join capability produces a route-bound admission proof. Therefore
-the room name, public key, and all other server-visible metadata are
-insufficient for the service to join as a viewer. The complete link is a bearer
-invitation. Viewer HTML is trusted as part of the chosen deployment: an
-operator who replaces that JavaScript can read `location.hash`. Users who do
-not trust the hosted viewer can join through native Clip or run the same server
-and embedded viewer themselves.
 
 ## Create the local DMG
 

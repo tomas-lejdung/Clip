@@ -9,6 +9,11 @@ public enum ClipNativeRendezvousLimits {
     public static let maximumOpaquePayloadBytes = 196_000
     public static let maximumPendingRoutes = 8
     public static let maximumHTTPResponseBytes = 65_536
+    public static let maximumICEServers = 32
+    public static let maximumICEURLsPerServer = 16
+    public static let maximumICEURLBytes = 2_048
+    public static let maximumICEUsernameBytes = 1_024
+    public static let maximumICECredentialBytes = 4_096
 }
 
 public enum ClipNativeRendezvousError: Error, Equatable, Sendable,
@@ -30,7 +35,7 @@ public enum ClipNativeRendezvousError: Error, Equatable, Sendable,
     case rendezvousConflict
     case rendezvousNotFound
     case rendezvousNotLive
-    case hostOffline
+    case ownerOffline
     case connectionAlreadyActive
     case connectionFailed
     case notConnected
@@ -50,7 +55,7 @@ public enum ClipNativeRendezvousError: Error, Equatable, Sendable,
         case .invalidOwnerToken:
             "The native rendezvous owner token must contain 32 random bytes."
         case .invalidCapabilities, .incompatibleServer:
-            "The server does not support Clip native rendezvous API v1."
+            "The server does not support Clip native rendezvous API v3."
         case .invalidResponse:
             "The native rendezvous server returned an invalid response."
         case .responseTooLarge:
@@ -72,9 +77,9 @@ public enum ClipNativeRendezvousError: Error, Equatable, Sendable,
         case .rendezvousNotFound:
             "The native rendezvous identifier is offline or unknown."
         case .rendezvousNotLive:
-            "The friend is not currently sharing."
-        case .hostOffline:
-            "The native rendezvous host is not connected."
+            "The native-v3 room is not currently accepting candidate connections."
+        case .ownerOffline:
+            "The native rendezvous owner is not connected."
         case .connectionAlreadyActive:
             "A native rendezvous transport is already active."
         case .connectionFailed:
@@ -158,39 +163,94 @@ public enum ClipNativeRendezvousState: String, Codable, Equatable, Sendable {
     case active
 }
 
+/// Bounded STUN/TURN configuration advertised by the native rendezvous
+/// service. It is transport configuration only: the service never gains room
+/// authority or access to the encrypted WebRTC payload.
+public struct ClipNativeRendezvousICEServer: Equatable, Sendable {
+    public let urls: [String]
+    public let username: String?
+    public let credential: String?
+
+    public init(
+        urls: [String],
+        username: String? = nil,
+        credential: String? = nil
+    ) throws {
+        guard
+            (1...ClipNativeRendezvousLimits.maximumICEURLsPerServer)
+                .contains(urls.count),
+            (username?.utf8.count ?? 0)
+                <= ClipNativeRendezvousLimits.maximumICEUsernameBytes,
+            (credential?.utf8.count ?? 0)
+                <= ClipNativeRendezvousLimits.maximumICECredentialBytes
+        else {
+            throw ClipNativeRendezvousError.invalidCapabilities
+        }
+        for value in urls {
+            guard
+                !value.isEmpty,
+                value.utf8.count
+                    <= ClipNativeRendezvousLimits.maximumICEURLBytes,
+                let components = URLComponents(string: value),
+                let scheme = components.scheme?.lowercased(),
+                ["stun", "stuns", "turn", "turns"].contains(scheme)
+            else {
+                throw ClipNativeRendezvousError.invalidCapabilities
+            }
+        }
+        self.urls = urls
+        self.username = username
+        self.credential = credential
+    }
+}
+
 public struct ClipNativeRendezvousCapabilities: Equatable, Sendable {
     public let apiVersion: Int
     public let messageVersion: Int
     public let serverVersion: String
     public let rendezvousPathTemplate: String
-    public let hostWebSocketPathTemplate: String
-    public let viewerWebSocketPathTemplate: String
+    public let ownerWebSocketPathTemplate: String
+    public let candidateWebSocketPathTemplate: String
     public let maximumMessageBytes: Int
     public let maximumDescriptorBytes: Int
     public let maximumOpaquePayloadBytes: Int
     public let maximumPendingRoutes: Int
     public let maximumRendezvous: Int
+    public let iceServers: [ClipNativeRendezvousICEServer]
+
+    public var webRTCICEServers: [WebRTCICEServerConfiguration] {
+        iceServers.map {
+            WebRTCICEServerConfiguration(
+                urlStrings: $0.urls,
+                username: $0.username,
+                credential: $0.credential
+            )
+        }
+    }
 
     public init(
-        apiVersion: Int = 1,
-        messageVersion: Int = 2,
+        apiVersion: Int = 3,
+        messageVersion: Int = 3,
         serverVersion: String,
-        rendezvousPathTemplate: String = "/api/native/v1/rendezvous/{rendezvous}",
-        hostWebSocketPathTemplate: String = "/api/native/v1/rendezvous/{rendezvous}/host",
-        viewerWebSocketPathTemplate: String = "/api/native/v1/rendezvous/{rendezvous}/viewer",
+        rendezvousPathTemplate: String = "/api/native/v3/rendezvous/{rendezvous}",
+        ownerWebSocketPathTemplate: String = "/api/native/v3/rendezvous/{rendezvous}/owner",
+        candidateWebSocketPathTemplate: String = "/api/native/v3/rendezvous/{rendezvous}/candidate",
         maximumMessageBytes: Int = ClipNativeRendezvousLimits.maximumMessageBytes,
         maximumDescriptorBytes: Int = ClipNativeRendezvousLimits.maximumDescriptorBytes,
         maximumOpaquePayloadBytes: Int = ClipNativeRendezvousLimits.maximumOpaquePayloadBytes,
         maximumPendingRoutes: Int = ClipNativeRendezvousLimits.maximumPendingRoutes,
-        maximumRendezvous: Int = 1_024
+        maximumRendezvous: Int = 1_024,
+        iceServers: [ClipNativeRendezvousICEServer] = [
+            try! .init(urls: ["stun:stun.l.google.com:19302"])
+        ]
     ) throws {
-        guard apiVersion == 1,
-              messageVersion == 2,
+        guard apiVersion == 3,
+              messageVersion == 3,
               !serverVersion.isEmpty,
               serverVersion.utf8.count <= 128,
               Self.validTemplate(rendezvousPathTemplate, suffix: nil),
-              Self.validTemplate(hostWebSocketPathTemplate, suffix: "/host"),
-              Self.validTemplate(viewerWebSocketPathTemplate, suffix: "/viewer"),
+              Self.validTemplate(ownerWebSocketPathTemplate, suffix: "/owner"),
+              Self.validTemplate(candidateWebSocketPathTemplate, suffix: "/candidate"),
               (1...ClipNativeRendezvousLimits.maximumMessageBytes)
                 .contains(maximumMessageBytes),
               (1...ClipNativeRendezvousLimits.maximumDescriptorBytes)
@@ -199,7 +259,9 @@ public struct ClipNativeRendezvousCapabilities: Equatable, Sendable {
                 .contains(maximumOpaquePayloadBytes),
               (1...ClipNativeRendezvousLimits.maximumPendingRoutes)
                 .contains(maximumPendingRoutes),
-              (1...16_384).contains(maximumRendezvous)
+              (1...16_384).contains(maximumRendezvous),
+              (1...ClipNativeRendezvousLimits.maximumICEServers)
+                .contains(iceServers.count)
         else {
             throw ClipNativeRendezvousError.invalidCapabilities
         }
@@ -207,13 +269,14 @@ public struct ClipNativeRendezvousCapabilities: Equatable, Sendable {
         self.messageVersion = messageVersion
         self.serverVersion = serverVersion
         self.rendezvousPathTemplate = rendezvousPathTemplate
-        self.hostWebSocketPathTemplate = hostWebSocketPathTemplate
-        self.viewerWebSocketPathTemplate = viewerWebSocketPathTemplate
+        self.ownerWebSocketPathTemplate = ownerWebSocketPathTemplate
+        self.candidateWebSocketPathTemplate = candidateWebSocketPathTemplate
         self.maximumMessageBytes = maximumMessageBytes
         self.maximumDescriptorBytes = maximumDescriptorBytes
         self.maximumOpaquePayloadBytes = maximumOpaquePayloadBytes
         self.maximumPendingRoutes = maximumPendingRoutes
         self.maximumRendezvous = maximumRendezvous
+        self.iceServers = iceServers
     }
 
     public func rendezvousURL(for target: ClipNativeRendezvousTarget) throws -> URL {
@@ -224,12 +287,12 @@ public struct ClipNativeRendezvousCapabilities: Equatable, Sendable {
         try rendezvousURL(for: target).appending(path: "session")
     }
 
-    public func hostWebSocketURL(for target: ClipNativeRendezvousTarget) throws -> URL {
-        try Self.resolve(hostWebSocketPathTemplate, target: target, webSocket: true)
+    public func ownerWebSocketURL(for target: ClipNativeRendezvousTarget) throws -> URL {
+        try Self.resolve(ownerWebSocketPathTemplate, target: target, webSocket: true)
     }
 
-    public func viewerWebSocketURL(for target: ClipNativeRendezvousTarget) throws -> URL {
-        try Self.resolve(viewerWebSocketPathTemplate, target: target, webSocket: true)
+    public func candidateWebSocketURL(for target: ClipNativeRendezvousTarget) throws -> URL {
+        try Self.resolve(candidateWebSocketPathTemplate, target: target, webSocket: true)
     }
 
     private static func validTemplate(_ value: String, suffix: String?) -> Bool {
@@ -289,8 +352,8 @@ public struct ClipNativeRendezvousStatus: Equatable, Sendable {
 }
 
 public enum ClipNativeRendezvousRole: Equatable, Sendable {
-    case host
-    case viewer
+    case owner
+    case candidate
 }
 
 public enum ClipNativeRendezvousDisconnectReason: Equatable, Sendable {
@@ -301,8 +364,8 @@ public enum ClipNativeRendezvousDisconnectReason: Equatable, Sendable {
 public enum ClipNativeRendezvousEvent: Equatable, Sendable {
     case connecting(role: ClipNativeRendezvousRole, reconnectAttempt: Int)
     case connected(role: ClipNativeRendezvousRole, reconnectAttempt: Int)
-    case hostPreparing(reconnectAttempt: Int)
-    case hostActive
+    case ownerPreparing(reconnectAttempt: Int)
+    case ownerActive
     case routeOpened(routeID: String, descriptor: Data?)
     case relay(routeID: String, payload: Data, sequence: UInt64)
     case routeClosed(routeID: String, reason: String?)
@@ -354,7 +417,7 @@ enum ClipNativeRendezvousWireType: String, Codable {
     case relay = "native-relay"
     case routeClosed = "native-route-closed"
     case closeRoute = "native-close-route"
-    case hostUnavailable = "native-host-unavailable"
+    case ownerUnavailable = "native-owner-unavailable"
     case error = "native-error"
 }
 
@@ -370,7 +433,7 @@ struct ClipNativeRendezvousWireMessage: Codable, Equatable {
 
     init(
         type: ClipNativeRendezvousWireType,
-        version: Int = 2,
+        version: Int = 3,
         routeID: String? = nil,
         sequence: UInt64? = nil,
         payload: String? = nil,
@@ -439,7 +502,7 @@ enum ClipNativeRendezvousWireCodec {
         case .relay: ["type", "version", "routeId", "sequence", "payload"]
         case .routeClosed: ["type", "version", "routeId", "reason"]
         case .closeRoute: ["type", "version", "routeId", "reason"]
-        case .hostUnavailable: ["type", "version"]
+        case .ownerUnavailable: ["type", "version"]
         case .error: ["type", "version", "code", "message"]
         }
         guard Set(object.keys).isSubset(of: allowed) else {
@@ -467,12 +530,12 @@ enum ClipNativeRendezvousWireCodec {
                   message.message == nil
             else { throw ClipNativeRendezvousError.invalidMessage }
             switch role {
-            case .host:
+            case .owner:
                 guard message.payload == nil else {
                     throw ClipNativeRendezvousError.invalidMessage
                 }
                 decodedPayload = nil
-            case .viewer:
+            case .candidate:
                 guard let value = message.payload,
                       let descriptor = ClipNativeRendezvousBase64URL.decodeCanonical(
                         value,
@@ -508,7 +571,7 @@ enum ClipNativeRendezvousWireCodec {
             else { throw ClipNativeRendezvousError.invalidMessage }
             decodedPayload = nil
 
-        case .hostUnavailable:
+        case .ownerUnavailable:
             guard message.routeID == nil,
                   message.sequence == nil,
                   message.payload == nil,

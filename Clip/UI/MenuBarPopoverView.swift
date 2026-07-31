@@ -1,5 +1,6 @@
 import AppKit
 import ClipCore
+import ClipLiveShare
 import CoreGraphics
 import Foundation
 import SwiftUI
@@ -96,6 +97,45 @@ struct MenuBarAudioState: Equatable, Sendable {
     }
 }
 
+enum MenuBarNativeV3InviteEntry {
+    static func parse(_ value: String) -> ClipLiveShareNativeV3Invite? {
+        let trimmed = value.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        )
+        guard !trimmed.isEmpty,
+              let url = URL(string: trimmed) else {
+            return nil
+        }
+        return try? ClipLiveShareNativeV3Invite(url: url)
+    }
+}
+
+struct MenuBarNativeV3JoinRequest: Equatable, Sendable,
+    CustomStringConvertible, CustomDebugStringConvertible
+{
+    let invite: ClipLiveShareNativeV3Invite
+    let accessWord: String?
+
+    init(
+        invite: ClipLiveShareNativeV3Invite,
+        accessWord: String?
+    ) {
+        self.invite = invite
+        let normalized = accessWord.map(
+            ClipLiveShareNativeV3AccessWordProof.normalize
+        )
+        self.accessWord = normalized?.isEmpty == false ? normalized : nil
+    }
+
+    var description: String {
+        "MenuBarNativeV3JoinRequest("
+            + "invite: <redacted>, "
+            + "accessWord: \(accessWord == nil ? "<none>" : "<redacted>"))"
+    }
+
+    var debugDescription: String { description }
+}
+
 @MainActor
 final class MenuBarPopoverModel: ObservableObject {
     static let recentRecordingLimit = 3
@@ -178,7 +218,8 @@ final class MenuBarPopoverModel: ObservableObject {
 
 @MainActor
 struct MenuBarActions {
-    let startLiveShare: () -> Void
+    let createNativeV3Room: () -> Void
+    let joinNativeV3Invite: (MenuBarNativeV3JoinRequest) -> Void
     let captureArea: () -> Void
     let lastArea: () -> Void
     let fullscreen: () -> Void
@@ -195,7 +236,10 @@ struct MenuBarActions {
     let quit: () -> Void
 
     init(
-        startLiveShare: @escaping () -> Void = {},
+        createNativeV3Room: @escaping () -> Void = {},
+        joinNativeV3Invite: @escaping (
+            MenuBarNativeV3JoinRequest
+        ) -> Void = { _ in },
         captureArea: @escaping () -> Void,
         lastArea: @escaping () -> Void,
         fullscreen: @escaping () -> Void,
@@ -211,7 +255,8 @@ struct MenuBarActions {
         checkForUpdates: @escaping () -> Void = {},
         quit: @escaping () -> Void
     ) {
-        self.startLiveShare = startLiveShare
+        self.createNativeV3Room = createNativeV3Room
+        self.joinNativeV3Invite = joinNativeV3Invite
         self.captureArea = captureArea
         self.lastArea = lastArea
         self.fullscreen = fullscreen
@@ -233,9 +278,11 @@ struct MenuBarPopoverView: View {
     static let contentWidth = ClipPopoverDesign.width
     /// Fallback used only if synchronous SwiftUI fitting-size measurement is
     /// unavailable.
-    static let contentSize = CGSize(width: contentWidth, height: 900)
+    static let contentSize = CGSize(width: contentWidth, height: 980)
 
     @StateObject private var model: MenuBarPopoverModel
+    @State private var nativeV3InviteEntry = ""
+    @State private var nativeV3AccessWord = ""
     let actions: MenuBarActions
     private let maximumHeight: CGFloat
     private let onContentHeightChange: (CGFloat) -> Void
@@ -247,23 +294,6 @@ struct MenuBarPopoverView: View {
         onContentHeightChange: @escaping (CGFloat) -> Void = { _ in }
     ) {
         _model = StateObject(wrappedValue: model)
-        self.actions = actions
-        self.maximumHeight = maximumHeight
-        self.onContentHeightChange = onContentHeightChange
-    }
-
-    /// Compatibility initializer for the coordinator while it adopts the live model.
-    init(
-        actions: MenuBarActions,
-        maximumHeight: CGFloat = 10_000,
-        onContentHeightChange: @escaping (CGFloat) -> Void = { _ in }
-    ) {
-        _model = StateObject(
-            wrappedValue: MenuBarPopoverModel(
-                isLastAreaAvailable: true,
-                isFullscreenAvailable: true
-            )
-        )
         self.actions = actions
         self.maximumHeight = maximumHeight
         self.onContentHeightChange = onContentHeightChange
@@ -283,6 +313,7 @@ struct MenuBarPopoverView: View {
                 version
             },
             content: {
+                liveShareSection
                 captureSection
                 if let preparedDisplay = model.preparedDisplay {
                     preparedTargetSection(preparedDisplay)
@@ -367,16 +398,105 @@ struct MenuBarPopoverView: View {
                     }
                     .accessibilityLabel("\(display.name), \(display.resolution)")
                 }
-
-                ClipPopoverRowDivider()
-                actionRow(
-                    String(localized: "Live Share"),
-                    systemImage: "dot.radiowaves.left.and.right",
-                    identifier: "clip.menu.liveShare",
-                    action: actions.startLiveShare
-                )
             }
         }
+    }
+
+    private var liveShareSection: some View {
+        ClipPopoverSection(String(localized: "Live Share")) {
+            VStack(spacing: 0) {
+                actionRow(
+                    String(localized: "Create Room"),
+                    systemImage: "person.2.badge.plus",
+                    identifier: "clip.menu.liveShare.createRoom",
+                    action: actions.createNativeV3Room
+                )
+
+                ClipPopoverRowDivider()
+
+                VStack(alignment: .leading, spacing: 7) {
+                    Text(String(localized: "Join Invite"))
+                        .font(.subheadline.weight(.medium))
+
+                    HStack(spacing: 8) {
+                        TextField(
+                            String(localized: "Paste a Clip room invite"),
+                            text: $nativeV3InviteEntry
+                        )
+                        .textFieldStyle(.roundedBorder)
+                        .lineLimit(1)
+                        .accessibilityIdentifier(
+                            "clip.menu.liveShare.invite"
+                        )
+                        .onSubmit(joinNativeV3Invite)
+
+                        ClipPopoverButton(
+                            String(localized: "Join"),
+                            systemImage: "arrow.right",
+                            prominence: .primary,
+                            isEnabled: parsedNativeV3Invite != nil,
+                            accessibilityIdentifier:
+                                "clip.menu.liveShare.join",
+                            action: joinNativeV3Invite
+                        )
+                    }
+
+                    SecureField(
+                        String(localized: "Access Word (optional)"),
+                        text: $nativeV3AccessWord
+                    )
+                    .textFieldStyle(.roundedBorder)
+                    .lineLimit(1)
+                    .accessibilityIdentifier(
+                        "clip.menu.liveShare.accessWord"
+                    )
+                    .onSubmit(joinNativeV3Invite)
+
+                    Text(inviteEntryGuidance)
+                        .font(.caption2)
+                        .foregroundStyle(
+                            nativeV3InviteEntry.isEmpty
+                                || parsedNativeV3Invite != nil
+                                ? AnyShapeStyle(.secondary)
+                                : AnyShapeStyle(.red)
+                        )
+                        .accessibilityIdentifier(
+                            "clip.menu.liveShare.inviteStatus"
+                        )
+                }
+                .padding(
+                    .horizontal,
+                    ClipPopoverDesign.rowHorizontalPadding
+                )
+                .padding(.vertical, ClipPopoverDesign.rowVerticalPadding)
+            }
+        }
+    }
+
+    private var parsedNativeV3Invite: ClipLiveShareNativeV3Invite? {
+        MenuBarNativeV3InviteEntry.parse(nativeV3InviteEntry)
+    }
+
+    private var inviteEntryGuidance: String {
+        if nativeV3InviteEntry.isEmpty {
+            return String(
+                localized:
+                    "Paste the complete invite from another Clip participant."
+            )
+        }
+        return parsedNativeV3Invite == nil
+            ? String(localized: "This is not a valid native Clip room invite.")
+            : String(localized: "Ready to join this room.")
+    }
+
+    private func joinNativeV3Invite() {
+        guard let invite = parsedNativeV3Invite else { return }
+        actions.joinNativeV3Invite(
+            MenuBarNativeV3JoinRequest(
+                invite: invite,
+                accessWord: nativeV3AccessWord
+            )
+        )
     }
 
     private func preparedTargetSection(_ display: MenuBarDisplayRow) -> some View {

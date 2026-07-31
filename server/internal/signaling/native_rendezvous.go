@@ -17,7 +17,7 @@ var (
 	ErrNativeRendezvousConflict = errors.New("native rendezvous is already owned")
 	ErrNativeUnauthorized       = errors.New("native rendezvous owner capability was rejected")
 	ErrNativeCapacity           = errors.New("native rendezvous capacity reached")
-	ErrNativeHostUnavailable    = errors.New("native rendezvous host is unavailable")
+	ErrNativeOwnerUnavailable   = errors.New("native rendezvous owner is unavailable")
 	ErrNativeNotLive            = errors.New("native rendezvous is not live")
 )
 
@@ -60,36 +60,36 @@ type NativeCleanupResult struct {
 type nativeRendezvous struct {
 	ownerHash  [32]byte
 	expiresAt  time.Time
-	host       *nativeHost
+	owner      *nativeOwner
 	active     bool
 	descriptor string
 	routes     map[string]*nativeRoute
 }
 
-type nativeHost struct {
+type nativeOwner struct {
 	id   string
 	peer Peer
 }
 
 type nativeRoute struct {
-	id             string
-	viewer         Peer
-	viewerSequence uint64
-	hostSequence   uint64
-	lastActivity   time.Time
-	viewerBudget   relayBurstBudget
-	hostBudget     relayBurstBudget
+	id                string
+	candidate         Peer
+	candidateSequence uint64
+	ownerSequence     uint64
+	lastActivity      time.Time
+	candidateBudget   relayBurstBudget
+	ownerBudget       relayBurstBudget
 }
 
-// NativeRendezvousHub owns the complete native-friend rendezvous lifecycle
-// under one lock. That makes active-state transitions and viewer-route opening
-// linearizable: after a stop returns, no route created from the old signed
-// descriptor can remain or be admitted.
+// NativeRendezvousHub owns the complete native-v3 bootstrap rendezvous
+// lifecycle under one lock. That makes active-state transitions and candidate
+// route opening linearizable: after a stop returns, no route created from the
+// old signed descriptor can remain or be admitted.
 //
 // The service stores only an owner-token hash, an opaque high-entropy ID, an
 // opaque signed descriptor, connection handles, and temporary routing state.
-// Friend names, passwords, identity keys, media state, and established viewer
-// truth remain client-side.
+// Access Words, identities, membership, leadership, media state, and
+// established mesh truth remain client-side.
 type NativeRendezvousHub struct {
 	mu      sync.Mutex
 	entries map[string]*nativeRendezvous
@@ -107,7 +107,7 @@ func NewNativeRendezvousHub(configuration NativeRendezvousConfiguration) *Native
 		configuration.MaximumRendezvous = 1_024
 	}
 	if configuration.MaximumPendingRoutes <= 0 {
-		configuration.MaximumPendingRoutes = protocol.MaximumPendingViewersPerRoom
+		configuration.MaximumPendingRoutes = protocol.MaximumPendingRoutes
 	}
 	if configuration.RouteIdleTimeout <= 0 {
 		configuration.RouteIdleTimeout = 2 * time.Minute
@@ -148,7 +148,7 @@ func (h *NativeRendezvousHub) Advertise(rendezvousID string, ownerHash [32]byte)
 			if !sameNativeOwner(existing.ownerHash, ownerHash) {
 				return NativeAdvertisement{Lease: h.config.LeaseDuration}, ErrNativeRendezvousConflict
 			}
-			if existing.host == nil {
+			if existing.owner == nil {
 				existing.expiresAt = now.Add(h.config.LeaseDuration)
 			}
 			return NativeAdvertisement{Lease: h.config.LeaseDuration}, nil
@@ -195,9 +195,9 @@ func (h *NativeRendezvousHub) Authenticate(rendezvousID string, ownerHash [32]by
 	return nil
 }
 
-func (h *NativeRendezvousHub) AttachHost(rendezvousID string, ownerHash [32]byte, hostID string, peer Peer) error {
-	if hostID == "" || peer == nil {
-		return ErrNativeHostUnavailable
+func (h *NativeRendezvousHub) AttachOwner(rendezvousID string, ownerHash [32]byte, ownerID string, peer Peer) error {
+	if ownerID == "" || peer == nil {
+		return ErrNativeOwnerUnavailable
 	}
 	h.mu.Lock()
 	entry, found := h.liveEntryLocked(rendezvousID, h.config.Now())
@@ -209,45 +209,45 @@ func (h *NativeRendezvousHub) AttachHost(rendezvousID string, ownerHash [32]byte
 		h.mu.Unlock()
 		return ErrNativeUnauthorized
 	}
-	oldHost := entry.host
+	oldOwner := entry.owner
 	oldRoutes := nativeRoutes(entry.routes)
-	entry.host = &nativeHost{id: hostID, peer: peer}
+	entry.owner = &nativeOwner{id: ownerID, peer: peer}
 	entry.active = false
 	entry.descriptor = ""
 	entry.expiresAt = time.Time{}
 	entry.routes = make(map[string]*nativeRoute)
 	h.mu.Unlock()
 
-	if oldHost != nil && oldHost.peer != peer {
-		oldHost.peer.Close(CloseGoingAway, "native host replaced")
+	if oldOwner != nil && oldOwner.peer != peer {
+		oldOwner.peer.Close(CloseGoingAway, "native owner replaced")
 	}
-	closeNativeViewers(oldRoutes, "native host replaced")
+	closeNativeCandidates(oldRoutes, "native owner replaced")
 	return nil
 }
 
-func (h *NativeRendezvousHub) RenewHost(rendezvousID, hostID string) bool {
+func (h *NativeRendezvousHub) RenewOwner(rendezvousID, ownerID string) bool {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	entry, found := h.entries[rendezvousID]
-	return found && entry.host != nil && entry.host.id == hostID
+	return found && entry.owner != nil && entry.owner.id == ownerID
 }
 
-func (h *NativeRendezvousHub) DetachHost(rendezvousID, hostID string) bool {
+func (h *NativeRendezvousHub) DetachOwner(rendezvousID, ownerID string) bool {
 	h.mu.Lock()
 	entry, found := h.entries[rendezvousID]
-	if !found || entry.host == nil || entry.host.id != hostID {
+	if !found || entry.owner == nil || entry.owner.id != ownerID {
 		h.mu.Unlock()
 		return false
 	}
 	routes := nativeRoutes(entry.routes)
-	entry.host = nil
+	entry.owner = nil
 	entry.active = false
 	entry.descriptor = ""
 	entry.routes = make(map[string]*nativeRoute)
 	entry.expiresAt = h.config.Now().Add(h.config.ReconnectGrace)
 	h.mu.Unlock()
 
-	closeNativeViewers(routes, "native host unavailable")
+	closeNativeCandidates(routes, "native owner unavailable")
 	return true
 }
 
@@ -265,18 +265,18 @@ func (h *NativeRendezvousHub) Activate(rendezvousID string, ownerHash [32]byte, 
 		h.mu.Unlock()
 		return ErrNativeUnauthorized
 	}
-	if entry.host == nil {
+	if entry.owner == nil {
 		h.mu.Unlock()
-		return ErrNativeHostUnavailable
+		return ErrNativeOwnerUnavailable
 	}
 	routes := nativeRoutes(entry.routes)
-	host := entry.host.peer
+	owner := entry.owner.peer
 	entry.active = true
 	entry.descriptor = descriptor
 	entry.routes = make(map[string]*nativeRoute)
 	h.mu.Unlock()
 
-	retireNativeRoutes(host, routes, "native session replaced")
+	retireNativeRoutes(owner, routes, "native session replaced")
 	return nil
 }
 
@@ -292,16 +292,16 @@ func (h *NativeRendezvousHub) Deactivate(rendezvousID string, ownerHash [32]byte
 		return ErrNativeUnauthorized
 	}
 	routes := nativeRoutes(entry.routes)
-	var host Peer
-	if entry.host != nil {
-		host = entry.host.peer
+	var owner Peer
+	if entry.owner != nil {
+		owner = entry.owner.peer
 	}
 	entry.active = false
 	entry.descriptor = ""
 	entry.routes = make(map[string]*nativeRoute)
 	h.mu.Unlock()
 
-	retireNativeRoutes(host, routes, "native sharing stopped")
+	retireNativeRoutes(owner, routes, "native sharing stopped")
 	return nil
 }
 
@@ -317,20 +317,20 @@ func (h *NativeRendezvousHub) Remove(rendezvousID string, ownerHash [32]byte) er
 		return ErrNativeUnauthorized
 	}
 	delete(h.entries, rendezvousID)
-	host := entry.host
+	owner := entry.owner
 	routes := nativeRoutes(entry.routes)
 	h.mu.Unlock()
 
-	if host != nil {
-		host.peer.Close(CloseGoingAway, "native rendezvous removed")
+	if owner != nil {
+		owner.peer.Close(CloseGoingAway, "native rendezvous removed")
 	}
-	closeNativeViewers(routes, "native rendezvous removed")
+	closeNativeCandidates(routes, "native rendezvous removed")
 	return nil
 }
 
-func (h *NativeRendezvousHub) OpenRoute(rendezvousID string, viewer Peer) (string, error) {
-	if viewer == nil {
-		return "", ErrNativeHostUnavailable
+func (h *NativeRendezvousHub) OpenRoute(rendezvousID string, candidate Peer) (string, error) {
+	if candidate == nil {
+		return "", ErrNativeOwnerUnavailable
 	}
 	h.mu.Lock()
 	entry, found := h.liveEntryLocked(rendezvousID, h.config.Now())
@@ -338,9 +338,9 @@ func (h *NativeRendezvousHub) OpenRoute(rendezvousID string, viewer Peer) (strin
 		h.mu.Unlock()
 		return "", ErrNativeRendezvousNotFound
 	}
-	if entry.host == nil {
+	if entry.owner == nil {
 		h.mu.Unlock()
-		return "", ErrNativeHostUnavailable
+		return "", ErrNativeOwnerUnavailable
 	}
 	if !entry.active || entry.descriptor == "" {
 		h.mu.Unlock()
@@ -357,121 +357,121 @@ func (h *NativeRendezvousHub) OpenRoute(rendezvousID string, viewer Peer) (strin
 	}
 	route := &nativeRoute{
 		id:           routeID,
-		viewer:       viewer,
+		candidate:    candidate,
 		lastActivity: h.config.Now(),
 	}
 	entry.routes[routeID] = route
-	viewerOpened := protocol.Message{
+	candidateOpened := protocol.Message{
 		Type:    protocol.MessageNativeRouteOpened,
 		Version: protocol.NativeMessageVersion,
 		RouteID: routeID,
 		Payload: entry.descriptor,
 	}
-	hostOpened := protocol.Message{
+	ownerOpened := protocol.Message{
 		Type:    protocol.MessageNativeRouteOpened,
 		Version: protocol.NativeMessageVersion,
 		RouteID: routeID,
 	}
-	if err := viewer.Send(viewerOpened); err != nil {
+	if err := candidate.Send(candidateOpened); err != nil {
 		delete(entry.routes, routeID)
 		h.mu.Unlock()
-		viewer.Close(CloseGoingAway, "native viewer unavailable")
+		candidate.Close(CloseGoingAway, "native candidate unavailable")
 		return "", err
 	}
-	if err := entry.host.peer.Send(hostOpened); err != nil {
+	if err := entry.owner.peer.Send(ownerOpened); err != nil {
 		delete(entry.routes, routeID)
 		h.mu.Unlock()
-		notifyAndClose(viewer, protocol.Message{
-			Type:    protocol.MessageNativeHostUnavailable,
+		notifyAndClose(candidate, protocol.Message{
+			Type:    protocol.MessageNativeOwnerUnavailable,
 			Version: protocol.NativeMessageVersion,
-		}, CloseGoingAway, "native host unavailable")
-		return "", ErrNativeHostUnavailable
+		}, CloseGoingAway, "native owner unavailable")
+		return "", ErrNativeOwnerUnavailable
 	}
 	h.mu.Unlock()
 	return routeID, nil
 }
 
-func (h *NativeRendezvousHub) RelayFromHost(rendezvousID, hostID string, message protocol.Message) error {
+func (h *NativeRendezvousHub) RelayFromOwner(rendezvousID, ownerID string, message protocol.Message) error {
 	if err := protocol.ValidateNativeRelay(message, true); err != nil {
 		return err
 	}
 	h.mu.Lock()
 	entry, found := h.entries[rendezvousID]
-	if !found || entry.host == nil || entry.host.id != hostID {
+	if !found || entry.owner == nil || entry.owner.id != ownerID {
 		h.mu.Unlock()
-		return ErrStaleHost
+		return ErrStaleOwner
 	}
 	route, found := entry.routes[message.RouteID]
 	if !found {
 		h.mu.Unlock()
 		return ErrRouteNotFound
 	}
-	if message.Sequence != route.hostSequence+1 {
+	if message.Sequence != route.ownerSequence+1 {
 		h.mu.Unlock()
 		return ErrSequence
 	}
-	if !route.hostBudget.allow(h.config.Now(), nativeRelayConfiguration(h.config), relayMessageBytes(message)) {
+	if !route.ownerBudget.allow(h.config.Now(), nativeRelayConfiguration(h.config), relayMessageBytes(message)) {
 		delete(entry.routes, message.RouteID)
 		h.mu.Unlock()
-		notifyAndClose(route.viewer, nativeRouteClosed(message.RouteID, "signaling rate limit"), CloseGoingAway, "signaling rate limit")
+		notifyAndClose(route.candidate, nativeRouteClosed(message.RouteID, "signaling rate limit"), CloseGoingAway, "signaling rate limit")
 		return ErrRouteBackpressure
 	}
-	route.hostSequence = message.Sequence
+	route.ownerSequence = message.Sequence
 	route.lastActivity = h.config.Now()
-	if err := route.viewer.Send(message); err != nil {
+	if err := route.candidate.Send(message); err != nil {
 		delete(entry.routes, message.RouteID)
 		h.mu.Unlock()
-		route.viewer.Close(CloseGoingAway, "native viewer unavailable")
-		return ErrStaleViewer
+		route.candidate.Close(CloseGoingAway, "native candidate unavailable")
+		return ErrStaleCandidate
 	}
 	h.mu.Unlock()
 	return nil
 }
 
-func (h *NativeRendezvousHub) RelayFromViewer(rendezvousID, routeID string, viewer Peer, message protocol.Message) error {
+func (h *NativeRendezvousHub) RelayFromCandidate(rendezvousID, routeID string, candidate Peer, message protocol.Message) error {
 	if err := protocol.ValidateNativeRelay(message, false); err != nil {
 		return err
 	}
 	h.mu.Lock()
 	entry, found := h.entries[rendezvousID]
-	if !found || entry.host == nil || !entry.active {
+	if !found || entry.owner == nil || !entry.active {
 		h.mu.Unlock()
-		return ErrNativeHostUnavailable
+		return ErrNativeOwnerUnavailable
 	}
 	route, found := entry.routes[routeID]
-	if !found || route.viewer != viewer {
+	if !found || route.candidate != candidate {
 		h.mu.Unlock()
-		return ErrStaleViewer
+		return ErrStaleCandidate
 	}
-	if message.Sequence != route.viewerSequence+1 {
+	if message.Sequence != route.candidateSequence+1 {
 		h.mu.Unlock()
 		return ErrSequence
 	}
 	message.RouteID = routeID
-	if !route.viewerBudget.allow(h.config.Now(), nativeRelayConfiguration(h.config), relayMessageBytes(message)) {
+	if !route.candidateBudget.allow(h.config.Now(), nativeRelayConfiguration(h.config), relayMessageBytes(message)) {
 		delete(entry.routes, routeID)
 		h.mu.Unlock()
-		viewer.Close(CloseGoingAway, "signaling rate limit")
+		candidate.Close(CloseGoingAway, "signaling rate limit")
 		return ErrRouteBackpressure
 	}
-	route.viewerSequence = message.Sequence
+	route.candidateSequence = message.Sequence
 	route.lastActivity = h.config.Now()
-	if err := entry.host.peer.Send(message); err != nil {
+	if err := entry.owner.peer.Send(message); err != nil {
 		delete(entry.routes, routeID)
 		h.mu.Unlock()
-		viewer.Close(CloseGoingAway, "native host unavailable")
-		return ErrNativeHostUnavailable
+		candidate.Close(CloseGoingAway, "native owner unavailable")
+		return ErrNativeOwnerUnavailable
 	}
 	h.mu.Unlock()
 	return nil
 }
 
-func (h *NativeRendezvousHub) CloseRouteFromHost(rendezvousID, hostID, routeID, reason string) error {
+func (h *NativeRendezvousHub) CloseRouteFromOwner(rendezvousID, ownerID, routeID, reason string) error {
 	h.mu.Lock()
 	entry, found := h.entries[rendezvousID]
-	if !found || entry.host == nil || entry.host.id != hostID {
+	if !found || entry.owner == nil || entry.owner.id != ownerID {
 		h.mu.Unlock()
-		return ErrStaleHost
+		return ErrStaleOwner
 	}
 	route, found := entry.routes[routeID]
 	if !found {
@@ -480,11 +480,11 @@ func (h *NativeRendezvousHub) CloseRouteFromHost(rendezvousID, hostID, routeID, 
 	}
 	delete(entry.routes, routeID)
 	h.mu.Unlock()
-	notifyAndClose(route.viewer, nativeRouteClosed(routeID, reason), CloseNormal, "native route closed")
+	notifyAndClose(route.candidate, nativeRouteClosed(routeID, reason), CloseNormal, "native route closed")
 	return nil
 }
 
-func (h *NativeRendezvousHub) CloseViewerRoute(rendezvousID, routeID string, viewer Peer, reason string) bool {
+func (h *NativeRendezvousHub) CloseCandidateRoute(rendezvousID, routeID string, candidate Peer, reason string) bool {
 	h.mu.Lock()
 	entry, found := h.entries[rendezvousID]
 	if !found {
@@ -492,20 +492,20 @@ func (h *NativeRendezvousHub) CloseViewerRoute(rendezvousID, routeID string, vie
 		return false
 	}
 	route, found := entry.routes[routeID]
-	if !found || route.viewer != viewer {
+	if !found || route.candidate != candidate {
 		h.mu.Unlock()
 		return false
 	}
 	delete(entry.routes, routeID)
-	var host Peer
-	if entry.host != nil {
-		host = entry.host.peer
+	var owner Peer
+	if entry.owner != nil {
+		owner = entry.owner.peer
 	}
 	h.mu.Unlock()
-	if host != nil {
-		_ = host.Send(nativeRouteClosed(routeID, reason))
+	if owner != nil {
+		_ = owner.Send(nativeRouteClosed(routeID, reason))
 	}
-	viewer.Close(CloseNormal, "native route closed")
+	candidate.Close(CloseNormal, "native route closed")
 	return true
 }
 
@@ -523,7 +523,7 @@ func (h *NativeRendezvousHub) Cleanup() NativeCleanupResult {
 	now := h.config.Now()
 	cutoff := now.Add(-h.config.RouteIdleTimeout)
 	type idleRoute struct {
-		host  Peer
+		owner Peer
 		route *nativeRoute
 	}
 	idle := make([]idleRoute, 0)
@@ -540,11 +540,11 @@ func (h *NativeRendezvousHub) Cleanup() NativeCleanupResult {
 			if route.lastActivity.After(cutoff) {
 				continue
 			}
-			var host Peer
-			if entry.host != nil {
-				host = entry.host.peer
+			var owner Peer
+			if entry.owner != nil {
+				owner = entry.owner.peer
 			}
-			idle = append(idle, idleRoute{host: host, route: route})
+			idle = append(idle, idleRoute{owner: owner, route: route})
 			delete(entry.routes, routeID)
 			result.IdleRoutes++
 		}
@@ -552,10 +552,10 @@ func (h *NativeRendezvousHub) Cleanup() NativeCleanupResult {
 	h.mu.Unlock()
 
 	for _, expired := range idle {
-		if expired.host != nil {
-			_ = expired.host.Send(nativeRouteClosed(expired.route.id, "route idle timeout"))
+		if expired.owner != nil {
+			_ = expired.owner.Send(nativeRouteClosed(expired.route.id, "route idle timeout"))
 		}
-		notifyAndClose(expired.route.viewer, nativeRouteClosed(expired.route.id, "route idle timeout"), CloseGoingAway, "route idle timeout")
+		notifyAndClose(expired.route.candidate, nativeRouteClosed(expired.route.id, "route idle timeout"), CloseGoingAway, "route idle timeout")
 	}
 	return result
 }
@@ -570,10 +570,10 @@ func (h *NativeRendezvousHub) Shutdown(reason string) {
 	h.mu.Unlock()
 
 	for _, entry := range entries {
-		if entry.host != nil {
-			entry.host.peer.Close(CloseGoingAway, boundedReason(reason))
+		if entry.owner != nil {
+			entry.owner.peer.Close(CloseGoingAway, boundedReason(reason))
 		}
-		closeNativeViewers(nativeRoutes(entry.routes), reason)
+		closeNativeCandidates(nativeRoutes(entry.routes), reason)
 	}
 }
 
@@ -604,7 +604,7 @@ func (h *NativeRendezvousHub) liveEntryLocked(rendezvousID string, now time.Time
 }
 
 func (h *NativeRendezvousHub) expiredLocked(entry *nativeRendezvous, now time.Time) bool {
-	return entry.host == nil && !entry.expiresAt.IsZero() && !now.Before(entry.expiresAt)
+	return entry.owner == nil && !entry.expiresAt.IsZero() && !now.Before(entry.expiresAt)
 }
 
 func (h *NativeRendezvousHub) purgeExpiredLocked(now time.Time) {
@@ -616,7 +616,7 @@ func (h *NativeRendezvousHub) purgeExpiredLocked(now time.Time) {
 }
 
 func nativeState(entry *nativeRendezvous) NativeRendezvousState {
-	if entry.host == nil {
+	if entry.owner == nil {
 		return NativeRendezvousOffline
 	}
 	if entry.active {
@@ -633,8 +633,8 @@ func nativeRoutes(routes map[string]*nativeRoute) []*nativeRoute {
 	return result
 }
 
-func nativeRelayConfiguration(configuration NativeRendezvousConfiguration) Configuration {
-	return Configuration{
+func nativeRelayConfiguration(configuration NativeRendezvousConfiguration) relayConfiguration {
+	return relayConfiguration{
 		RelayBurstWindow:             configuration.RelayBurstWindow,
 		MaximumRelayMessagesPerBurst: configuration.MaximumRelayMessagesPerBurst,
 		MaximumRelayBytesPerBurst:    configuration.MaximumRelayBytesPerBurst,
@@ -650,21 +650,21 @@ func nativeRouteClosed(routeID, reason string) protocol.Message {
 	}
 }
 
-func closeNativeViewers(routes []*nativeRoute, reason string) {
+func closeNativeCandidates(routes []*nativeRoute, reason string) {
 	for _, route := range routes {
-		notifyAndClose(route.viewer, protocol.Message{
-			Type:    protocol.MessageNativeHostUnavailable,
+		notifyAndClose(route.candidate, protocol.Message{
+			Type:    protocol.MessageNativeOwnerUnavailable,
 			Version: protocol.NativeMessageVersion,
 		}, CloseGoingAway, boundedReason(reason))
 	}
 }
 
-func retireNativeRoutes(host Peer, routes []*nativeRoute, reason string) {
+func retireNativeRoutes(owner Peer, routes []*nativeRoute, reason string) {
 	for _, route := range routes {
-		if host != nil {
-			_ = host.Send(nativeRouteClosed(route.id, reason))
+		if owner != nil {
+			_ = owner.Send(nativeRouteClosed(route.id, reason))
 		}
-		notifyAndClose(route.viewer, nativeRouteClosed(route.id, reason), CloseGoingAway, boundedReason(reason))
+		notifyAndClose(route.candidate, nativeRouteClosed(route.id, reason), CloseGoingAway, boundedReason(reason))
 	}
 }
 

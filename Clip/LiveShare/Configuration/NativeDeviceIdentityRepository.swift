@@ -51,7 +51,7 @@ struct LiveNativeDeviceIdentityKeychain: NativeDeviceIdentitySecureStorage {
 
     init(
         service: String = "com.tomaslejdung.clip.live-share",
-        account: String = "native-device-identity-v1"
+        account: String = "native-device-identity-v3"
     ) {
         self.service = service
         self.account = account
@@ -134,8 +134,6 @@ struct NativeDeviceIdentitySigner: ClipLiveShareIdentitySigner, @unchecked Senda
 
 struct NativeDeviceIdentity: Sendable {
     let signer: NativeDeviceIdentitySigner
-    let rendezvousID: ClipLiveShareRendezvousID
-    let ownerToken: ClipLiveShareOwnerToken
 
     var publicKey: ClipLiveShareIdentityPublicKey { signer.publicKey }
     var fingerprint: ClipLiveShareIdentityFingerprint { publicKey.fingerprint }
@@ -145,8 +143,6 @@ actor NativeDeviceIdentityRepository {
     private struct StoredIdentity: Codable, Sendable {
         let version: Int
         let signingPrivateKey: Data
-        let rendezvousID: ClipLiveShareRendezvousID
-        let ownerToken: ClipLiveShareOwnerToken
     }
 
     private let storage: any NativeDeviceIdentitySecureStorage
@@ -165,9 +161,7 @@ actor NativeDeviceIdentityRepository {
         }
 
         let identity = NativeDeviceIdentity(
-            signer: NativeDeviceIdentitySigner(),
-            rendezvousID: .random(),
-            ownerToken: .random()
+            signer: NativeDeviceIdentitySigner()
         )
         let encoded = try encode(identity)
         do {
@@ -197,25 +191,21 @@ actor NativeDeviceIdentityRepository {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
         return try encoder.encode(StoredIdentity(
-            version: 1,
-            signingPrivateKey: identity.signer.rawRepresentation,
-            rendezvousID: identity.rendezvousID,
-            ownerToken: identity.ownerToken
+            version: 3,
+            signingPrivateKey: identity.signer.rawRepresentation
         ))
     }
 
     private func decode(_ data: Data) throws -> NativeDeviceIdentity {
         do {
             let stored = try JSONDecoder().decode(StoredIdentity.self, from: data)
-            guard stored.version == 1 else {
+            guard stored.version == 3 else {
                 throw NativeDeviceIdentityStorageError.corruptIdentity
             }
             return NativeDeviceIdentity(
                 signer: try NativeDeviceIdentitySigner(
                     rawRepresentation: stored.signingPrivateKey
-                ),
-                rendezvousID: stored.rendezvousID,
-                ownerToken: stored.ownerToken
+                )
             )
         } catch let error as NativeDeviceIdentityStorageError {
             throw error

@@ -1,11 +1,6 @@
 import Foundation
 
 /// A source identity scoped to one remote participant.
-///
-/// Native v1/v2 sessions currently instantiate one remote participant, but
-/// source-instance identifiers are only unique within that participant. Keeping
-/// the namespace here prevents a future multi-participant viewer from merging
-/// two otherwise identical source identifiers.
 struct RemoteParticipantSourceKey: Hashable, Sendable {
     let participantNamespace: Data
     let sourceInstanceID: String
@@ -14,18 +9,13 @@ struct RemoteParticipantSourceKey: Hashable, Sendable {
 /// A viewer-window identity scoped to one remote participant.
 struct RemoteParticipantWindowKey: Hashable, Sendable {
     let participantNamespace: Data
-    fileprivate let slot: RemoteParticipantWindowSlot
+    fileprivate let sourceInstanceID: String
 }
 
 struct RemoteParticipantLocalWindowPresentation: Equatable, Sendable {
     let scaleMode: NativeViewerScaleMode
     let isVisible: Bool
     let isFullScreen: Bool
-}
-
-fileprivate enum RemoteParticipantWindowSlot: Hashable, Sendable {
-    case manual(sourceInstanceID: String)
-    case automatic
 }
 
 /// Owns the presentation state for exactly one remote participant.
@@ -42,7 +32,7 @@ struct RemoteParticipantPresentation<RemoteTrack> {
     private var authoritativeSources: [NativeViewerSourceSnapshot] = []
     private var remoteTracksByStreamID: [String: RemoteTrack] = [:]
     private var localPresentationByWindow:
-        [RemoteParticipantWindowSlot: RemoteParticipantLocalWindowPresentation] = [:]
+        [String: RemoteParticipantLocalWindowPresentation] = [:]
 
     init(participantNamespace: Data? = nil) {
         self.participantNamespace = participantNamespace
@@ -71,9 +61,9 @@ struct RemoteParticipantPresentation<RemoteTrack> {
         guard !isTornDown else { return [] }
         authoritativeSources = sources
 
-        let retainedSlots = Set(sources.map(Self.windowSlot(for:)))
+        let retainedSourceIDs = Set(sources.map(\.sourceInstanceID))
         localPresentationByWindow = localPresentationByWindow.filter {
-            retainedSlots.contains($0.key)
+            retainedSourceIDs.contains($0.key)
         }
         return readySources
     }
@@ -118,7 +108,7 @@ struct RemoteParticipantPresentation<RemoteTrack> {
         guard let participantNamespace else { return nil }
         return RemoteParticipantWindowKey(
             participantNamespace: participantNamespace,
-            slot: Self.windowSlot(for: source)
+            sourceInstanceID: source.sourceInstanceID
         )
     }
 
@@ -127,7 +117,7 @@ struct RemoteParticipantPresentation<RemoteTrack> {
     ) {
         guard !isTornDown else { return }
         for window in windows {
-            localPresentationByWindow[Self.windowSlot(for: window.source)] =
+            localPresentationByWindow[window.source.sourceInstanceID] =
                 RemoteParticipantLocalWindowPresentation(
                     scaleMode: window.scaleMode,
                     isVisible: window.isVisible,
@@ -140,7 +130,7 @@ struct RemoteParticipantPresentation<RemoteTrack> {
         for source: NativeViewerSourceSnapshot
     ) -> RemoteParticipantLocalWindowPresentation? {
         guard !isTornDown else { return nil }
-        return localPresentationByWindow[Self.windowSlot(for: source)]
+        return localPresentationByWindow[source.sourceInstanceID]
     }
 
     /// Clears participant-owned state exactly once.
@@ -156,16 +146,5 @@ struct RemoteParticipantPresentation<RemoteTrack> {
         remoteTracksByStreamID.removeAll()
         localPresentationByWindow.removeAll()
         return true
-    }
-
-    private static func windowSlot(
-        for source: NativeViewerSourceSnapshot
-    ) -> RemoteParticipantWindowSlot {
-        switch source.mode {
-        case .manual:
-            .manual(sourceInstanceID: source.sourceInstanceID)
-        case .followsFocusedWindow:
-            .automatic
-        }
     }
 }

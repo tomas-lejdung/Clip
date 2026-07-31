@@ -61,10 +61,16 @@ struct ClipNativeRendezvousTransportTests {
 
         let capabilities = try await client.discover(at: fixture.endpoint)
         #expect(capabilities == fixture.capabilities)
+        #expect(capabilities.iceServers == [
+            try .init(urls: ["stun:stun.l.google.com:19302"])
+        ])
+        #expect(capabilities.webRTCICEServers == [
+            .init(urlStrings: ["stun:stun.l.google.com:19302"])
+        ])
         #expect(try capabilities.rendezvousURL(for: fixture.target).path
             == fixture.rendezvousPath)
-        #expect(try capabilities.hostWebSocketURL(for: fixture.target).scheme == "ws")
-        #expect(try capabilities.viewerWebSocketURL(for: fixture.target).scheme == "ws")
+        #expect(try capabilities.ownerWebSocketURL(for: fixture.target).scheme == "ws")
+        #expect(try capabilities.candidateWebSocketURL(for: fixture.target).scheme == "ws")
 
         let claimed = try await client.claim(
             fixture.owner,
@@ -103,6 +109,96 @@ struct ClipNativeRendezvousTransportTests {
             try await client.discover(at: fixture.endpoint)
         }
 
+        var invalidICE = try #require(try JSONSerialization.jsonObject(
+            with: fixture.capabilitiesData
+        ) as? [String: Any])
+        invalidICE["iceServers"] = [[
+            "urls": ["https://not-an-ice-server.example"],
+        ]]
+        let invalidICEData = try rendezvousTestJSON(invalidICE)
+        let invalidICEHTTP = RendezvousTestHTTPTransport { _, _ in
+            .init(statusCode: 200, data: invalidICEData)
+        }
+        let invalidICEClient = ClipNativeRendezvousHTTPClient(
+            transport: invalidICEHTTP
+        )
+        await #expect(throws: ClipNativeRendezvousError.invalidCapabilities) {
+            try await invalidICEClient.discover(at: fixture.endpoint)
+        }
+
+        var extendedICE = try #require(try JSONSerialization.jsonObject(
+            with: fixture.capabilitiesData
+        ) as? [String: Any])
+        extendedICE["iceServers"] = [[
+            "urls": ["stun:stun.example.test:3478"],
+            "secretExtension": true,
+        ]]
+        let extendedICEData = try rendezvousTestJSON(extendedICE)
+        let extendedICEHTTP = RendezvousTestHTTPTransport { _, _ in
+            .init(statusCode: 200, data: extendedICEData)
+        }
+        let extendedICEClient = ClipNativeRendezvousHTTPClient(
+            transport: extendedICEHTTP
+        )
+        await #expect(throws: ClipNativeRendezvousError.invalidCapabilities) {
+            try await extendedICEClient.discover(at: fixture.endpoint)
+        }
+
+        var legacyCapabilities = try #require(try JSONSerialization.jsonObject(
+            with: fixture.capabilitiesData
+        ) as? [String: Any])
+        legacyCapabilities["apiVersion"] = 1
+        legacyCapabilities["messageVersion"] = 2
+        legacyCapabilities["hostWebSocketPathTemplate"] =
+            "/api/native/v1/rendezvous/{rendezvous}/host"
+        legacyCapabilities["viewerWebSocketPathTemplate"] =
+            "/api/native/v1/rendezvous/{rendezvous}/viewer"
+        legacyCapabilities.removeValue(forKey: "ownerWebSocketPathTemplate")
+        legacyCapabilities.removeValue(forKey: "candidateWebSocketPathTemplate")
+        let legacyCapabilitiesData = try rendezvousTestJSON(legacyCapabilities)
+        let legacyHTTP = RendezvousTestHTTPTransport { _, _ in
+            .init(statusCode: 200, data: legacyCapabilitiesData)
+        }
+        let legacyClient = ClipNativeRendezvousHTTPClient(transport: legacyHTTP)
+        await #expect(throws: ClipNativeRendezvousError.invalidResponse) {
+            try await legacyClient.discover(at: fixture.endpoint)
+        }
+
+        var legacyVersions = try #require(try JSONSerialization.jsonObject(
+            with: fixture.capabilitiesData
+        ) as? [String: Any])
+        legacyVersions["apiVersion"] = 1
+        legacyVersions["messageVersion"] = 2
+        let legacyVersionsData = try rendezvousTestJSON(legacyVersions)
+        let legacyVersionsHTTP = RendezvousTestHTTPTransport { _, _ in
+            .init(statusCode: 200, data: legacyVersionsData)
+        }
+        let legacyVersionsClient = ClipNativeRendezvousHTTPClient(
+            transport: legacyVersionsHTTP
+        )
+        await #expect(throws: ClipNativeRendezvousError.invalidCapabilities) {
+            try await legacyVersionsClient.discover(at: fixture.endpoint)
+        }
+
+        #expect(throws: ClipNativeRendezvousError.invalidMessage) {
+            try ClipNativeRendezvousWireCodec.decode(
+                .text("""
+                {"type":"native-host-unavailable","version":2}
+                """),
+                role: .candidate,
+                capabilities: fixture.capabilities
+            )
+        }
+        #expect(throws: ClipNativeRendezvousError.invalidMessage) {
+            try ClipNativeRendezvousWireCodec.decode(
+                .text("""
+                {"type":"native-owner-unavailable","version":2}
+                """),
+                role: .candidate,
+                capabilities: fixture.capabilities
+            )
+        }
+
         #expect(ClipNativeRendezvousBase64URL.decodeCanonical(
             "YQ==",
             minimumBytes: 1,
@@ -132,8 +228,8 @@ struct ClipNativeRendezvousTransportTests {
         }
     }
 
-    @Test("host attaches preparing, retries activation, rotates, stops, and deletes")
-    func hostLifecycle() async throws {
+    @Test("owner attaches preparing, retries activation, rotates, stops, and deletes")
+    func ownerLifecycle() async throws {
         let fixture = try RendezvousTestFixture()
         let socket = RendezvousTestWebSocket()
         let factory = RendezvousTestWebSocketFactory(results: [.success(socket)])
@@ -157,24 +253,24 @@ struct ClipNativeRendezvousTransportTests {
                 return .init(statusCode: 500, data: Data())
             }
         }
-        let host = ClipNativeRendezvousHostTransport(
+        let owner = ClipNativeRendezvousOwnerTransport(
             httpTransport: http,
             webSocketFactory: factory,
             reconnectPolicy: .disabled,
             reconnectSleeper: sleeper,
             attachmentRetryDelaysMilliseconds: [7]
         )
-        let recorder = await RendezvousTestEventRecorder.record(host.events())
+        let recorder = await RendezvousTestEventRecorder.record(owner.events())
 
-        _ = try await host.attachHost(fixture.owner)
+        _ = try await owner.attachOwner(fixture.owner)
         #expect(await socket.resumeCount() == 1)
         let websocketRequest = try #require(await factory.recordedRequests().first)
-        #expect(websocketRequest.url?.path == fixture.rendezvousPath + "/host")
+        #expect(websocketRequest.url?.path == fixture.rendezvousPath + "/owner")
         #expect(websocketRequest.value(forHTTPHeaderField: "Authorization")
             == fixture.owner.authorizationHeaderValue)
 
         let firstDescriptor = Data("descriptor-one".utf8)
-        try await host.publishSession(descriptor: firstDescriptor)
+        try await owner.publishSession(descriptor: firstDescriptor)
         #expect(await sleeper.recordedDurations() == [.milliseconds(7)])
 
         let routeID = fixture.routeID
@@ -189,15 +285,15 @@ struct ClipNativeRendezvousTransportTests {
             ))
         }
 
-        try await host.publishSession(descriptor: Data("descriptor-two".utf8))
+        try await owner.publishSession(descriptor: Data("descriptor-two".utf8))
         try await rendezvousEventually {
             await recorder.snapshot().contains(.routeClosed(
                 routeID: routeID,
                 reason: "session-rotated"
             ))
         }
-        try await host.stopSharing()
-        await host.teardown(removeRendezvous: true)
+        try await owner.stopSharing()
+        await owner.teardown(removeRendezvous: true)
 
         let requests = await http.recordedRequests()
         #expect(requests.filter {
@@ -211,8 +307,8 @@ struct ClipNativeRendezvousTransportTests {
             await recorder.snapshot().last == .stopped
         }
         let events = await recorder.snapshot()
-        #expect(events.contains(.hostPreparing(reconnectAttempt: 0)))
-        #expect(events.filter { $0 == .hostActive }.count == 2)
+        #expect(events.contains(.ownerPreparing(reconnectAttempt: 0)))
+        #expect(events.filter { $0 == .ownerActive }.count == 2)
         #expect(events.last == .stopped)
     }
 
@@ -233,16 +329,16 @@ struct ClipNativeRendezvousTransportTests {
             }
         }
         let factory = RendezvousTestWebSocketFactory(results: [])
-        let host = ClipNativeRendezvousHostTransport(
+        let owner = ClipNativeRendezvousOwnerTransport(
             httpTransport: http,
             webSocketFactory: factory,
             reconnectPolicy: .disabled,
             reconnectSleeper: RendezvousTestSleeper()
         )
-        let attachment = Task { try await host.attachHost(fixture.owner) }
+        let attachment = Task { try await owner.attachOwner(fixture.owner) }
         try await rendezvousEventually { await http.recordedRequests().count == 2 }
 
-        await host.teardown(removeRendezvous: false)
+        await owner.teardown(removeRendezvous: false)
         await claimGate.open()
         await #expect(throws: ClipNativeRendezvousError.operationSuperseded) {
             try await attachment.value
@@ -251,20 +347,20 @@ struct ClipNativeRendezvousTransportTests {
         #expect(await factory.recordedRequests().isEmpty)
     }
 
-    @Test("host relays opaque messages in strict per-route order")
-    func hostOrderedRelay() async throws {
+    @Test("owner relays opaque messages in strict per-route order")
+    func ownerOrderedRelay() async throws {
         let fixture = try RendezvousTestFixture()
         let firstGate = RendezvousTestGate()
         let secondGate = RendezvousTestGate()
         let socket = RendezvousTestWebSocket(sendGates: [firstGate, secondGate])
-        let host = ClipNativeRendezvousHostTransport(
-            httpTransport: fixture.activeHostHTTP,
+        let owner = ClipNativeRendezvousOwnerTransport(
+            httpTransport: fixture.activeOwnerHTTP,
             webSocketFactory: RendezvousTestWebSocketFactory(results: [.success(socket)]),
             reconnectPolicy: .disabled,
             reconnectSleeper: RendezvousTestSleeper()
         )
-        let recorder = await RendezvousTestEventRecorder.record(host.events())
-        _ = try await host.attachHost(fixture.owner)
+        let recorder = await RendezvousTestEventRecorder.record(owner.events())
+        _ = try await owner.attachOwner(fixture.owner)
 
         await socket.enqueue(try fixture.wire(.init(
             type: .routeOpened,
@@ -277,9 +373,9 @@ struct ClipNativeRendezvousTransportTests {
             ))
         }
 
-        let first = Task { try await host.send(Data("one".utf8), to: fixture.routeID) }
+        let first = Task { try await owner.send(Data("one".utf8), to: fixture.routeID) }
         try await rendezvousEventually { await socket.sentPayloads().count == 1 }
-        let second = Task { try await host.send(Data("two".utf8), to: fixture.routeID) }
+        let second = Task { try await owner.send(Data("two".utf8), to: fixture.routeID) }
         await firstGate.open()
         try await rendezvousEventually { await socket.sentPayloads().count == 2 }
         await secondGate.open()
@@ -310,43 +406,43 @@ struct ClipNativeRendezvousTransportTests {
                 sequence: 1
             ))
         }
-        await host.closeRoute(fixture.routeID, reason: "complete")
+        await owner.closeRoute(fixture.routeID, reason: "complete")
         let closed = try #require(try await socket.decodedMessages().last)
         #expect(closed.type == .closeRoute)
         #expect(closed.routeID == fixture.routeID)
         await #expect(throws: ClipNativeRendezvousError.routeNotFound) {
-            try await host.send(Data("late".utf8), to: fixture.routeID)
+            try await owner.send(Data("late".utf8), to: fixture.routeID)
         }
-        await host.teardown()
+        await owner.teardown()
     }
 
-    @Test("viewer requires active state and relays through its implicit route")
-    func viewerActiveGateAndRelay() async throws {
+    @Test("candidate requires active state and relays through its implicit route")
+    func candidateActiveGateAndRelay() async throws {
         let fixture = try RendezvousTestFixture()
         let inactiveFactory = RendezvousTestWebSocketFactory(results: [])
-        let inactive = ClipNativeRendezvousViewerTransport(
-            httpTransport: fixture.viewerHTTP(state: .preparing),
+        let inactive = ClipNativeRendezvousCandidateTransport(
+            httpTransport: fixture.candidateHTTP(state: .preparing),
             webSocketFactory: inactiveFactory,
             reconnectPolicy: .disabled,
             reconnectSleeper: RendezvousTestSleeper()
         )
         await #expect(throws: ClipNativeRendezvousError.rendezvousNotLive) {
-            try await inactive.attachViewer(fixture.target)
+            try await inactive.attachCandidate(fixture.target)
         }
         #expect(await inactiveFactory.recordedRequests().isEmpty)
 
         let socket = RendezvousTestWebSocket()
         let factory = RendezvousTestWebSocketFactory(results: [.success(socket)])
-        let viewer = ClipNativeRendezvousViewerTransport(
-            httpTransport: fixture.viewerHTTP(state: .active),
+        let candidate = ClipNativeRendezvousCandidateTransport(
+            httpTransport: fixture.candidateHTTP(state: .active),
             webSocketFactory: factory,
             reconnectPolicy: .disabled,
             reconnectSleeper: RendezvousTestSleeper()
         )
-        let recorder = await RendezvousTestEventRecorder.record(viewer.events())
-        _ = try await viewer.attachViewer(fixture.target)
+        let recorder = await RendezvousTestEventRecorder.record(candidate.events())
+        _ = try await candidate.attachCandidate(fixture.target)
         #expect((try #require(await factory.recordedRequests().first)).url?.path
-            == fixture.rendezvousPath + "/viewer")
+            == fixture.rendezvousPath + "/candidate")
 
         let descriptor = Data("signed-session".utf8)
         await socket.enqueue(try fixture.wire(.init(
@@ -361,7 +457,7 @@ struct ClipNativeRendezvousTransportTests {
             ))
         }
 
-        try await viewer.send(Data("offer".utf8))
+        try await candidate.send(Data("offer".utf8))
         let outbound = try #require(try await socket.decodedMessages().first)
         #expect(outbound.type == .relay)
         #expect(outbound.routeID == nil)
@@ -381,17 +477,17 @@ struct ClipNativeRendezvousTransportTests {
             ))
         }
 
-        await viewer.closeRoute(reason: "peer-connected")
+        await candidate.closeRoute(reason: "peer-connected")
         let close = try #require(try await socket.decodedMessages().last)
         #expect(close.type == .closeRoute)
         #expect(close.routeID == nil)
         #expect(close.reason == "peer-connected")
         #expect(await socket.closeCount() == 1)
-        await viewer.teardown()
+        await candidate.teardown()
     }
 
-    @Test("host reconnect reclaims, republishes, and exhausts its bounded policy")
-    func hostReconnectAndExhaustion() async throws {
+    @Test("owner reconnect reclaims, republishes, and exhausts its bounded policy")
+    func ownerReconnectAndExhaustion() async throws {
         let fixture = try RendezvousTestFixture()
         let first = RendezvousTestWebSocket()
         let restored = RendezvousTestWebSocket()
@@ -401,22 +497,22 @@ struct ClipNativeRendezvousTransportTests {
             .failure(.connectionFailed),
         ])
         let sleeper = RendezvousTestSleeper()
-        let host = ClipNativeRendezvousHostTransport(
-            httpTransport: fixture.activeHostHTTP,
+        let owner = ClipNativeRendezvousOwnerTransport(
+            httpTransport: fixture.activeOwnerHTTP,
             webSocketFactory: factory,
             reconnectPolicy: .init(delaysMilliseconds: [3]),
             reconnectSleeper: sleeper
         )
-        let recorder = await RendezvousTestEventRecorder.record(host.events())
-        _ = try await host.attachHost(fixture.owner)
-        try await host.publishSession(descriptor: Data("current".utf8))
+        let recorder = await RendezvousTestEventRecorder.record(owner.events())
+        _ = try await owner.attachOwner(fixture.owner)
+        try await owner.publishSession(descriptor: Data("current".utf8))
 
         await first.failReceive()
         try await rendezvousEventually {
             let events = await recorder.snapshot()
             return await restored.resumeCount() == 1
-                && events.contains(.connected(role: .host, reconnectAttempt: 1))
-                && events.filter { $0 == .hostActive }.count == 2
+                && events.contains(.connected(role: .owner, reconnectAttempt: 1))
+                && events.filter { $0 == .ownerActive }.count == 2
         }
 
         await restored.failReceive()
@@ -430,21 +526,21 @@ struct ClipNativeRendezvousTransportTests {
             .milliseconds(3), .milliseconds(3),
         ])
         #expect(await factory.recordedRequests().count == 3)
-        await host.teardown()
+        await owner.teardown()
     }
 
     @Test("invalid receive bursts are coalesced and do not poison valid traffic")
     func invalidReceiveCoalescing() async throws {
         let fixture = try RendezvousTestFixture()
         let socket = RendezvousTestWebSocket()
-        let host = ClipNativeRendezvousHostTransport(
-            httpTransport: fixture.activeHostHTTP,
+        let owner = ClipNativeRendezvousOwnerTransport(
+            httpTransport: fixture.activeOwnerHTTP,
             webSocketFactory: RendezvousTestWebSocketFactory(results: [.success(socket)]),
             reconnectPolicy: .disabled,
             reconnectSleeper: RendezvousTestSleeper()
         )
-        let recorder = await RendezvousTestEventRecorder.record(host.events())
-        _ = try await host.attachHost(fixture.owner)
+        let recorder = await RendezvousTestEventRecorder.record(owner.events())
+        _ = try await owner.attachOwner(fixture.owner)
 
         await socket.enqueue(.text("{malformed"))
         await socket.enqueue(.data(Data(
@@ -464,7 +560,7 @@ struct ClipNativeRendezvousTransportTests {
         let events = await recorder.snapshot()
         #expect(events.filter { $0 == .invalidMessageReceived }.count == 1)
         #expect(await socket.closeCount() == 0)
-        await host.teardown()
+        await owner.teardown()
     }
 }
 
@@ -488,23 +584,26 @@ private struct RendezvousTestFixture: Sendable {
             ownerToken: Data(repeating: 0x22, count: 32)
         )
         capabilities = try ClipNativeRendezvousCapabilities(serverVersion: "test")
-        rendezvousPath = "/api/native/v1/rendezvous/\(target.rendezvousIDString)"
+        rendezvousPath = "/api/native/v3/rendezvous/\(target.rendezvousIDString)"
         routeID = ClipNativeRendezvousBase64URL.encode(
             Data(repeating: 0x33, count: 16)
         )
         capabilitiesData = try rendezvousTestJSON([
             "protocol": "clip-native-rendezvous",
-            "apiVersion": 1,
-            "messageVersion": 2,
+            "apiVersion": 3,
+            "messageVersion": 3,
             "serverVersion": "test",
-            "rendezvousPathTemplate": "/api/native/v1/rendezvous/{rendezvous}",
-            "hostWebSocketPathTemplate": "/api/native/v1/rendezvous/{rendezvous}/host",
-            "viewerWebSocketPathTemplate": "/api/native/v1/rendezvous/{rendezvous}/viewer",
+            "rendezvousPathTemplate": "/api/native/v3/rendezvous/{rendezvous}",
+            "ownerWebSocketPathTemplate": "/api/native/v3/rendezvous/{rendezvous}/owner",
+            "candidateWebSocketPathTemplate": "/api/native/v3/rendezvous/{rendezvous}/candidate",
             "maximumMessageBytes": 262_144,
             "maximumDescriptorBytes": 16_384,
             "maximumOpaquePayloadBytes": 196_000,
             "maximumPendingRoutes": 8,
             "maximumRendezvous": 1_024,
+            "iceServers": [
+                ["urls": ["stun:stun.l.google.com:19302"]]
+            ],
         ])
         leaseData = try rendezvousTestJSON([
             "rendezvousId": target.rendezvousIDString,
@@ -512,7 +611,7 @@ private struct RendezvousTestFixture: Sendable {
         ])
     }
 
-    var activeHostHTTP: RendezvousTestHTTPTransport {
+    var activeOwnerHTTP: RendezvousTestHTTPTransport {
         RendezvousTestHTTPTransport { request, _ in
             switch (request.httpMethod, request.url?.path) {
             case ("GET", "/.well-known/clip-native-rendezvous"):
@@ -524,13 +623,13 @@ private struct RendezvousTestFixture: Sendable {
             case ("DELETE", _):
                 return .init(statusCode: 204, data: Data())
             default:
-                Issue.record("Unexpected host HTTP request: \(request)")
+                Issue.record("Unexpected owner HTTP request: \(request)")
                 return .init(statusCode: 500, data: Data())
             }
         }
     }
 
-    func viewerHTTP(
+    func candidateHTTP(
         state: ClipNativeRendezvousState
     ) -> RendezvousTestHTTPTransport {
         RendezvousTestHTTPTransport { request, _ in
@@ -543,7 +642,7 @@ private struct RendezvousTestFixture: Sendable {
                     "state": state.rawValue,
                 ]))
             default:
-                Issue.record("Unexpected viewer HTTP request: \(request)")
+                Issue.record("Unexpected candidate HTTP request: \(request)")
                 return .init(statusCode: 500, data: Data())
             }
         }

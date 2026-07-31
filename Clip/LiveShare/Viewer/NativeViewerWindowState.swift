@@ -3,11 +3,6 @@ import CoreGraphics
 import CryptoKit
 import Foundation
 
-enum NativeViewerSourceMode: Equatable, Sendable {
-    case manual
-    case followsFocusedWindow
-}
-
 struct NativeViewerSourceSnapshot: Equatable, Sendable {
     let sourceInstanceID: String
     let streamID: String
@@ -17,11 +12,10 @@ struct NativeViewerSourceSnapshot: Equatable, Sendable {
     /// The source window or display size in macOS points. Encoded pixels stay
     /// separate so Retina captures remain sharp without appearing twice as
     /// large on a 1x viewer display.
-    let sourcePointSize: CGSize?
+    let sourcePointSize: CGSize
     let isFocused: Bool
     let isConnected: Bool
     let stateRevision: UInt64
-    let mode: NativeViewerSourceMode
 
     init(
         sourceInstanceID: String,
@@ -29,11 +23,10 @@ struct NativeViewerSourceSnapshot: Equatable, Sendable {
         applicationName: String,
         windowName: String,
         pixelSize: CGSize,
-        sourcePointSize: CGSize? = nil,
+        sourcePointSize: CGSize,
         isFocused: Bool,
         isConnected: Bool,
-        stateRevision: UInt64,
-        mode: NativeViewerSourceMode
+        stateRevision: UInt64
     ) {
         self.sourceInstanceID = sourceInstanceID
         self.streamID = streamID
@@ -44,26 +37,20 @@ struct NativeViewerSourceSnapshot: Equatable, Sendable {
         self.isFocused = isFocused
         self.isConnected = isConnected
         self.stateRevision = stateRevision
-        self.mode = mode
     }
 }
 
 extension ClipLiveShareStreamDescriptor {
-    var sourcePointSize: CGSize? {
-        guard let sourcePointWidth, let sourcePointHeight else { return nil }
-        return CGSize(width: sourcePointWidth, height: sourcePointHeight)
+    var sourcePointSize: CGSize {
+        CGSize(width: sourcePointWidth, height: sourcePointHeight)
     }
 }
 
 struct NativeViewerWindowID: Hashable, Sendable, CustomStringConvertible {
     private let rawValue: String
 
-    static func manual(sourceInstanceID: String) -> Self {
-        Self(rawValue: "manual:\(sourceInstanceID)")
-    }
-
-    static func automatic(sessionID: String) -> Self {
-        Self(rawValue: "automatic:\(sessionID)")
+    static func source(instanceID: String) -> Self {
+        Self(rawValue: "source:\(instanceID)")
     }
 
     var description: String { rawValue }
@@ -104,22 +91,16 @@ enum NativeViewerWindowChange: Equatable, Sendable {
 /// owns local placement after a window is created, so host geometry can never
 /// pull a viewer's windows around their desktop.
 struct NativeViewerWindowRegistry: Equatable, Sendable {
-    let sessionID: String
     private(set) var windows: [NativeViewerWindowID: NativeViewerWindowSnapshot] = [:]
 
-    init(sessionID: String) {
-        self.sessionID = sessionID
-    }
+    init() {}
 
     mutating func reconcile(_ sources: [NativeViewerSourceSnapshot]) -> [NativeViewerWindowChange] {
         var incoming: [NativeViewerWindowID: NativeViewerSourceSnapshot] = [:]
         for source in sources {
-            let id = switch source.mode {
-            case .manual:
-                NativeViewerWindowID.manual(sourceInstanceID: source.sourceInstanceID)
-            case .followsFocusedWindow:
-                NativeViewerWindowID.automatic(sessionID: sessionID)
-            }
+            let id = NativeViewerWindowID.source(
+                instanceID: source.sourceInstanceID
+            )
             guard let existing = incoming[id] else {
                 incoming[id] = source
                 continue

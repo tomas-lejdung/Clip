@@ -122,11 +122,10 @@ struct NativeViewerWindowControllerTests {
             sourcePointSize: CGSize(width: 960, height: 540),
             isFocused: true,
             isConnected: true,
-            stateRevision: 1,
-            mode: .manual
+            stateRevision: 1
         )
         let controller = NativeViewerWindowController(
-            id: .manual(sourceInstanceID: source.sourceInstanceID),
+            id: .source(instanceID: source.sourceInstanceID),
             ownerName: "Friend",
             source: source,
             identityColor: .systemPink,
@@ -161,8 +160,7 @@ struct NativeViewerWindowControllerTests {
             sourcePointSize: CGSize(width: 1_000, height: 500),
             isFocused: true,
             isConnected: true,
-            stateRevision: 1,
-            mode: .manual
+            stateRevision: 1
         )
         content.frame = CGRect(
             x: 0,
@@ -199,8 +197,7 @@ struct NativeViewerWindowControllerTests {
             sourcePointSize: CGSize(width: 2_311, height: 1_222),
             isFocused: true,
             isConnected: true,
-            stateRevision: 1,
-            mode: .manual
+            stateRevision: 1
         )
         content.frame = CGRect(
             x: 0,
@@ -343,10 +340,10 @@ struct NativeViewerWindowControllerTests {
             forFrameRect: CGRect(origin: .zero, size: frameSize)
         ).size
         let maximum = CGSize(
-            width: source.sourcePointSize!.width
+            width: source.sourcePointSize.width
                 + NativeViewerContentView.horizontalChrome
                 + max(0, frameSize.width - contentSize.width),
-            height: source.sourcePointSize!.height
+            height: source.sourcePointSize.height
                 + NativeViewerContentView.verticalChrome
                 + max(0, frameSize.height - contentSize.height)
         )
@@ -363,7 +360,7 @@ struct NativeViewerWindowControllerTests {
         #expect(window.minSize == defaultMinimum)
     }
 
-    @Test("Host growth resizes Follow but preserves Native and Fit frames")
+    @Test("Source growth resizes Follow but preserves Native and Fit frames")
     func hostGrowthRespectsSizingModeOwnership() {
         let initial = Self.makeSource(
             sourcePointSize: CGSize(width: 480, height: 270)
@@ -516,7 +513,7 @@ struct NativeViewerWindowControllerTests {
         #expect(states == [true, false])
     }
 
-    @Test("Leaving Follow during fullscreen cancels its deferred host resize")
+    @Test("Leaving Follow during fullscreen cancels its deferred source resize")
     func nativeModeCancelsDeferredFollowResize() {
         let controller = makeController()
         defer { controller.tearDown() }
@@ -540,8 +537,7 @@ struct NativeViewerWindowControllerTests {
             sourcePointSize: CGSize(width: 1_200, height: 675),
             isFocused: true,
             isConnected: true,
-            stateRevision: 2,
-            mode: .manual
+            stateRevision: 2
         )
         controller.update(
             ownerName: "Friend",
@@ -559,7 +555,7 @@ struct NativeViewerWindowControllerTests {
         source: NativeViewerSourceSnapshot = Self.makeSource()
     ) -> NativeViewerWindowController {
         NativeViewerWindowController(
-            id: .manual(sourceInstanceID: source.sourceInstanceID),
+            id: .source(instanceID: source.sourceInstanceID),
             ownerName: "Friend",
             source: source,
             identityColor: .systemPink,
@@ -583,8 +579,7 @@ struct NativeViewerWindowControllerTests {
             sourcePointSize: sourcePointSize,
             isFocused: true,
             isConnected: true,
-            stateRevision: stateRevision,
-            mode: .manual
+            stateRevision: stateRevision
         )
     }
 }

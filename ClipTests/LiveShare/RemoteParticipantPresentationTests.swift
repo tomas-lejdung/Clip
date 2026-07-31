@@ -78,7 +78,7 @@ struct RemoteParticipantPresentationTests {
         _ = presentation.upsertRemoteTrack("first", streamID: "video0")
         presentation.rememberLocalPresentation([
             NativeViewerWindowSnapshot(
-                id: .manual(sourceInstanceID: initial.sourceInstanceID),
+                id: .source(instanceID: initial.sourceInstanceID),
                 source: initial,
                 isVisible: saved.isVisible,
                 scaleMode: saved.scaleMode,
@@ -104,17 +104,44 @@ struct RemoteParticipantPresentationTests {
         )
     }
 
-    @Test("Follow-host window presentation survives source generation replacement")
-    func automaticWindowPresentationSurvivesReplacement() {
+    @Test("Track loss removes only its ready window and a fresh track rebinds")
+    func trackLossDoesNotLeaveGhostWindow() {
+        let first = makeSource(instance: "first", stream: "video0")
+        let second = makeSource(instance: "second", stream: "video1")
+        var presentation = RemoteParticipantPresentation<String>(
+            participantNamespace: Data([1])
+        )
+        _ = presentation.replaceAuthoritativeSources([first, second])
+        _ = presentation.upsertRemoteTrack("track-0", streamID: "video0")
+        _ = presentation.upsertRemoteTrack("track-1", streamID: "video1")
+        #expect(presentation.readySources == [first, second])
+
+        let afterLoss = presentation.removeRemoteTrack(streamID: "video0")
+
+        #expect(afterLoss == [second])
+        #expect(presentation.remoteTrack(forStreamID: "video0") == nil)
+        #expect(presentation.remoteTrack(forStreamID: "video1") == "track-1")
+
+        let afterRecovery = presentation.upsertRemoteTrack(
+            "replacement-0",
+            streamID: "video0"
+        )
+        #expect(afterRecovery == [first, second])
+        #expect(
+            presentation.remoteTrack(forStreamID: "video0")
+                == "replacement-0"
+        )
+    }
+
+    @Test("Auto-shared source replacement does not inherit another source's presentation")
+    func autoSharedSourcesKeepIndependentPresentation() {
         let initial = makeSource(
             instance: "first",
-            stream: "video0",
-            mode: .followsFocusedWindow
+            stream: "video0"
         )
         let replacement = makeSource(
             instance: "second",
-            stream: "video1",
-            mode: .followsFocusedWindow
+            stream: "video1"
         )
         let saved = RemoteParticipantLocalWindowPresentation(
             scaleMode: .fit,
@@ -127,7 +154,7 @@ struct RemoteParticipantPresentationTests {
         _ = presentation.replaceAuthoritativeSources([initial])
         presentation.rememberLocalPresentation([
             NativeViewerWindowSnapshot(
-                id: .automatic(sessionID: "session"),
+                id: .source(instanceID: initial.sourceInstanceID),
                 source: initial,
                 isVisible: saved.isVisible,
                 scaleMode: saved.scaleMode
@@ -136,7 +163,7 @@ struct RemoteParticipantPresentationTests {
 
         _ = presentation.replaceAuthoritativeSources([replacement])
 
-        #expect(presentation.localPresentation(for: replacement) == saved)
+        #expect(presentation.localPresentation(for: replacement) == nil)
     }
 
     @Test("Authoritative removal discards obsolete local presentation")
@@ -148,7 +175,7 @@ struct RemoteParticipantPresentationTests {
         _ = presentation.replaceAuthoritativeSources([source])
         presentation.rememberLocalPresentation([
             NativeViewerWindowSnapshot(
-                id: .manual(sourceInstanceID: source.sourceInstanceID),
+                id: .source(instanceID: source.sourceInstanceID),
                 source: source,
                 isVisible: false,
                 scaleMode: .native
@@ -191,8 +218,7 @@ struct RemoteParticipantPresentationTests {
     private func makeSource(
         instance: String,
         stream: String,
-        title: String = "Document",
-        mode: NativeViewerSourceMode = .manual
+        title: String = "Document"
     ) -> NativeViewerSourceSnapshot {
         NativeViewerSourceSnapshot(
             sourceInstanceID: instance,
@@ -200,10 +226,10 @@ struct RemoteParticipantPresentationTests {
             applicationName: "Fixture",
             windowName: title,
             pixelSize: CGSize(width: 1_280, height: 720),
+            sourcePointSize: CGSize(width: 1_280, height: 720),
             isFocused: false,
             isConnected: true,
-            stateRevision: 1,
-            mode: mode
+            stateRevision: 1
         )
     }
 }

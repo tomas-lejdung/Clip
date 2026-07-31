@@ -492,4 +492,30 @@ public struct ClipLiveShareSignedNativeV3MembershipSnapshot: Codable, Equatable,
       try localCapabilities.validateCompatibility(with: participant.capabilities)
     }
   }
+
+  /// Revalidates a membership that this process already accepted while it was
+  /// fresh.
+  ///
+  /// Membership expiry bounds *admission* and prevents a newly connecting peer
+  /// from trusting an arbitrarily old room view. It does not revoke an
+  /// established participant after a few minutes. Room-control messages remain
+  /// bound to this exact membership digest and carry their own fresh validity
+  /// window.
+  ///
+  /// Callers must only use this for their locally committed membership, never
+  /// for an untrusted membership arriving from the network for the first time.
+  public func verifyAsEstablished(
+    expectedSessionID: ClipLiveShareSessionID,
+    expectedLeaderParticipantID: ClipLiveShareNativeV3ParticipantID,
+    expectedLeaderIdentity: ClipLiveShareIdentityPublicKey,
+    localCapabilities: ClipLiveShareNativeV3Capabilities = .current
+  ) throws {
+    try verify(
+      expectedSessionID: expectedSessionID,
+      expectedLeaderParticipantID: expectedLeaderParticipantID,
+      expectedLeaderIdentity: expectedLeaderIdentity,
+      localCapabilities: localCapabilities,
+      at: snapshot.issuedAt
+    )
+  }
 }

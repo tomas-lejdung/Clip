@@ -12,11 +12,11 @@ var environmentNames = []string{
 	"CLIP_SERVER_LEASE_DURATION",
 	"CLIP_SERVER_RECONNECT_GRACE",
 	"CLIP_SERVER_ROUTE_IDLE_TIMEOUT",
-	"CLIP_SERVER_MAXIMUM_ROOMS",
+	"CLIP_SERVER_MAXIMUM_RENDEZVOUS",
 	"CLIP_SERVER_MAXIMUM_CONNECTIONS",
-	"CLIP_SERVER_RESERVED_HOST_CONNECTIONS",
+	"CLIP_SERVER_RESERVED_COORDINATOR_CONNECTIONS",
 	"CLIP_SERVER_MAXIMUM_CONNECTIONS_PER_SOURCE",
-	"CLIP_SERVER_ROOM_LEASE_OPERATIONS_PER_MINUTE",
+	"CLIP_SERVER_RENDEZVOUS_LEASE_OPERATIONS_PER_MINUTE",
 	"CLIP_SERVER_WEBSOCKET_UPGRADES_PER_MINUTE",
 	"CLIP_SERVER_MAXIMUM_QUEUED_BYTES_PER_SOCKET",
 	"CLIP_SERVER_MAXIMUM_QUEUED_BYTES_TOTAL",
@@ -56,11 +56,11 @@ func TestEnvironmentOverridesAreStrictlyParsed(t *testing.T) {
 	t.Setenv("CLIP_SERVER_LEASE_DURATION", "10m")
 	t.Setenv("CLIP_SERVER_RECONNECT_GRACE", "45s")
 	t.Setenv("CLIP_SERVER_ROUTE_IDLE_TIMEOUT", "90s")
-	t.Setenv("CLIP_SERVER_MAXIMUM_ROOMS", "50")
+	t.Setenv("CLIP_SERVER_MAXIMUM_RENDEZVOUS", "50")
 	t.Setenv("CLIP_SERVER_MAXIMUM_CONNECTIONS", "75")
-	t.Setenv("CLIP_SERVER_RESERVED_HOST_CONNECTIONS", "10")
+	t.Setenv("CLIP_SERVER_RESERVED_COORDINATOR_CONNECTIONS", "10")
 	t.Setenv("CLIP_SERVER_MAXIMUM_CONNECTIONS_PER_SOURCE", "20")
-	t.Setenv("CLIP_SERVER_ROOM_LEASE_OPERATIONS_PER_MINUTE", "30")
+	t.Setenv("CLIP_SERVER_RENDEZVOUS_LEASE_OPERATIONS_PER_MINUTE", "30")
 	t.Setenv("CLIP_SERVER_WEBSOCKET_UPGRADES_PER_MINUTE", "120")
 	t.Setenv("CLIP_SERVER_MAXIMUM_QUEUED_BYTES_PER_SOCKET", "1048576")
 	t.Setenv("CLIP_SERVER_MAXIMUM_QUEUED_BYTES_TOTAL", "8388608")
@@ -73,7 +73,11 @@ func TestEnvironmentOverridesAreStrictlyParsed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if configuration.Address != ":9090" || configuration.LeaseDuration != 10*time.Minute || configuration.MaximumRooms != 50 || configuration.MaximumConnections != 75 || configuration.ReservedHostConnections != 10 {
+	if configuration.Address != ":9090" ||
+		configuration.LeaseDuration != 10*time.Minute ||
+		configuration.MaximumRendezvous != 50 ||
+		configuration.MaximumConnections != 75 ||
+		configuration.ReservedCoordinatorConnections != 10 {
 		t.Fatalf("environment configuration = %#v", configuration)
 	}
 	if len(configuration.AllowedOrigins) != 2 || configuration.ICEServers[0].Credential != "temporary" || len(configuration.TrustedProxyCIDRs) != 2 || configuration.MaximumQueuedBytesTotal != 8_388_608 {
@@ -86,9 +90,11 @@ func TestInvalidEnvironmentIsRejected(t *testing.T) {
 		name  string
 		value string
 	}{
-		"zero port":            {name: "PORT", value: "0"},
-		"invalid duration":     {name: "CLIP_SERVER_LEASE_DURATION", value: "later"},
-		"negative room limit":  {name: "CLIP_SERVER_MAXIMUM_ROOMS", value: "-1"},
+		"zero port":        {name: "PORT", value: "0"},
+		"invalid duration": {name: "CLIP_SERVER_LEASE_DURATION", value: "later"},
+		"negative rendezvous limit": {
+			name: "CLIP_SERVER_MAXIMUM_RENDEZVOUS", value: "-1",
+		},
 		"trailing ICE JSON":    {name: "CLIP_SERVER_ICE_SERVERS_JSON", value: `[{"urls":["stun:example"]}] {}`},
 		"HTTP ICE URL":         {name: "CLIP_SERVER_ICE_SERVERS_JSON", value: `[{"urls":["https://example"]}]`},
 		"origin with path":     {name: "CLIP_SERVER_ALLOWED_ORIGINS", value: "https://example.com/viewer"},

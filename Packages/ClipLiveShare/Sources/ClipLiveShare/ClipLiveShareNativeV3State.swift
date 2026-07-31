@@ -145,11 +145,11 @@ public struct ClipLiveShareNativeV3PeerLinkRevisionLedger: Equatable, Sendable {
 
 public struct ClipLiveShareNativeV3PublishedSource: Codable, Equatable, Hashable, Sendable {
   public let key: ClipLiveShareNativeV3SourceKey
-  public let descriptor: ClipLiveShareNativeStreamDescriptor
+  public let descriptor: ClipLiveShareNativeV3StreamDescriptor
 
   public init(
     key: ClipLiveShareNativeV3SourceKey,
-    descriptor: ClipLiveShareNativeStreamDescriptor
+    descriptor: ClipLiveShareNativeV3StreamDescriptor
   ) throws {
     guard key.sourceInstanceID == descriptor.sourceInstanceID else {
       throw ClipLiveShareNativeV3Error.invalidSourceOwnership
@@ -173,7 +173,7 @@ public struct ClipLiveShareNativeV3PublishedSource: Codable, Equatable, Hashable
     try self.init(
       key: container.decode(ClipLiveShareNativeV3SourceKey.self, forKey: .key),
       descriptor: container.decode(
-        ClipLiveShareNativeStreamDescriptor.self,
+        ClipLiveShareNativeV3StreamDescriptor.self,
         forKey: .descriptor
       )
     )

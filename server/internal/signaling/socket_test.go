@@ -26,10 +26,14 @@ func newUnstartedTestSocket(queueDepth, maximumPerRoute, maximumBytesPerRoute in
 func TestSendQueueFullReportsBackpressureWithoutClosingSocket(t *testing.T) {
 	t.Parallel()
 	socket := newUnstartedTestSocket(1, 1, protocol.MaximumMessageBytes)
-	if err := socket.Send(protocol.Message{Type: protocol.MessageHostUnavailable}); err != nil {
+	if err := socket.Send(protocol.Message{
+		Type: protocol.MessageNativeOwnerUnavailable,
+	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := socket.Send(protocol.Message{Type: protocol.MessageHostUnavailable}); !errors.Is(err, ErrOutboundQueueFull) {
+	if err := socket.Send(protocol.Message{
+		Type: protocol.MessageNativeOwnerUnavailable,
+	}); !errors.Is(err, ErrOutboundQueueFull) {
 		t.Fatalf("second Send() = %v", err)
 	}
 	if socket.closing {
@@ -42,7 +46,9 @@ func TestSendQueueFullReportsBackpressureWithoutClosingSocket(t *testing.T) {
 	}
 
 	<-socket.outbound
-	if err := socket.Send(protocol.Message{Type: protocol.MessageHostUnavailable}); err != nil {
+	if err := socket.Send(protocol.Message{
+		Type: protocol.MessageNativeOwnerUnavailable,
+	}); err != nil {
 		t.Fatalf("Send() after queue capacity returned = %v", err)
 	}
 }
@@ -50,8 +56,12 @@ func TestSendQueueFullReportsBackpressureWithoutClosingSocket(t *testing.T) {
 func TestPerRouteQueueLimitReservesCapacityForOtherRoutes(t *testing.T) {
 	t.Parallel()
 	socket := newUnstartedTestSocket(4, 2, protocol.MaximumMessageBytes)
-	firstRoute := protocol.Message{Type: protocol.MessageRelay, RouteID: "first-route"}
-	secondRoute := protocol.Message{Type: protocol.MessageRelay, RouteID: "second-route"}
+	firstRoute := protocol.Message{
+		Type: protocol.MessageNativeRelay, RouteID: "first-route",
+	}
+	secondRoute := protocol.Message{
+		Type: protocol.MessageNativeRelay, RouteID: "second-route",
+	}
 	if err := socket.Send(firstRoute); err != nil {
 		t.Fatal(err)
 	}
@@ -87,7 +97,9 @@ func TestNativeRelayUsesPerRouteQueueLimit(t *testing.T) {
 
 func TestPerRouteQueuedByteLimitIsEnforced(t *testing.T) {
 	t.Parallel()
-	message := protocol.Message{Type: protocol.MessageRelay, RouteID: "byte-route"}
+	message := protocol.Message{
+		Type: protocol.MessageNativeRelay, RouteID: "byte-route",
+	}
 	encoded, err := json.Marshal(message)
 	if err != nil {
 		t.Fatal(err)
@@ -106,7 +118,7 @@ func TestPerRouteQueuedByteLimitIsEnforced(t *testing.T) {
 
 func TestPerSocketQueuedByteLimitIsEnforced(t *testing.T) {
 	t.Parallel()
-	message := protocol.Message{Type: protocol.MessageHostUnavailable}
+	message := protocol.Message{Type: protocol.MessageNativeOwnerUnavailable}
 	encoded, err := json.Marshal(message)
 	if err != nil {
 		t.Fatal(err)
@@ -126,7 +138,7 @@ func TestPerSocketQueuedByteLimitIsEnforced(t *testing.T) {
 
 func TestSharedQueuedByteBudgetIsReleasedWithFrames(t *testing.T) {
 	t.Parallel()
-	message := protocol.Message{Type: protocol.MessageHostUnavailable}
+	message := protocol.Message{Type: protocol.MessageNativeOwnerUnavailable}
 	encoded, err := json.Marshal(message)
 	if err != nil {
 		t.Fatal(err)
@@ -164,7 +176,9 @@ func TestAbortClosesSocketImmediately(t *testing.T) {
 	default:
 		t.Fatal("Abort() did not close Done")
 	}
-	if err := socket.Send(protocol.Message{Type: protocol.MessageHostUnavailable}); !errors.Is(err, ErrSocketClosed) {
+	if err := socket.Send(protocol.Message{
+		Type: protocol.MessageNativeOwnerUnavailable,
+	}); !errors.Is(err, ErrSocketClosed) {
 		t.Fatalf("Send() after Abort() = %v", err)
 	}
 }

@@ -5,8 +5,8 @@ import Testing
 
 @Suite("Native device identity repository")
 struct NativeDeviceIdentityRepositoryTests {
-    @Test("Identity, rendezvous and owner capability survive repository recreation")
-    func persistsCompleteIdentity() async throws {
+    @Test("Signing identity survives repository recreation")
+    func persistsSigningIdentity() async throws {
         let storage = MemoryNativeIdentitySecureStorage()
         let firstRepository = NativeDeviceIdentityRepository(storage: storage)
         let first = try await firstRepository.loadOrCreate()
@@ -14,8 +14,6 @@ struct NativeDeviceIdentityRepositoryTests {
         let second = try await secondRepository.loadOrCreate()
 
         #expect(first.publicKey == second.publicKey)
-        #expect(first.rendezvousID == second.rendezvousID)
-        #expect(first.ownerToken.rawValue == second.ownerToken.rawValue)
         let payload = Data("signed fixture".utf8)
         #expect(first.publicKey.isValidSignature(
             try second.signer.signature(for: payload),
@@ -23,7 +21,7 @@ struct NativeDeviceIdentityRepositoryTests {
         ))
     }
 
-    @Test("Reset rotates every persistent secret")
+    @Test("Reset rotates the persistent signing identity")
     func resetRotatesIdentity() async throws {
         let repository = NativeDeviceIdentityRepository(
             storage: MemoryNativeIdentitySecureStorage()
@@ -32,8 +30,6 @@ struct NativeDeviceIdentityRepositoryTests {
         let replacement = try await repository.reset()
 
         #expect(first.publicKey != replacement.publicKey)
-        #expect(first.rendezvousID != replacement.rendezvousID)
-        #expect(first.ownerToken.rawValue != replacement.ownerToken.rawValue)
     }
 
     @Test("Corrupt Keychain data fails closed instead of rotating trust silently")
@@ -89,6 +85,145 @@ struct NativeDeviceIdentityRepositoryTests {
 
         #expect(message.contains(String(errSecMissingEntitlement)))
         #expect(message.localizedCaseInsensitiveContains("Keychain"))
+    }
+
+    @Test("Guarded file identities persist independently per mesh participant")
+    func guardedMeshFileIdentitiesPersistAndRemainDistinct() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "Clip-Mesh-Identity-Tests-\(UUID().uuidString)",
+            isDirectory: true
+        )
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let firstURL = root
+            .appendingPathComponent("participant-a", isDirectory: true)
+            .appendingPathComponent(
+                IsolatedNativeDeviceIdentityFileStorage.relativePath,
+                isDirectory: false
+            )
+        let secondURL = root
+            .appendingPathComponent("participant-b", isDirectory: true)
+            .appendingPathComponent(
+                IsolatedNativeDeviceIdentityFileStorage.relativePath,
+                isDirectory: false
+            )
+        let firstRepository = NativeDeviceIdentityRepository(
+            storage: IsolatedNativeDeviceIdentityFileStorage(fileURL: firstURL)
+        )
+        let firstIdentity = try await firstRepository.loadOrCreate()
+        let relaunchedRepository = NativeDeviceIdentityRepository(
+            storage: IsolatedNativeDeviceIdentityFileStorage(fileURL: firstURL)
+        )
+        let relaunchedIdentity = try await relaunchedRepository.loadOrCreate()
+        let secondRepository = NativeDeviceIdentityRepository(
+            storage: IsolatedNativeDeviceIdentityFileStorage(fileURL: secondURL)
+        )
+        let secondIdentity = try await secondRepository.loadOrCreate()
+
+        #expect(firstIdentity.publicKey == relaunchedIdentity.publicKey)
+        #expect(firstIdentity.publicKey != secondIdentity.publicKey)
+    }
+
+    @Test("Guarded file identity is owner-only and bounded")
+    func guardedMeshFileIdentityIsOwnerOnlyAndBounded() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "Clip-Mesh-Identity-Tests-\(UUID().uuidString)",
+            isDirectory: true
+        )
+        defer { try? FileManager.default.removeItem(at: root) }
+        let fileURL = root.appendingPathComponent(
+            IsolatedNativeDeviceIdentityFileStorage.relativePath,
+            isDirectory: false
+        )
+        let storage = IsolatedNativeDeviceIdentityFileStorage(fileURL: fileURL)
+        let payload = Data("private identity fixture".utf8)
+
+        try storage.insert(payload)
+
+        #expect(try storage.load() == payload)
+        let fileAttributes = try FileManager.default.attributesOfItem(
+            atPath: fileURL.path
+        )
+        let directoryAttributes = try FileManager.default.attributesOfItem(
+            atPath: fileURL.deletingLastPathComponent().path
+        )
+        let filePermissions = try #require(
+            fileAttributes[.posixPermissions] as? NSNumber
+        )
+        let directoryPermissions = try #require(
+            directoryAttributes[.posixPermissions] as? NSNumber
+        )
+        #expect(filePermissions.intValue & 0o777 == 0o600)
+        #expect(directoryPermissions.intValue & 0o777 == 0o700)
+
+        let oversized = Data(
+            repeating: 0xFF,
+            count: (64 * 1_024) + 1
+        )
+        let oversizedStorage = IsolatedNativeDeviceIdentityFileStorage(
+            fileURL: root.appendingPathComponent("oversized.json")
+        )
+        #expect(throws: NativeDeviceIdentityStorageError.corruptIdentity) {
+            try oversizedStorage.insert(oversized)
+        }
+    }
+
+    @Test("Only a valid mesh acceptance launch selects file-backed identity storage")
+    func fileStorageSelectionIsFailClosed() throws {
+        let root = URL(fileURLWithPath: "/tmp/clip-mesh-identity-selection")
+        let validArguments = [
+            "Clip",
+            AppLaunchConfiguration.uiTestingArgument,
+            AppLaunchConfiguration.nativeV3MeshAcceptanceArgument,
+            AppLaunchConfiguration.nativeV3MeshAcceptanceAcknowledgementArgument,
+            "\(AppLaunchConfiguration.nativeV3MeshParticipantArgumentPrefix)participant-a",
+        ]
+        let meshConfiguration = AppLaunchConfiguration.resolve(
+            arguments: validArguments,
+            temporaryDirectory: root,
+            isolationIdentifier: AppLaunchConfiguration.isolationIdentifier(
+                for: validArguments
+            )
+        )
+        let storage = try meshConfiguration.makeNativeDeviceIdentityStorage(
+            applicationSupportDirectory: root.appendingPathComponent("Support")
+        )
+        let isolatedStorage = try #require(
+            storage as? IsolatedNativeDeviceIdentityFileStorage
+        )
+        #expect(
+            isolatedStorage.fileURL
+                == root
+                    .appendingPathComponent("Support")
+                    .appendingPathComponent(
+                        IsolatedNativeDeviceIdentityFileStorage.relativePath
+                    )
+        )
+
+        let production = AppLaunchConfiguration.resolve(
+            arguments: ["Clip"],
+            temporaryDirectory: root,
+            isolationIdentifier: "production"
+        )
+        #expect(
+            try production.makeNativeDeviceIdentityStorage(
+                applicationSupportDirectory: root
+            ) is LiveNativeDeviceIdentityKeychain
+        )
+
+        let invalidArguments = Array(validArguments.dropLast())
+        let invalid = AppLaunchConfiguration.resolve(
+            arguments: invalidArguments,
+            temporaryDirectory: root,
+            isolationIdentifier: AppLaunchConfiguration.isolationIdentifier(
+                for: invalidArguments
+            )
+        )
+        #expect(throws: AppLaunchConfigurationError.invalidNativeV3MeshAcceptanceRequest) {
+            _ = try invalid.makeNativeDeviceIdentityStorage(
+                applicationSupportDirectory: root
+            )
+        }
     }
 }
 

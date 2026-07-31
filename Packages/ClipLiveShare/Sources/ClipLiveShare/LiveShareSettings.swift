@@ -294,6 +294,15 @@ public struct LiveShareAdvancedVideoSettings: Codable, Equatable, Sendable {
 /// viewer's video-bandwidth budget; transport congestion control can still
 /// reduce the effective rate to protect latency.
 public struct LiveShareSettings: Codable, Equatable, Sendable {
+    public static let collaborationPingDurationSecondsRange = 1 ... 10
+    public static let collaborationInkExpirySecondsRange = 1 ... 60
+    public static let defaultCollaborationInkColor =
+        try! ClipLiveShareNativeV3CollaborationColor(
+            red: 74,
+            green: 167,
+            blue: 255
+        )
+
     public var quality: LiveShareQualityPreset
     public var frameRate: LiveShareFrameRate
     public var encodingMode: LiveShareEncodingMode
@@ -308,6 +317,29 @@ public struct LiveShareSettings: Codable, Equatable, Sendable {
     public var prioritizeFocusedWindow: Bool
     public var autoShareFocusedWindows: Bool
     public var accessCodeEnabled: Bool
+    /// Viewing never transmits a pointer unless this explicit local preference
+    /// is enabled.
+    public var collaborationPointerVisibleByDefault: Bool
+    public var collaborationPingDurationSeconds: Int {
+        didSet {
+            collaborationPingDurationSeconds = Self.clamp(
+                collaborationPingDurationSeconds,
+                to: Self.collaborationPingDurationSecondsRange
+            )
+        }
+    }
+    /// Ink is independently selectable from the persistent identity color
+    /// used to attribute pointers and pings.
+    public var collaborationInkColor:
+        ClipLiveShareNativeV3CollaborationColor
+    public var collaborationInkExpirySeconds: Int {
+        didSet {
+            collaborationInkExpirySeconds = Self.clamp(
+                collaborationInkExpirySeconds,
+                to: Self.collaborationInkExpirySecondsRange
+            )
+        }
+    }
     public var advancedVideoSettings: LiveShareAdvancedVideoSettings
 
     public init(
@@ -322,6 +354,12 @@ public struct LiveShareSettings: Codable, Equatable, Sendable {
         prioritizeFocusedWindow: Bool = true,
         autoShareFocusedWindows: Bool = false,
         accessCodeEnabled: Bool = false,
+        collaborationPointerVisibleByDefault: Bool = false,
+        collaborationPingDurationSeconds: Int = 2,
+        collaborationInkColor:
+            ClipLiveShareNativeV3CollaborationColor =
+                Self.defaultCollaborationInkColor,
+        collaborationInkExpirySeconds: Int = 30,
         advancedVideoSettings: LiveShareAdvancedVideoSettings = .default
     ) {
         self.quality = quality
@@ -337,6 +375,17 @@ public struct LiveShareSettings: Codable, Equatable, Sendable {
         self.prioritizeFocusedWindow = prioritizeFocusedWindow
         self.autoShareFocusedWindows = autoShareFocusedWindows
         self.accessCodeEnabled = accessCodeEnabled
+        self.collaborationPointerVisibleByDefault =
+            collaborationPointerVisibleByDefault
+        self.collaborationPingDurationSeconds = Self.clamp(
+            collaborationPingDurationSeconds,
+            to: Self.collaborationPingDurationSecondsRange
+        )
+        self.collaborationInkColor = collaborationInkColor
+        self.collaborationInkExpirySeconds = Self.clamp(
+            collaborationInkExpirySeconds,
+            to: Self.collaborationInkExpirySecondsRange
+        )
         self.advancedVideoSettings = advancedVideoSettings.normalized()
     }
 
@@ -355,6 +404,10 @@ public struct LiveShareSettings: Codable, Equatable, Sendable {
         case adaptiveBitrateEnabled
         case autoShareFocusedWindows
         case accessCodeEnabled
+        case collaborationPointerVisibleByDefault
+        case collaborationPingDurationSeconds
+        case collaborationInkColor
+        case collaborationInkExpirySeconds
         case advancedVideoSettings
     }
 
@@ -381,6 +434,28 @@ public struct LiveShareSettings: Codable, Equatable, Sendable {
             ?? true
         autoShareFocusedWindows = try container.decodeIfPresent(Bool.self, forKey: .autoShareFocusedWindows) ?? false
         accessCodeEnabled = try container.decodeIfPresent(Bool.self, forKey: .accessCodeEnabled) ?? false
+        collaborationPointerVisibleByDefault = try container.decodeIfPresent(
+            Bool.self,
+            forKey: .collaborationPointerVisibleByDefault
+        ) ?? false
+        collaborationPingDurationSeconds = Self.clamp(
+            try container.decodeIfPresent(
+                Int.self,
+                forKey: .collaborationPingDurationSeconds
+            ) ?? 2,
+            to: Self.collaborationPingDurationSecondsRange
+        )
+        collaborationInkColor = try container.decodeIfPresent(
+            ClipLiveShareNativeV3CollaborationColor.self,
+            forKey: .collaborationInkColor
+        ) ?? Self.defaultCollaborationInkColor
+        collaborationInkExpirySeconds = Self.clamp(
+            try container.decodeIfPresent(
+                Int.self,
+                forKey: .collaborationInkExpirySeconds
+            ) ?? 30,
+            to: Self.collaborationInkExpirySecondsRange
+        )
         advancedVideoSettings = try container.decodeIfPresent(
             LiveShareAdvancedVideoSettings.self,
             forKey: .advancedVideoSettings
@@ -403,6 +478,22 @@ public struct LiveShareSettings: Codable, Equatable, Sendable {
         try container.encode(prioritizeFocusedWindow, forKey: .prioritizeFocusedWindow)
         try container.encode(autoShareFocusedWindows, forKey: .autoShareFocusedWindows)
         try container.encode(accessCodeEnabled, forKey: .accessCodeEnabled)
+        try container.encode(
+            collaborationPointerVisibleByDefault,
+            forKey: .collaborationPointerVisibleByDefault
+        )
+        try container.encode(
+            collaborationPingDurationSeconds,
+            forKey: .collaborationPingDurationSeconds
+        )
+        try container.encode(
+            collaborationInkColor,
+            forKey: .collaborationInkColor
+        )
+        try container.encode(
+            collaborationInkExpirySeconds,
+            forKey: .collaborationInkExpirySeconds
+        )
         try container.encode(advancedVideoSettings, forKey: .advancedVideoSettings)
     }
 
@@ -413,5 +504,12 @@ public struct LiveShareSettings: Codable, Equatable, Sendable {
             let trimmed = identifier.trimmingCharacters(in: .whitespacesAndNewlines)
             return trimmed.isEmpty ? nil : trimmed
         })
+    }
+
+    private static func clamp<Value: Comparable>(
+        _ value: Value,
+        to range: ClosedRange<Value>
+    ) -> Value {
+        min(max(value, range.lowerBound), range.upperBound)
     }
 }

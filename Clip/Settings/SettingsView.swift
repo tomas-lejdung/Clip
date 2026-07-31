@@ -77,7 +77,7 @@ struct SettingsExternalActions: Sendable {
     let chooseDefaultSaveDirectory: @MainActor @Sendable (URL) async -> URL?
     let openSystemSettings: @MainActor @Sendable (URL) -> Void
     let revealHistoryDirectory: @MainActor @Sendable (URL) -> Void
-    let testLiveShareServer: @MainActor @Sendable (ClipLiveShareServerEndpoint) async throws -> Void
+    let testLiveShareServer: @MainActor @Sendable (ClipLiveShareRendezvousEndpoint) async throws -> Void
 
     init(
         chooseDefaultSaveDirectory: @escaping @MainActor @Sendable (URL) async -> URL? = {
@@ -103,7 +103,7 @@ struct SettingsExternalActions: Sendable {
             NSWorkspace.shared.activateFileViewerSelecting([url])
         },
         testLiveShareServer: @escaping @MainActor @Sendable (
-            ClipLiveShareServerEndpoint
+            ClipLiveShareRendezvousEndpoint
         ) async throws -> Void = { endpoint in
             try await LiveShareServerConnectionProbe.live.test(endpoint)
         }
@@ -129,52 +129,12 @@ private enum LiveShareServerTestStatus: Equatable {
     case failed(String)
 }
 
-enum SettingsNativeFriendStatus: Equatable, Sendable {
-    case offline
-    case preparing
-    case live
-    case blocked
-
-    var title: String {
-        switch self {
-        case .offline: String(localized: "Offline")
-        case .preparing: String(localized: "Getting ready")
-        case .live: String(localized: "Live")
-        case .blocked: String(localized: "Blocked")
-        }
-    }
-
-    var systemImage: String {
-        switch self {
-        case .offline: "circle"
-        case .preparing: "clock"
-        case .live: "circle.fill"
-        case .blocked: "hand.raised.fill"
-        }
-    }
-}
-
-struct SettingsNativeFriendRowSnapshot: Equatable, Identifiable, Sendable {
-    let id: String
-    let displayName: String
-    let deviceName: String
-    let fingerprint: String
-    let status: SettingsNativeFriendStatus
-
-    var isBlocked: Bool { status == .blocked }
-}
-
 enum SettingsAccessibilityIdentifier {
     static let nativeIdentityFingerprint =
         "clip.settings.liveShare.identity.fingerprint"
     static let nativeIdentityReset = "clip.settings.liveShare.identity.reset"
     static let nativeIdentityResetConfirm =
         "clip.settings.liveShare.identity.reset.confirm"
-    static let nativeFriendsEmpty = "clip.settings.liveShare.friends.empty"
-
-    static func nativeFriend(_ id: String, element: String) -> String {
-        "clip.settings.liveShare.friend.\(id).\(element)"
-    }
 }
 
 struct SettingsView: View {
@@ -205,54 +165,16 @@ struct SettingsView: View {
     }
 
     @MainActor
-    static func nativeFriendRows(
-        for model: NativeFriendModel
-    ) -> [SettingsNativeFriendRowSnapshot] {
-        let presenceByID = Dictionary(
-            uniqueKeysWithValues: model.presentationSnapshots.map {
-                ($0.id, $0.presence)
-            }
-        )
-        return model.book.records
-            .filter { $0.trustState != .pendingCommit }
-            .map { record in
-                let status: SettingsNativeFriendStatus
-                if record.trustState == .blocked {
-                    status = .blocked
-                } else {
-                    status = switch presenceByID[record.id] ?? .offline {
-                    case .offline: .offline
-                    case .preparing: .preparing
-                    case .live: .live
-                    }
-                }
-                return SettingsNativeFriendRowSnapshot(
-                    id: record.id,
-                    displayName: record.displayName,
-                    deviceName: record.deviceName,
-                    fingerprint: formattedFingerprint(record.identity.fingerprint),
-                    status: status
-                )
-            }
-    }
-
-    @MainActor
     @discardableResult
     static func resetNativeIdentity(
-        repository: NativeDeviceIdentityRepository,
-        friends: NativeFriendModel
+        repository: NativeDeviceIdentityRepository
     ) async throws -> ClipLiveShareIdentityFingerprint {
-        // Persistently remove every trust edge before rotating the Keychain
-        // identity. If this write fails, reset aborts with the old identity and
-        // friend book intact instead of reporting a partial success.
-        try await friends.clearAllDurably()
         let replacement = try await repository.reset()
         return replacement.fingerprint
     }
 
     @ObservedObject var model: AppSettingsModel
     @ObservedObject var liveSharePreferences: LiveSharePreferencesModel
-    @ObservedObject var nativeFriends: NativeFriendModel
     @ObservedObject var shortcuts: GlobalShortcutService
     let liveShareIdentity: NativeDeviceIdentityRepository
     let permissions: any PermissionServicing
@@ -287,7 +209,6 @@ struct SettingsView: View {
     init(
         model: AppSettingsModel,
         liveSharePreferences: LiveSharePreferencesModel,
-        nativeFriends: NativeFriendModel,
         liveShareIdentity: NativeDeviceIdentityRepository,
         shortcuts: GlobalShortcutService,
         permissions: any PermissionServicing,
@@ -303,7 +224,6 @@ struct SettingsView: View {
     ) {
         _model = ObservedObject(wrappedValue: model)
         _liveSharePreferences = ObservedObject(wrappedValue: liveSharePreferences)
-        _nativeFriends = ObservedObject(wrappedValue: nativeFriends)
         self.liveShareIdentity = liveShareIdentity
         _shortcuts = ObservedObject(wrappedValue: shortcuts)
         self.permissions = permissions
@@ -388,7 +308,7 @@ struct SettingsView: View {
             )
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("This device will receive a new fingerprint and all local Friends will be removed. Existing Friends will no longer recognize it.")
+            Text("This device will receive a new fingerprint. Existing room invitations tied to the old identity will no longer be valid.")
         }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("clip.settings")
@@ -529,7 +449,7 @@ struct SettingsView: View {
                     .disabled(
                         liveSharePreferences.serverEndpoint == .official
                             && liveShareServerAddressText
-                                == ClipLiveShareServerEndpoint.official.description
+                                == ClipLiveShareRendezvousEndpoint.official.description
                     )
                     .accessibilityIdentifier("clip.settings.liveShare.server.reset")
                 }
@@ -551,7 +471,7 @@ struct SettingsView: View {
             } header: {
                 Text("Server")
             } footer: {
-                Text("Clip discovers the viewer, encrypted signaling, and ICE configuration from this server root. Changes apply to the next Live Share session.")
+                Text("Clip discovers encrypted rendezvous, signaling, and ICE configuration from this server root. Changes apply to the next Live Share session.")
             }
 
             Section {
@@ -608,46 +528,7 @@ struct SettingsView: View {
             } header: {
                 Text("This Device")
             } footer: {
-                Text("Friends use this fingerprint to verify this Mac. Reset it only if you want this device to become a new identity.")
-            }
-
-            Section {
-                let rows = Self.nativeFriendRows(for: nativeFriends)
-                if rows.isEmpty {
-                    Text("No Friends yet. Add one from the Live Share popover.")
-                        .foregroundStyle(.secondary)
-                        .accessibilityIdentifier(
-                            SettingsAccessibilityIdentifier.nativeFriendsEmpty
-                        )
-                } else {
-                    ForEach(rows) { row in
-                        SettingsNativeFriendRow(
-                            snapshot: row,
-                            onRename: { name in
-                                nativeFriends.rename(id: row.id, to: name)
-                            },
-                            onSetBlocked: { blocked in
-                                nativeFriends.setBlocked(blocked, id: row.id)
-                            },
-                            onRemove: {
-                                nativeFriends.remove(id: row.id)
-                            }
-                        )
-                    }
-                }
-
-                if let error = nativeFriends.lastPersistenceError {
-                    Label(error, systemImage: "exclamationmark.triangle")
-                        .font(.caption)
-                        .foregroundStyle(.orange)
-                        .accessibilityIdentifier(
-                            "clip.settings.liveShare.friends.error"
-                        )
-                }
-            } header: {
-                Text("Friends")
-            } footer: {
-                Text("Names are local to this Mac. Blocking keeps the Friend saved but prevents trusted connections; removing deletes the local record.")
+                Text("Room participants use this fingerprint to verify this Mac. Reset it only if you want this device to become a new identity.")
             }
 
             Section("Default stream") {
@@ -759,6 +640,67 @@ struct SettingsView: View {
                 Text("Sharing behavior")
             } footer: {
                 Text("These are defaults for new sessions. Controls in the Live Share popover can still change the active session.")
+            }
+
+            Section {
+                Toggle(
+                    "Reveal collaboration pointer by default",
+                    isOn: liveShareSetting(
+                        \.collaborationPointerVisibleByDefault
+                    )
+                )
+                .accessibilityIdentifier(
+                    "clip.settings.liveShare.collaboration.pointer"
+                )
+
+                Stepper(
+                    value: liveShareSetting(
+                        \.collaborationPingDurationSeconds
+                    ),
+                    in: LiveShareSettings
+                        .collaborationPingDurationSecondsRange
+                ) {
+                    LabeledContent("Ping duration") {
+                        Text(
+                            "\(liveSharePreferences.settings.collaborationPingDurationSeconds) seconds"
+                        )
+                        .monospacedDigit()
+                    }
+                }
+                .accessibilityIdentifier(
+                    "clip.settings.liveShare.collaboration.pingDuration"
+                )
+
+                ColorPicker(
+                    "Ink color",
+                    selection: collaborationInkColorBinding,
+                    supportsOpacity: false
+                )
+                .accessibilityIdentifier(
+                    "clip.settings.liveShare.collaboration.inkColor"
+                )
+
+                Stepper(
+                    value: liveShareSetting(
+                        \.collaborationInkExpirySeconds
+                    ),
+                    in: LiveShareSettings
+                        .collaborationInkExpirySecondsRange
+                ) {
+                    LabeledContent("Erase ink after") {
+                        Text(
+                            "\(liveSharePreferences.settings.collaborationInkExpirySeconds) seconds"
+                        )
+                        .monospacedDigit()
+                    }
+                }
+                .accessibilityIdentifier(
+                    "clip.settings.liveShare.collaboration.inkExpiry"
+                )
+            } header: {
+                Text("Collaboration")
+            } footer: {
+                Text("Pointer visibility is explicit. Pings and temporary ink disappear automatically.")
             }
 
             if let error = liveSharePreferences.lastPersistenceError {
@@ -1065,13 +1007,57 @@ struct SettingsView: View {
         )
     }
 
-    private var liveShareServerCandidate: ClipLiveShareServerEndpoint? {
-        try? ClipLiveShareServerEndpoint(userInput: liveShareServerAddressText)
+    private var collaborationInkColorBinding: Binding<Color> {
+        Binding(
+            get: {
+                let color =
+                    liveSharePreferences.settings.collaborationInkColor
+                return Color(
+                    red: Double(color.red) / 255,
+                    green: Double(color.green) / 255,
+                    blue: Double(color.blue) / 255
+                )
+            },
+            set: { selected in
+                guard
+                    let color = NSColor(selected).usingColorSpace(.deviceRGB)
+                else { return }
+                var red = UInt8(
+                    clamping: Int((color.redComponent * 255).rounded())
+                )
+                var green = UInt8(
+                    clamping: Int((color.greenComponent * 255).rounded())
+                )
+                var blue = UInt8(
+                    clamping: Int((color.blueComponent * 255).rounded())
+                )
+                if red <= 15, green <= 15, blue <= 15 {
+                    red = 16
+                    green = 16
+                    blue = 16
+                }
+                guard
+                    let collaborationColor =
+                        try? ClipLiveShareNativeV3CollaborationColor(
+                            red: red,
+                            green: green,
+                            blue: blue
+                        )
+                else { return }
+                liveSharePreferences.updateSettings {
+                    $0.collaborationInkColor = collaborationColor
+                }
+            }
+        )
+    }
+
+    private var liveShareServerCandidate: ClipLiveShareRendezvousEndpoint? {
+        try? ClipLiveShareRendezvousEndpoint(userInput: liveShareServerAddressText)
     }
 
     private func validateLiveShareServerDraft() {
         do {
-            _ = try ClipLiveShareServerEndpoint(userInput: liveShareServerAddressText)
+            _ = try ClipLiveShareRendezvousEndpoint(userInput: liveShareServerAddressText)
             liveShareServerValidationError = nil
         } catch let error as LocalizedError {
             liveShareServerValidationError = error.errorDescription
@@ -1084,7 +1070,7 @@ struct SettingsView: View {
 
     private func applyLiveShareServerAddress() {
         do {
-            let endpoint = try ClipLiveShareServerEndpoint(
+            let endpoint = try ClipLiveShareRendezvousEndpoint(
                 userInput: liveShareServerAddressText
             )
             isLiveShareServerAddressFocused = false
@@ -1102,7 +1088,7 @@ struct SettingsView: View {
     private func testLiveShareServer() {
         guard liveShareServerTestStatus != .testing else { return }
         do {
-            let endpoint = try ClipLiveShareServerEndpoint(
+            let endpoint = try ClipLiveShareRendezvousEndpoint(
                 userInput: liveShareServerAddressText
             )
             liveShareServerValidationError = nil
@@ -1135,7 +1121,7 @@ struct SettingsView: View {
 
     private func resetLiveShareServerAddress() {
         isLiveShareServerAddressFocused = false
-        liveShareServerAddressText = ClipLiveShareServerEndpoint.official.description
+        liveShareServerAddressText = ClipLiveShareRendezvousEndpoint.official.description
         liveShareServerValidationError = nil
         liveShareServerTestID = nil
         liveShareServerTestStatus = .idle
@@ -1168,8 +1154,7 @@ struct SettingsView: View {
             defer { isResettingNativeIdentity = false }
             do {
                 nativeIdentityFingerprint = try await Self.resetNativeIdentity(
-                    repository: liveShareIdentity,
-                    friends: nativeFriends
+                    repository: liveShareIdentity
                 )
             } catch is CancellationError {
                 return
@@ -1410,151 +1395,6 @@ struct SettingsView: View {
             fromByteCount: max(0, byteCount),
             countStyle: .file
         )
-    }
-}
-
-private struct SettingsNativeFriendRow: View {
-    let snapshot: SettingsNativeFriendRowSnapshot
-    let onRename: (String) -> Void
-    let onSetBlocked: (Bool) -> Void
-    let onRemove: () -> Void
-
-    @State private var localName: String
-    @FocusState private var isEditingName: Bool
-
-    init(
-        snapshot: SettingsNativeFriendRowSnapshot,
-        onRename: @escaping (String) -> Void,
-        onSetBlocked: @escaping (Bool) -> Void,
-        onRemove: @escaping () -> Void
-    ) {
-        self.snapshot = snapshot
-        self.onRename = onRename
-        self.onSetBlocked = onSetBlocked
-        self.onRemove = onRemove
-        _localName = State(initialValue: snapshot.displayName)
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(alignment: .firstTextBaseline, spacing: 12) {
-                TextField("Local name", text: $localName)
-                    .textFieldStyle(.roundedBorder)
-                    .frame(minWidth: 180, idealWidth: 230, maxWidth: 280)
-                    .focused($isEditingName)
-                    .onSubmit {
-                        commitName()
-                    }
-                    .accessibilityIdentifier(
-                        SettingsAccessibilityIdentifier.nativeFriend(
-                            snapshot.id,
-                            element: "name"
-                        )
-                    )
-                Spacer()
-                status
-            }
-
-            LabeledContent("Device") {
-                Text(snapshot.deviceName)
-                    .foregroundStyle(.secondary)
-                    .accessibilityIdentifier(
-                        SettingsAccessibilityIdentifier.nativeFriend(
-                            snapshot.id,
-                            element: "device"
-                        )
-                    )
-            }
-
-            LabeledContent("Fingerprint") {
-                Text(snapshot.fingerprint)
-                    .font(.system(.caption, design: .monospaced))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                    .textSelection(.enabled)
-                    .help(snapshot.fingerprint)
-                    .accessibilityIdentifier(
-                        SettingsAccessibilityIdentifier.nativeFriend(
-                            snapshot.id,
-                            element: "fingerprint"
-                        )
-                    )
-            }
-
-            HStack(spacing: 8) {
-                Spacer()
-                Button(snapshot.isBlocked ? "Unblock" : "Block") {
-                    onSetBlocked(!snapshot.isBlocked)
-                }
-                .accessibilityIdentifier(
-                    SettingsAccessibilityIdentifier.nativeFriend(
-                        snapshot.id,
-                        element: "block"
-                    )
-                )
-                Button("Remove", role: .destructive) {
-                    onRemove()
-                }
-                .accessibilityIdentifier(
-                    SettingsAccessibilityIdentifier.nativeFriend(
-                        snapshot.id,
-                        element: "remove"
-                    )
-                )
-            }
-        }
-        .padding(.vertical, 4)
-        .accessibilityElement(children: .contain)
-        .accessibilityIdentifier(
-            SettingsAccessibilityIdentifier.nativeFriend(
-                snapshot.id,
-                element: "row"
-            )
-        )
-        .onChange(of: isEditingName) { wasEditing, isEditing in
-            if wasEditing, !isEditing {
-                commitName()
-            }
-        }
-        .onChange(of: snapshot.displayName) { _, displayName in
-            guard !isEditingName else { return }
-            localName = displayName
-        }
-    }
-
-    @ViewBuilder
-    private var status: some View {
-        Label(snapshot.status.title, systemImage: snapshot.status.systemImage)
-            .font(.caption)
-            .foregroundStyle(statusColor)
-            .accessibilityIdentifier(
-                SettingsAccessibilityIdentifier.nativeFriend(
-                    snapshot.id,
-                    element: "status"
-                )
-            )
-    }
-
-    private var statusColor: Color {
-        switch snapshot.status {
-        case .live: .green
-        case .blocked: .orange
-        case .preparing: .blue
-        case .offline: .secondary
-        }
-    }
-
-    private func commitName() {
-        let trimmed = localName.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else {
-            localName = snapshot.displayName
-            return
-        }
-        let normalized = String(trimmed.prefix(128))
-        localName = normalized
-        guard normalized != snapshot.displayName else { return }
-        onRename(normalized)
     }
 }
 

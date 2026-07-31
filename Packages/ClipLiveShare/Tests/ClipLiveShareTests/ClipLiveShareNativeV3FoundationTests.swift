@@ -5,14 +5,27 @@ import Testing
 
 @Suite("Clip Live Share native v3 mesh foundation")
 struct ClipLiveShareNativeV3FoundationTests {
-  @Test("v3 constants preserve protocol headroom above initial product policy")
+  @Test("v3 constants enforce the four-participant product mesh")
   func protocolAndProductBounds() {
     #expect(ClipLiveShareNativeV3.version == 3)
     #expect(ClipLiveShareNativeV3.controlDataChannelLabel == "clip-native-control-v3")
+    #expect(ClipLiveShareNativeV3.maximumControlMessageBytes == 196_400)
     #expect(ClipLiveShareNativeV3.maximumProtocolParticipants == 4)
-    #expect(ClipLiveShareNativeV3.defaultProductAdmissionLimit == 2)
+    #expect(ClipLiveShareNativeV3.defaultProductAdmissionLimit == 4)
     #expect(ClipLiveShareNativeV3.reservedVideoSlotsPerParticipant == 4)
-    #expect(ClipLiveShareNativeV3.defaultMaximumActiveSourcesPerParticipant == 2)
+    #expect(ClipLiveShareNativeV3.defaultMaximumActiveSourcesPerParticipant == 4)
+    #expect(
+      ClipLiveShareNativeV3Capabilities.current.required.isSuperset(
+        of: [
+          .bidirectionalMedia,
+          .participantAudio,
+          .leadershipSuccession,
+          .authorityChain,
+          .collaboration,
+          .closedControlEnvelope,
+        ]
+      )
+    )
     #expect(
       ClipLiveShareNativeV3.maximumMembershipCredentialLifetimeMilliseconds
         == 5 * 60 * 1_000
@@ -51,6 +64,57 @@ struct ClipLiveShareNativeV3FoundationTests {
     #expect(forward.otherParticipant(than: first) == second)
     #expect(throws: ClipLiveShareNativeV3Error.selfPeerLink) {
       try ClipLiveShareNativeV3PeerLinkKey(first, first)
+    }
+  }
+
+  @Test("v3 stream source-point geometry is mandatory and strict")
+  func mandatoryStreamPointGeometry() throws {
+    let descriptor = try ClipLiveShareStreamDescriptor(
+      id: ClipLiveShareStreamID(rawValue: "geometry-stream"),
+      mediaTrackID: ClipLiveShareMediaTrackID(rawValue: "geometry-track"),
+      active: true,
+      focused: true,
+      appName: "Fixture",
+      windowName: "Geometry",
+      width: 1_920,
+      height: 1_080,
+      order: 0,
+      sourcePointWidth: 960,
+      sourcePointHeight: 540
+    )
+    let encoded = try JSONEncoder().encode(descriptor)
+    #expect(
+      try JSONDecoder().decode(
+        ClipLiveShareStreamDescriptor.self,
+        from: encoded
+      ) == descriptor
+    )
+
+    let object = try #require(
+      JSONSerialization.jsonObject(with: encoded) as? [String: Any]
+    )
+    var missingGeometry = object
+    missingGeometry["sourcePointWidth"] = nil
+    let missingGeometryData = try JSONSerialization.data(
+      withJSONObject: missingGeometry
+    )
+    #expect(throws: DecodingError.self) {
+      try JSONDecoder().decode(
+        ClipLiveShareStreamDescriptor.self,
+        from: missingGeometryData
+      )
+    }
+
+    var invalidGeometry = object
+    invalidGeometry["sourcePointHeight"] = 0
+    let invalidGeometryData = try JSONSerialization.data(
+      withJSONObject: invalidGeometry
+    )
+    #expect(throws: ClipLiveShareProtocolError.self) {
+      try JSONDecoder().decode(
+        ClipLiveShareStreamDescriptor.self,
+        from: invalidGeometryData
+      )
     }
   }
 
@@ -220,7 +284,7 @@ struct ClipLiveShareNativeV3FoundationTests {
     }
   }
 
-  @Test("wire accepts a four-participant complete mesh while product defaults admit two")
+  @Test("wire and product accept a complete four-participant mesh")
   func completeMeshProtocolAndProductLimits() throws {
     let fixture = NativeV3Fixture()
     let participants = [
@@ -251,17 +315,29 @@ struct ClipLiveShareNativeV3FoundationTests {
     #expect(!topology.isComplete(establishedLinks: leaderLinks))
     #expect(topology.isComplete(establishedLinks: topology.peerLinkKeys))
 
-    #expect(throws: ClipLiveShareNativeV3Error.participantLimit(maximum: 2, actual: 4)) {
-      _ = try ClipLiveShareNativeV3MeshState(
-        localParticipantID: fixture.leader.participantID,
-        signedMembership: signed,
-        expectedSessionID: fixture.sessionID,
-        expectedLeaderParticipantID: fixture.leader.participantID,
-        expectedLeaderIdentity: fixture.leaderSigner.publicKey,
-        establishedLinks: leaderLinks,
-        at: fixture.now
-      )
-    }
+    let productParticipants = [
+      fixture.leader,
+      fixture.guest,
+      fixture.third,
+      fixture.fourth,
+    ]
+    let productMembership = try fixture.signedSnapshot(
+      participants: productParticipants,
+      revision: 1
+    )
+    let productState = try ClipLiveShareNativeV3MeshState(
+      localParticipantID: fixture.leader.participantID,
+      signedMembership: productMembership,
+      expectedSessionID: fixture.sessionID,
+      expectedLeaderParticipantID: fixture.leader.participantID,
+      expectedLeaderIdentity: fixture.leaderSigner.publicKey,
+      establishedLinks: try fixture.establishedLinks(
+        local: fixture.leader,
+        participants: productParticipants
+      ),
+      at: fixture.now
+    )
+    #expect(productState.topology.participantIDs.count == 4)
     let protocolState = try ClipLiveShareNativeV3MeshState(
       localParticipantID: fixture.leader.participantID,
       signedMembership: signed,
@@ -566,7 +642,7 @@ struct ClipLiveShareNativeV3FoundationTests {
     }
   }
 
-  @Test("source snapshots accept four wire slots but product state enforces two active")
+  @Test("source snapshots and product state accept all four reserved slots")
   func sourceWireAndProductLimits() throws {
     let fixture = NativeV3Fixture()
     let signed = try fixture.signedSnapshot(
@@ -599,14 +675,16 @@ struct ClipLiveShareNativeV3FoundationTests {
       sources: sources
     )
     #expect(wireSnapshot.sources.count == 4)
-    #expect(throws: ClipLiveShareProtocolError.self) {
-      try state.applySourceSnapshot(
-        wireSnapshot,
-        from: fixture.guest.participantID
-      )
-    }
-    #expect(state.sources.isEmpty)
-    #expect(state.sourceLedger.latestAcceptedRevisions.isEmpty)
+    try state.applySourceSnapshot(
+      wireSnapshot,
+      from: fixture.guest.participantID
+    )
+    #expect(state.sources.count == 4)
+    #expect(
+      state.sourceLedger.latestAcceptedRevisions[
+        fixture.guest.participantID
+      ]?.rawValue == 1
+    )
   }
 }
 
@@ -729,9 +807,8 @@ private struct NativeV3Fixture {
     let sourceID = try ClipLiveShareSourceInstanceID(
       bytes: Data(repeating: byte, count: 16)
     )
-    let descriptor = ClipLiveShareNativeStreamDescriptor(
+    let descriptor = ClipLiveShareNativeV3StreamDescriptor(
       sourceInstanceID: sourceID,
-      presentationMode: .manual,
       stream: try ClipLiveShareStreamDescriptor(
         id: ClipLiveShareStreamID(rawValue: "stream-\(byte)"),
         mediaTrackID: ClipLiveShareMediaTrackID(rawValue: "track-\(byte)"),
@@ -741,7 +818,9 @@ private struct NativeV3Fixture {
         windowName: "Window \(byte)",
         width: 1_280,
         height: 720,
-        order: Int(byte)
+        order: Int(byte),
+        sourcePointWidth: 1_280,
+        sourcePointHeight: 720
       )
     )
     return try ClipLiveShareNativeV3PublishedSource(

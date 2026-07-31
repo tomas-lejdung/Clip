@@ -31,7 +31,6 @@ final class DeterministicUIScenarioCoordinator {
     private let directories: ApplicationDirectories
     private let settings: AppSettingsModel
     private let liveSharePreferences: LiveSharePreferencesModel
-    private let nativeFriends: NativeFriendModel
     private let liveShareIdentity: NativeDeviceIdentityRepository
     private let statusBar: NSStatusBar
     private let popover = NSPopover()
@@ -78,18 +77,6 @@ final class DeterministicUIScenarioCoordinator {
         liveSharePreferences = try LiveSharePreferencesModel(
             applicationSupportDirectory: directories.applicationSupport
         )
-        let friendBook = try Self.settingsFriendBook()
-        nativeFriends = NativeFriendModel(
-            repository: try NativeFriendRepository(
-                applicationSupportDirectory: directories.applicationSupport
-            ),
-            initialBook: friendBook
-        )
-        if let liveFriend = friendBook.records.first(where: {
-            $0.trustState == .trusted
-        }) {
-            nativeFriends.setPresence(.live, id: liveFriend.id)
-        }
         liveShareIdentity = NativeDeviceIdentityRepository(
             storage: try DeterministicNativeDeviceIdentityStorage()
         )
@@ -117,8 +104,7 @@ final class DeterministicUIScenarioCoordinator {
             } else {
                 presentWindow(
                     rootView: content(for: scenario),
-                    size: windowSize(for: scenario),
-                    scrollsContentToBottom: scenario == .liveShareLiveBottom
+                    size: windowSize(for: scenario)
                 )
             }
         }
@@ -239,44 +225,6 @@ final class DeterministicUIScenarioCoordinator {
         return max(0, documentView.bounds.height - scrollView.contentView.bounds.height)
     }
 
-    private static func settingsFriendBook() throws -> NativeFriendBook {
-        let liveIdentity = try NativeDeviceIdentitySigner(
-            rawRepresentation: deterministicPrivateKey(seed: 2)
-        ).publicKey
-        let blockedIdentity = try NativeDeviceIdentitySigner(
-            rawRepresentation: deterministicPrivateKey(seed: 3)
-        ).publicKey
-        return NativeFriendBook(records: [
-            NativeFriendRecord(
-                identity: liveIdentity,
-                displayName: "Mira",
-                deviceName: "Mira’s MacBook Pro",
-                endpoint: .official,
-                rendezvousID: try ClipLiveShareRendezvousID(
-                    bytes: Data(
-                        repeating: 0x22,
-                        count: ClipLiveShareNativeV2.rendezvousIDByteCount
-                    )
-                ),
-                createdAt: Date(timeIntervalSince1970: 1_700_000_000)
-            ),
-            NativeFriendRecord(
-                identity: blockedIdentity,
-                displayName: "Old Studio Mac",
-                deviceName: "Mac mini",
-                endpoint: .official,
-                rendezvousID: try ClipLiveShareRendezvousID(
-                    bytes: Data(
-                        repeating: 0x33,
-                        count: ClipLiveShareNativeV2.rendezvousIDByteCount
-                    )
-                ),
-                trustState: .blocked,
-                createdAt: Date(timeIntervalSince1970: 1_700_000_100)
-            ),
-        ])
-    }
-
     private func content(for scenario: DeterministicUIScenario) -> AnyView {
         switch scenario {
         case .onboarding:
@@ -349,46 +297,6 @@ final class DeterministicUIScenarioCoordinator {
                 identifier: scenario.accessibilityIdentifier
             )
 
-        case .liveShareReady,
-             .liveShareLive,
-             .liveShareLiveBottom,
-             .liveShareAudioExclusions,
-             .liveShareReconnecting,
-             .liveShareFailed:
-            guard let snapshot = DeterministicLiveShareDemo.snapshot(for: scenario) else {
-                return wrapped(
-                    DeterministicFailureScenarioView(),
-                    identifier: scenario.accessibilityIdentifier
-                )
-            }
-            return wrapped(
-                LiveSharePopoverView(
-                    model: LiveSharePresentationModel(
-                        snapshot: snapshot,
-                        actions: .noOp
-                    ),
-                    initiallyExpandsStatistics: scenario == .liveShareLiveBottom
-                ),
-                identifier: scenario.accessibilityIdentifier
-            )
-
-        case .liveShareOverlays:
-            return wrapped(
-                DeterministicLiveShareOverlayScenarioView(),
-                identifier: scenario.accessibilityIdentifier
-            )
-
-        case .nativeViewerWaiting, .nativeViewerLive:
-            return wrapped(
-                NativeViewerPopoverView(
-                    model: NativeViewerPresentationModel(
-                        snapshot: DeterministicNativeViewerDemo.snapshot(for: scenario),
-                        actions: .init()
-                    )
-                ),
-                identifier: scenario.accessibilityIdentifier
-            )
-
         case .settings,
              .settingsRecording,
              .settingsLiveShare,
@@ -415,7 +323,6 @@ final class DeterministicUIScenarioCoordinator {
                 SettingsView(
                     model: settings,
                     liveSharePreferences: liveSharePreferences,
-                    nativeFriends: nativeFriends,
                     liveShareIdentity: liveShareIdentity,
                     shortcuts: shortcuts,
                     permissions: permissions,
@@ -458,17 +365,6 @@ final class DeterministicUIScenarioCoordinator {
             NSSize(width: 820, height: 650)
         case .history, .historyExports:
             NSSize(width: 860, height: 560)
-        case .liveShareReady,
-             .liveShareLive,
-             .liveShareLiveBottom,
-             .liveShareAudioExclusions,
-             .liveShareReconnecting,
-             .liveShareFailed:
-            LiveSharePopoverView.contentSize
-        case .liveShareOverlays:
-            NSSize(width: 700, height: 430)
-        case .nativeViewerWaiting, .nativeViewerLive:
-            NativeViewerPopoverView.contentSize
         case .settings,
              .settingsRecording,
              .settingsLiveShare,
@@ -585,503 +481,8 @@ private extension DeterministicUIScenario {
              .preview,
              .history,
              .historyExports,
-             .liveShareReady,
-             .liveShareLive,
-             .liveShareLiveBottom,
-             .liveShareAudioExclusions,
-             .liveShareReconnecting,
-             .liveShareFailed,
-             .liveShareOverlays,
-             .nativeViewerWaiting,
-             .nativeViewerLive,
              .failure:
             nil
-        }
-    }
-}
-
-/// Permission-free native viewer states used to render the real production
-/// popover without opening signaling, media, audio, or desktop windows.
-enum DeterministicNativeViewerDemo {
-    static func snapshot(
-        for scenario: DeterministicUIScenario
-    ) -> NativeViewerViewSnapshot {
-        switch scenario {
-        case .nativeViewerWaiting:
-            NativeViewerViewSnapshot(
-                phase: .waitingForHostApproval,
-                ownerName: "Mira",
-                ownerDeviceName: "Mira’s MacBook Pro",
-                route: .unknown,
-                friendship: .friends
-            )
-        case .nativeViewerLive:
-            NativeViewerViewSnapshot(
-                phase: .live,
-                ownerName: "Mira",
-                ownerDeviceName: "Mira’s MacBook Pro",
-                route: .peerToPeer,
-                sources: [
-                    NativeViewerSourceViewSnapshot(
-                        id: "source-xcode",
-                        applicationName: "Xcode",
-                        windowName: "LiveShareCoordinator.swift",
-                        pixelWidth: 1_920,
-                        pixelHeight: 1_200,
-                        isVisible: true,
-                        isFocused: true,
-                        isConnected: true,
-                        scaleMode: .follow
-                    ),
-                    NativeViewerSourceViewSnapshot(
-                        id: "source-safari",
-                        applicationName: "Safari",
-                        windowName: "Clip Viewer",
-                        pixelWidth: 1_440,
-                        pixelHeight: 900,
-                        isVisible: false,
-                        isFocused: false,
-                        isConnected: true,
-                        scaleMode: .native
-                    ),
-                    NativeViewerSourceViewSnapshot(
-                        id: "source-terminal",
-                        applicationName: "Terminal",
-                        windowName: "swift test",
-                        pixelWidth: 1_280,
-                        pixelHeight: 800,
-                        isVisible: true,
-                        isFocused: false,
-                        isConnected: false,
-                        scaleMode: .fit
-                    ),
-                ],
-                systemAudioAvailable: true,
-                systemAudioEnabled: true,
-                volume: 0.72,
-                friendship: .friends,
-                statistics: NativeViewerStatisticsSnapshot(
-                    bitsPerSecond: 8_400_000,
-                    framesPerSecond: 30,
-                    packetsLost: 2,
-                    codec: "AV1"
-                )
-            )
-        default:
-            NativeViewerViewSnapshot()
-        }
-    }
-}
-
-/// Permission-free, fixed Live Share data used by UI-source and visual regression tests.
-/// Keeping it next to the deterministic coordinator makes it impossible for a scenario launch
-/// to accidentally instantiate signaling, ScreenCaptureKit, WebRTC, or a permission service.
-enum DeterministicLiveShareDemo {
-    static func snapshot(for scenario: DeterministicUIScenario) -> LiveShareViewSnapshot? {
-        switch scenario {
-        case .liveShareReady:
-            readySnapshot()
-        case .liveShareLive, .liveShareLiveBottom:
-            liveSnapshot()
-        case .liveShareAudioExclusions:
-            audioExclusionSnapshot()
-        case .liveShareReconnecting:
-            reconnectingSnapshot()
-        case .liveShareFailed:
-            failedSnapshot()
-        default:
-            nil
-        }
-    }
-
-    private static let room = LiveShareRoomViewSnapshot(
-        viewerURL: URL(
-            string: "https://clip.tineestudio.se/CRISP-FROG-042#v=1&key=fixture&join=capability"
-        )!,
-        roomCode: "CRISP-FROG-042"
-    )
-
-    private static let availableWindows = [
-        LiveShareAvailableWindowViewSnapshot(
-            id: "window-slack",
-            applicationName: "Slack",
-            windowTitle: "#clip-development",
-            applicationPath: nil
-        ),
-        LiveShareAvailableWindowViewSnapshot(
-            id: "window-terminal",
-            applicationName: "Terminal",
-            windowTitle: "Clip — swift test",
-            applicationPath: nil
-        ),
-        LiveShareAvailableWindowViewSnapshot(
-            id: "window-notes",
-            applicationName: "Notes",
-            windowTitle: "Release checklist",
-            applicationPath: nil
-        ),
-    ]
-
-    private static let audioApplications = [
-        LiveShareAudioApplicationViewSnapshot(
-            id: "com.hnc.Discord",
-            name: "Discord",
-            bundleIdentifier: "com.hnc.Discord"
-        ),
-        LiveShareAudioApplicationViewSnapshot(
-            id: "com.apple.Music",
-            name: "Music",
-            bundleIdentifier: "com.apple.Music"
-        ),
-    ]
-
-    private static let sources = [
-        LiveShareSourceViewSnapshot(
-            id: "window-safari",
-            slotIndex: 0,
-            applicationName: "Safari",
-            windowTitle: "Clip pull request",
-            status: .live,
-            isFocused: true
-        ),
-        LiveShareSourceViewSnapshot(
-            id: "window-xcode",
-            slotIndex: 1,
-            applicationName: "Xcode",
-            windowTitle: "LiveShareCoordinator.swift",
-            status: .starting
-        ),
-        LiveShareSourceViewSnapshot(
-            id: "window-keynote",
-            slotIndex: 2,
-            applicationName: "Keynote",
-            windowTitle: "Product roadmap",
-            status: .live
-        ),
-    ]
-
-    private static let slots = [
-        LiveShareSourceSlotViewSnapshot(index: 0, state: .live),
-        LiveShareSourceSlotViewSnapshot(index: 1, state: .starting),
-        LiveShareSourceSlotViewSnapshot(index: 2, state: .live),
-        LiveShareSourceSlotViewSnapshot(index: 3, state: .empty),
-    ]
-
-    private static let viewers = [
-        LiveShareViewerViewSnapshot(
-            id: "viewer-4F8A",
-            displayName: "Alex",
-            connection: .peerToPeer,
-            connectedDuration: 84
-        ),
-        LiveShareViewerViewSnapshot(
-            id: "viewer-92D1",
-            connection: .turn,
-            connectedDuration: 37
-        ),
-        LiveShareViewerViewSnapshot(
-            id: "viewer-A071",
-            connection: .connecting,
-            connectedDuration: nil
-        ),
-    ]
-
-    private static let statistics = LiveShareStatisticsViewSnapshot(
-        uptime: 94,
-        streams: [
-            LiveShareStreamStatisticsViewSnapshot(
-                id: "stream-safari",
-                name: "Safari · Clip pull request",
-                width: 1_920,
-                height: 1_080,
-                deliveredFramesPerSecond: 29.9,
-                bitsPerSecond: 5_800_000,
-                bytesSent: 58_400_000,
-                isFocused: true
-            ),
-            LiveShareStreamStatisticsViewSnapshot(
-                id: "stream-xcode",
-                name: "Xcode · LiveShareCoordinator.swift",
-                width: 1_728,
-                height: 1_117,
-                deliveredFramesPerSecond: 27.8,
-                bitsPerSecond: 4_200_000,
-                bytesSent: 32_100_000
-            ),
-            LiveShareStreamStatisticsViewSnapshot(
-                id: "stream-keynote",
-                name: "Keynote · Product roadmap",
-                width: 1_600,
-                height: 900,
-                deliveredFramesPerSecond: 30,
-                bitsPerSecond: 3_600_000,
-                bytesSent: 27_900_000
-            ),
-        ]
-    )
-
-    private static func readySnapshot() -> LiveShareViewSnapshot {
-        LiveShareViewSnapshot(
-            phase: .ready,
-            sessionStage: .preparing,
-            canStartSharing: true,
-            canReplaceRoom: true,
-            room: room,
-            accessCodeEnabled: false,
-            sources: [],
-            fullscreen: .init(isOn: false, displayName: "Studio Display"),
-            canShareFocusedWindow: false,
-            focusedWindowDescription: "Safari · Clip pull request",
-            availableWindows: availableWindows,
-            canAddWindow: false,
-            settings: .init(
-                quality: .veryHigh,
-                frameRate: .thirty,
-                codec: .init(codec: .h264, acceleration: .hardware),
-                prioritizeFocusedWindow: true,
-                mode: .quality,
-                autoShareFocusedWindows: false
-            )
-        )
-    }
-
-    private static func liveSnapshot() -> LiveShareViewSnapshot {
-        LiveShareViewSnapshot(
-            phase: .live(elapsedSeconds: 94),
-            sessionStage: .active,
-            room: room,
-            accessCodeEnabled: true,
-            accessCode: "MELORIA",
-            sources: sources,
-            slots: slots,
-            fullscreen: .init(isOn: false, displayName: "Studio Display"),
-            canShareFocusedWindow: true,
-            focusedWindowDescription: "Safari · Clip pull request",
-            availableWindows: availableWindows,
-            canAddWindow: true,
-            settings: .init(
-                quality: .ultra,
-                frameRate: .thirty,
-                codec: .init(codec: .h264, acceleration: .hardware),
-                prioritizeFocusedWindow: true,
-                mode: .quality,
-                autoShareFocusedWindows: false
-            ),
-            viewers: viewers,
-            statistics: statistics
-        )
-    }
-
-    private static func audioExclusionSnapshot() -> LiveShareViewSnapshot {
-        LiveShareViewSnapshot(
-            phase: .live(elapsedSeconds: 94),
-            sessionStage: .active,
-            room: room,
-            sources: [],
-            slots: [.init(index: 0, state: .live)],
-            fullscreen: .init(isOn: true, displayName: "Studio Display"),
-            canShareFocusedWindow: false,
-            availableWindows: availableWindows,
-            canAddWindow: false,
-            settings: .init(
-                quality: .ultra,
-                frameRate: .thirty,
-                codec: .init(codec: .h264, acceleration: .hardware),
-                systemAudioEnabled: true,
-                audioExclusionApplications: audioApplications,
-                excludedAudioApplicationIDs: [audioApplications[0].id],
-                prioritizeFocusedWindow: true,
-                mode: .quality,
-                autoShareFocusedWindows: false,
-                canChangeAudioExclusions: true
-            ),
-            viewers: viewers,
-            statistics: statistics
-        )
-    }
-
-    private static func reconnectingSnapshot() -> LiveShareViewSnapshot {
-        LiveShareViewSnapshot(
-            phase: .reconnecting(attempt: 2, maximumAttempts: 5),
-            sessionStage: .active,
-            room: room,
-            accessCodeEnabled: true,
-            accessCode: "MELORIA",
-            canChangeAccessCode: false,
-            sources: sources.map {
-                LiveShareSourceViewSnapshot(
-                    id: $0.id,
-                    slotIndex: $0.slotIndex,
-                    applicationName: $0.applicationName,
-                    windowTitle: $0.windowTitle,
-                    status: .starting,
-                    isFocused: $0.isFocused,
-                    canStop: false
-                )
-            },
-            slots: slots.map {
-                LiveShareSourceSlotViewSnapshot(
-                    index: $0.index,
-                    state: $0.state == .empty ? .empty : .starting
-                )
-            },
-            fullscreen: .init(
-                isOn: false,
-                displayName: "Studio Display",
-                isEnabled: false,
-                detail: "Fullscreen controls resume after reconnecting."
-            ),
-            canShareFocusedWindow: false,
-            focusedWindowDescription: "Safari · Clip pull request",
-            availableWindows: availableWindows,
-            canAddWindow: false,
-            settings: disabledSettings(),
-            viewers: [
-                .init(id: "viewer-4F8A", connection: .connecting, connectedDuration: nil),
-                .init(id: "viewer-92D1", connection: .disconnected, connectedDuration: nil),
-            ],
-            statistics: statistics
-        )
-    }
-
-    private static func failedSnapshot() -> LiveShareViewSnapshot {
-        LiveShareViewSnapshot(
-            phase: .failed(message: "The signaling service is unavailable."),
-            sessionStage: .active,
-            room: room,
-            accessCodeEnabled: true,
-            accessCode: "MELORIA",
-            canChangeAccessCode: false,
-            accessCodeError: "The access word could not be refreshed while offline.",
-            sources: [
-                LiveShareSourceViewSnapshot(
-                    id: "window-safari",
-                    slotIndex: 0,
-                    applicationName: "Safari",
-                    windowTitle: "Clip pull request",
-                    status: .failed,
-                    isFocused: true,
-                    canStop: false
-                ),
-            ],
-            slots: [.init(index: 0, state: .starting)],
-            fullscreen: .init(
-                isOn: false,
-                displayName: "Studio Display",
-                isEnabled: false
-            ),
-            focusedWindowDescription: "Safari · Clip pull request",
-            availableWindows: availableWindows,
-            settings: disabledSettings(),
-            viewers: [
-                .init(id: "viewer-4F8A", connection: .disconnected, connectedDuration: nil),
-            ],
-            statistics: statistics
-        )
-    }
-
-    private static func disabledSettings() -> LiveShareSettingsViewSnapshot {
-        LiveShareSettingsViewSnapshot(
-            quality: .ultra,
-            frameRate: .thirty,
-            codec: .init(codec: .h264, acceleration: .hardware),
-            prioritizeFocusedWindow: true,
-            mode: .quality,
-            autoShareFocusedWindows: false,
-            canChangeQuality: false,
-            canChangeFrameRate: false,
-            canChangeCodec: false,
-            canChangeCursorUpdateRate: false,
-            canChangePrioritizeFocusedWindow: false,
-            canChangeMode: false,
-            canChangeAutoShare: false
-        )
-    }
-}
-
-@MainActor
-private struct DeterministicLiveShareOverlayScenarioView: View {
-    private let activeHUD = LiveShareStatusHUDSnapshot(
-        slots: [
-            .init(index: 0, state: .live),
-            .init(index: 1, state: .starting),
-            .init(index: 2, state: .live),
-        ],
-        connectedViewerCount: 2,
-        fullscreen: .init(isOn: false, displayName: "Studio Display")
-    )
-
-    private let fullscreenHUD = LiveShareStatusHUDSnapshot(
-        slots: [.init(index: 0, state: .live)],
-        connectedViewerCount: 3,
-        fullscreen: .init(isOn: true, displayName: "Studio Display")
-    )
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 28) {
-            Text("Live Share overlays")
-                .font(.title2.weight(.semibold))
-
-            HStack(alignment: .top, spacing: 54) {
-                preview(title: "Focused window · available") {
-                    FocusedWindowShareOverlayView(
-                        snapshot: .init(
-                            sourceID: "window-safari",
-                            applicationName: "Safari",
-                            windowTitle: "Clip pull request",
-                            state: .shareable
-                        ),
-                        side: .left,
-                        primaryAction: {},
-                        toggleSide: {}
-                    )
-                }
-                .accessibilityIdentifier("clip.liveShare.fixture.focused.shareable")
-
-                preview(title: "Focused window · live") {
-                    FocusedWindowShareOverlayView(
-                        snapshot: .init(
-                            sourceID: "window-xcode",
-                            applicationName: "Xcode",
-                            windowTitle: "LiveShareCoordinator.swift",
-                            state: .live
-                        ),
-                        side: .right,
-                        primaryAction: {},
-                        toggleSide: {}
-                    )
-                }
-                .accessibilityIdentifier("clip.liveShare.fixture.focused.live")
-            }
-
-            HStack(alignment: .top, spacing: 48) {
-                preview(title: "Window sources") {
-                    LiveShareStatusHUDView(snapshot: activeHUD, actions: .init())
-                }
-                .accessibilityIdentifier("clip.liveShare.fixture.hud.windows")
-
-                preview(title: "Fullscreen") {
-                    LiveShareStatusHUDView(snapshot: fullscreenHUD, actions: .init())
-                }
-                .accessibilityIdentifier("clip.liveShare.fixture.hud.fullscreen")
-            }
-        }
-        .padding(28)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .background(.background)
-        .accessibilityElement(children: .contain)
-        .accessibilityIdentifier("clip.liveShare.fixture.overlays")
-    }
-
-    private func preview<Content: View>(
-        title: String,
-        @ViewBuilder content: () -> Content
-    ) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text(title)
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.secondary)
-            content()
         }
     }
 }
@@ -1105,8 +506,6 @@ private final class DeterministicNativeDeviceIdentityStorage:
     private struct StoredIdentityFixture: Encodable {
         let version: Int
         let signingPrivateKey: Data
-        let rendezvousID: ClipLiveShareRendezvousID
-        let ownerToken: ClipLiveShareOwnerToken
     }
 
     private let lock = NSLock()
@@ -1114,20 +513,8 @@ private final class DeterministicNativeDeviceIdentityStorage:
 
     init() throws {
         data = try JSONEncoder().encode(StoredIdentityFixture(
-            version: 1,
-            signingPrivateKey: deterministicPrivateKey(seed: 1),
-            rendezvousID: ClipLiveShareRendezvousID(
-                bytes: Data(
-                    repeating: 0x11,
-                    count: ClipLiveShareNativeV2.rendezvousIDByteCount
-                )
-            ),
-            ownerToken: ClipLiveShareOwnerToken(
-                bytes: Data(
-                    repeating: 0x44,
-                    count: ClipLiveShareV1.ownerTokenByteCount
-                )
-            )
+            version: 3,
+            signingPrivateKey: deterministicPrivateKey(seed: 1)
         ))
     }
 

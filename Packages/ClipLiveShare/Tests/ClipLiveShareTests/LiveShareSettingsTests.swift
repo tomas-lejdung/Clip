@@ -32,6 +32,13 @@ struct LiveShareSettingsTests {
         #expect(settings.prioritizeFocusedWindow)
         #expect(!settings.autoShareFocusedWindows)
         #expect(!settings.accessCodeEnabled)
+        #expect(!settings.collaborationPointerVisibleByDefault)
+        #expect(settings.collaborationPingDurationSeconds == 2)
+        #expect(
+            settings.collaborationInkColor
+                == LiveShareSettings.defaultCollaborationInkColor
+        )
+        #expect(settings.collaborationInkExpirySeconds == 30)
         #expect(settings.advancedVideoSettings == .default)
         for codec in LiveShareVideoCodec.allCases {
             #expect(settings.advancedVideoSettings[codec] == .default)
@@ -53,6 +60,14 @@ struct LiveShareSettingsTests {
         value.cursorUpdatesMatchFrameRate = true
         value.prioritizeFocusedWindow = false
         value.autoShareFocusedWindows = true
+        value.collaborationPointerVisibleByDefault = true
+        value.collaborationPingDurationSeconds = 7
+        value.collaborationInkColor = try .init(
+            red: 230,
+            green: 80,
+            blue: 120
+        )
+        value.collaborationInkExpirySeconds = 45
         value.advancedVideoSettings.h264 = LiveShareCodecAdvancedSettings(
             maximumQuantizer: 30,
             minimumBitratePercent: 45,
@@ -75,6 +90,12 @@ struct LiveShareSettingsTests {
         )
         #expect(object["cursorUpdatesMatchFrameRate"] as? Bool == true)
         #expect(object["prioritizeFocusedWindow"] as? Bool == false)
+        #expect(
+            object["collaborationPointerVisibleByDefault"] as? Bool == true
+        )
+        #expect(object["collaborationPingDurationSeconds"] as? Int == 7)
+        #expect(object["collaborationInkExpirySeconds"] as? Int == 45)
+        #expect(object["collaborationInkColor"] != nil)
         #expect(object["adaptiveBitrateEnabled"] == nil)
         #expect(object["advancedVideoSettings"] != nil)
     }
@@ -104,6 +125,13 @@ struct LiveShareSettingsTests {
         #expect(!settings.prioritizeFocusedWindow)
         #expect(settings.autoShareFocusedWindows)
         #expect(settings.accessCodeEnabled)
+        #expect(!settings.collaborationPointerVisibleByDefault)
+        #expect(settings.collaborationPingDurationSeconds == 2)
+        #expect(
+            settings.collaborationInkColor
+                == LiveShareSettings.defaultCollaborationInkColor
+        )
+        #expect(settings.collaborationInkExpirySeconds == 30)
         #expect(settings.advancedVideoSettings == .default)
     }
 
@@ -111,6 +139,59 @@ struct LiveShareSettingsTests {
     func missingFieldsUseDefaults() throws {
         let settings = try JSONDecoder().decode(LiveShareSettings.self, from: Data("{}".utf8))
         #expect(settings == .default)
+    }
+
+    @Test("collaboration durations normalize to protocol bounds")
+    func collaborationDurationsNormalize() throws {
+        var initialized = LiveShareSettings(
+            collaborationPingDurationSeconds: -20,
+            collaborationInkExpirySeconds: 500
+        )
+        #expect(
+            initialized.collaborationPingDurationSeconds
+                == LiveShareSettings.collaborationPingDurationSecondsRange
+                    .lowerBound
+        )
+        #expect(
+            initialized.collaborationInkExpirySeconds
+                == LiveShareSettings.collaborationInkExpirySecondsRange
+                    .upperBound
+        )
+
+        initialized.collaborationPingDurationSeconds = 500
+        initialized.collaborationInkExpirySeconds = -20
+        #expect(
+            initialized.collaborationPingDurationSeconds
+                == LiveShareSettings.collaborationPingDurationSecondsRange
+                    .upperBound
+        )
+        #expect(
+            initialized.collaborationInkExpirySeconds
+                == LiveShareSettings.collaborationInkExpirySecondsRange
+                    .lowerBound
+        )
+
+        let decoded = try JSONDecoder().decode(
+            LiveShareSettings.self,
+            from: Data(
+                """
+                {
+                  "collaborationPingDurationSeconds": 100,
+                  "collaborationInkExpirySeconds": 0
+                }
+                """.utf8
+            )
+        )
+        #expect(
+            decoded.collaborationPingDurationSeconds
+                == LiveShareSettings.collaborationPingDurationSecondsRange
+                    .upperBound
+        )
+        #expect(
+            decoded.collaborationInkExpirySeconds
+                == LiveShareSettings.collaborationInkExpirySecondsRange
+                    .lowerBound
+        )
     }
 
     @Test("audio exclusion identifiers normalize while decoding and initializing")

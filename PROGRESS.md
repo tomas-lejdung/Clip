@@ -2,7 +2,7 @@
 
 This file tracks implementation against [spec.md](spec.md). The specification is the product source of truth; this board records execution state and verification evidence.
 
-Last updated: 2026-07-20
+Last updated: 2026-07-31
 
 ## Status model
 
@@ -46,31 +46,42 @@ appearance matrix moves to that client's post-update acceptance.
 ## Verification snapshot
 
 Current native Live Share service replacement checkpoint on
-`codex/native-live-share-server`:
+`codex/native-participant-mesh`:
 
-- [x] Freeze Clip Live Share Protocol v1: privacy-minimal room registry,
-  owner-token-hash authentication, URL-fragment P-256 host identity,
-  per-viewer ECDH/HKDF/AES-GCM signaling, host-side access-code admission,
-  opaque random stream identities, and `clip-control-v1` DataChannel handoff.
-- [x] Add the top-level Go `server/` with its embedded browser viewer,
-  system-audio playback controls, strict limits, in-memory leases, health and
-  capability endpoints, non-root Docker image, and multi-architecture publish
-  script.
-- [x] Add deterministic Go routing, browser crypto, cross-language vector, and
-  Swift protocol/crypto coverage. The isolated Go and browser suites pass.
-- [x] Complete the production coordinator's final native manifest/control
-  migration and delete the superseded signaling implementation/tests.
-- [x] Pass `./scripts/run-live-share-acceptance.sh`, the complete hosted
-  Swift/app suite, strict Swift 6 source/link/test-source gate, real offscreen
-  WebKit flow, final documentation/search audit and Release compilation/link
-  build from the feature tree. The installed Apple Development
-  certificate is expired, so valid distribution signing remains a release gate.
-- [ ] Run the explicit controlled-Mac browser video/audio, overlay exclusion,
-  remote/TURN, restart, and soak gates before a release advertises this service.
+- [x] Replace browser-v1/native-v2 host/viewer entry with one clean-slate
+  native-v3 participant session for both Create and Join.
+- [x] Reduce the Go service to bounded opaque native rendezvous, health/version,
+  and validated STUN/TURN discovery.
+- [x] Add signed transactional admission, complete-mesh topology, symmetric
+  source/audio state, collaboration events, and leadership state.
+- [x] Complete production participant UI/lifecycle wiring, remove obsolete
+  v1/v2/Friends production sources, and pass deterministic two/three/four
+  participant topology, source/audio, removal, failure, and leadership gates.
+- [x] Lock current-leader authority below strict-majority reachability, gate
+  rendezvous/admission/membership mutation while locked, require exact-chain
+  quorum confirmation to restore, and catch up valid complete authority
+  history after missed membership or leadership terms.
+- [x] Pass the frozen-tree local gate: server tests; 72 focused
+  protocol/security/lifecycle tests; 8 rendezvous tests; WebRTC manager and
+  real-loopback package gates; hosted native-v3 mesh suites; strict package
+  totals of Core 81, Media 74, Capture 37, LiveShare 97, and WebRTC 66; and
+  server `go test -race ./...` plus `go vet ./...`.
+- [x] Pass the complete stable-signed hosted app suite: 364 of 365 tests, zero
+  failures, with one deliberate external-lane skip.
+- [ ] External gate: launch three and four independent signed Clip GUI
+  processes and exercise production Create/Join, real privacy-authorized
+  ScreenCaptureKit video/system audio, leadership, removal, reconnect, and
+  clean termination.
+- [ ] External gate: pass controlled direct Internet ICE and TURN, physical
+  multi-display/Spaces and Retina combinations, CPU/upstream/thermal/audio-mix
+  observation, repeated churn, and the required soak.
 
-The detailed board and evidence boundary are in
-[`docs/live-share-progress.md`](docs/live-share-progress.md). This branch does
-not replace the app currently installed in `/Applications`.
+The deterministic implementation is complete; the unchecked items are release
+acceptance evidence, not disabled production entry points. Create Room and Join
+Invite are enabled only through the clean-slate native-v3 participant path.
+
+The authoritative current board and evidence boundary are in
+[`docs/native-participant-mesh-progress.md`](docs/native-participant-mesh-progress.md).
 
 Current Live Share Settings evidence completed on 2026-07-20:
 

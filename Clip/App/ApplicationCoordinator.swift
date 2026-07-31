@@ -1,5 +1,7 @@
 import AppKit
 import ClipCore
+import ClipLiveShare
+import ClipLiveShareWebRTC
 import ClipMedia
 import Combine
 import SwiftUI
@@ -119,46 +121,31 @@ enum RecordingCompletionPolicy {
     }
 }
 
-enum ApplicationLiveShareRoleGate {
-    static func hasActiveRole(
-        isHosting: Bool,
-        isViewing: Bool,
-        isTransitioning: Bool = false
-    ) -> Bool {
-        isHosting || isViewing || isTransitioning
-    }
-
-    static func acceptsCallback(activeToken: UUID?, callbackToken: UUID) -> Bool {
-        activeToken == callbackToken
-    }
-
-    static func permitsHostPreparationHandoff(
-        activeToken: UUID?,
-        callbackToken: UUID,
-        isHosting: Bool,
-        isViewing: Bool
-    ) -> Bool {
-        acceptsCallback(activeToken: activeToken, callbackToken: callbackToken)
-            && isHosting
-            && !isViewing
-    }
-
-    static func permitsHandoffCompletion(
-        activeToken: UUID?,
-        transitionToken: UUID,
-        isTransitioning: Bool,
-        isPreparingForTermination: Bool
-    ) -> Bool {
-        acceptsCallback(
-            activeToken: activeToken,
-            callbackToken: transitionToken
-        ) && isTransitioning && !isPreparingForTermination
-    }
+@MainActor
+struct MeshParticipantApplicationActivation {
+    let context: MeshParticipantLaunchContext
+    let bootstrap: any MeshParticipantBootstrapRouting
+    let mediaFactory: ClipLiveShareNativeV3WebRTCTransportFactory
+    let peerLinkManager: ClipLiveShareNativeV3MeshPeerLinkManager
+    let localPresentation: MeshParticipantLocalPresentationState
+    let actions: MeshParticipantCoordinatorActions
 }
 
-private enum NativeViewerLaunchRequest {
-    case invite(String)
-    case friend(NativeFriendRecord)
+enum MeshParticipantApplicationActivationError: Error, LocalizedError {
+    case roleUnavailable
+    case accessWordGenerationFailed
+    case connectionFailed(String)
+
+    var errorDescription: String? {
+        switch self {
+        case .roleUnavailable:
+            String(localized: "Another Clip capture or Live Share role is active.")
+        case .accessWordGenerationFailed:
+            String(localized: "Clip couldn’t create a new Access Word. Try again.")
+        case let .connectionFailed(message):
+            message
+        }
+    }
 }
 
 @MainActor
@@ -411,7 +398,6 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
     private let onboardingStore: OnboardingStore
     private let regionOutlineController = CaptureRegionOutlineController()
     private let applicationUpdater: any ApplicationUpdateServicing
-    private let nativeFriendPresenceMonitor: NativeFriendPresenceMonitor
 
     private var statusItem: NSStatusItem?
     private var activeFluidPopoverSizingToken: UUID?
@@ -426,12 +412,20 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
     private var previewLifecycleContext: PreviewLifecycleContext?
     private var historyWindowController: NSWindowController?
     private var onboardingWindowController: NSWindowController?
-    private var liveShareCoordinator: LiveShareCoordinator?
-    private var nativeViewerCoordinator: NativeLiveShareViewerCoordinator?
-    /// Invalidates late host/viewer callbacks after an atomic role handoff.
-    private var liveShareRoleToken: UUID?
-    private var liveShareRoleTransitionToken: UUID?
-    private var liveShareRoleTransitionTask: Task<Void, Never>?
+    private var meshParticipantRoomSession:
+        MeshParticipantRoomConnectionSession?
+    private var meshParticipantRoomEventTask: Task<Void, Never>?
+    private var meshParticipantRoomStartTask: Task<Void, Never>?
+    private var meshParticipantRoomAttemptToken: UUID?
+    private var meshParticipantPendingJoinInvite:
+        ClipLiveShareNativeV3Invite?
+    private var meshParticipantLocalPresentation =
+        MeshParticipantLocalPresentationState()
+    private var meshParticipantCoordinator: MeshParticipantCoordinator?
+    private var nativeV3MeshAcceptanceReporter:
+        NativeV3MeshAcceptanceReporter?
+    /// Invalidates late participant callbacks after room teardown/replacement.
+    private var meshParticipantRoleToken: UUID?
     private var isStartingLiveShare = false
     private var isPreparingCapture = false
     private var startupTask: Task<Void, Never>?
@@ -448,11 +442,9 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
     private var isPreparingForTermination = false
 
     private var hasActiveLiveShareRole: Bool {
-        ApplicationLiveShareRoleGate.hasActiveRole(
-            isHosting: liveShareCoordinator != nil,
-            isViewing: nativeViewerCoordinator != nil,
-            isTransitioning: liveShareRoleTransitionTask != nil
-        )
+        meshParticipantRoomSession != nil
+            || meshParticipantCoordinator != nil
+            || meshParticipantRoomStartTask != nil
     }
 
     init(
@@ -463,9 +455,6 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
         self.dependencies = dependencies
         self.applicationUpdater = applicationUpdater
         self.statusBar = statusBar
-        nativeFriendPresenceMonitor = NativeFriendPresenceMonitor(
-            friends: dependencies.nativeFriends
-        )
         lastAreaStore = LastAreaStore(defaults: dependencies.defaults)
         onboardingStore = OnboardingStore(defaults: dependencies.defaults)
         super.init()
@@ -478,6 +467,25 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
         guard statusItem == nil, !isPreparingForTermination else { return }
         installStatusItem()
         statusItem?.button?.isEnabled = false
+        if let request = dependencies.launchConfiguration
+            .nativeV3MeshAcceptanceReportingRequest
+        {
+            do {
+                let reporter = try NativeV3MeshAcceptanceReporter(
+                    request: request
+                )
+                reporter.startTerminationWatcher {
+                    NSApp.terminate(nil)
+                }
+                nativeV3MeshAcceptanceReporter = reporter
+            } catch {
+                ClipLog.lifecycle.error(
+                    "Native-v3 acceptance reporting setup failed: \(error.localizedDescription, privacy: .public)"
+                )
+                NSApp.terminate(nil)
+                return
+            }
+        }
         monitorCaptureEvents()
 
         startupTask = Task { @MainActor [weak self] in
@@ -487,30 +495,7 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
             guard !Task.isCancelled, !isPreparingForTermination else { return }
             await dependencies.liveSharePreferences.load()
             guard !Task.isCancelled, !isPreparingForTermination else { return }
-            let nativeIdentity = try? await dependencies.liveShareIdentity.loadOrCreate()
-            await dependencies.nativeFriends.load(
-                localIdentity: nativeIdentity?.publicKey
-            )
-            if nativeIdentity != nil {
-                for recovery in dependencies.nativeFriends
-                    .requesterHandshakeRecoveries
-                    where recovery.signedCommitReceipt != nil {
-                    do {
-                        try await dependencies.nativeFriends
-                            .completeRequesterHandshakeDurably(
-                                friendID: recovery.counterpartyIdentity
-                                    .fingerprint.rawValue,
-                                handshakeID: recovery.id
-                            )
-                    } catch {
-                        ClipLog.storage.error(
-                            "Could not finish a recovered friendship commit: \(error.localizedDescription, privacy: .public)"
-                        )
-                    }
-                }
-            }
-            guard !Task.isCancelled, !isPreparingForTermination else { return }
-            nativeFriendPresenceMonitor.start()
+            _ = try? await dependencies.liveShareIdentity.loadOrCreate()
             await dependencies.audio.refreshDevices()
             guard !Task.isCancelled, !isPreparingForTermination else { return }
             installIdlePopover()
@@ -559,21 +544,27 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
     }
 
     private func stop(preservingLiveShareForTermination: Bool) {
-        nativeFriendPresenceMonitor.stop()
         if preservingLiveShareForTermination {
-            liveShareCoordinator?.hideForApplicationTermination()
-            nativeViewerCoordinator?.hideForApplicationTermination()
+            meshParticipantCoordinator?.hideForApplicationTermination()
         } else {
-            liveShareCoordinator?.cancelForApplicationStop()
-            nativeViewerCoordinator?.cancelForApplicationStop()
-            liveShareCoordinator = nil
-            nativeViewerCoordinator = nil
-            liveShareRoleToken = nil
-            // The detached host remains owned by this task until its awaited
-            // transport cleanup completes, but it can no longer install a
-            // viewer after the application has stopped.
-            liveShareRoleTransitionToken = nil
-            liveShareRoleTransitionTask = nil
+            nativeV3MeshAcceptanceReporter?.stopTerminationWatcher()
+            nativeV3MeshAcceptanceReporter = nil
+            let meshRoomSession = meshParticipantRoomSession
+            meshParticipantRoomEventTask?.cancel()
+            meshParticipantRoomEventTask = nil
+            meshParticipantRoomStartTask?.cancel()
+            meshParticipantRoomStartTask = nil
+            meshParticipantRoomAttemptToken = nil
+            meshParticipantPendingJoinInvite = nil
+            meshParticipantRoomSession = nil
+            meshParticipantCoordinator?.cancelForApplicationStop()
+            meshParticipantCoordinator = nil
+            meshParticipantRoleToken = nil
+            if let meshRoomSession {
+                Task {
+                    await meshRoomSession.close()
+                }
+            }
         }
         startupTask?.cancel()
         startupTask = nil
@@ -623,26 +614,25 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
     /// in-progress Retake is canceled so its original draft stays authoritative.
     func prepareForTermination() async {
         isPreparingForTermination = true
-        nativeFriendPresenceMonitor.stop()
         maintenanceTask?.cancel()
         maintenanceTask = nil
 
-        if let liveShareRoleTransitionTask {
-            liveShareRoleTransitionToken = nil
-            await liveShareRoleTransitionTask.value
-            self.liveShareRoleTransitionTask = nil
-            liveShareRoleToken = nil
+        if let meshParticipantCoordinator {
+            await meshParticipantCoordinator.endForApplicationTermination()
+            self.meshParticipantCoordinator = nil
         }
-
-        if let liveShareCoordinator {
-            await liveShareCoordinator.endForApplicationTermination()
-            self.liveShareCoordinator = nil
+        meshParticipantRoomStartTask?.cancel()
+        meshParticipantRoomStartTask = nil
+        meshParticipantRoomAttemptToken = nil
+        meshParticipantPendingJoinInvite = nil
+        meshParticipantRoomEventTask?.cancel()
+        meshParticipantRoomEventTask = nil
+        if let meshParticipantRoomSession {
+            await meshParticipantRoomSession.close()
+            self.meshParticipantRoomSession = nil
         }
-        if let nativeViewerCoordinator {
-            await nativeViewerCoordinator.endForApplicationTermination()
-            self.nativeViewerCoordinator = nil
-        }
-        liveShareRoleToken = nil
+        meshParticipantRoleToken = nil
+        nativeV3MeshAcceptanceReporter?.stopTerminationWatcher()
 
         if pendingRetake != nil, recordingState.phase == .finishing {
             // The in-flight replacement may still finish into History, but the
@@ -692,7 +682,6 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
         await persistAndReleasePreviewForTermination()
         await dependencies.settings.flushPendingPersistence()
         await dependencies.liveSharePreferences.flushPendingPersistence()
-        await dependencies.nativeFriends.flushPendingPersistence()
     }
 
     private func waitForTerminalOperationHandoff() async {
@@ -749,7 +738,12 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
     private func installIdlePopover() {
         guard !isPreparingForTermination else { return }
         let actions = MenuBarActions(
-            startLiveShare: { [weak self] in self?.startLiveShare() },
+            createNativeV3Room: { [weak self] in
+                self?.createNativeV3Room()
+            },
+            joinNativeV3Invite: { [weak self] request in
+                self?.joinNativeV3Room(request)
+            },
             captureArea: { [weak self] in self?.requestSelection(mode: .captureArea) },
             lastArea: { [weak self] in self?.requestSelection(mode: .lastArea) },
             fullscreen: { [weak self] in self?.requestSelection(mode: .fullscreen) },
@@ -934,33 +928,18 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
         }
     }
 
-    private func installLiveSharePopover(model: LiveSharePresentationModel) {
+    private func installMeshParticipantPopover(
+        model: MeshRoomPresentationModel
+    ) {
         guard !isPreparingForTermination else { return }
         popover.behavior = .transient
         popover.animates = true
         popover.delegate = self
         installFluidPopoverContent(
-            width: LiveSharePopoverView.contentWidth,
-            initialHeight: LiveSharePopoverView.contentSize.height
+            width: MeshRoomPopoverView.contentWidth,
+            initialHeight: MeshRoomPopoverView.contentSize.height
         ) { maximumHeight, reportContentHeight in
-            LiveSharePopoverView(
-                model: model,
-                maximumHeight: maximumHeight,
-                onContentHeightChange: reportContentHeight
-            )
-        }
-    }
-
-    private func installNativeViewerPopover(model: NativeViewerPresentationModel) {
-        guard !isPreparingForTermination else { return }
-        popover.behavior = .transient
-        popover.animates = true
-        popover.delegate = self
-        installFluidPopoverContent(
-            width: NativeViewerPopoverView.contentWidth,
-            initialHeight: NativeViewerPopoverView.contentSize.height
-        ) { maximumHeight, reportContentHeight in
-            NativeViewerPopoverView(
+            MeshRoomPopoverView(
                 model: model,
                 maximumHeight: maximumHeight,
                 onContentHeightChange: reportContentHeight
@@ -988,226 +967,795 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
         }
     }
 
-    private func startLiveShare() {
+    // MARK: - Native-v3 participant room
+
+    private func createNativeV3Room() {
+        beginNativeV3RoomConnection(joinRequest: nil)
+    }
+
+    private func joinNativeV3Room(
+        _ request: MenuBarNativeV3JoinRequest
+    ) {
+        if let session = meshParticipantRoomSession,
+           meshParticipantCoordinator == nil,
+           meshParticipantPendingJoinInvite == request.invite {
+            guard let accessWord = request.accessWord else {
+                NSSound.beep()
+                return
+            }
+            Task { @MainActor [weak self] in
+                do {
+                    try await session.provideAccessWord(accessWord)
+                } catch {
+                    self?.presentError(
+                        title: String(
+                            localized: "Couldn’t Submit Access Word"
+                        ),
+                        error: error
+                    )
+                }
+            }
+            return
+        }
+        beginNativeV3RoomConnection(joinRequest: request)
+    }
+
+    /// Create and Join both enter the same direct-v3 connection owner. There
+    /// is no host/viewer negotiation, legacy invitation fallback, or role
+    /// handoff in this production path.
+    private func beginNativeV3RoomConnection(
+        joinRequest: MenuBarNativeV3JoinRequest?
+    ) {
         guard !isStartingLiveShare,
               !isPreparingCapture,
               !hasActiveLiveShareRole,
               recordingPresentationModel == nil,
-              [.idle, .canceled, .failed, .preview].contains(recordingState.phase),
+              [.idle, .canceled, .failed, .preview].contains(
+                recordingState.phase
+              ),
               !isPreparingForTermination else {
             NSSound.beep()
             return
         }
+
         isStartingLiveShare = true
-        defer { isStartingLiveShare = false }
-
-        let roleToken = UUID()
-        let coordinator = LiveShareCoordinator(
-            preferences: dependencies.liveSharePreferences,
-            nativeFriends: dependencies.nativeFriends,
-            serverEndpoint: dependencies.liveSharePreferences.serverEndpoint,
-            requestScreenRecordingPermission: { [weak self] in
-                await self?.ensureLiveShareScreenRecordingPermission() ?? false
-            },
-            onJoinInviteRequested: { [weak self] invite in
-                self?.transitionFromHostPreparationToViewer(
-                    invite: invite,
-                    roleToken: roleToken
-                )
-            },
-            onJoinFriendRequested: { [weak self] friend in
-                self?.requestNativeFriendJoin(friend, roleToken: roleToken)
-            },
-            onSessionEnded: { [weak self] in
-                self?.liveShareDidEnd(roleToken: roleToken)
-            },
-            onMenuBarStatusChanged: { [weak self] status in
-                self?.updateLiveShareStatusIcon(status, roleToken: roleToken)
-            }
-        )
-        liveShareCoordinator = coordinator
-        liveShareRoleToken = roleToken
-        installLiveSharePopover(model: coordinator.presentationModel)
+        let attemptToken = UUID()
+        meshParticipantRoomAttemptToken = attemptToken
         updateLiveShareStatusIcon(.ready)
-        coordinator.start()
+        meshParticipantRoomStartTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            defer {
+                if meshParticipantRoomAttemptToken == attemptToken {
+                    meshParticipantRoomStartTask = nil
+                    isStartingLiveShare = false
+                }
+            }
 
-        if popover.isShown {
-            popover.contentViewController?.view.window?.makeKey()
-        } else if let button = statusItem?.button {
-            popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
-            popover.contentViewController?.view.window?.makeKey()
+            do {
+                let endpoint = joinRequest?.invite.endpoint
+                    ?? dependencies.liveSharePreferences
+                    .serverEndpoint.rootURL
+                let webRTCConfiguration =
+                    try await Self.nativeV3WebRTCConfiguration(
+                        endpoint: endpoint
+                    )
+                let identity = try await dependencies.liveShareIdentity
+                    .loadOrCreate()
+                try Task.checkCancellation()
+                guard meshParticipantRoomAttemptToken == attemptToken,
+                      !isPreparingForTermination else {
+                    throw CancellationError()
+                }
+                let participant = try Self.makeNativeV3Participant(
+                    identity: identity
+                )
+                let session: MeshParticipantRoomConnectionSession
+                if let joinRequest {
+                    session = try .candidate(
+                        invite: joinRequest.invite,
+                        participant: participant,
+                        signer: identity.signer,
+                        accessWord: joinRequest.accessWord,
+                        webRTCConfiguration: webRTCConfiguration
+                    )
+                    meshParticipantLocalPresentation =
+                        Self.initialMeshPresentation(
+                            invite: joinRequest.invite,
+                            isLocalLeader: false
+                        )
+                    meshParticipantPendingJoinInvite = joinRequest.invite
+                } else {
+                    let initialAccessWord =
+                        try Self.initialMeshAccessWord(
+                            for:
+                                dependencies.liveSharePreferences
+                                    .settings,
+                            generator: {
+                                try LiveShareAccessCode.generate()
+                            }
+                        )
+                    session = try .creator(
+                        endpoint: dependencies.liveSharePreferences
+                            .serverEndpoint.rootURL,
+                        sessionID: .random(),
+                        participant: participant,
+                        signer: identity.signer,
+                        requiredAccessWord: initialAccessWord,
+                        webRTCConfiguration: webRTCConfiguration
+                    )
+                    meshParticipantLocalPresentation =
+                        Self.initialMeshPresentation(
+                            invite: nil,
+                            isLocalLeader: true,
+                            accessWord: initialAccessWord
+                        )
+                    meshParticipantPendingJoinInvite = nil
+                }
+
+                try Task.checkCancellation()
+                guard meshParticipantRoomAttemptToken == attemptToken,
+                      meshParticipantRoomSession == nil,
+                      meshParticipantCoordinator == nil,
+                      !isPreparingForTermination else {
+                    await session.close()
+                    throw CancellationError()
+                }
+
+                meshParticipantRoomSession = session
+                let events = await session.events()
+                meshParticipantRoomEventTask =
+                    Task { @MainActor [weak self] in
+                        for await event in events {
+                            guard !Task.isCancelled, let self else {
+                                return
+                            }
+                            await self.handleMeshRoomConnectionEvent(
+                                event,
+                                from: session
+                            )
+                        }
+                    }
+                try await session.start()
+            } catch is CancellationError {
+                return
+            } catch {
+                guard meshParticipantRoomAttemptToken == attemptToken else {
+                    return
+                }
+                failMeshRoomConnection(
+                    error.localizedDescription,
+                    session: meshParticipantRoomSession
+                )
+            }
         }
     }
 
-    private func transitionFromHostPreparationToViewer(
-        invite: String,
-        roleToken: UUID
-    ) {
-        transitionFromHostPreparationToViewer(
-            .invite(invite),
-            roleToken: roleToken
+    private static func nativeV3WebRTCConfiguration(
+        endpoint: URL
+    ) async throws -> ClipLiveShareNativeV3WebRTCConfiguration {
+        let capabilities: ClipNativeRendezvousCapabilities
+        do {
+            capabilities = try await ClipNativeRendezvousHTTPClient()
+                .discover(at: endpoint)
+        } catch {
+            throw MeshParticipantApplicationActivationError
+                .connectionFailed(
+                    String(
+                        localized:
+                            "Clip couldn’t load this room server’s native connection settings. \(error.localizedDescription)"
+                    )
+                )
+        }
+
+        var peerConfiguration = WebRTCPeerConfiguration.clipDefault
+        peerConfiguration.iceServers = capabilities.webRTCICEServers
+        return ClipLiveShareNativeV3WebRTCConfiguration(
+            peer: peerConfiguration
         )
     }
 
-    private func transitionFromHostPreparationToViewer(
-        _ request: NativeViewerLaunchRequest,
-        roleToken: UUID
-    ) {
-        guard !isPreparingForTermination,
-              liveShareRoleTransitionTask == nil,
-              ApplicationLiveShareRoleGate.permitsHostPreparationHandoff(
-                activeToken: liveShareRoleToken,
-                callbackToken: roleToken,
-                isHosting: liveShareCoordinator != nil,
-                isViewing: nativeViewerCoordinator != nil
-              ),
-              let liveShareCoordinator else {
-            NSSound.beep()
-            return
-        }
+    private static func makeNativeV3Participant(
+        identity: NativeDeviceIdentity
+    ) throws -> ClipLiveShareNativeV3Participant {
+        let hostName = Host.current().localizedName?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let displayName = hostName.flatMap {
+            $0.isEmpty ? nil : $0
+        } ?? String(localized: "This Mac")
+        return try .init(
+            participantID: .random(),
+            identity: identity.publicKey,
+            displayName: displayName,
+            capabilities: .current
+        )
+    }
 
-        // Reserve the application role with a fresh token before detaching the
-        // host. This invalidates every late host callback synchronously. The
-        // viewer is created only after all host transports finish teardown.
-        let transitionToken = UUID()
-        self.liveShareCoordinator = nil
-        liveShareRoleToken = transitionToken
-        liveShareRoleTransitionToken = transitionToken
-        liveShareRoleTransitionTask = Task { @MainActor [weak self] in
-            await liveShareCoordinator.cancelForRoleTransition()
-            guard let self else { return }
-            guard ApplicationLiveShareRoleGate.permitsHandoffCompletion(
-                activeToken: liveShareRoleToken,
-                transitionToken: transitionToken,
-                isTransitioning: liveShareRoleTransitionToken == transitionToken,
-                isPreparingForTermination: isPreparingForTermination
-            ) else {
-                if liveShareRoleTransitionToken == transitionToken {
-                    liveShareRoleTransitionToken = nil
-                    liveShareRoleTransitionTask = nil
-                    liveShareRoleToken = nil
-                }
+    private static func initialMeshPresentation(
+        invite: ClipLiveShareNativeV3Invite?,
+        isLocalLeader: Bool,
+        accessWord: String? = nil
+    ) -> MeshParticipantLocalPresentationState {
+        var state = MeshParticipantLocalPresentationState(
+            roomName: meshRoomName(invite: invite),
+            invite: invite.flatMap(meshInviteSnapshot)
+        )
+        state.accessWordEnabled = isLocalLeader && accessWord != nil
+        state.accessWord = isLocalLeader ? accessWord : nil
+        state.canChangeAccessWord = isLocalLeader
+        return state
+    }
+
+    /// Resolves the persisted default before the owner route is created so
+    /// its signed room descriptor and the first popover frame agree about
+    /// whether an Access Word is required.
+    static func initialMeshAccessWord(
+        for settings: LiveShareSettings,
+        generator: () throws -> String
+    ) rethrows -> String? {
+        guard settings.accessCodeEnabled else { return nil }
+        return try generator()
+    }
+
+    /// Native-v3 room presentation is derived only from the shared invitation,
+    /// so every participant displays the same name without consulting the
+    /// deleted legacy room-name service or inventing a local machine name.
+    private static func meshRoomName(
+        invite: ClipLiveShareNativeV3Invite?
+    ) -> String {
+        guard let invite else {
+            return String(localized: "Live Share")
+        }
+        let roomCode = String(
+            invite.rendezvousID.rawValue.prefix(8)
+        ).uppercased()
+        return String(localized: "Room \(roomCode)")
+    }
+
+    private static func meshInviteSnapshot(
+        _ invite: ClipLiveShareNativeV3Invite
+    ) -> MeshRoomInviteSnapshot? {
+        guard let url = try? invite.url else { return nil }
+        return MeshRoomInviteSnapshot(
+            url: url,
+            roomCode: String(
+                invite.rendezvousID.rawValue.prefix(8)
+            ).uppercased()
+        )
+    }
+
+    private func handleMeshRoomConnectionEvent(
+        _ event: MeshParticipantRoomConnectionEvent,
+        from session: MeshParticipantRoomConnectionSession
+    ) async {
+        guard meshParticipantRoomSession === session,
+              !isPreparingForTermination else { return }
+
+        switch event {
+        case let .phaseChanged(phase):
+            switch phase {
+            case .joining, .publishingInvite, .awaitingApproval,
+                 .preparingPeerLinks:
+                updateLiveShareStatusIcon(.ready)
+            case .active:
+                updateLiveShareStatusIcon(.ready)
+            case .accessWordRequired:
+                // Keep the authenticated rendezvous route alive. The existing
+                // Join fields remain visible, and submitting the same invite
+                // with a word resumes this exact direct-v3 transaction through
+                // `provideAccessWord(_:)`.
+                updateLiveShareStatusIcon(.ready)
+            case .rejected, .timedOut, .failed, .closed, .idle:
+                break
+            }
+
+        case let .inviteChanged(invite):
+            let snapshot = invite.flatMap(Self.meshInviteSnapshot)
+            let roomName = MeshRoomIdentityPolicy.roomName(
+                current: meshParticipantLocalPresentation.roomName,
+                inviteDerivedName: Self.meshRoomName(invite: invite),
+                roomIsActive: meshParticipantCoordinator != nil
+            )
+            meshParticipantLocalPresentation.roomName = roomName
+            meshParticipantLocalPresentation.invite = snapshot
+            meshParticipantCoordinator?.updateRoomName(roomName)
+            meshParticipantCoordinator?.updateRoomInvite(snapshot)
+
+        case .accessWordRequirementChanged:
+            break
+
+        case let .admissionRequested(participant):
+            let admission = MeshRoomPendingAdmissionSnapshot(
+                id: participant.participantID.rawValue,
+                displayName: participant.displayName,
+                deviceName: nil
+            )
+            meshParticipantLocalPresentation.pendingAdmissions = [
+                admission
+            ]
+            meshParticipantCoordinator?.updatePendingAdmissions([
+                admission
+            ])
+
+        case let .activationReady(roomActivation):
+            guard meshParticipantCoordinator == nil,
+                  let media = roomActivation.media else {
+                failMeshRoomConnection(
+                    String(
+                        localized:
+                            "Clip couldn’t prepare the native-v3 media connection."
+                    ),
+                    session: session
+                )
                 return
             }
+            let isLeader =
+                roomActivation.context.signedMembership.snapshot
+                    .leaderParticipantID
+                    == roomActivation.context.localParticipantID
+            meshParticipantLocalPresentation.canChangeAccessWord = isLeader
+            do {
+                try activateMeshParticipant(
+                    MeshParticipantApplicationActivation(
+                        context: roomActivation.context,
+                        bootstrap: roomActivation.bootstrap,
+                        mediaFactory: media.factory,
+                        peerLinkManager: media.peerLinkManager,
+                        localPresentation:
+                            meshParticipantLocalPresentation,
+                        actions: makeMeshParticipantActions(
+                            session: session
+                        )
+                    )
+                )
+                meshParticipantRoomStartTask = nil
+                meshParticipantRoomAttemptToken = nil
+                meshParticipantPendingJoinInvite = nil
+                isStartingLiveShare = false
+            } catch {
+                failMeshRoomConnection(
+                    error.localizedDescription,
+                    session: session
+                )
+            }
 
-            liveShareRoleTransitionToken = nil
-            liveShareRoleTransitionTask = nil
-            liveShareRoleToken = nil
-            switch request {
-            case .invite(let invite):
-                startNativeViewer(invite: invite)
-            case .friend(let friend):
-                startNativeViewer(friend: friend)
+        case let .membershipUpdateReady(context):
+            meshParticipantLocalPresentation.pendingAdmissions = []
+            meshParticipantCoordinator?.updatePendingAdmissions([])
+            meshParticipantCoordinator?.commitMembership(
+                context.signedMembership,
+                authorityChain: context.authorityChain,
+                verifiedNonces: context.verifiedPeerTransportNonces,
+                bootstrapAdmissionDigests:
+                    context.bootstrapAdmissionDigests
+            )
+
+        case let .admissionFailed(message):
+            meshParticipantLocalPresentation.pendingAdmissions = []
+            meshParticipantCoordinator?.updatePendingAdmissions([])
+            ClipLog.lifecycle.error(
+                "Native-v3 admission failed while the room stayed active: \(message, privacy: .private)"
+            )
+
+        case let .inviteRefreshFailed(message):
+            ClipLog.lifecycle.error(
+                "Native-v3 invite refresh failed: \(message, privacy: .private)"
+            )
+            if meshParticipantCoordinator != nil {
+                presentError(
+                    title: String(
+                        localized: "Couldn’t Refresh Room Invitation"
+                    ),
+                    error: MeshParticipantApplicationActivationError
+                        .connectionFailed(message)
+                )
+            }
+
+        case let .rejected(reason):
+            meshParticipantLocalPresentation.pendingAdmissions = []
+            meshParticipantCoordinator?.updatePendingAdmissions([])
+            if meshParticipantCoordinator == nil {
+                failMeshRoomConnection(
+                    String(
+                        localized:
+                            "The room rejected this join request (\(reason.rawValue))."
+                    ),
+                    session: session
+                )
+            }
+
+        case let .failed(message):
+            meshParticipantLocalPresentation.pendingAdmissions = []
+            meshParticipantCoordinator?.updatePendingAdmissions([])
+            if meshParticipantCoordinator == nil {
+                failMeshRoomConnection(message, session: session)
+            } else {
+                ClipLog.lifecycle.error(
+                    "Native-v3 admission failed while the room stayed active: \(message, privacy: .private)"
+                )
+            }
+
+        case .closed:
+            if meshParticipantCoordinator == nil {
+                finishMeshRoomConnection(session: session)
             }
         }
     }
 
-    private func startNativeViewer(invite: String) {
-        guard !isPreparingForTermination,
-              !hasActiveLiveShareRole,
-              recordingPresentationModel == nil,
-              !isPreparingCapture,
-              [.idle, .canceled, .failed, .preview].contains(recordingState.phase) else {
-            NSSound.beep()
-            return
-        }
-
-        let roleToken = UUID()
-        let coordinator = NativeLiveShareViewerCoordinator(
-            invite: invite,
-            identityRepository: dependencies.liveShareIdentity,
-            nativeFriends: dependencies.nativeFriends,
-            localServerEndpoint: dependencies.liveSharePreferences.serverEndpoint,
-            onSessionEnded: { [weak self] in
-                self?.nativeViewerDidEnd(roleToken: roleToken)
+    private func makeMeshParticipantActions(
+        session: MeshParticipantRoomConnectionSession
+    ) -> MeshParticipantCoordinatorActions {
+        MeshParticipantCoordinatorActions(
+            setAccessWordEnabled: { [weak self] enabled in
+                self?.setMeshAccessWordEnabled(
+                    enabled,
+                    session: session
+                )
             },
-            onMenuBarStatusChanged: { [weak self] status in
-                self?.updateLiveShareStatusIcon(status, roleToken: roleToken)
+            replaceAccessWord: { [weak self] in
+                self?.replaceMeshAccessWord(session: session)
+            },
+            requestNewInvite: { [weak self] in
+                self?.refreshMeshInvite(session: session)
+            },
+            approveAdmission: { [weak self] rawParticipantID in
+                self?.approveMeshAdmission(
+                    rawParticipantID,
+                    session: session
+                )
+            },
+            denyAdmission: { [weak self] rawParticipantID in
+                self?.denyMeshAdmission(
+                    rawParticipantID,
+                    session: session
+                )
+            },
+            committedContextChanged: {
+                [weak self] context, availability, refresh in
+                await self?.applyMeshCommittedContext(
+                    context,
+                    availability: availability,
+                    refreshInviteIfLocalLeader: refresh,
+                    session: session
+                )
+            },
+            receiveBootstrapForward: { forward, participantID in
+                try await session.receiveBootstrapForward(
+                    forward,
+                    from: participantID
+                )
+            },
+            receiveBootstrapMembership: { membership, participantID in
+                try await session.receiveCommittedMembership(
+                    membership,
+                    from: participantID
+                )
             }
         )
-        activateNativeViewer(coordinator, roleToken: roleToken)
     }
 
-    private func startNativeViewer(friend: NativeFriendRecord) {
-        guard !isPreparingForTermination,
-              !hasActiveLiveShareRole,
-              recordingPresentationModel == nil,
-              !isPreparingCapture,
-              [.idle, .canceled, .failed, .preview].contains(recordingState.phase) else {
-            NSSound.beep()
-            return
-        }
-
-        let roleToken = UUID()
-        let coordinator = NativeLiveShareViewerCoordinator(
-            friend: friend,
-            identityRepository: dependencies.liveShareIdentity,
-            nativeFriends: dependencies.nativeFriends,
-            localServerEndpoint: dependencies.liveSharePreferences.serverEndpoint,
-            onSessionEnded: { [weak self] in
-                self?.nativeViewerDidEnd(roleToken: roleToken)
-            },
-            onMenuBarStatusChanged: { [weak self] status in
-                self?.updateLiveShareStatusIcon(status, roleToken: roleToken)
-            }
-        )
-        activateNativeViewer(coordinator, roleToken: roleToken)
-    }
-
-    private func activateNativeViewer(
-        _ coordinator: NativeLiveShareViewerCoordinator,
-        roleToken: UUID
+    private func refreshMeshInvite(
+        session: MeshParticipantRoomConnectionSession
     ) {
-        nativeViewerCoordinator = coordinator
-        liveShareRoleToken = roleToken
-        installNativeViewerPopover(model: coordinator.presentationModel)
+        guard meshParticipantRoomSession === session else { return }
+        Task { @MainActor [weak self] in
+            do {
+                try await session.refreshInvite()
+            } catch {
+                self?.presentError(
+                    title: String(
+                        localized: "Couldn’t Create a New Invitation"
+                    ),
+                    error: error
+                )
+            }
+        }
+    }
+
+    private func setMeshAccessWordEnabled(
+        _ enabled: Bool,
+        session: MeshParticipantRoomConnectionSession
+    ) {
+        guard enabled else {
+            updateMeshAccessWord(nil, session: session)
+            return
+        }
+        do {
+            updateMeshAccessWord(
+                try LiveShareAccessCode.generate(),
+                session: session
+            )
+        } catch {
+            presentError(
+                title: String(localized: "Couldn’t Update Access Word"),
+                error: MeshParticipantApplicationActivationError
+                    .accessWordGenerationFailed
+            )
+        }
+    }
+
+    private func replaceMeshAccessWord(
+        session: MeshParticipantRoomConnectionSession
+    ) {
+        guard let value = try? LiveShareAccessCode.generate() else {
+            presentError(
+                title: String(localized: "Couldn’t Update Access Word"),
+                error: MeshParticipantApplicationActivationError
+                    .accessWordGenerationFailed
+            )
+            return
+        }
+        updateMeshAccessWord(value, session: session)
+    }
+
+    private func updateMeshAccessWord(
+        _ value: String?,
+        session: MeshParticipantRoomConnectionSession
+    ) {
+        guard meshParticipantRoomSession === session else { return }
+        let previousEnabled =
+            meshParticipantLocalPresentation.accessWordEnabled
+        let previousValue = meshParticipantLocalPresentation.accessWord
+        Task { @MainActor [weak self] in
+            guard let self,
+                  meshParticipantRoomSession === session else { return }
+            do {
+                try await session.updateRequiredAccessWord(value)
+                meshParticipantLocalPresentation.accessWordEnabled =
+                    value != nil
+                meshParticipantLocalPresentation.accessWord = value
+                meshParticipantCoordinator?
+                    .updateAccessWordPresentation(
+                        enabled: value != nil,
+                        value: value,
+                        canChange: true
+                    )
+            } catch {
+                meshParticipantLocalPresentation.accessWordEnabled =
+                    previousEnabled
+                meshParticipantLocalPresentation.accessWord =
+                    previousValue
+                meshParticipantCoordinator?
+                    .updateAccessWordPresentation(
+                        enabled: previousEnabled,
+                        value: previousValue,
+                        canChange: true
+                    )
+                presentError(
+                    title: String(
+                        localized: "Couldn’t Update Access Word"
+                    ),
+                    error: error
+                )
+            }
+        }
+    }
+
+    private func approveMeshAdmission(
+        _ rawParticipantID: String,
+        session: MeshParticipantRoomConnectionSession
+    ) {
+        guard let participantID =
+            try? ClipLiveShareNativeV3ParticipantID(
+                rawValue: rawParticipantID
+            )
+        else { return }
+        Task { @MainActor [weak self] in
+            do {
+                try await session.approveAdmission(participantID)
+            } catch {
+                self?.presentError(
+                    title: String(
+                        localized: "Couldn’t Approve Participant"
+                    ),
+                    error: error
+                )
+            }
+        }
+    }
+
+    private func denyMeshAdmission(
+        _ rawParticipantID: String,
+        session: MeshParticipantRoomConnectionSession
+    ) {
+        guard let participantID =
+            try? ClipLiveShareNativeV3ParticipantID(
+                rawValue: rawParticipantID
+            )
+        else { return }
+        Task { @MainActor [weak self] in
+            do {
+                try await session.denyAdmission(participantID)
+            } catch {
+                self?.presentError(
+                    title: String(
+                        localized: "Couldn’t Deny Participant"
+                    ),
+                    error: error
+                )
+            }
+        }
+    }
+
+    private func applyMeshCommittedContext(
+        _ context: MeshParticipantBootstrapLaunchContext,
+        availability: MeshParticipantBootstrapRoomAvailability,
+        refreshInviteIfLocalLeader: Bool,
+        session: MeshParticipantRoomConnectionSession
+    ) async {
+        guard meshParticipantRoomSession === session else { return }
+        let isLocalLeader =
+            context.signedMembership.snapshot.leaderParticipantID
+                == context.localParticipantID
+        let canManageRoom =
+            isLocalLeader && availability == .active
+        if !canManageRoom {
+            meshParticipantLocalPresentation.accessWordEnabled = false
+            meshParticipantLocalPresentation.accessWord = nil
+        }
+        meshParticipantLocalPresentation.canChangeAccessWord =
+            canManageRoom
+        meshParticipantCoordinator?.updateAccessWordPresentation(
+            enabled:
+                meshParticipantLocalPresentation.accessWordEnabled,
+            value: meshParticipantLocalPresentation.accessWord,
+            canChange: canManageRoom
+        )
+        do {
+            try await session.applyCommittedContext(
+                context,
+                availability: availability,
+                refreshInviteIfLocalLeader:
+                    refreshInviteIfLocalLeader
+            )
+        } catch {
+            presentError(
+                title: String(
+                    localized: "Couldn’t Refresh Room Invitation"
+                ),
+                error: error
+            )
+        }
+    }
+
+    private func failMeshRoomConnection(
+        _ message: String,
+        session: MeshParticipantRoomConnectionSession?
+    ) {
+        guard let session else {
+            isStartingLiveShare = false
+            meshParticipantRoomStartTask = nil
+            meshParticipantRoomAttemptToken = nil
+            updateStatusIcon(
+                symbol: "record.circle",
+                description: String(localized: "Clip")
+            )
+            presentError(
+                title: String(localized: "Couldn’t Join Live Share"),
+                error: MeshParticipantApplicationActivationError
+                    .connectionFailed(message)
+            )
+            return
+        }
+        guard meshParticipantRoomSession === session else { return }
+        finishMeshRoomConnection(session: session)
+        presentError(
+            title: String(localized: "Couldn’t Join Live Share"),
+            error: MeshParticipantApplicationActivationError
+                .connectionFailed(message)
+        )
+    }
+
+    private func finishMeshRoomConnection(
+        session: MeshParticipantRoomConnectionSession
+    ) {
+        guard meshParticipantRoomSession === session else { return }
+        meshParticipantRoomEventTask?.cancel()
+        meshParticipantRoomEventTask = nil
+        meshParticipantRoomStartTask?.cancel()
+        meshParticipantRoomStartTask = nil
+        meshParticipantRoomAttemptToken = nil
+        meshParticipantPendingJoinInvite = nil
+        meshParticipantRoomSession = nil
+        isStartingLiveShare = false
+        meshParticipantLocalPresentation = .init()
+        if meshParticipantCoordinator == nil {
+            meshParticipantRoleToken = nil
+            installIdlePopover()
+            updateStatusIcon(
+                symbol: "record.circle",
+                description: String(localized: "Clip")
+            )
+        }
+        Task {
+            await session.close()
+        }
+    }
+
+    /// Installs the symmetric native-v3 participant after direct v3 room
+    /// creation or admission has produced an authenticated, fully linked
+    /// membership context. Creator and joiners enter this exact same path.
+    func activateMeshParticipant(
+        _ activation: MeshParticipantApplicationActivation
+    ) throws {
+        guard !isPreparingForTermination,
+              meshParticipantCoordinator == nil,
+              recordingPresentationModel == nil,
+              !isPreparingCapture else {
+            throw MeshParticipantApplicationActivationError.roleUnavailable
+        }
+
+        let roleToken = UUID()
+        let coordinator = try MeshParticipantCoordinator(
+            context: activation.context,
+            bootstrap: activation.bootstrap,
+            mediaFactory: activation.mediaFactory,
+            peerLinkManager: activation.peerLinkManager,
+            initialLocalSettings:
+                dependencies.liveSharePreferences.settings,
+            persistLocalSettings: { [weak self] settings in
+                self?.dependencies.liveSharePreferences.replaceSettings(
+                    with: settings
+                )
+            },
+            localPresentation: activation.localPresentation,
+            actions: activation.actions,
+            acceptanceReporter: nativeV3MeshAcceptanceReporter,
+            onSessionEnded: { [weak self] in
+                self?.meshParticipantDidEnd(roleToken: roleToken)
+            },
+            onMenuBarStatusChanged: { [weak self] status in
+                self?.updateLiveShareStatusIcon(
+                    status,
+                    roleToken: roleToken
+                )
+            }
+        )
+
+        meshParticipantRoleToken = roleToken
+        meshParticipantCoordinator = coordinator
+        installMeshParticipantPopover(model: coordinator.presentationModel)
         updateLiveShareStatusIcon(.ready)
         coordinator.start()
         if let button = statusItem?.button {
-            popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+            if !popover.isShown {
+                popover.show(
+                    relativeTo: button.bounds,
+                    of: button,
+                    preferredEdge: .minY
+                )
+            }
             popover.contentViewController?.view.window?.makeKey()
         }
     }
 
-    private func requestNativeFriendJoin(
-        _ friend: NativeFriendRecord,
-        roleToken: UUID
-    ) {
-        transitionFromHostPreparationToViewer(
-            .friend(friend),
-            roleToken: roleToken
-        )
-    }
-
-    private func liveShareDidEnd(roleToken: UUID) {
+    private func meshParticipantDidEnd(roleToken: UUID) {
         guard !isPreparingForTermination,
-              ApplicationLiveShareRoleGate.acceptsCallback(
-                activeToken: liveShareRoleToken,
-                callbackToken: roleToken
-              ),
-              liveShareCoordinator != nil else { return }
-        liveShareCoordinator = nil
-        liveShareRoleToken = nil
+              meshParticipantRoleToken == roleToken,
+              meshParticipantCoordinator != nil else { return }
+        let roomSession = meshParticipantRoomSession
+        meshParticipantRoomEventTask?.cancel()
+        meshParticipantRoomEventTask = nil
+        meshParticipantRoomStartTask?.cancel()
+        meshParticipantRoomStartTask = nil
+        meshParticipantRoomAttemptToken = nil
+        meshParticipantPendingJoinInvite = nil
+        meshParticipantRoomSession = nil
+        meshParticipantCoordinator = nil
+        meshParticipantRoleToken = nil
+        meshParticipantLocalPresentation = .init()
+
         installIdlePopover()
-        updateStatusIcon(symbol: "record.circle", description: String(localized: "Clip"))
+        updateStatusIcon(
+            symbol: "record.circle",
+            description: String(localized: "Clip")
+        )
         Task { @MainActor [weak self] in
             await self?.refreshMenuBarModel()
         }
-    }
-
-    private func nativeViewerDidEnd(roleToken: UUID) {
-        guard !isPreparingForTermination,
-              ApplicationLiveShareRoleGate.acceptsCallback(
-                activeToken: liveShareRoleToken,
-                callbackToken: roleToken
-              ),
-              nativeViewerCoordinator != nil else { return }
-        nativeViewerCoordinator = nil
-        liveShareRoleToken = nil
-        installIdlePopover()
-        updateStatusIcon(symbol: "record.circle", description: String(localized: "Clip"))
-        Task { @MainActor [weak self] in
-            await self?.refreshMenuBarModel()
+        if let roomSession {
+            Task {
+                await roomSession.close()
+            }
         }
     }
 
@@ -2909,7 +3457,6 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
         let view = SettingsView(
             model: dependencies.settings,
             liveSharePreferences: dependencies.liveSharePreferences,
-            nativeFriends: dependencies.nativeFriends,
             liveShareIdentity: dependencies.liveShareIdentity,
             shortcuts: dependencies.shortcuts,
             permissions: dependencies.permissions,
@@ -2917,7 +3464,7 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
             historyDirectory: historyDirectory,
             storageActions: storageActions,
             applyLiveShareAdvancedSettings: { [weak self] codec, advanced in
-                self?.liveShareCoordinator?.presentationModel
+                self?.meshParticipantCoordinator?.presentationModel
                     .setAdvancedVideoSettings(advanced, for: codec)
             }
         )
@@ -3024,7 +3571,7 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
             explanation.alertStyle = .informational
             explanation.messageText = String(localized: "Allow Screen Recording")
             explanation.informativeText = String(
-                localized: "Clip needs Screen & System Audio Recording access to share only the windows or display you choose. Live Share sends selected video and optional system audio to connected viewers over encrypted WebRTC media transport."
+                localized: "Clip needs Screen & System Audio Recording access to share only the windows or display you choose. Live Share sends selected video and optional system audio to connected participants over encrypted WebRTC media transport."
             )
             explanation.addButton(withTitle: String(localized: "Continue"))
             explanation.addButton(withTitle: String(localized: "Not Now"))
@@ -3198,7 +3745,9 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
         button.image = image
     }
 
-    private func updateLiveShareStatusIcon(_ status: LiveShareMenuBarStatus) {
+    private func updateLiveShareStatusIcon(
+        _ status: MeshParticipantMenuBarStatus
+    ) {
         updateStatusIcon(
             symbol: status.symbolName,
             description: status.accessibilityDescription
@@ -3206,13 +3755,10 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
     }
 
     private func updateLiveShareStatusIcon(
-        _ status: LiveShareMenuBarStatus,
+        _ status: MeshParticipantMenuBarStatus,
         roleToken: UUID
     ) {
-        guard ApplicationLiveShareRoleGate.acceptsCallback(
-            activeToken: liveShareRoleToken,
-            callbackToken: roleToken
-        ) else { return }
+        guard meshParticipantRoleToken == roleToken else { return }
         updateLiveShareStatusIcon(status)
     }
 

@@ -1,39 +1,55 @@
 import Foundation
 
-/// Additive native Clip-to-Clip protocol primitives for participant meshes.
+/// Native Clip-to-Clip protocol primitives for participant meshes.
 ///
-/// Native v3 is deliberately separate from the browser v1 and native v2
-/// codecs. In particular, signatures use v3-specific canonical domains so a
-/// v3 value can never be interpreted as a valid v2 value (or change a v2
-/// golden vector).
+/// Signatures use native-v3-specific canonical domains so values from another
+/// protocol cannot be interpreted as valid participant-mesh messages.
 public enum ClipLiveShareNativeV3 {
   public static let version = 3
   public static let protocolIdentifier = "clip-live-share-native"
   public static let controlDataChannelLabel = "clip-native-control-v3"
+  /// Bounds every native-v3 room-control payload. The value leaves comfortable
+  /// headroom for WebRTC DataChannel framing while still accommodating a
+  /// complete four-participant membership, four source descriptors per
+  /// participant, ICE batches, and bounded collaboration strokes.
+  public static let maximumControlMessageBytes = 196_400
 
   public static let participantIDByteCount = 16
   public static let maximumCapabilities = 64
-  /// Each peer connection reserves the current four deterministic video slots.
-  public static let reservedVideoSlotsPerParticipant =
-    ClipLiveShareNativeV2.maximumConcurrentVideoSources
+  /// Each peer connection reserves four deterministic video slots. This is a
+  /// native-v3 wire invariant rather than an alias to another protocol.
+  public static let reservedVideoSlotsPerParticipant = 4
   public static let maximumSourcesPerParticipant = reservedVideoSlotsPerParticipant
-  /// The first mesh UI exposes two simultaneously active sources per
-  /// participant while retaining all four protocol slots for later expansion.
-  public static let defaultMaximumActiveSourcesPerParticipant = 2
+  /// Product and protocol expose all four deterministic video slots. This
+  /// preserves Clip's existing four-source Live Share contract for every mesh
+  /// participant instead of making the symmetric room a functional downgrade.
+  public static let defaultMaximumActiveSourcesPerParticipant =
+    reservedVideoSlotsPerParticipant
 
   /// The wire protocol is intentionally bounded because a complete mesh has
   /// O(n²) peer links. Four participants require six links.
   public static let maximumProtocolParticipants = 4
 
-  /// The first product iteration admits the owner and one guest. This is a
-  /// policy limit rather than a wire-format limit, so later UI work can raise
-  /// it without introducing native v4.
-  public static let defaultProductAdmissionLimit = 2
+  /// The product release gate exercises the complete four-participant graph:
+  /// six direct peer links, while every process owns only its three incident
+  /// connections.
+  public static let defaultProductAdmissionLimit = 4
 
   public static let maximumMembershipCredentialLifetimeMilliseconds: Int64 =
     5 * 60 * 1_000
   public static let maximumMembershipSnapshotLifetimeMilliseconds: Int64 =
     5 * 60 * 1_000
+  public static let transportNonceByteCount = 32
+  public static let possessionChallengeByteCount = 32
+  public static let maximumPossessionChallengeLifetimeMilliseconds: Int64 =
+    60 * 1_000
+  public static let maximumPeerLinkRenegotiationRequestLifetimeMilliseconds:
+    Int64 = 60 * 1_000
+  public static let maximumLeadershipProposalLifetimeMilliseconds: Int64 =
+    60 * 1_000
+  public static let maximumParticipantLeaveRequestLifetimeMilliseconds: Int64 =
+    60 * 1_000
+  public static let maximumAuthorityTransitions = 8
   public static let maximumClockSkewMilliseconds: Int64 = 30 * 1_000
 }
 
@@ -55,6 +71,17 @@ public enum ClipLiveShareNativeV3Error: Error, Equatable, Sendable {
     expectedGreaterThan: UInt64,
     actual: UInt64
   )
+  case invalidBinaryValue(name: String, expectedBytes: Int)
+  case invalidPeerLinkContext
+  case unknownControlMessageType(String)
+  case invalidLeadershipTerm
+  case staleLeadershipTerm(expectedGreaterThan: UInt64, actual: UInt64)
+  case duplicateLeadershipVote
+  case conflictingLeadershipVote
+  case insufficientLeadershipQuorum(required: Int, actual: Int)
+  case invalidLeadershipCertificate
+  case invalidAuthorityChain
+  case staleRoomTerminationRevision(expectedGreaterThan: UInt64, actual: UInt64)
   case selfPeerLink
   case participantLimit(maximum: Int, actual: Int)
   case duplicateParticipant
@@ -96,6 +123,28 @@ extension ClipLiveShareNativeV3Error: LocalizedError {
       "Expected source revision greater than \(expected) for \(participantID), received \(actual)."
     case let .stalePeerLinkRevision(peerLinkKey, expected, actual):
       "Expected peer-link revision greater than \(expected) for \(peerLinkKey), received \(actual)."
+    case let .invalidBinaryValue(name, expectedBytes):
+      "The native v3 \(name) must contain exactly \(expectedBytes) bytes."
+    case .invalidPeerLinkContext:
+      "The native v3 peer-link message does not match its asserted participant pair."
+    case let .unknownControlMessageType(type):
+      "The native v3 control message type '\(type)' is unsupported."
+    case .invalidLeadershipTerm:
+      "The native v3 leadership term must be positive."
+    case let .staleLeadershipTerm(expected, actual):
+      "Expected a leadership term greater than \(expected), received \(actual)."
+    case .duplicateLeadershipVote:
+      "The native v3 leadership certificate contains a duplicate vote."
+    case .conflictingLeadershipVote:
+      "The participant has already voted for another proposal in this leadership term."
+    case let .insufficientLeadershipQuorum(required, actual):
+      "The native v3 leadership certificate requires \(required) votes; received \(actual)."
+    case .invalidLeadershipCertificate:
+      "The native v3 leadership certificate does not match the last committed membership."
+    case .invalidAuthorityChain:
+      "The native v3 room authority chain is invalid."
+    case let .staleRoomTerminationRevision(expected, actual):
+      "Expected a room-termination revision greater than \(expected), received \(actual)."
     case .selfPeerLink:
       "A native v3 peer link requires two different participants."
     case let .participantLimit(maximum, actual):
@@ -219,9 +268,27 @@ public struct ClipLiveShareNativeV3Capability: Codable, Equatable, Hashable, Com
     try! Self(rawValue: "signaling.peer-link-negotiation-v1")
   public static let leaderSignedMembership =
     try! Self(rawValue: "membership.leader-signed-v1")
+  public static let bidirectionalMedia =
+    try! Self(rawValue: "media.bidirectional-v1")
+  public static let participantAudio =
+    try! Self(rawValue: "audio.participant-v1")
+  public static let leadershipSuccession =
+    try! Self(rawValue: "membership.quorum-succession-v1")
+  public static let authorityChain =
+    try! Self(rawValue: "membership.authority-chain-v1")
+  public static let collaboration =
+    try! Self(rawValue: "collaboration.pointer-ping-ink-v1")
+  public static let closedControlEnvelope =
+    try! Self(rawValue: "control.closed-envelope-v1")
 
   public static let nativeV3Baseline: Set<Self> = [
+    .authorityChain,
+    .bidirectionalMedia,
+    .closedControlEnvelope,
+    .collaboration,
     .completeMesh,
+    .leadershipSuccession,
+    .participantAudio,
     .participantSources,
     .peerLinkNegotiation,
     .leaderSignedMembership,
@@ -425,6 +492,54 @@ public struct ClipLiveShareNativeV3PeerLinkKey: Codable, Equatable, Hashable, Co
   }
 }
 
+/// Randomly identifies one concrete WebRTC transport attempt for a participant
+/// pair. A negotiation revision prevents stale ordering while this nonce keeps
+/// proofs and ICE from being transplanted to a different transport created at
+/// the same revision in another process.
+public struct ClipLiveShareNativeV3TransportNonce: Codable, Equatable, Hashable, Sendable,
+  CustomStringConvertible
+{
+  public let bytes: Data
+
+  public init(bytes: Data) throws {
+    guard bytes.count == ClipLiveShareNativeV3.transportNonceByteCount else {
+      throw ClipLiveShareNativeV3Error.invalidBinaryValue(
+        name: "transport nonce",
+        expectedBytes: ClipLiveShareNativeV3.transportNonceByteCount
+      )
+    }
+    self.bytes = bytes
+  }
+
+  public init(rawValue: String) throws {
+    guard let bytes = ClipLiveShareBase64URL.decode(rawValue) else {
+      throw ClipLiveShareProtocolError.invalidBase64URL
+    }
+    try self.init(bytes: bytes)
+  }
+
+  public static func random() -> Self {
+    try! Self(
+      bytes: nativeV3SecureRandomData(
+        count: ClipLiveShareNativeV3.transportNonceByteCount
+      )
+    )
+  }
+
+  public var rawValue: String { ClipLiveShareBase64URL.encode(bytes) }
+  public var description: String { rawValue }
+
+  public init(from decoder: any Decoder) throws {
+    let container = try decoder.singleValueContainer()
+    try self.init(rawValue: container.decode(String.self))
+  }
+
+  public func encode(to encoder: any Encoder) throws {
+    var container = encoder.singleValueContainer()
+    try container.encode(rawValue)
+  }
+}
+
 public struct ClipLiveShareNativeV3MembershipRevision: Codable, Equatable, Hashable, Comparable,
   Sendable
 {
@@ -504,11 +619,11 @@ public struct ClipLiveShareNativeV3PeerLinkRevision: Codable, Equatable, Hashabl
 ///
 /// This is deliberately module-internal and is not the native-v3 wire
 /// boundary. Runtime integration must expose a closed, versioned v3 envelope
-/// so v1/v2 values cannot be encoded through a generic public API.
+/// so unrelated values cannot be encoded through a generic public API.
 enum ClipLiveShareNativeV3FoundationJSONCodec {
   static func encode<T: Encodable>(
     _ value: T,
-    maximumBytes: Int = ClipLiveShareV1.maximumInnerMessageBytes
+    maximumBytes: Int = ClipLiveShareNativeV3.maximumControlMessageBytes
   ) throws -> Data {
     let encoder = JSONEncoder()
     encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
@@ -520,7 +635,7 @@ enum ClipLiveShareNativeV3FoundationJSONCodec {
   static func decode<T: Decodable>(
     _ type: T.Type,
     from data: Data,
-    maximumBytes: Int = ClipLiveShareV1.maximumInnerMessageBytes
+    maximumBytes: Int = ClipLiveShareNativeV3.maximumControlMessageBytes
   ) throws -> T {
     try validateSize(data, maximumBytes: maximumBytes)
     return try JSONDecoder().decode(type, from: data)
@@ -578,7 +693,7 @@ struct ClipLiveShareNativeV3CanonicalEncoder {
   }
 }
 
-private func nativeV3SecureRandomData(count: Int) -> Data {
+func nativeV3SecureRandomData(count: Int) -> Data {
   var generator = SystemRandomNumberGenerator()
   return Data(
     (0..<count).map { _ in

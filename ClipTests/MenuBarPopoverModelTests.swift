@@ -1,5 +1,6 @@
 import AppKit
 import ClipCore
+import ClipLiveShare
 import CoreGraphics
 import SwiftUI
 import XCTest
@@ -7,12 +8,93 @@ import XCTest
 
 @MainActor
 final class MenuBarPopoverModelTests: XCTestCase {
+    func testNativeV3InviteEntryAcceptsOnlyCompleteV3Invites() throws {
+        let invite = try makeNativeV3Invite()
+        let inviteURL = try invite.url.absoluteString
+
+        XCTAssertEqual(
+            MenuBarNativeV3InviteEntry.parse(" \n\(inviteURL)\t"),
+            invite
+        )
+        XCTAssertNil(MenuBarNativeV3InviteEntry.parse(""))
+        XCTAssertNil(
+            MenuBarNativeV3InviteEntry.parse(
+                "https://mesh.example.test/#clip-native-v3=invalid"
+            )
+        )
+    }
+
+    func testNativeV3RoomActionsUseSeparateCreateAndJoinCallbacks() throws {
+        let invite = try makeNativeV3Invite()
+        var createCount = 0
+        var joinRequest: MenuBarNativeV3JoinRequest?
+        let actions = MenuBarActions(
+            createNativeV3Room: { createCount += 1 },
+            joinNativeV3Invite: { joinRequest = $0 },
+            captureArea: {},
+            lastArea: {},
+            fullscreen: {},
+            openHistory: {},
+            openSettings: {},
+            quit: {}
+        )
+
+        actions.createNativeV3Room()
+        actions.joinNativeV3Invite(
+            MenuBarNativeV3JoinRequest(
+                invite: invite,
+                accessWord: "  be-ta  "
+            )
+        )
+
+        XCTAssertEqual(createCount, 1)
+        XCTAssertEqual(joinRequest?.invite, invite)
+        XCTAssertEqual(joinRequest?.accessWord, "BE-TA")
+        XCTAssertFalse(joinRequest?.description.contains("BE-TA") == true)
+        XCTAssertFalse(
+            joinRequest?.description.contains(
+                try invite.url.absoluteString
+            ) == true
+        )
+    }
+
+    func testNativeV3JoinRequestDropsAnEmptyAccessWord() throws {
+        let request = MenuBarNativeV3JoinRequest(
+            invite: try makeNativeV3Invite(),
+            accessWord: " \n "
+        )
+
+        XCTAssertNil(request.accessWord)
+        XCTAssertTrue(request.description.contains("<none>"))
+    }
+
     func testVersionDisplayUsesTheMarketingVersion() {
         XCTAssertEqual(
             MenuBarApplicationVersion.displayString(
                 infoDictionary: ["CFBundleShortVersionString": "1.2.3"]
             ),
             "v1.2.3"
+        )
+    }
+
+    private func makeNativeV3Invite()
+        throws -> ClipLiveShareNativeV3Invite {
+        let signer = try ClipLiveShareSoftwareIdentitySigner(
+            rawRepresentation: Data(repeating: 0x66, count: 32)
+        )
+        return try ClipLiveShareNativeV3Invite(
+            endpoint: URL(string: "https://mesh.example.test")!,
+            rendezvousID: .init(bytes: Data(repeating: 0x11, count: 32)),
+            sessionID: .init(rawValue: "menu-native-v3-room"),
+            foundingCreatorIdentity: signer.publicKey,
+            leaderParticipantID: .init(
+                bytes: Data(repeating: 0x22, count: 16)
+            ),
+            leaderIdentity: signer.publicKey,
+            leaderRendezvousPublicKey: ClipLiveShareNativeV3RendezvousIdentity().publicKey,
+            admissionCapability: .init(
+                bytes: Data(repeating: 0x44, count: 32)
+            )
         )
     }
 
@@ -149,7 +231,10 @@ final class MenuBarPopoverModelTests: XCTestCase {
         let liveShare = NSViewController()
         liveShare.view = NSView(frame: .zero)
         container.replaceContent(with: liveShare)
-        container.view.frame.size = LiveSharePopoverView.contentSize
+        container.view.frame.size = NSSize(
+            width: ClipPopoverDesign.width,
+            height: 620
+        )
         container.view.layoutSubtreeIfNeeded()
 
         XCTAssertTrue(container.view === stableRootView)
@@ -186,13 +271,9 @@ final class MenuBarPopoverModelTests: XCTestCase {
 
     func testPopoverViewsShareTheDesignWidthAndRetainFallbackHeights() {
         XCTAssertEqual(MenuBarPopoverView.contentSize.width, ClipPopoverDesign.width)
-        XCTAssertEqual(MenuBarPopoverView.contentSize.height, 900)
+        XCTAssertEqual(MenuBarPopoverView.contentSize.height, 980)
         XCTAssertEqual(RecordingStatusView.contentSize.width, ClipPopoverDesign.width)
         XCTAssertEqual(RecordingStatusView.contentSize.height, 360)
-        XCTAssertEqual(LiveSharePopoverView.contentWidth, ClipPopoverDesign.width)
-        XCTAssertEqual(LiveSharePopoverView.contentSize.height, 620)
-        XCTAssertEqual(NativeViewerPopoverView.contentWidth, ClipPopoverDesign.width)
-        XCTAssertEqual(NativeViewerPopoverView.contentSize.height, 590)
     }
 
     func testSharedPopoverButtonSizesMatchTheVisualHierarchy() {
@@ -369,136 +450,6 @@ final class MenuBarPopoverModelTests: XCTestCase {
         XCTAssertEqual(fittedHeight, reportedHeight ?? 0, accuracy: 1)
     }
 
-    func testReadyLiveShareReportsItsNaturalHeightInsteadOfTheLegacyFixedHeight() throws {
-        let reported = expectation(description: "Natural Live Share height reported")
-        var reportedHeight: CGFloat?
-        let snapshot = try XCTUnwrap(
-            DeterministicLiveShareDemo.snapshot(for: .liveShareReady)
-        )
-        let controller = NSHostingController(
-            rootView: LiveSharePopoverView(
-                model: LiveSharePresentationModel(
-                    snapshot: snapshot,
-                    actions: .noOp
-                ),
-                maximumHeight: 940,
-                onContentHeightChange: { height in
-                    guard reportedHeight == nil, height > 250 else { return }
-                    reportedHeight = height
-                    reported.fulfill()
-                }
-            )
-        )
-        let window = NSWindow(
-            contentRect: NSRect(
-                origin: .zero,
-                size: LiveSharePopoverView.contentSize
-            ),
-            styleMask: [.borderless],
-            backing: .buffered,
-            defer: false
-        )
-        window.contentViewController = controller
-        controller.view.layoutSubtreeIfNeeded()
-
-        let fittedHeight = ceil(controller.view.fittingSize.height)
-        XCTAssertEqual(XCTWaiter.wait(for: [reported], timeout: 1), .completed)
-        XCTAssertGreaterThan(fittedHeight, 300)
-        XCTAssertLessThan(fittedHeight, LiveSharePopoverView.contentSize.height)
-        XCTAssertGreaterThan(reportedHeight ?? 0, 300)
-        XCTAssertLessThan(
-            reportedHeight ?? .infinity,
-            LiveSharePopoverView.contentSize.height
-        )
-        // SwiftUI can publish a transient segment sum a few points before the
-        // hosting view's final fitting pass; the production coalescer uses the
-        // latest value. Keep this focused on natural-vs-legacy sizing.
-        XCTAssertEqual(fittedHeight, reportedHeight ?? 0, accuracy: 8)
-    }
-
-    func testNativeViewerReportsItsNaturalHeight() {
-        let reported = expectation(description: "Natural native-viewer height reported")
-        var reportedHeight: CGFloat?
-        let controller = NSHostingController(
-            rootView: NativeViewerPopoverView(
-                model: NativeViewerPresentationModel(
-                    snapshot: DeterministicNativeViewerDemo.snapshot(
-                        for: .nativeViewerLive
-                    ),
-                    actions: .init()
-                ),
-                maximumHeight: 940,
-                onContentHeightChange: { height in
-                    guard reportedHeight == nil else { return }
-                    reportedHeight = height
-                    reported.fulfill()
-                }
-            )
-        )
-        let window = NSWindow(
-            contentRect: NSRect(
-                origin: .zero,
-                size: NativeViewerPopoverView.contentSize
-            ),
-            styleMask: [.borderless],
-            backing: .buffered,
-            defer: false
-        )
-        window.contentViewController = controller
-        controller.view.layoutSubtreeIfNeeded()
-
-        let fittedHeight = ceil(controller.view.fittingSize.height)
-        XCTAssertEqual(XCTWaiter.wait(for: [reported], timeout: 1), .completed)
-        XCTAssertGreaterThan(fittedHeight, 300)
-        XCTAssertLessThanOrEqual(fittedHeight, 940)
-        XCTAssertEqual(fittedHeight, reportedHeight ?? 0, accuracy: 1)
-    }
-
-    func testAudioExclusionMenuAppearsOnlyForFullscreenSystemAudio() {
-        let application = LiveShareAudioApplicationViewSnapshot(
-            id: "com.hnc.Discord",
-            name: "Discord",
-            bundleIdentifier: "com.hnc.Discord"
-        )
-        let fullscreenWithAudio = LiveShareViewSnapshot(
-            phase: .live(elapsedSeconds: 10),
-            sessionStage: .active,
-            fullscreen: .init(isOn: true, displayName: "Built-in Retina Display"),
-            settings: .init(
-                systemAudioEnabled: true,
-                audioExclusionApplications: [application],
-                canChangeAudioExclusions: true
-            )
-        )
-        let fullscreenWithoutAudio = LiveShareViewSnapshot(
-            phase: .live(elapsedSeconds: 10),
-            sessionStage: .active,
-            fullscreen: .init(isOn: true, displayName: "Built-in Retina Display"),
-            settings: .init(
-                systemAudioEnabled: false,
-                audioExclusionApplications: [application],
-                canChangeAudioExclusions: true
-            )
-        )
-        let windowShareWithAudio = LiveShareViewSnapshot(
-            phase: .live(elapsedSeconds: 10),
-            sessionStage: .active,
-            fullscreen: .init(isOn: false, displayName: "Built-in Retina Display"),
-            settings: .init(
-                systemAudioEnabled: true,
-                audioExclusionApplications: [application],
-                canChangeAudioExclusions: true
-            )
-        )
-
-        let visibleHeight = fittedLiveShareHeight(for: fullscreenWithAudio)
-        let audioOffHeight = fittedLiveShareHeight(for: fullscreenWithoutAudio)
-        let windowShareHeight = fittedLiveShareHeight(for: windowShareWithAudio)
-
-        XCTAssertGreaterThan(visibleHeight, audioOffHeight + 10)
-        XCTAssertEqual(windowShareHeight, audioOffHeight, accuracy: 1)
-    }
-
     func testAudioExclusionSummaryShowsNoneAppNameAndCount() {
         let discord = LiveShareAudioApplicationViewSnapshot(
             id: "com.hnc.Discord",
@@ -535,30 +486,6 @@ final class MenuBarPopoverModelTests: XCTestCase {
             ).audioExclusionSummary,
             "1 App"
         )
-    }
-
-    private func fittedLiveShareHeight(for snapshot: LiveShareViewSnapshot) -> CGFloat {
-        let controller = NSHostingController(
-            rootView: LiveSharePopoverView(
-                model: LiveSharePresentationModel(
-                    snapshot: snapshot,
-                    actions: .noOp
-                ),
-                maximumHeight: 940
-            )
-        )
-        let window = NSWindow(
-            contentRect: NSRect(
-                origin: .zero,
-                size: LiveSharePopoverView.contentSize
-            ),
-            styleMask: [.borderless],
-            backing: .buffered,
-            defer: false
-        )
-        window.contentViewController = controller
-        controller.view.layoutSubtreeIfNeeded()
-        return ceil(controller.view.fittingSize.height)
     }
 
     private func display(

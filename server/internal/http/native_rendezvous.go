@@ -15,18 +15,19 @@ const maximumNativeSessionRequestBytes = 24 * 1_024
 
 func (s *Service) nativeCapabilities(writer http.ResponseWriter, _ *http.Request) {
 	writeJSON(writer, http.StatusOK, protocol.NativeRendezvousCapabilities{
-		Protocol:                    "clip-native-rendezvous",
-		APIVersion:                  protocol.NativeRendezvousAPIVersion,
-		MessageVersion:              protocol.NativeMessageVersion,
-		ServerVersion:               s.config.ServerVersion,
-		RendezvousPathTemplate:      "/api/native/v1/rendezvous/{rendezvous}",
-		HostWebSocketPathTemplate:   "/api/native/v1/rendezvous/{rendezvous}/host",
-		ViewerWebSocketPathTemplate: "/api/native/v1/rendezvous/{rendezvous}/viewer",
-		MaximumMessageBytes:         protocol.MaximumMessageBytes,
-		MaximumDescriptorBytes:      protocol.MaximumNativeDescriptorBytes,
-		MaximumOpaquePayloadBytes:   protocol.MaximumNativeOpaquePayloadBytes,
-		MaximumPendingRoutes:        protocol.MaximumPendingViewersPerRoom,
-		MaximumRendezvous:           s.config.MaximumRooms,
+		Protocol:                       "clip-native-rendezvous",
+		APIVersion:                     protocol.NativeRendezvousAPIVersion,
+		MessageVersion:                 protocol.NativeMessageVersion,
+		ServerVersion:                  s.config.ServerVersion,
+		RendezvousPathTemplate:         "/api/native/v3/rendezvous/{rendezvous}",
+		OwnerWebSocketPathTemplate:     "/api/native/v3/rendezvous/{rendezvous}/owner",
+		CandidateWebSocketPathTemplate: "/api/native/v3/rendezvous/{rendezvous}/candidate",
+		MaximumMessageBytes:            protocol.MaximumMessageBytes,
+		MaximumDescriptorBytes:         protocol.MaximumNativeDescriptorBytes,
+		MaximumOpaquePayloadBytes:      protocol.MaximumNativeOpaquePayloadBytes,
+		MaximumPendingRoutes:           protocol.MaximumPendingRoutes,
+		MaximumRendezvous:              s.config.MaximumRendezvous,
+		ICEServers:                     append([]protocol.ICEServer(nil), s.config.ICEServers...),
 	})
 }
 
@@ -35,7 +36,9 @@ func (s *Service) advertiseNativeRendezvous(writer http.ResponseWriter, request 
 	if !ok {
 		return
 	}
-	if !s.admission.allowRoomLeaseOperation(s.admission.source(request)) {
+	if !s.admission.allowRendezvousLeaseOperation(
+		s.admission.source(request),
+	) {
 		writer.Header().Set("Retry-After", "60")
 		writeError(writer, http.StatusTooManyRequests, "source_rate_limited")
 		return
@@ -126,8 +129,8 @@ func (s *Service) activateNativeSession(writer http.ResponseWriter, request *htt
 	}
 	if err := s.nativeRendezvous.Activate(rendezvousID, ownerHash, body.Descriptor); err != nil {
 		switch {
-		case errors.Is(err, signaling.ErrNativeHostUnavailable):
-			writeError(writer, http.StatusConflict, "host_offline")
+		case errors.Is(err, signaling.ErrNativeOwnerUnavailable):
+			writeError(writer, http.StatusConflict, "owner_offline")
 		default:
 			writeNativeOwnerError(writer, err)
 		}
@@ -153,7 +156,7 @@ func (s *Service) deactivateNativeSession(writer http.ResponseWriter, request *h
 	writer.WriteHeader(http.StatusNoContent)
 }
 
-func (s *Service) nativeHostWebSocket(writer http.ResponseWriter, request *http.Request) {
+func (s *Service) nativeOwnerWebSocket(writer http.ResponseWriter, request *http.Request) {
 	rendezvousID, ok := nativeRendezvousID(writer, request)
 	if !ok {
 		return
@@ -173,23 +176,23 @@ func (s *Service) nativeHostWebSocket(writer http.ResponseWriter, request *http.
 		writeNativeOwnerError(writer, err)
 		return
 	}
-	if !s.acquireHostConnection(source) {
+	if !s.acquireCoordinatorConnection(source) {
 		writeError(writer, http.StatusServiceUnavailable, "connection_capacity_reached")
 		return
 	}
-	defer s.releaseHostConnection(source)
+	defer s.releaseCoordinatorConnection(source)
 
 	connection, err := s.upgrader.Upgrade(writer, request, nil)
 	if err != nil {
 		return
 	}
-	hostID, err := randomIdentifier(16)
+	ownerID, err := randomIdentifier(16)
 	if err != nil {
 		_ = connection.Close()
 		return
 	}
 	socket := signaling.NewSocket(connection, s.socketConfiguration(func() {
-		if !s.nativeRendezvous.RenewHost(rendezvousID, hostID) {
+		if !s.nativeRendezvous.RenewOwner(rendezvousID, ownerID) {
 			_ = connection.Close()
 		}
 	}))
@@ -202,14 +205,14 @@ func (s *Service) nativeHostWebSocket(writer http.ResponseWriter, request *http.
 	defer s.untrackSocket(socket)
 	socket.Start()
 	defer socket.Wait()
-	defer socket.Close(signaling.CloseNormal, "native host disconnected")
+	defer socket.Close(signaling.CloseNormal, "native owner disconnected")
 
-	if err := s.nativeRendezvous.AttachHost(rendezvousID, ownerHash, hostID, socket); err != nil {
+	if err := s.nativeRendezvous.AttachOwner(rendezvousID, ownerHash, ownerID, socket); err != nil {
 		_ = socket.Send(protocol.NativeErrorMessage("owner_unauthorized", "The rendezvous owner capability was rejected."))
 		socket.Close(signaling.ClosePolicyViolation, "owner unauthorized")
 		return
 	}
-	defer s.nativeRendezvous.DetachHost(rendezvousID, hostID)
+	defer s.nativeRendezvous.DetachOwner(rendezvousID, ownerID)
 	_ = socket.ResetReadDeadline()
 
 	for {
@@ -220,12 +223,12 @@ func (s *Service) nativeHostWebSocket(writer http.ResponseWriter, request *http.
 		}
 		switch message.Type {
 		case protocol.MessageNativeRelay:
-			err = s.nativeRendezvous.RelayFromHost(rendezvousID, hostID, message)
+			err = s.nativeRendezvous.RelayFromOwner(rendezvousID, ownerID, message)
 		case protocol.MessageNativeCloseRoute:
 			if validateErr := protocol.ValidateNativeCloseRoute(message, true); validateErr != nil {
 				err = validateErr
 			} else {
-				err = s.nativeRendezvous.CloseRouteFromHost(rendezvousID, hostID, message.RouteID, message.Reason)
+				err = s.nativeRendezvous.CloseRouteFromOwner(rendezvousID, ownerID, message.RouteID, message.Reason)
 			}
 		default:
 			err = protocol.ErrInvalidMessage
@@ -233,7 +236,7 @@ func (s *Service) nativeHostWebSocket(writer http.ResponseWriter, request *http.
 		if err == nil {
 			continue
 		}
-		if errors.Is(err, signaling.ErrRouteNotFound) || errors.Is(err, signaling.ErrStaleViewer) {
+		if errors.Is(err, signaling.ErrRouteNotFound) || errors.Is(err, signaling.ErrStaleCandidate) {
 			_ = socket.Send(protocol.NativeErrorMessage("route_unavailable", "The native rendezvous route is no longer available."))
 			continue
 		}
@@ -242,7 +245,7 @@ func (s *Service) nativeHostWebSocket(writer http.ResponseWriter, request *http.
 			continue
 		}
 		if errors.Is(err, signaling.ErrSequence) {
-			_ = s.nativeRendezvous.CloseRouteFromHost(rendezvousID, hostID, message.RouteID, "relay sequence rejected")
+			_ = s.nativeRendezvous.CloseRouteFromOwner(rendezvousID, ownerID, message.RouteID, "relay sequence rejected")
 			_ = socket.Send(protocol.NativeErrorMessage("route_sequence_rejected", "The native rendezvous route sequence was rejected."))
 			continue
 		}
@@ -252,7 +255,7 @@ func (s *Service) nativeHostWebSocket(writer http.ResponseWriter, request *http.
 	}
 }
 
-func (s *Service) nativeViewerWebSocket(writer http.ResponseWriter, request *http.Request) {
+func (s *Service) nativeCandidateWebSocket(writer http.ResponseWriter, request *http.Request) {
 	rendezvousID, ok := nativeRendezvousID(writer, request)
 	if !ok {
 		return
@@ -272,12 +275,11 @@ func (s *Service) nativeViewerWebSocket(writer http.ResponseWriter, request *htt
 		writeError(writer, http.StatusConflict, "rendezvous_not_live")
 		return
 	}
-	roomKey := "native:" + rendezvousID
-	if !s.acquireViewerConnection(source, roomKey) {
+	if !s.acquireCandidateConnection(source, rendezvousID) {
 		writeError(writer, http.StatusServiceUnavailable, "connection_capacity_reached")
 		return
 	}
-	defer s.releaseViewerConnection(source, roomKey)
+	defer s.releaseCandidateConnection(source, rendezvousID)
 
 	connection, err := s.upgrader.Upgrade(writer, request, nil)
 	if err != nil {
@@ -293,22 +295,22 @@ func (s *Service) nativeViewerWebSocket(writer http.ResponseWriter, request *htt
 	defer s.untrackSocket(socket)
 	socket.Start()
 	defer socket.Wait()
-	defer socket.Close(signaling.CloseNormal, "native viewer disconnected")
+	defer socket.Close(signaling.CloseNormal, "native candidate disconnected")
 
 	routeID, err := s.nativeRendezvous.OpenRoute(rendezvousID, socket)
 	if err != nil {
 		switch {
 		case errors.Is(err, signaling.ErrRouteLimit):
-			_ = socket.Send(protocol.NativeErrorMessage("route_capacity_reached", "The rendezvous has too many pending native viewers."))
+			_ = socket.Send(protocol.NativeErrorMessage("route_capacity_reached", "The rendezvous has too many pending native candidates."))
 		case errors.Is(err, signaling.ErrNativeNotLive):
-			_ = socket.Send(protocol.NativeErrorMessage("rendezvous_not_live", "The host is not sharing."))
+			_ = socket.Send(protocol.NativeErrorMessage("rendezvous_not_live", "The owner is not sharing."))
 		default:
-			_ = socket.Send(protocol.Message{Type: protocol.MessageNativeHostUnavailable, Version: protocol.NativeMessageVersion})
+			_ = socket.Send(protocol.Message{Type: protocol.MessageNativeOwnerUnavailable, Version: protocol.NativeMessageVersion})
 		}
 		socket.Close(signaling.CloseTryAgainLater, "native route unavailable")
 		return
 	}
-	defer s.nativeRendezvous.CloseViewerRoute(rendezvousID, routeID, socket, "native viewer disconnected")
+	defer s.nativeRendezvous.CloseCandidateRoute(rendezvousID, routeID, socket, "native candidate disconnected")
 	_ = socket.ResetReadDeadline()
 
 	for {
@@ -319,12 +321,12 @@ func (s *Service) nativeViewerWebSocket(writer http.ResponseWriter, request *htt
 		}
 		switch message.Type {
 		case protocol.MessageNativeRelay:
-			err = s.nativeRendezvous.RelayFromViewer(rendezvousID, routeID, socket, message)
+			err = s.nativeRendezvous.RelayFromCandidate(rendezvousID, routeID, socket, message)
 		case protocol.MessageNativeCloseRoute:
 			if validateErr := protocol.ValidateNativeCloseRoute(message, false); validateErr != nil {
 				err = validateErr
 			} else {
-				s.nativeRendezvous.CloseViewerRoute(rendezvousID, routeID, socket, "native viewer completed signaling")
+				s.nativeRendezvous.CloseCandidateRoute(rendezvousID, routeID, socket, "native candidate completed signaling")
 				return
 			}
 		default:
@@ -333,7 +335,7 @@ func (s *Service) nativeViewerWebSocket(writer http.ResponseWriter, request *htt
 		if err == nil {
 			continue
 		}
-		if errors.Is(err, signaling.ErrRouteBackpressure) || errors.Is(err, signaling.ErrNativeHostUnavailable) || errors.Is(err, signaling.ErrStaleViewer) {
+		if errors.Is(err, signaling.ErrRouteBackpressure) || errors.Is(err, signaling.ErrNativeOwnerUnavailable) || errors.Is(err, signaling.ErrStaleCandidate) {
 			return
 		}
 		_ = socket.Send(protocol.NativeErrorMessage("protocol_error", "The native rendezvous message was rejected."))

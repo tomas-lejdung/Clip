@@ -134,21 +134,6 @@ final class SettingsVisualSnapshotTests: XCTestCase {
                 isDirectory: true
             )
         )
-        let friendBook = try snapshotNativeFriendBook()
-        let nativeFriends = NativeFriendModel(
-            repository: try NativeFriendRepository(
-                applicationSupportDirectory: stateDirectory.appendingPathComponent(
-                    "Application Support",
-                    isDirectory: true
-                )
-            ),
-            initialBook: friendBook
-        )
-        if let liveFriend = friendBook.records.first(where: {
-            $0.trustState == .trusted
-        }) {
-            nativeFriends.setPresence(.live, id: liveFriend.id)
-        }
         let liveShareIdentity = NativeDeviceIdentityRepository(
             storage: try SnapshotNativeDeviceIdentityStorage()
         )
@@ -163,7 +148,6 @@ final class SettingsVisualSnapshotTests: XCTestCase {
         let settingsView = SettingsView(
             model: model,
             liveSharePreferences: liveSharePreferences,
-            nativeFriends: nativeFriends,
             liveShareIdentity: liveShareIdentity,
             shortcuts: shortcuts,
             permissions: SnapshotPermissionService(),
@@ -394,8 +378,6 @@ private final class SnapshotNativeDeviceIdentityStorage:
     private struct StoredIdentityFixture: Encodable {
         let version: Int
         let signingPrivateKey: Data
-        let rendezvousID: ClipLiveShareRendezvousID
-        let ownerToken: ClipLiveShareOwnerToken
     }
 
     private let lock = NSLock()
@@ -403,20 +385,8 @@ private final class SnapshotNativeDeviceIdentityStorage:
 
     init() throws {
         data = try JSONEncoder().encode(StoredIdentityFixture(
-            version: 1,
-            signingPrivateKey: snapshotPrivateKey(seed: 1),
-            rendezvousID: ClipLiveShareRendezvousID(
-                bytes: Data(
-                    repeating: 0x11,
-                    count: ClipLiveShareNativeV2.rendezvousIDByteCount
-                )
-            ),
-            ownerToken: ClipLiveShareOwnerToken(
-                bytes: Data(
-                    repeating: 0x44,
-                    count: ClipLiveShareV1.ownerTokenByteCount
-                )
-            )
+            version: 3,
+            signingPrivateKey: snapshotPrivateKey(seed: 1)
         ))
     }
 
@@ -437,44 +407,6 @@ private final class SnapshotNativeDeviceIdentityStorage:
         defer { lock.unlock() }
         data = nil
     }
-}
-
-private func snapshotNativeFriendBook() throws -> NativeFriendBook {
-    let liveIdentity = try NativeDeviceIdentitySigner(
-        rawRepresentation: snapshotPrivateKey(seed: 2)
-    ).publicKey
-    let blockedIdentity = try NativeDeviceIdentitySigner(
-        rawRepresentation: snapshotPrivateKey(seed: 3)
-    ).publicKey
-    return NativeFriendBook(records: [
-        NativeFriendRecord(
-            identity: liveIdentity,
-            displayName: "Mira",
-            deviceName: "Mira’s MacBook Pro",
-            endpoint: .official,
-            rendezvousID: try ClipLiveShareRendezvousID(
-                bytes: Data(
-                    repeating: 0x22,
-                    count: ClipLiveShareNativeV2.rendezvousIDByteCount
-                )
-            ),
-            createdAt: Date(timeIntervalSince1970: 1_700_000_000)
-        ),
-        NativeFriendRecord(
-            identity: blockedIdentity,
-            displayName: "Old Studio Mac",
-            deviceName: "Mac mini",
-            endpoint: .official,
-            rendezvousID: try ClipLiveShareRendezvousID(
-                bytes: Data(
-                    repeating: 0x33,
-                    count: ClipLiveShareNativeV2.rendezvousIDByteCount
-                )
-            ),
-            trustState: .blocked,
-            createdAt: Date(timeIntervalSince1970: 1_700_000_100)
-        ),
-    ])
 }
 
 private func snapshotPrivateKey(seed: UInt8) -> Data {
