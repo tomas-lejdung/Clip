@@ -10,27 +10,24 @@ import OSLog
 /// after opening and verifying the opaque admission record.
 struct ServerCoordinatedMeshVerifiedMember: Equatable, Sendable {
     let handle: ClipLiveShareServerRoomV4MemberHandle
-    let participantID: ClipLiveShareNativeV3ParticipantID
-    /// Present when the caller owns the decrypted descriptor. The app room
-    /// session can also construct this value from `ClientRoom.snapshot`, whose
-    /// public neutral projection intentionally exposes only the already
-    /// verified participant ID and display fields.
-    let descriptor: ClipLiveShareServerRoomV4MemberDescriptor?
-    let displayName: String
-    let deviceName: String
+    /// The complete descriptor is mandatory after creator certification and
+    /// decryption. Runtime capability decisions must never infer a profile
+    /// from missing data or from user-controlled display fields.
+    let descriptor: ClipLiveShareServerRoomV4MemberDescriptor
+
+    var participantID: ClipLiveShareNativeV3ParticipantID {
+        descriptor.participantID
+    }
+
+    var displayName: String { descriptor.displayName }
+    var deviceName: String { descriptor.deviceName }
 
     init(
         handle: ClipLiveShareServerRoomV4MemberHandle,
-        participantID: ClipLiveShareNativeV3ParticipantID,
-        descriptor: ClipLiveShareServerRoomV4MemberDescriptor? = nil,
-        displayName: String? = nil,
-        deviceName: String? = nil
+        descriptor: ClipLiveShareServerRoomV4MemberDescriptor
     ) {
         self.handle = handle
-        self.participantID = participantID
         self.descriptor = descriptor
-        self.displayName = displayName ?? descriptor?.displayName ?? ""
-        self.deviceName = deviceName ?? descriptor?.deviceName ?? ""
     }
 }
 
@@ -82,10 +79,6 @@ struct ServerCoordinatedMeshVerifiedRoster: Equatable, Sendable {
             ),
             Set(members.map(\.handle)).count == members.count,
             Set(members.map(\.participantID)).count == members.count,
-            members.allSatisfy({
-                $0.descriptor?.participantID == $0.participantID
-                    || $0.descriptor == nil
-            }),
             members.contains(where: {
                 $0.handle == localHandle
                     && $0.participantID == localParticipantID
@@ -480,6 +473,7 @@ enum ServerCoordinatedMeshMediaRuntimeError:
     case staleSourceRevision
     case sourceNotPublished
     case invalidICECandidate
+    case unsupportedParticipantCapability
 
     var errorDescription: String? {
         switch self {
@@ -497,6 +491,8 @@ enum ServerCoordinatedMeshMediaRuntimeError:
         case .staleSourceRevision: "The source snapshot revision is stale."
         case .sourceNotPublished: "The collaboration event refers to an unpublished source."
         case .invalidICECandidate: "The pair signal contains an invalid ICE candidate."
+        case .unsupportedParticipantCapability:
+            "The participant profile does not allow this operation."
         }
     }
 }
@@ -717,6 +713,7 @@ actor ServerCoordinatedMeshMediaRuntime {
             resetRemoteParticipantIncarnation(participantID)
         }
         pruneState(to: incoming.participantIDs)
+        await enforceReceiveOnlyWebProfiles(in: incoming)
         for failure in result.failedPairs {
             emit(.pairFailed(
                 participantID: failure.remoteParticipantID,
@@ -737,6 +734,13 @@ actor ServerCoordinatedMeshMediaRuntime {
     ) async throws {
         try requireActive()
         let roster = try currentRoster()
+        guard !isReceiveOnlyWebParticipant(
+            roster.localParticipantID,
+            in: roster
+        ) || sources.isEmpty else {
+            throw ServerCoordinatedMeshMediaRuntimeError
+                .unsupportedParticipantCapability
+        }
         guard nextLocalSourceRevisionRawValue < UInt64.max else {
             throw ClipLiveShareServerRoomV4Error.sequenceExhausted
         }
@@ -762,6 +766,13 @@ actor ServerCoordinatedMeshMediaRuntime {
     ) async throws {
         try requireActive()
         let roster = try currentRoster()
+        guard !isReceiveOnlyWebParticipant(
+            roster.localParticipantID,
+            in: roster
+        ) else {
+            throw ServerCoordinatedMeshMediaRuntimeError
+                .unsupportedParticipantCapability
+        }
         guard cursor.sessionID == roster.sessionID,
               cursor.participantID == roster.localParticipantID,
               cursor.sourceKey.ownerParticipantID == roster.localParticipantID,
@@ -784,6 +795,13 @@ actor ServerCoordinatedMeshMediaRuntime {
     ) async throws {
         try requireActive()
         let roster = try currentRoster()
+        guard !isReceiveOnlyWebParticipant(
+            roster.localParticipantID,
+            in: roster
+        ) else {
+            throw ServerCoordinatedMeshMediaRuntimeError
+                .unsupportedParticipantCapability
+        }
         guard event.context.sessionID == roster.sessionID,
               event.context.participantID == roster.localParticipantID,
               sourceExists(event.context.sourceKey) else {
@@ -802,19 +820,28 @@ actor ServerCoordinatedMeshMediaRuntime {
             // behind durable room/annotation state when a pair is pressured.
 #if DEBUG
             if case let .pointer(pointer) = event {
-                let diagnostics = await broadcastEphemeralWithDiagnostics(data)
+                let diagnostics = await broadcastEphemeralWithDiagnostics(
+                    data,
+                    excludingReceiveOnlyWebParticipants: true
+                )
                 let visibility = pointer.position == nil ? "hide" : "visible"
                 Self.pointerTransportLogger.debug(
                     "Pointer broadcast sequence=\(pointer.context.sequence, privacy: .public) state=\(visibility, privacy: .public) acceptedPeers=\(diagnostics.acceptedPeerCount, privacy: .public) droppedPeers=\(diagnostics.droppedPeerCount, privacy: .public)"
                 )
             }
 #else
-            await broadcastEphemeral(data)
+            await broadcastEphemeral(
+                data,
+                excludingReceiveOnlyWebParticipants: true
+            )
 #endif
         case .ping, .strokeBegin, .strokePoints, .strokeEnd, .clear:
             // Ink and commands form an ordered state machine. Losing or
             // reordering any member would corrupt the annotation state.
-            await broadcastReliable(data)
+            await broadcastReliable(
+                data,
+                excludingReceiveOnlyWebParticipants: true
+            )
         }
         await publishSnapshot()
     }
@@ -827,19 +854,22 @@ actor ServerCoordinatedMeshMediaRuntime {
         let roster = try currentRoster()
         guard
             let local = roster.member(for: roster.localParticipantID),
-            let remote = roster.member(for: participantID),
-            let localIdentity = local.descriptor?.identity,
-            let remoteIdentity = remote.descriptor?.identity
+            let remote = roster.member(for: participantID)
         else {
             throw ServerCoordinatedMeshMediaRuntimeError.unknownParticipant
+        }
+        guard !isReceiveOnlyWebParticipant(local),
+              !isReceiveOnlyWebParticipant(remote) else {
+            throw ServerCoordinatedMeshMediaRuntimeError
+                .unsupportedParticipantCapability
         }
         try message.verifyTransportContext(
             roomID: roster.roomID,
             sessionID: roster.sessionID,
             authorParticipantID: roster.localParticipantID,
             recipientParticipantID: participantID,
-            authorIdentity: localIdentity,
-            recipientIdentity: remoteIdentity,
+            authorIdentity: local.descriptor.identity,
+            recipientIdentity: remote.descriptor.identity,
             at: now()
         )
         let data = try ClipLiveShareMeshMediaControlCodec.encode(
@@ -891,6 +921,10 @@ actor ServerCoordinatedMeshMediaRuntime {
         from participantID: ClipLiveShareNativeV3ParticipantID
     ) async throws -> WebRTCRemoteVideoStream? {
         try requireKnownRemoteParticipant(participantID)
+        guard let roster,
+              !isReceiveOnlyWebParticipant(participantID, in: roster) else {
+            return nil
+        }
         return try await links.remoteVideoStream(
             for: descriptor,
             from: participantID
@@ -902,6 +936,14 @@ actor ServerCoordinatedMeshMediaRuntime {
         for participantID: ClipLiveShareNativeV3ParticipantID
     ) async throws {
         try requireKnownRemoteParticipant(participantID)
+        if let roster,
+           isReceiveOnlyWebParticipant(participantID, in: roster) {
+            try await links.setRemoteParticipantAudioPlaybackEnabled(
+                false,
+                for: participantID
+            )
+            return
+        }
         try await links.setRemoteParticipantAudioPlaybackEnabled(
             enabled,
             for: participantID
@@ -913,6 +955,14 @@ actor ServerCoordinatedMeshMediaRuntime {
         for participantID: ClipLiveShareNativeV3ParticipantID
     ) async throws {
         try requireKnownRemoteParticipant(participantID)
+        if let roster,
+           isReceiveOnlyWebParticipant(participantID, in: roster) {
+            try await links.setRemoteParticipantAudioPlaybackEnabled(
+                false,
+                for: participantID
+            )
+            return
+        }
         try await links.setRemoteParticipantAudioVolume(
             volume,
             for: participantID
@@ -1355,13 +1405,50 @@ actor ServerCoordinatedMeshMediaRuntime {
                     )
                 }
             case let .controlMessageReceived(participantID, data):
-                try handleControlData(data, from: participantID)
+                do {
+                    try handleControlData(data, from: participantID)
+                } catch {
+                    // The signed web-v1 profile is receive-only. Malformed
+                    // or otherwise forbidden control traffic from that peer
+                    // is a pair-local protocol violation, not evidence that
+                    // ICE or SDP needs recovery. In particular, never enter
+                    // the generic recovery loop for a browser attempting to
+                    // publish state it is not allowed to own.
+                    if isReceiveOnlyWebParticipant(
+                        participantID,
+                        in: roster
+                    ) {
+                        // Ignore this pair's invalid Web control frame. A
+                        // warning would remain stuck because recovery is
+                        // intentionally not started for a capability breach.
+                        // The authoritative roster and the healthy transport
+                        // stay usable for later valid receive-only control.
+                        break
+                    } else {
+                        throw error
+                    }
+                }
             case let .remoteVideoTrackAdded(participantID, trackID):
+                guard !isReceiveOnlyWebParticipant(
+                    participantID,
+                    in: roster
+                ) else {
+                    remoteVideoTrackIDs[participantID] = nil
+                    break
+                }
                 remoteVideoTrackIDs[participantID, default: []].insert(trackID)
             case let .remoteVideoTrackRemoved(participantID, trackID):
                 remoteVideoTrackIDs[participantID]?.remove(trackID)
             case let .remoteParticipantAudioAvailable(participantID, trackID):
-                audioTrackIDs[participantID] = trackID
+                if isReceiveOnlyWebParticipant(participantID, in: roster) {
+                    audioTrackIDs[participantID] = nil
+                    try? await links.setRemoteParticipantAudioPlaybackEnabled(
+                        false,
+                        for: participantID
+                    )
+                } else {
+                    audioTrackIDs[participantID] = trackID
+                }
             case let .remoteParticipantAudioRemoved(participantID, _):
                 audioTrackIDs[participantID] = nil
             case let .statisticsUpdated(value):
@@ -1441,8 +1528,18 @@ actor ServerCoordinatedMeshMediaRuntime {
               participantID != roster.localParticipantID else {
             throw ServerCoordinatedMeshMediaRuntimeError.unknownParticipant
         }
+        let receiveOnlyWeb = isReceiveOnlyWebParticipant(
+            participantID,
+            in: roster
+        )
         switch try ClipLiveShareMeshMediaControlCodec.decode(data) {
         case let .sourceSnapshot(snapshot):
+            // Web-v1 publishes one authenticated empty manifest so reliable
+            // control synchronization has the same completion semantics as a
+            // Native pair. It can never own a media source. Ignore a validly
+            // decoded nonempty manifest before it can mutate presentation or
+            // trigger recovery on this otherwise healthy edge.
+            guard !receiveOnlyWeb || snapshot.sources.isEmpty else { return }
             guard snapshot.sessionID == roster.sessionID,
                   snapshot.membershipRevision == Self.mediaMembershipRevision,
                   snapshot.ownerParticipantID == participantID else {
@@ -1467,6 +1564,7 @@ actor ServerCoordinatedMeshMediaRuntime {
             sourceSnapshots[participantID] = snapshot
             pruneSourceScopedState()
         case let .sourceCursor(cursor):
+            guard !receiveOnlyWeb else { return }
             guard cursor.sessionID == roster.sessionID,
                   cursor.participantID == participantID,
                   cursor.sourceKey.ownerParticipantID == participantID,
@@ -1478,6 +1576,7 @@ actor ServerCoordinatedMeshMediaRuntime {
             sourceCursors[cursor.sourceKey] = cursor
             emit(.sourceCursorReceived(cursor, from: participantID))
         case let .collaboration(event):
+            guard !receiveOnlyWeb else { return }
             guard event.context.sessionID == roster.sessionID,
                   sourceExists(event.context.sourceKey) else {
                 throw ServerCoordinatedMeshMediaRuntimeError.sourceNotPublished
@@ -1495,11 +1594,10 @@ actor ServerCoordinatedMeshMediaRuntime {
             }
 #endif
         case let .friendship(message):
+            guard !receiveOnlyWeb else { return }
             guard
                 let remote = roster.member(for: participantID),
-                let local = roster.member(for: roster.localParticipantID),
-                let remoteIdentity = remote.descriptor?.identity,
-                let localIdentity = local.descriptor?.identity
+                let local = roster.member(for: roster.localParticipantID)
             else {
                 throw ServerCoordinatedMeshMediaRuntimeError.unknownParticipant
             }
@@ -1508,8 +1606,8 @@ actor ServerCoordinatedMeshMediaRuntime {
                 sessionID: roster.sessionID,
                 authorParticipantID: participantID,
                 recipientParticipantID: roster.localParticipantID,
-                authorIdentity: remoteIdentity,
-                recipientIdentity: localIdentity,
+                authorIdentity: remote.descriptor.identity,
+                recipientIdentity: local.descriptor.identity,
                 at: now()
             )
             emit(.friendshipMessageReceived(message, from: participantID))
@@ -1771,11 +1869,19 @@ actor ServerCoordinatedMeshMediaRuntime {
         ))
     }
 
-    private func broadcastEphemeral(_ data: Data) async {
+    private func broadcastEphemeral(
+        _ data: Data,
+        excludingReceiveOnlyWebParticipants: Bool = false
+    ) async {
         guard let roster else { return }
         await withTaskGroup(of: Void.self) { group in
             for participantID in roster.participantIDs
-            where participantID != roster.localParticipantID {
+            where participantID != roster.localParticipantID
+                && (!excludingReceiveOnlyWebParticipants
+                    || !isReceiveOnlyWebParticipant(
+                        participantID,
+                        in: roster
+                    )) {
                 group.addTask { [links] in
                     _ = await links.sendEphemeral(data, to: participantID)
                 }
@@ -1785,7 +1891,8 @@ actor ServerCoordinatedMeshMediaRuntime {
 
 #if DEBUG
     private func broadcastEphemeralWithDiagnostics(
-        _ data: Data
+        _ data: Data,
+        excludingReceiveOnlyWebParticipants: Bool = false
     ) async -> EphemeralBroadcastDiagnostics {
         guard let roster else {
             return .init(acceptedPeerCount: 0, droppedPeerCount: 0)
@@ -1795,7 +1902,12 @@ actor ServerCoordinatedMeshMediaRuntime {
             returning: EphemeralBroadcastDiagnostics.self
         ) { group in
             for participantID in roster.participantIDs
-            where participantID != roster.localParticipantID {
+            where participantID != roster.localParticipantID
+                && (!excludingReceiveOnlyWebParticipants
+                    || !isReceiveOnlyWebParticipant(
+                        participantID,
+                        in: roster
+                    )) {
                 group.addTask { [links] in
                     await links.sendEphemeral(data, to: participantID)
                 }
@@ -1817,10 +1929,18 @@ actor ServerCoordinatedMeshMediaRuntime {
     }
 #endif
 
-    private func broadcastReliable(_ data: Data) async {
+    private func broadcastReliable(
+        _ data: Data,
+        excludingReceiveOnlyWebParticipants: Bool = false
+    ) async {
         guard let roster else { return }
         for participantID in roster.participantIDs.sorted()
-        where participantID != roster.localParticipantID {
+        where participantID != roster.localParticipantID
+            && (!excludingReceiveOnlyWebParticipants
+                || !isReceiveOnlyWebParticipant(
+                    participantID,
+                    in: roster
+                )) {
             do {
                 try await links.sendReliable(data, to: participantID)
             } catch {
@@ -1861,6 +1981,62 @@ actor ServerCoordinatedMeshMediaRuntime {
         sourceSnapshots[key.ownerParticipantID]?.sources.contains {
             $0.key == key
         } == true
+    }
+
+    /// The creator-certified descriptor is the sole capability authority.
+    /// Runtime behavior never falls back to a user-agent, display name, or
+    /// implicit Native profile.
+    private func isReceiveOnlyWebParticipant(
+        _ participantID: ClipLiveShareNativeV3ParticipantID,
+        in roster: ServerCoordinatedMeshVerifiedRoster
+    ) -> Bool {
+        guard let member = roster.member(for: participantID) else {
+            return false
+        }
+        return isReceiveOnlyWebParticipant(member)
+    }
+
+    private func isReceiveOnlyWebParticipant(
+        _ member: ServerCoordinatedMeshVerifiedMember
+    ) -> Bool {
+        member.descriptor.clientKind == .webViewer
+            && member.descriptor.capabilityProfile == .webViewerV1
+    }
+
+    /// Enforces the receive-only profile after every authoritative roster
+    /// transaction. This also removes stale state if a test or future
+    /// migration changes a participant descriptor while retaining its room
+    /// identity. The production profile is immutable for an incarnation.
+    private func enforceReceiveOnlyWebProfiles(
+        in roster: ServerCoordinatedMeshVerifiedRoster
+    ) async {
+        let webParticipantIDs = roster.members.reduce(
+            into: Set<ClipLiveShareNativeV3ParticipantID>()
+        ) { result, member in
+            if isReceiveOnlyWebParticipant(member) {
+                result.insert(member.participantID)
+            }
+        }
+        for participantID in webParticipantIDs {
+            if sourceSnapshots[participantID]?.sources.isEmpty == false {
+                sourceSnapshots[participantID] = nil
+            }
+            remoteVideoTrackIDs[participantID] = nil
+            audioTrackIDs[participantID] = nil
+            sourceCursors = sourceCursors.filter {
+                $0.key.ownerParticipantID != participantID
+            }
+            collaboration = collaboration.filter {
+                $0.key.ownerParticipantID != participantID
+            }
+            // The underlying WebRTC receiver defaults participant audio on.
+            // Persist an explicit disabled preference before a malicious Web
+            // endpoint can surface an unsolicited audio track.
+            try? await links.setRemoteParticipantAudioPlaybackEnabled(
+                false,
+                for: participantID
+            )
+        }
     }
 
     private func pruneState(
@@ -1912,7 +2088,16 @@ actor ServerCoordinatedMeshMediaRuntime {
     private func replayReceiverState(
         from snapshot: ClipLiveShareNativeV3MeshPeerLinkManagerSnapshot
     ) {
+        guard let roster else { return }
         for link in snapshot.links {
+            guard !isReceiveOnlyWebParticipant(
+                link.remoteParticipantID,
+                in: roster
+            ) else {
+                remoteVideoTrackIDs[link.remoteParticipantID] = nil
+                audioTrackIDs[link.remoteParticipantID] = nil
+                continue
+            }
             remoteVideoTrackIDs[link.remoteParticipantID, default: []]
                 .formUnion(link.remoteVideoTrackIDs)
             if let audioTrackID = link.remoteParticipantAudioTrackID {

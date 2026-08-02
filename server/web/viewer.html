@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="referrer" content="no-referrer" />
+    <title>Clip Live Share</title>
+    <link rel="stylesheet" href="/assets/clip-viewer.css" />
+  </head>
+  <body>
+    <main id="app">
+      <header class="topbar">
+        <div class="brand">
+          <span class="brand-mark" aria-hidden="true">●</span>
+          <div><strong>Clip Live Share</strong><span id="room-label">Secure room</span></div>
+        </div>
+        <div class="top-actions">
+          <button id="audio-unlock" class="primary compact" type="button">Enable Audio</button>
+          <button id="participants-button" class="icon-button" type="button" aria-label="Show participants" title="Participants">People <span id="participant-count">0</span></button>
+          <button id="fullscreen-button" class="icon-button" type="button" aria-label="Enter fullscreen" title="Fullscreen">Fullscreen</button>
+          <button id="leave-button" class="danger compact" type="button">Leave</button>
+        </div>
+      </header>
+
+      <section id="stage" class="stage" aria-live="polite">
+        <div id="focus-view" class="focus-view"><video id="focus-video" autoplay playsinline muted></video></div>
+        <div id="grid-view" class="media-grid" hidden></div>
+        <div id="row-view" class="media-row" hidden></div>
+        <div id="empty-state" class="empty-state">
+          <div class="pulse-mark">●</div>
+          <h1 id="state-title">Joining Live Share…</h1>
+          <p id="state-message">Opening the encrypted room and preparing direct peer connections.</p>
+          <form id="access-form" hidden>
+            <label for="access-word">Access Word</label>
+            <div class="inline-form"><input id="access-word" autocomplete="off" spellcheck="false" maxlength="256" /><button class="primary" type="submit">Join</button></div>
+          </form>
+        </div>
+        <div id="unsupported" class="unsupported" hidden><strong id="unsupported-title">Unsupported Encoding</strong><span id="unsupported-message">This browser cannot decode a participant’s selected video codec. Room membership and compatible participant links continue normally.</span></div>
+      </section>
+
+      <nav class="controlbar" aria-label="Viewer controls">
+        <div class="segmented" aria-label="Layout">
+          <button type="button" data-layout="focus" class="active">Focus</button>
+          <button type="button" data-layout="grid">Grid</button>
+          <button type="button" data-layout="row">Row</button>
+        </div>
+        <div class="segmented" aria-label="Scale">
+          <button type="button" data-scale="fit" class="active">Fit</button>
+          <button type="button" data-scale="fill">Fill</button>
+          <button type="button" data-scale="native">Native</button>
+        </div>
+        <label class="select-label">Follow <select id="follow-select"><option value="">Automatic</option></select></label>
+        <div id="source-summary" class="source-summary">Waiting for a shared window</div>
+        <button id="master-mute" type="button" class="icon-button">Muted</button>
+        <input id="master-volume" type="range" min="0" max="1" step="0.01" value="0.8" aria-label="Master volume" />
+      </nav>
+
+      <aside id="participants-panel" class="side-panel" hidden>
+        <div class="panel-heading"><div><strong>Participants</strong><span>Direct peer-to-peer mesh</span></div><button id="participants-close" class="icon-button" aria-label="Close participants">Close</button></div>
+        <div id="participants-list"></div>
+      </aside>
+    </main>
+    <script type="module" src="/assets/clip-viewer.js"></script>
+  </body>
+</html>

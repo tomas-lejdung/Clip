@@ -1227,7 +1227,8 @@ final class ServerCoordinatedMeshParticipantCoordinator {
             localParticipant: .init(
                 id: localParticipantID.rawValue,
                 displayName: localDisplayName,
-                deviceName: localDeviceName
+                deviceName: localDeviceName,
+                clientKind: .nativeApp
             ),
             creatorParticipantID: creatorID?.rawValue,
             invite: invite,
@@ -1321,6 +1322,7 @@ final class ServerCoordinatedMeshParticipantCoordinator {
             id: id.rawValue,
             displayName: member.descriptor.displayName,
             deviceName: member.descriptor.deviceName,
+            clientKind: member.descriptor.clientKind,
             route: route(for: member, media: roomSnapshot?.media),
             connectedDuration:
                 member.connected
@@ -1362,7 +1364,10 @@ final class ServerCoordinatedMeshParticipantCoordinator {
             sessionID: room.sessionID,
             localParticipantID: localParticipantID,
             remotes: room.members.compactMap { member in
-                guard !member.isLocal else { return nil }
+                guard !member.isLocal,
+                      member.descriptor.clientKind == .nativeApp else {
+                    return nil
+                }
                 return .init(
                     participantID: member.descriptor.participantID,
                     identity: member.descriptor.identity,

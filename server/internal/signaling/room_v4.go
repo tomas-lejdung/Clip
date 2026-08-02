@@ -199,6 +199,36 @@ func (h *RoomHub) AuthenticateOwner(roomID string, ownerHash [sha256.Size]byte) 
 	return nil
 }
 
+// AuthenticateMemberReconnect verifies that an admitted member may reconnect
+// without attaching a peer, consuming the capability, or changing room state.
+// ReconnectMember remains authoritative when a transport is attached because
+// the room may change after this read-only check.
+func (h *RoomHub) AuthenticateMemberReconnect(
+	roomID string,
+	handle string,
+	reconnectHash [sha256.Size]byte,
+) error {
+	if protocol.ValidateNativeMemberHandle(handle) != nil {
+		return ErrRoomUnauthorized
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	room := h.rooms[roomID]
+	if room == nil {
+		return ErrRoomNotFound
+	}
+	member := room.members[handle]
+	if member == nil || !member.hasReconnect ||
+		!sameRoomCapability(member.reconnectHash, reconnectHash) {
+		return ErrRoomUnauthorized
+	}
+	if member.peer == nil && !member.graceDeadline.IsZero() &&
+		!h.config.Now().Before(member.graceDeadline) {
+		return ErrRoomMemberNotFound
+	}
+	return nil
+}
+
 func (h *RoomHub) EndRoomByOwner(roomID string, ownerHash [sha256.Size]byte, reason string) error {
 	h.mu.Lock()
 	room := h.rooms[roomID]

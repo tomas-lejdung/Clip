@@ -1772,16 +1772,7 @@ public final class ClipLiveShareNativeV3WebRTCPeerLinkTransport:
     capabilities: [RTCRtpCodecCapability],
     to transceiver: RTCRtpTransceiver
   ) throws {
-    let names: [String] = switch codec {
-    case .av1: [
-      codec.rtcName,
-      WebRTCVideoCodec.vp9.rtcName,
-      WebRTCVideoCodec.vp8.rtcName,
-    ]
-    case .vp9: [codec.rtcName, WebRTCVideoCodec.vp8.rtcName]
-    case .h264, .vp8: [codec.rtcName]
-    }
-    let preferences = names.flatMap { name in
+    let preferences = videoCodecPreferenceNames(for: codec).flatMap { name in
       capabilities.filter {
         $0.name.caseInsensitiveCompare(name) == .orderedSame
       }
@@ -1796,6 +1787,17 @@ public final class ClipLiveShareNativeV3WebRTCPeerLinkTransport:
       throw ClipLiveShareNativeV3WebRTCPeerLinkError
         .codecPreferenceFailed(error.localizedDescription)
     }
+  }
+
+  /// The room's selected codec is an exact media contract, not a preference
+  /// ladder. In particular, AV1 must never make a second VP9/VP8 encoding for
+  /// a peer that cannot decode AV1. An incompatible peer edge may fail as a
+  /// whole; the client reports Unsupported Encoding while room membership
+  /// remains available through the encrypted room transport.
+  static func videoCodecPreferenceNames(
+    for codec: WebRTCVideoCodec
+  ) -> [String] {
+    [codec.rtcName]
   }
 
   private static func applyAudioCodecPreference(

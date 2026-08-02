@@ -4,12 +4,37 @@ import ClipLiveShare
 import CoreMedia
 import Foundation
 import Testing
+@preconcurrency import WebRTC
 
 @testable import ClipLiveShareWebRTC
 
 extension NativeMediaResourceTests {
   @Suite("Native v3 production WebRTC loopback")
   struct ClipLiveShareNativeV3RealWebRTCLoopbackTests {
+    @Test(
+      "native offerer interoperates with browser-like receive-only peer",
+      .timeLimit(.minutes(1))
+    )
+    func nativeOffererToBrowserReceiveOnly() async throws {
+      try await assertBrowserLikeReceiveOnlyPair(
+        nativeByte: 0x10,
+        browserByte: 0x20,
+        expectedOfferer: .native
+      )
+    }
+
+    @Test(
+      "browser-like receive-only offerer interoperates with native answerer",
+      .timeLimit(.minutes(1))
+    )
+    func browserReceiveOnlyOffererToNative() async throws {
+      try await assertBrowserLikeReceiveOnlyPair(
+        nativeByte: 0x20,
+        browserByte: 0x10,
+        expectedOfferer: .browser
+      )
+    }
+
     @Test(
       "two participants negotiate symmetric media and ordered control",
       .timeLimit(.minutes(1))
@@ -497,6 +522,920 @@ extension NativeMediaResourceTests {
         participant.factory.close()
       }
     }
+
+    private func assertBrowserLikeReceiveOnlyPair(
+      nativeByte: UInt8,
+      browserByte: UInt8,
+      expectedOfferer: NativeV3BrowserOfferer
+    ) async throws {
+      let native = try NativeV3RealParticipant(byte: nativeByte)
+      let browserID = try ClipLiveShareNativeV3ParticipantID(
+        bytes: Data(
+          repeating: browserByte,
+          count: ClipLiveShareNativeV3.participantIDByteCount
+        )
+      )
+      let link = try await NativeV3BrowserReceiveOnlyLink(
+        native: native,
+        browserID: browserID
+      )
+
+      do {
+        try await link.start()
+        let ready = await link.waitUntilReady()
+        let readySnapshot = await link.snapshot()
+        #expect(
+          ready,
+          Comment(
+            rawValue:
+              "Native/browser pair did not become ready: \(readySnapshot)"
+          )
+        )
+        guard ready else {
+          await link.close()
+          native.factory.close()
+          return
+        }
+
+        #expect(readySnapshot.browser.offerer == expectedOfferer)
+        #expect(readySnapshot.native.connectionState == .connected)
+        #expect(readySnapshot.browser.connectionState == .connected)
+        #expect(readySnapshot.native.controlState == .open)
+        #expect(readySnapshot.browser.controlState == .open)
+        #expect(readySnapshot.browser.controlChannelIsOrdered)
+        #expect(
+          readySnapshot.browser.controlChannelLabel
+            == ClipLiveShareNativeV3.controlDataChannelLabel
+        )
+        #expect(readySnapshot.browser.remoteVideoTrackCount == 4)
+        #expect(readySnapshot.browser.remoteAudioTrackCount == 1)
+        #expect(readySnapshot.browser.mediaTransceiverCount == 5)
+        #expect(readySnapshot.browser.outboundMediaTrackCount == 0)
+        #expect(readySnapshot.native.remoteVideoTrackIDs.isEmpty)
+        #expect(readySnapshot.native.remoteAudioTrackID == nil)
+        #expect(readySnapshot.native.remoteVideoTrackAddEvents == 0)
+        #expect(readySnapshot.native.remoteAudioAvailableEvents == 0)
+        #expect(readySnapshot.native.failures.isEmpty)
+        #expect(readySnapshot.browser.failures.isEmpty)
+        #expect(readySnapshot.relayErrors.isEmpty)
+
+        let browserLocal = try #require(
+          readySnapshot.browser.localDescriptions.last
+        )
+        let browserRemote = try #require(
+          readySnapshot.browser.remoteDescriptions.last
+        )
+        let offer = expectedOfferer == .browser
+          ? browserLocal
+          : browserRemote
+        let answer = expectedOfferer == .browser
+          ? browserRemote
+          : browserLocal
+        #expect(offer.kind == .offer)
+        #expect(answer.kind == .answer)
+        for description in [offer, answer] {
+          let sections = nativeV3MediaSections(in: description.sdp)
+          #expect(sections["video"] == 4)
+          #expect(sections["audio"] == 1)
+          #expect(sections["application"] == 1)
+          #expect(nativeV3NamedVideoCodecs(in: description.sdp) == ["VP8"])
+        }
+        let browserDirections = nativeV3MediaDirections(
+          in: browserLocal.sdp
+        )
+        #expect(browserDirections["video"] == ["recvonly"])
+        #expect(browserDirections["audio"] == ["recvonly"])
+
+        let snapshot = try ClipLiveShareNativeV3SourceSnapshot(
+          sessionID: ClipLiveShareSessionID(
+            rawValue: "browser-receive-only-loopback"
+          ),
+          membershipRevision: .init(rawValue: 1),
+          ownerParticipantID: native.id,
+          sourceRevision: .init(rawValue: 1),
+          sources: []
+        )
+        let nativePayload = try ClipLiveShareMeshMediaControlCodec.encode(
+          .sourceSnapshot(snapshot)
+        )
+        try await link.sendFromNative(nativePayload)
+
+        let browserSnapshot = try ClipLiveShareNativeV3SourceSnapshot(
+          sessionID: snapshot.sessionID,
+          membershipRevision: snapshot.membershipRevision,
+          ownerParticipantID: browserID,
+          sourceRevision: .init(rawValue: 1),
+          sources: []
+        )
+        let browserPayload = try ClipLiveShareMeshMediaControlCodec.encode(
+          .sourceSnapshot(browserSnapshot)
+        )
+        try link.sendFromBrowser(browserPayload)
+        let delivered = await link.waitUntil {
+          $0.browser.controlMessages == [nativePayload]
+            && $0.native.controlMessages == [browserPayload]
+        }
+        let deliveredSnapshot = await link.snapshot()
+        #expect(
+          delivered,
+          Comment(
+            rawValue:
+              "Source snapshots did not cross ordered control: "
+              + "\(deliveredSnapshot)"
+          )
+        )
+        #expect(
+          try ClipLiveShareMeshMediaControlCodec.decode(
+            deliveredSnapshot.browser.controlMessages[0]
+          ) == .sourceSnapshot(snapshot)
+        )
+        #expect(
+          try ClipLiveShareMeshMediaControlCodec.decode(
+            deliveredSnapshot.native.controlMessages[0]
+          ) == .sourceSnapshot(browserSnapshot)
+        )
+
+        await link.close()
+        #expect(await link.waitUntilClosed())
+      } catch {
+        await link.close()
+        native.factory.close()
+        throw error
+      }
+
+      native.factory.close()
+    }
+  }
+}
+
+private enum NativeV3BrowserOfferer: String, Sendable {
+  case native
+  case browser
+}
+
+private struct NativeV3BrowserEndpointSnapshot: Sendable,
+  CustomStringConvertible
+{
+  let offerer: NativeV3BrowserOfferer
+  var connectionState: WebRTCPeerConnectionState = .new
+  var controlState: WebRTCControlDataChannelState = .connecting
+  var controlChannelLabel: String?
+  var controlChannelIsOrdered = false
+  var localDescriptions: [WebRTCSessionDescription] = []
+  var remoteDescriptions: [WebRTCSessionDescription] = []
+  var localICECandidateCount = 0
+  var controlMessages: [Data] = []
+  var remoteVideoTrackCount = 0
+  var remoteAudioTrackCount = 0
+  var mediaTransceiverCount = 0
+  var outboundMediaTrackCount = 0
+  var failures: [String] = []
+  var isClosed = false
+
+  var description: String {
+    "offerer=\(offerer.rawValue), "
+      + "connection=\(connectionState.rawValue), "
+      + "control=\(controlState.rawValue), "
+      + "descriptions=\(localDescriptions.map(\.kind.rawValue)), "
+      + "ice=\(localICECandidateCount), "
+      + "messages=\(controlMessages.count), "
+      + "video=\(remoteVideoTrackCount), "
+      + "audio=\(remoteAudioTrackCount), "
+      + "transceivers=\(mediaTransceiverCount), "
+      + "outbound=\(outboundMediaTrackCount), "
+      + "failures=\(failures), closed=\(isClosed)"
+  }
+}
+
+private struct NativeV3BrowserLinkSnapshot: Sendable,
+  CustomStringConvertible
+{
+  var native = NativeV3RealEndpointSnapshot()
+  var browser: NativeV3BrowserEndpointSnapshot
+  var relayErrors: [String] = []
+
+  var isReady: Bool {
+    native.connectionState == .connected
+      && browser.connectionState == .connected
+      && native.controlState == .open
+      && browser.controlState == .open
+      && browser.remoteVideoTrackCount == 4
+      && browser.remoteAudioTrackCount == 1
+      && browser.outboundMediaTrackCount == 0
+      && native.remoteVideoTrackIDs.isEmpty
+      && native.remoteAudioTrackID == nil
+      && native.failures.isEmpty
+      && browser.failures.isEmpty
+      && relayErrors.isEmpty
+  }
+
+  var description: String {
+    "native={\(native)}, browser={\(browser)}, relayErrors=\(relayErrors)"
+  }
+}
+
+private actor NativeV3BrowserLinkState {
+  private var native = NativeV3RealEndpointSnapshot()
+  private var relayErrors: [String] = []
+
+  func recordNative(
+    _ event: ClipLiveShareNativeV3PeerLinkTransportEvent
+  ) {
+    switch event {
+    case let .localNegotiation(.sessionDescription(description)):
+      native.localDescriptions.append(description)
+    case .localNegotiation(.iceCandidate):
+      native.localICECandidateCount += 1
+    case let .connectionStateChanged(state):
+      native.connectionState = state
+    case let .controlChannelStateChanged(state):
+      native.controlState = state
+    case let .controlMessageReceived(data):
+      native.controlMessages.append(data)
+    case let .remoteVideoTrackAdded(trackID):
+      native.remoteVideoTrackAddEvents += 1
+      native.remoteVideoTrackIDs.insert(trackID.rawValue)
+    case let .remoteVideoTrackRemoved(trackID):
+      native.remoteVideoTrackRemoveEvents += 1
+      native.remoteVideoTrackIDs.remove(trackID.rawValue)
+    case let .remoteParticipantAudioAvailable(trackID):
+      native.remoteAudioAvailableEvents += 1
+      native.remoteAudioTrackID = trackID
+    case let .remoteParticipantAudioRemoved(trackID):
+      native.remoteAudioRemovedEvents += 1
+      if native.remoteAudioTrackID == trackID {
+        native.remoteAudioTrackID = nil
+      }
+    case let .failed(message):
+      native.failures.append(message)
+    case .negotiationNeeded, .routeChanged, .statisticsChanged,
+         .iceGatheringDiagnostic:
+      break
+    }
+  }
+
+  func finishNativeEvents() {
+    native.eventStreamFinished = true
+  }
+
+  func recordRelayError(_ error: any Error) {
+    relayErrors.append(error.localizedDescription)
+  }
+
+  func snapshot(
+    browser: NativeV3BrowserEndpointSnapshot
+  ) -> NativeV3BrowserLinkSnapshot {
+    .init(
+      native: native,
+      browser: browser,
+      relayErrors: relayErrors
+    )
+  }
+}
+
+private final class NativeV3BrowserReceiveOnlyLink: @unchecked Sendable {
+  private let nativeTransport: any ClipLiveShareNativeV3PeerLinkTransport
+  private let browser: NativeV3BrowserReceiveOnlyEndpoint
+  private let state: NativeV3BrowserLinkState
+  private let nativePump: Task<Void, Never>
+  private let closeLock = NSLock()
+  private var didClose = false
+
+  init(
+    native: NativeV3RealParticipant,
+    browserID: ClipLiveShareNativeV3ParticipantID
+  ) async throws {
+    let key = try ClipLiveShareNativeV3PeerLinkKey(native.id, browserID)
+    let configuration = try ClipLiveShareNativeV3PeerLinkConfiguration(
+      key: key,
+      localParticipantID: native.id
+    )
+    nativeTransport = try await native.factory.makeTransport(
+      configuration: configuration
+    )
+    let offerer: NativeV3BrowserOfferer =
+      configuration.role == .offerer ? .native : .browser
+    browser = try NativeV3BrowserReceiveOnlyEndpoint(offerer: offerer)
+    state = NativeV3BrowserLinkState()
+
+    let nativeTransport = nativeTransport
+    let browser = browser
+    let state = state
+    browser.setNegotiationSink { payload in
+      Task {
+        do {
+          switch payload {
+          case let .sessionDescription(description):
+            try await nativeTransport.applyRemoteDescription(description)
+          case let .iceCandidate(candidate):
+            try await nativeTransport.addRemoteICECandidate(candidate)
+          }
+        } catch {
+          await state.recordRelayError(error)
+        }
+      }
+    }
+
+    let events = await nativeTransport.events()
+    nativePump = Task {
+      for await event in events {
+        await state.recordNative(event)
+        guard case let .localNegotiation(payload) = event else { continue }
+        do {
+          switch payload {
+          case let .sessionDescription(description):
+            try await browser.applyRemoteDescription(description)
+          case let .iceCandidate(candidate):
+            try await browser.addRemoteICECandidate(candidate)
+          }
+        } catch {
+          await state.recordRelayError(error)
+        }
+      }
+      await state.finishNativeEvents()
+    }
+  }
+
+  func start() async throws {
+    try await nativeTransport.start()
+    try await browser.start()
+  }
+
+  func sendFromNative(_ data: Data) async throws {
+    try await nativeTransport.sendControlMessage(data)
+  }
+
+  func sendFromBrowser(_ data: Data) throws {
+    try browser.sendControlMessage(data)
+  }
+
+  func snapshot() async -> NativeV3BrowserLinkSnapshot {
+    await state.snapshot(browser: browser.snapshot())
+  }
+
+  func waitUntilReady() async -> Bool {
+    await waitUntil { $0.isReady }
+  }
+
+  func waitUntilClosed() async -> Bool {
+    await waitUntil(timeout: .seconds(2)) {
+      $0.native.eventStreamFinished && $0.browser.isClosed
+    }
+  }
+
+  func waitUntil(
+    timeout: Duration = .seconds(10),
+    condition: @escaping @Sendable (NativeV3BrowserLinkSnapshot) -> Bool
+  ) async -> Bool {
+    let clock = ContinuousClock()
+    let deadline = clock.now.advanced(by: timeout)
+    while clock.now < deadline {
+      if condition(await snapshot()) { return true }
+      try? await Task.sleep(for: .milliseconds(10))
+    }
+    return condition(await snapshot())
+  }
+
+  func close() async {
+    let shouldClose = closeLock.withLock { () -> Bool in
+      guard !didClose else { return false }
+      didClose = true
+      return true
+    }
+    guard shouldClose else { return }
+    browser.close()
+    await nativeTransport.close()
+    await nativePump.value
+  }
+}
+
+private final class NativeV3BrowserPeerDelegate:
+  NSObject,
+  RTCPeerConnectionDelegate,
+  RTCDataChannelDelegate,
+  @unchecked Sendable
+{
+  enum Event: @unchecked Sendable {
+    case localICECandidate(RTCIceCandidate)
+    case connectionState(RTCPeerConnectionState)
+    case dataChannel(RTCDataChannel)
+    case dataChannelState(RTCDataChannel)
+    case data(RTCDataChannel, Data)
+    case receiverChanged
+    case failure(String)
+  }
+
+  private let lock = NSLock()
+  private var handler: (@Sendable (Event) -> Void)?
+
+  func attach(_ handler: @escaping @Sendable (Event) -> Void) {
+    lock.withLock { self.handler = handler }
+  }
+
+  func detach() {
+    lock.withLock { handler = nil }
+  }
+
+  private func emit(_ event: Event) {
+    lock.withLock { handler }?(event)
+  }
+
+  func peerConnection(
+    _: RTCPeerConnection,
+    didChange _: RTCSignalingState
+  ) {}
+
+  func peerConnection(_: RTCPeerConnection, didAdd _: RTCMediaStream) {}
+  func peerConnection(_: RTCPeerConnection, didRemove _: RTCMediaStream) {}
+  func peerConnectionShouldNegotiate(_: RTCPeerConnection) {}
+  func peerConnection(_: RTCPeerConnection, didChange _: RTCIceConnectionState) {}
+  func peerConnection(_: RTCPeerConnection, didChange _: RTCIceGatheringState) {}
+
+  func peerConnection(
+    _: RTCPeerConnection,
+    didGenerate candidate: RTCIceCandidate
+  ) {
+    emit(.localICECandidate(candidate))
+  }
+
+  func peerConnection(_: RTCPeerConnection, didRemove _: [RTCIceCandidate]) {}
+
+  func peerConnection(
+    _: RTCPeerConnection,
+    didOpen dataChannel: RTCDataChannel
+  ) {
+    emit(.dataChannel(dataChannel))
+  }
+
+  func peerConnection(
+    _: RTCPeerConnection,
+    didChange newState: RTCPeerConnectionState
+  ) {
+    emit(.connectionState(newState))
+  }
+
+  func peerConnection(
+    _: RTCPeerConnection,
+    didAdd _: RTCRtpReceiver,
+    streams _: [RTCMediaStream]
+  ) {
+    emit(.receiverChanged)
+  }
+
+  func peerConnection(
+    _: RTCPeerConnection,
+    didRemove _: RTCRtpReceiver
+  ) {
+    emit(.receiverChanged)
+  }
+
+  func peerConnection(
+    _: RTCPeerConnection,
+    didFailToGatherIceCandidate event: RTCIceCandidateErrorEvent
+  ) {
+    emit(.failure("ICE \(event.errorCode): \(event.errorText)"))
+  }
+
+  func dataChannelDidChangeState(_ dataChannel: RTCDataChannel) {
+    emit(.dataChannelState(dataChannel))
+  }
+
+  func dataChannel(_: RTCDataChannel, didChangeBufferedAmount _: UInt64) {}
+
+  func dataChannel(
+    _ dataChannel: RTCDataChannel,
+    didReceiveMessageWith buffer: RTCDataBuffer
+  ) {
+    emit(.data(dataChannel, buffer.data))
+  }
+}
+
+private enum NativeV3BrowserEndpointError: Error, LocalizedError {
+  case peerConnectionCreationFailed
+  case transceiverCreationFailed
+  case dataChannelCreationFailed
+  case dataChannelUnavailable
+  case descriptionCreationFailed(String)
+  case descriptionApplicationFailed(String)
+  case candidateApplicationFailed(String)
+
+  var errorDescription: String? {
+    switch self {
+    case .peerConnectionCreationFailed:
+      "Browser-like peer connection creation failed."
+    case .transceiverCreationFailed:
+      "Browser-like receive-only transceiver creation failed."
+    case .dataChannelCreationFailed:
+      "Browser-like control DataChannel creation failed."
+    case .dataChannelUnavailable:
+      "Browser-like control DataChannel is unavailable."
+    case let .descriptionCreationFailed(message):
+      "Browser-like description creation failed: \(message)"
+    case let .descriptionApplicationFailed(message):
+      "Browser-like description application failed: \(message)"
+    case let .candidateApplicationFailed(message):
+      "Browser-like ICE candidate application failed: \(message)"
+    }
+  }
+}
+
+private final class NativeV3BrowserReceiveOnlyEndpoint: @unchecked Sendable {
+  typealias NegotiationSink = @Sendable (
+    ClipLiveShareNativeV3PeerNegotiationPayload
+  ) -> Void
+
+  private let offerer: NativeV3BrowserOfferer
+  private let factory: RTCPeerConnectionFactory
+  private let connection: RTCPeerConnection
+  private let delegate: NativeV3BrowserPeerDelegate
+  private let lock = NSLock()
+  private var state: NativeV3BrowserEndpointSnapshot
+  private var controlChannel: RTCDataChannel?
+  private var negotiationSink: NegotiationSink?
+  private var remoteDescriptionApplied = false
+  private var pendingRemoteCandidates: [RTCIceCandidate] = []
+  private var didStart = false
+
+  init(offerer: NativeV3BrowserOfferer) throws {
+    self.offerer = offerer
+    state = .init(offerer: offerer)
+    factory = RTCPeerConnectionFactory(
+      encoderFactory: RTCDefaultVideoEncoderFactory(),
+      decoderFactory: RTCDefaultVideoDecoderFactory()
+    )
+    delegate = NativeV3BrowserPeerDelegate()
+
+    let configuration = RTCConfiguration()
+    configuration.sdpSemantics = .unifiedPlan
+    configuration.bundlePolicy = .maxBundle
+    configuration.rtcpMuxPolicy = .require
+    configuration.continualGatheringPolicy = .gatherContinually
+    configuration.iceTransportPolicy = .all
+    configuration.iceServers = []
+    guard let connection = factory.peerConnection(
+      with: configuration,
+      constraints: RTCMediaConstraints(
+        mandatoryConstraints: nil,
+        optionalConstraints: nil
+      ),
+      delegate: delegate
+    ) else {
+      throw NativeV3BrowserEndpointError.peerConnectionCreationFailed
+    }
+    self.connection = connection
+    delegate.attach { [weak self] event in
+      self?.handle(event)
+    }
+
+    if offerer == .browser {
+      let videoCodecs = factory
+        .rtpReceiverCapabilities(forKind: kRTCMediaStreamTrackKindVideo)
+        .codecs
+        .filter { $0.name.caseInsensitiveCompare("VP8") == .orderedSame }
+      let audioCodecs = factory
+        .rtpReceiverCapabilities(forKind: kRTCMediaStreamTrackKindAudio)
+        .codecs
+        .filter { $0.name.caseInsensitiveCompare("opus") == .orderedSame }
+      guard !videoCodecs.isEmpty, !audioCodecs.isEmpty else {
+        throw NativeV3BrowserEndpointError.transceiverCreationFailed
+      }
+      for _ in 0..<ClipLiveShareNativeV3.reservedVideoSlotsPerParticipant {
+        let configuration = RTCRtpTransceiverInit()
+        configuration.direction = .recvOnly
+        guard let transceiver = connection.addTransceiver(
+          of: .video,
+          init: configuration
+        ) else {
+          throw NativeV3BrowserEndpointError.transceiverCreationFailed
+        }
+        try transceiver.setCodecPreferences(videoCodecs, error: ())
+      }
+      let configuration = RTCRtpTransceiverInit()
+      configuration.direction = .recvOnly
+      guard let transceiver = connection.addTransceiver(
+        of: .audio,
+        init: configuration
+      ) else {
+        throw NativeV3BrowserEndpointError.transceiverCreationFailed
+      }
+      try transceiver.setCodecPreferences(audioCodecs, error: ())
+
+      let dataConfiguration = RTCDataChannelConfiguration()
+      dataConfiguration.isOrdered = true
+      dataConfiguration.maxPacketLifeTime = -1
+      dataConfiguration.maxRetransmits = -1
+      dataConfiguration.isNegotiated = false
+      guard let dataChannel = connection.dataChannel(
+        forLabel: ClipLiveShareNativeV3.controlDataChannelLabel,
+        configuration: dataConfiguration
+      ) else {
+        throw NativeV3BrowserEndpointError.dataChannelCreationFailed
+      }
+      accept(dataChannel)
+    }
+    refreshMediaSnapshot()
+  }
+
+  func setNegotiationSink(_ sink: @escaping NegotiationSink) {
+    lock.withLock { negotiationSink = sink }
+  }
+
+  func start() async throws {
+    let shouldOffer = lock.withLock { () -> Bool in
+      guard !didStart else { return false }
+      didStart = true
+      return offerer == .browser
+    }
+    guard shouldOffer else { return }
+    let offer = try await createDescription(type: .offer)
+    try await setLocalDescription(offer)
+    emitNegotiation(
+      .sessionDescription(.init(kind: .offer, sdp: offer.sdp))
+    )
+  }
+
+  func applyRemoteDescription(
+    _ description: WebRTCSessionDescription
+  ) async throws {
+    let rtcDescription = RTCSessionDescription(
+      type: description.kind == .offer ? .offer : .answer,
+      sdp: description.sdp
+    )
+    try await setRemoteDescription(rtcDescription)
+    lock.withLock {
+      state.remoteDescriptions.append(description)
+      remoteDescriptionApplied = true
+    }
+    let pending = lock.withLock { () -> [RTCIceCandidate] in
+      let pending = pendingRemoteCandidates
+      pendingRemoteCandidates.removeAll(keepingCapacity: true)
+      return pending
+    }
+    for candidate in pending {
+      try await add(candidate)
+    }
+    refreshMediaSnapshot()
+
+    guard description.kind == .offer else { return }
+    let answer = try await createDescription(type: .answer)
+    try await setLocalDescription(answer)
+    emitNegotiation(
+      .sessionDescription(.init(kind: .answer, sdp: answer.sdp))
+    )
+  }
+
+  func addRemoteICECandidate(_ candidate: WebRTCICECandidate) async throws {
+    let rtcCandidate = RTCIceCandidate(
+      sdp: candidate.candidate,
+      sdpMLineIndex: candidate.sdpMLineIndex,
+      sdpMid: candidate.sdpMid
+    )
+    let shouldQueue = lock.withLock { () -> Bool in
+      guard !remoteDescriptionApplied else { return false }
+      pendingRemoteCandidates.append(rtcCandidate)
+      return true
+    }
+    if !shouldQueue {
+      try await add(rtcCandidate)
+    }
+  }
+
+  func sendControlMessage(_ data: Data) throws {
+    let channel = lock.withLock { controlChannel }
+    guard let channel, channel.readyState == .open else {
+      throw NativeV3BrowserEndpointError.dataChannelUnavailable
+    }
+    guard channel.sendData(RTCDataBuffer(data: data, isBinary: true)) else {
+      throw NativeV3BrowserEndpointError.dataChannelUnavailable
+    }
+  }
+
+  func snapshot() -> NativeV3BrowserEndpointSnapshot {
+    refreshMediaSnapshot()
+    return lock.withLock { state }
+  }
+
+  func close() {
+    let channel = lock.withLock { () -> RTCDataChannel? in
+      guard !state.isClosed else { return nil }
+      state.isClosed = true
+      state.connectionState = .closed
+      state.controlState = .closed
+      let channel = controlChannel
+      controlChannel = nil
+      negotiationSink = nil
+      return channel
+    }
+    channel?.delegate = nil
+    channel?.close()
+    delegate.detach()
+    connection.delegate = nil
+    connection.close()
+  }
+
+  private func handle(_ event: NativeV3BrowserPeerDelegate.Event) {
+    switch event {
+    case let .localICECandidate(candidate):
+      lock.withLock { state.localICECandidateCount += 1 }
+      emitNegotiation(
+        .iceCandidate(
+          .init(
+            candidate: candidate.sdp,
+            sdpMid: candidate.sdpMid,
+            sdpMLineIndex: candidate.sdpMLineIndex
+          )
+        )
+      )
+    case let .connectionState(connectionState):
+      lock.withLock {
+        state.connectionState = switch connectionState {
+        case .new: .new
+        case .connecting: .connecting
+        case .connected: .connected
+        case .disconnected: .disconnected
+        case .failed: .failed
+        case .closed: .closed
+        @unknown default: .failed
+        }
+      }
+    case let .dataChannel(channel):
+      accept(channel)
+    case let .dataChannelState(channel):
+      lock.withLock {
+        guard channel === controlChannel else { return }
+        state.controlState = Self.controlState(channel.readyState)
+      }
+    case let .data(channel, data):
+      lock.withLock {
+        guard channel === controlChannel else { return }
+        state.controlMessages.append(data)
+      }
+    case .receiverChanged:
+      refreshMediaSnapshot()
+    case let .failure(message):
+      lock.withLock { state.failures.append(message) }
+    }
+  }
+
+  private func accept(_ channel: RTCDataChannel) {
+    lock.withLock {
+      guard
+        channel.label == ClipLiveShareNativeV3.controlDataChannelLabel,
+        channel.isOrdered,
+        controlChannel == nil
+      else {
+        channel.close()
+        state.failures.append("Unexpected browser-like DataChannel")
+        return
+      }
+      controlChannel = channel
+      channel.delegate = delegate
+      state.controlChannelLabel = channel.label
+      state.controlChannelIsOrdered = channel.isOrdered
+      state.controlState = Self.controlState(channel.readyState)
+    }
+  }
+
+  private func emitNegotiation(
+    _ payload: ClipLiveShareNativeV3PeerNegotiationPayload
+  ) {
+    lock.withLock { negotiationSink }?(payload)
+  }
+
+  private func refreshMediaSnapshot() {
+    let transceivers = connection.transceivers.filter {
+      $0.mediaType == .video || $0.mediaType == .audio
+    }
+    let videoReceiverIDs = Set(
+      transceivers.compactMap { transceiver -> String? in
+        guard
+          transceiver.mediaType == .video,
+          transceiver.receiver.track is RTCVideoTrack
+        else { return nil }
+        return transceiver.receiver.receiverId
+      }
+    )
+    let audioReceiverIDs = Set(
+      transceivers.compactMap { transceiver -> String? in
+        guard
+          transceiver.mediaType == .audio,
+          transceiver.receiver.track is RTCAudioTrack
+        else { return nil }
+        return transceiver.receiver.receiverId
+      }
+    )
+    let outboundCount = transceivers.filter { $0.sender.track != nil }.count
+    lock.withLock {
+      state.remoteVideoTrackCount = videoReceiverIDs.count
+      state.remoteAudioTrackCount = audioReceiverIDs.count
+      state.mediaTransceiverCount = transceivers.count
+      state.outboundMediaTrackCount = outboundCount
+    }
+  }
+
+  private func createDescription(
+    type: RTCSdpType
+  ) async throws -> RTCSessionDescription {
+    try await withCheckedThrowingContinuation { continuation in
+      let completion:
+        @Sendable (RTCSessionDescription?, (any Error)?) -> Void = {
+          description, error in
+          if let error {
+            continuation.resume(
+              throwing: NativeV3BrowserEndpointError
+                .descriptionCreationFailed(error.localizedDescription)
+            )
+          } else if let description {
+            continuation.resume(returning: description)
+          } else {
+            continuation.resume(
+              throwing: NativeV3BrowserEndpointError
+                .descriptionCreationFailed("no description")
+            )
+          }
+        }
+      let constraints = RTCMediaConstraints(
+        mandatoryConstraints: nil,
+        optionalConstraints: nil
+      )
+      if type == .offer {
+        connection.offer(for: constraints, completionHandler: completion)
+      } else {
+        connection.answer(for: constraints, completionHandler: completion)
+      }
+    }
+  }
+
+  private func setLocalDescription(
+    _ description: RTCSessionDescription
+  ) async throws {
+    try await withCheckedThrowingContinuation {
+      (continuation: CheckedContinuation<Void, any Error>) in
+      connection.setLocalDescription(description) { [weak self] error in
+        if let error {
+          continuation.resume(
+            throwing: NativeV3BrowserEndpointError
+              .descriptionApplicationFailed(error.localizedDescription)
+          )
+          return
+        }
+        self?.lock.withLock {
+          self?.state.localDescriptions.append(
+            .init(
+              kind: description.type == .offer ? .offer : .answer,
+              sdp: description.sdp
+            )
+          )
+        }
+        continuation.resume()
+      }
+    }
+  }
+
+  private func setRemoteDescription(
+    _ description: RTCSessionDescription
+  ) async throws {
+    try await withCheckedThrowingContinuation {
+      (continuation: CheckedContinuation<Void, any Error>) in
+      connection.setRemoteDescription(description) { error in
+        if let error {
+          continuation.resume(
+            throwing: NativeV3BrowserEndpointError
+              .descriptionApplicationFailed(error.localizedDescription)
+          )
+        } else {
+          continuation.resume()
+        }
+      }
+    }
+  }
+
+  private func add(_ candidate: RTCIceCandidate) async throws {
+    try await withCheckedThrowingContinuation {
+      (continuation: CheckedContinuation<Void, any Error>) in
+      connection.add(candidate) { error in
+        if let error {
+          continuation.resume(
+            throwing: NativeV3BrowserEndpointError
+              .candidateApplicationFailed(error.localizedDescription)
+          )
+        } else {
+          continuation.resume()
+        }
+      }
+    }
+  }
+
+  private static func controlState(
+    _ state: RTCDataChannelState
+  ) -> WebRTCControlDataChannelState {
+    switch state {
+    case .connecting: .connecting
+    case .open: .open
+    case .closing: .closing
+    case .closed: .closed
+    @unknown default: .closed
+    }
   }
 }
 
@@ -820,6 +1759,49 @@ private func nativeV3MediaSections(in sdp: String) -> [String: Int] {
     }
   }
   return sections
+}
+
+private func nativeV3MediaDirections(in sdp: String) -> [String: Set<String>] {
+  let normalized = sdp.replacingOccurrences(of: "\r\n", with: "\n")
+  let lines = normalized.components(separatedBy: "\n")
+  var result: [String: Set<String>] = [:]
+  var media: String?
+  for line in lines {
+    if line.hasPrefix("m=") {
+      media = line.dropFirst(2).split(whereSeparator: \.isWhitespace).first.map(
+        String.init
+      )
+    } else if let media,
+      ["a=sendrecv", "a=sendonly", "a=recvonly", "a=inactive"].contains(line)
+    {
+      result[media, default: []].insert(String(line.dropFirst(2)))
+    }
+  }
+  return result
+}
+
+private func nativeV3NamedVideoCodecs(in sdp: String) -> Set<String> {
+  let normalized = sdp.replacingOccurrences(of: "\r\n", with: "\n")
+  let namedCodecs: Set<String> = ["AV1", "VP9", "VP8", "H264"]
+  var inVideo = false
+  var result: Set<String> = []
+  for line in normalized.components(separatedBy: "\n") {
+    if line.hasPrefix("m=") {
+      inVideo = line.hasPrefix("m=video ")
+      continue
+    }
+    guard inVideo, line.hasPrefix("a=rtpmap:") else { continue }
+    let codec = line
+      .split(separator: " ", maxSplits: 1)
+      .last?
+      .split(separator: "/", maxSplits: 1)
+      .first
+      .map { String($0).uppercased() }
+    if let codec, namedCodecs.contains(codec) {
+      result.insert(codec)
+    }
+  }
+  return result
 }
 
 private enum NativeV3PlayoutToneError: Error {

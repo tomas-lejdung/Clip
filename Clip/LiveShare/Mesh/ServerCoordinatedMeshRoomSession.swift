@@ -1376,7 +1376,6 @@ actor ServerCoordinatedMeshRoomSession {
         let members = verified.members.map {
             ServerCoordinatedMeshVerifiedMember(
                 handle: $0.handle,
-                participantID: $0.descriptor.participantID,
                 descriptor: $0.descriptor
             )
         }

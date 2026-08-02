@@ -1,3 +1,4 @@
+import ClipLiveShare
 import Foundation
 import SwiftUI
 
@@ -715,6 +716,7 @@ struct MeshRoomPopoverView: View {
         if participant.id == model.snapshot.creatorParticipantID {
             values.append(String(localized: "Creator"))
         }
+        values.append(participant.clientKind.participantKindTitle)
         values.append(participant.route.title)
         return values.joined(separator: " · ")
     }
@@ -1688,6 +1690,7 @@ struct MeshRoomPopoverView: View {
                     id: model.snapshot.localParticipant.id,
                     name: model.snapshot.localParticipant.displayName,
                     detail: model.snapshot.localParticipant.deviceName,
+                    clientKind: model.snapshot.localParticipant.clientKind,
                     isLocal: true,
                     isCreator:
                         model.snapshot.localParticipant.id
@@ -1702,6 +1705,7 @@ struct MeshRoomPopoverView: View {
                         name: participant.displayName,
                         detail: participant.deviceName
                             ?? participant.route.title,
+                        clientKind: participant.clientKind,
                         isLocal: false,
                         isCreator:
                             participant.id
@@ -1717,6 +1721,7 @@ struct MeshRoomPopoverView: View {
         id: String,
         name: String,
         detail: String?,
+        clientKind: ClipLiveShareServerRoomV4ClientKind,
         isLocal: Bool,
         isCreator: Bool,
         friendshipState: MeshRoomFriendshipState?
@@ -1739,6 +1744,9 @@ struct MeshRoomPopoverView: View {
                             .font(.caption2.weight(.semibold))
                             .foregroundStyle(.orange)
                     }
+                    Text(clientKind.participantKindTitle)
+                        .font(.caption2.weight(.medium))
+                        .foregroundStyle(.secondary)
                 }
                 if let detail {
                     Text(detail)
@@ -1749,10 +1757,12 @@ struct MeshRoomPopoverView: View {
             Spacer()
             if !isLocal {
                 HStack(spacing: 8) {
-                    friendshipControl(
-                        participantID: id,
-                        state: friendshipState ?? .available
-                    )
+                    if clientKind.supportsFriendship {
+                        friendshipControl(
+                            participantID: id,
+                            state: friendshipState ?? .available
+                        )
+                    }
                     if model.snapshot.isLocalCreator {
                         Button(role: .destructive) {
                             model.removeParticipant(id)

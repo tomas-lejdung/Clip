@@ -1,7 +1,7 @@
-# Native Room v4 Invites
+# Room v4 Invites
 
-Clip uses one canonical invitation for both the native app and a future web
-viewer:
+Clip uses one canonical invitation for both the native app and the receive-only
+web participant:
 
 ```text
 https://ROOM-SERVICE/ROOMCODE#v=4&key=SEALED-PAYLOAD&join=ADMISSION-CAPABILITY
@@ -14,9 +14,15 @@ room agreement secret, and a copy of the admission capability. `join` derives
 the payload-encryption key and authorizes a candidate to knock.
 
 The browser does not send a URL fragment in HTTP requests, so an honest room
-service receives neither `key` nor `join`. A future web viewer must nevertheless
-treat its served JavaScript as part of Clip's trusted client: JavaScript can
-read the fragment and could exfiltrate it if the origin were compromised.
+service receives neither `key` nor `join`. The web viewer nevertheless treats
+the same-origin JavaScript served by Clip's room service as part of the trusted
+client: JavaScript can read the fragment and could exfiltrate it if the origin
+were compromised. The viewer therefore uses only repository-owned assets and
+loads no third-party scripts, fonts, styles, analytics, or CDNs.
+
+The browser requires HTTPS for every non-loopback invite. Plain HTTP is
+accepted only for the exact local-development hosts `localhost`, `127.0.0.1`,
+and `[::1]`; lookalike and subdomain names are not loopback exceptions.
 
 The sealed payload uses AES-256-GCM. Its key is HKDF-SHA256 over `join`, and its
 authenticated data binds protocol v4 and the exact `/ROOMCODE` path. Changing
@@ -34,8 +40,16 @@ fields, noncanonical base64url, percent-encoded room codes, and additional path
 components.
 
 The browser reference parser lives in
-`Web/clip-server-room-v4-invite.mjs`. Swift and JavaScript share the fixed
-cross-language fixture in `Tests/Fixtures/server-room-v4-invite.json`.
+`Web/clip-server-room-v4-invite.mjs`, and the deployed viewer uses the matching
+WebCrypto implementation in `server/web/assets/clip-room-crypto.js`. Swift and
+JavaScript share the fixed cross-language fixture in
+`Tests/Fixtures/server-room-v4-invite.json`.
+
+After decryption, Native and Web enter the same authoritative room roster and
+use the same encrypted pair-signaling contract. A signed member descriptor
+declares the closed client profile (`nativeApp/nativeV1` or
+`webViewer/webViewerV1`) for capability presentation; it does not create a
+second admission or signaling protocol.
 
 ## Saved-friend presence
 

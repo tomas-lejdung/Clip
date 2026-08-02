@@ -1,4 +1,4 @@
-# Server-Coordinated Native Mesh
+# Server-Coordinated Participant Mesh
 
 Status: implementation contract for the clean-slate mesh replacement.
 
@@ -9,12 +9,17 @@ remain on direct WebRTC peer connections.
 
 ## Product contract
 
-- A room supports at most four participants.
+- A room supports at most four participants across Native and Web profiles.
 - Every unordered participant pair owns exactly one direct WebRTC connection.
 - For participants A, B, and C, the only media topology is A-B, A-C, and B-C.
 - Adding or removing one participant never renegotiates an unaffected pair.
-- Every participant can publish windows, fullscreen video, and system audio.
-- The creator controls admission, Access Word, Ask Before Joining, invite
+- Every Native participant can publish windows, fullscreen video, and system
+  audio. A Web participant is a first-class, receive-only mesh member that
+  publishes an authenticated empty source snapshot and no media.
+- Native and Web use the same room session, pair identity, encrypted signaling,
+  concrete peer-link contract, fixed transceivers, and ordered DataChannel. The
+  authenticated profile controls capabilities and presentation only.
+- The Native creator controls admission, Access Word, Ask Before Joining, invite
   rotation, participant removal, and End Room.
 - A noncreator may leave without affecting the remaining pairs.
 - If the creator explicitly leaves, the room ends for everyone.
@@ -23,6 +28,12 @@ remain on direct WebRTC peer connections.
 - There is no creator election, leadership term, quorum, authority chain,
   membership certificate chain, or leaderless-locked phase.
 - No legacy protocol or backwards compatibility is required.
+
+The creator-certified descriptor carries exactly one closed, versioned client
+profile: `nativeApp/nativeV1` or `webViewer/webViewerV1`. The Web profile may
+receive all compatible Native sources and per-participant audio, leave, and
+reconnect its tab. It cannot create/administer a room, publish media, create a
+friendship, send/render collaboration, or control native viewer windows.
 
 ## Privacy boundary
 
@@ -34,28 +45,43 @@ https://service.example/ROOMCODE#v=4&key=<sealed-client-payload>&join=<admission
 ```
 
 `ROOMCODE` is random presentation material, not the service API room ID. The
-URL fragment is never sent in HTTP or WebSocket requests. `key` is an AES-GCM
-payload containing the opaque 256-bit API room ID, session binding, creator
-identity, room agreement secret, and admission capability. `join` derives the
-payload key and proves permission to knock. Authenticated data binds the sealed
-payload to the exact room-code path. After decrypting the invite, a client uses
-the opaque API room ID as service-visible routing material.
+unmodified client never sends the URL fragment in HTTP or WebSocket requests.
+`key` is an AES-GCM payload containing the opaque 256-bit API room ID, session
+binding, creator identity, room agreement secret, and admission capability.
+`join` derives the payload key and proves permission to knock. Authenticated
+data binds the sealed payload to the exact room-code path. After decrypting the
+invite, a client uses the opaque API room ID as service-visible routing
+material.
 
-The service may observe room/member routing handles, IP addresses, connection
-timing, roster revision, and ciphertext sizes. It must not receive plaintext
+The service may observe the non-authorizing presentation code when it serves a
+web page, room/member routing handles, IP addresses, connection timing, roster
+revision, and ciphertext sizes. It must not receive plaintext
 participant identities or names, Access Words, SDP, ICE candidates, source or
 window metadata, codec settings, cursor/annotation values, audio, or video.
 
 Member descriptors, admission requests, and pair-signaling payloads are opaque
-authenticated ciphertext. A descriptor contains the participant's persistent
-identity and ephemeral pair-signaling public key. The creator signs each
-admitted opaque descriptor together with its server-assigned member handle.
-Clients reject roster entries without that creator admission signature.
+authenticated ciphertext. A descriptor contains the participant identity
+(device-persistent for Native or tab-scoped for Web), ephemeral pair-signaling
+public key, and closed Native/Web profile.
+The creator signs each admitted opaque descriptor together with its
+server-assigned member handle. Clients reject roster entries without that
+creator admission signature. The service cannot read or route differently on
+the profile.
+
+The profile is a creator-certified declaration, not proof that a participant
+is running Apple's signed Clip binary. Capability checks constrain peers that
+declare `webViewerV1`, but a custom malicious client could claim
+`nativeApp/nativeV1` unless a future protocol adds Native application
+attestation. Creator admission and the bounded room membership remain part of
+the threat model.
 
 The service is trusted for availability, roster ordering, and removal. It is
 not trusted with room contents or admission secrets. It can deny service, as
-any rendezvous server can, but it cannot decrypt or silently fabricate a valid
-participant admission.
+any rendezvous server can, but the unmodified binary cannot decrypt or silently
+fabricate a valid participant admission. For the Web surface, its serving
+origin is additionally a trusted client-distribution boundary: a malicious or
+compromised deployment could serve JavaScript that reads and exfiltrates the
+fragment. The protocol does not claim protection from that origin.
 
 ## Service-owned state
 
@@ -91,6 +117,31 @@ refreshes, and roster revisions. Only the explicit New Invite action rotates
 the admission capability and changes the copied URL. Rotation does not replace
 the room ID or disturb admitted participants.
 
+## Receive-only web session
+
+`GET /ROOMCODE` serves one same-origin repository-owned viewer shell. The room
+code is presentation material only; JavaScript reads and decrypts the canonical
+`#v=4&key=...&join=...` fragment locally before contacting the opaque API room.
+Viewer HTML and assets use a restrictive Content Security Policy and no
+third-party scripts, styles, fonts, analytics, or CDNs. With those unmodified
+assets, the fragment never enters a request, cookie, WebSocket outer envelope,
+or service log. Non-loopback browser invites require HTTPS; HTTP is accepted
+only for exact loopback development hosts.
+
+One browser tab owns one ephemeral P-256 participant identity and reconnect
+capability in tab-scoped storage. A refresh preserves that member; explicit
+Leave removes it; another tab is a distinct candidate. Browsers cannot attach
+the Native reconnect Authorization header to a WebSocket. A same-origin POST
+therefore exchanges the capability for a short-lived, single-use, source-bound
+opaque ticket, which is supplied in the WebSocket subprotocol header. The room
+hub still validates and consumes the underlying reconnect credential while
+attaching the socket. Native Authorization behavior is unchanged.
+
+Web-v1 supports current desktop Safari and Chromium. It presents Focus, Grid,
+and Row layouts, participant-scoped Follow selection, Fit/Fill/Native size,
+cursor-follow panning, browser fullscreen, and master plus per-publisher audio
+controls. Firefox and mobile browsers are not release claims.
+
 ## Friends and private presence
 
 Friendship is a signed four-step handshake over an already authenticated pair
@@ -108,7 +159,7 @@ and cannot correlate one publisher's friend graph through a reused mailbox.
 
 A saved-friend join uses the same v4 admission protocol and always requests
 explicit creator approval. It does not add a legacy route or separate media
-role.
+role. Friendship controls are restricted to authenticated Native profiles.
 
 ## Roster wire state
 
@@ -160,6 +211,22 @@ through the service. Source snapshots, participant audio, collaboration state,
 and media continue over the established direct pair's authenticated WebRTC
 tracks and DataChannel.
 
+The remote profile does not select a native transport implementation. For A
+and B as Native and W as Web, Native reconciles A-B, A-W, and B-W through the
+same normal pair manager; W implements that pair contract with the platform
+`RTCPeerConnection` API. Web-Web edges remain authenticated data-only edges.
+
+Every video transceiver offers only the publishing participant's selected
+codec. There is no browser-specific second encode, transcoding, or codec
+fallback. If a Web runtime cannot decode it, the incompatible peer remains in
+the authoritative roster and the UI reports `Unsupported Encoding: <codec>`
+when the codec is observable. An edge that fails before exposing the codec may
+instead remain unavailable or black.
+Current libwebrtc may reject that complete peer edge rather than only its video
+m-lines, so web-v1 does not promise audio or DataChannel availability on that
+one incompatible edge. Every unrelated pair and the publisher's single encoder
+remain unchanged.
+
 ## Disconnect behavior
 
 - Explicit noncreator leave: remove immediately, increment roster revision,
@@ -186,18 +253,28 @@ and source-aware ScreenCaptureKit resolution policy unchanged.
 
 The mesh manager remains the owner of one concrete transport per pair, but its
 desired peers and signaling now come directly from the server room session.
+The receive-only browser conforms to this contract; it does not introduce a
+browser-specific Native transport or signaling path.
 
 ## Mandatory gates
 
-- Invite fragment never appears in an HTTP path, query, header, server log, or
-  outer WebSocket message.
+- The unmodified client never places the invite fragment in an HTTP path,
+  query, header, server log, or outer WebSocket message. The Web serving origin
+  remains a trusted client-distribution boundary.
 - Invite remains identical across repeated joins; only New Invite changes it.
 - Two participants form exactly one ready bidirectional pair.
 - Adding a third forms exactly three pairs without changing A-B transport ID,
   negotiation revision, track IDs, or media continuity.
 - Adding a fourth forms exactly six pairs without replacing the first three.
-- Every participant publishes and receives every other participant's video and
-  optional system audio.
+- Every Native participant publishes and receives every other Native
+  participant's video and optional system audio. Every Web participant receives
+  every compatible Native publisher and publishes no media.
+- A + B + Web forms exactly three ready links without changing A-B's transport
+  ID, negotiation revision, tracks, codec, or media continuity.
+- A + B + C + Web forms exactly six links. Native/Web presentation badges and
+  Web capability restrictions derive only from the signed profile.
+- Unsupported selected codec proves no fallback, second encoder, or
+  transcoding; the Web UI reports the codec and unrelated pairs remain live.
 - One pair's injected signaling, ICE, transport, or backpressure failure does
   not change any other pair.
 - Simultaneous full-roster delivery in different orders converges to the same

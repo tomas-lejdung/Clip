@@ -29,6 +29,7 @@ type Service struct {
 	config         config.Config
 	roomHub        *signaling.RoomHub
 	friendPresence *friendPresenceStore
+	webReconnect   *browserReconnectTicketStore
 	handler        http.Handler
 	upgrader       websocket.Upgrader
 	connections    chan struct{}
@@ -70,6 +71,7 @@ func NewWithRoomHub(
 		config:         configuration,
 		roomHub:        roomHub,
 		friendPresence: newFriendPresenceStore(configuration.MaximumRendezvous * 64),
+		webReconnect:   newBrowserReconnectTicketStore(configuration.MaximumTrackedSources),
 		connections:    make(chan struct{}, configuration.MaximumConnections),
 		queueBudget: signaling.NewQueuedByteBudget(
 			configuration.MaximumQueuedBytesTotal,
@@ -173,6 +175,10 @@ func (s *Service) routes() http.Handler {
 		s.nativeRoomWebSocket,
 	)
 	mux.HandleFunc(
+		"POST /api/native/v4/rooms/{room}/browser-reconnect",
+		s.createBrowserReconnectTicket,
+	)
+	mux.HandleFunc(
 		"PUT /api/native/v4/friends/{routing}/presence",
 		s.putNativeFriendPresence,
 	)
@@ -182,7 +188,9 @@ func (s *Service) routes() http.Handler {
 	)
 	mux.HandleFunc("GET /healthz", s.health)
 	mux.HandleFunc("GET /version", s.version)
-	return s.securityHeaders(mux)
+	mux.HandleFunc("GET /assets/{asset...}", s.viewerAsset)
+	mux.HandleFunc("GET /{room}", s.viewerPage)
+	return s.securityHeaders(rejectViewerPathAliases(mux))
 }
 
 func (s *Service) health(writer http.ResponseWriter, _ *http.Request) {
@@ -224,6 +232,7 @@ func (s *Service) cleanupLoop(ctx context.Context) {
 		case <-ticker.C:
 			s.roomHub.Cleanup()
 			s.friendPresence.cleanup()
+			s.webReconnect.cleanup()
 			s.admission.cleanup()
 		}
 	}
@@ -243,7 +252,7 @@ func (s *Service) securityHeaders(next http.Handler) http.Handler {
 		writer.Header().Set("X-Frame-Options", "DENY")
 		writer.Header().Set(
 			"Permissions-Policy",
-			"camera=(), microphone=(), geolocation=(), payment=(), usb=()",
+			"camera=(), microphone=(), display-capture=(), geolocation=(), payment=(), usb=()",
 		)
 		next.ServeHTTP(writer, request)
 	})

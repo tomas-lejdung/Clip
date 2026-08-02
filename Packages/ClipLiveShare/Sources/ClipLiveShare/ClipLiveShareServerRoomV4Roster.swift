@@ -73,7 +73,7 @@ public struct ClipLiveShareServerRoomV4RosterMember: Codable, Equatable,
     self.connected = connected
   }
 
-  enum CodingKeys: String, CodingKey {
+  enum CodingKeys: String, CodingKey, CaseIterable {
     case handle
     case descriptor
     case connected
@@ -133,6 +133,35 @@ public struct ClipLiveShareServerRoomV4RosterSnapshot: Codable, Equatable,
   }
 }
 
+/// Coarse participant implementation kind carried inside the encrypted,
+/// creator-certified member descriptor. The rendezvous service cannot inspect
+/// this value.
+public enum ClipLiveShareServerRoomV4ClientKind: String, Codable, Equatable,
+  Hashable, Sendable
+{
+  case nativeApp
+  case webViewer
+}
+
+/// Closed, versioned feature profile for one room participant.
+///
+/// Profiles deliberately replace an open-ended capability bag: every client
+/// can reason about one audited behavior set, and unknown future profiles fail
+/// closed instead of silently enabling a partial feature combination.
+public enum ClipLiveShareServerRoomV4CapabilityProfile: String, Codable,
+  Equatable, Hashable, Sendable
+{
+  case nativeV1
+  case webViewerV1
+
+  public var clientKind: ClipLiveShareServerRoomV4ClientKind {
+    switch self {
+    case .nativeV1: .nativeApp
+    case .webViewerV1: .webViewer
+    }
+  }
+}
+
 /// Client-only descriptor encrypted inside admission messages and rosters.
 public struct ClipLiveShareServerRoomV4MemberDescriptor: Codable, Equatable,
   Hashable, Sendable
@@ -145,13 +174,17 @@ public struct ClipLiveShareServerRoomV4MemberDescriptor: Codable, Equatable,
   public let pairSignalingPublicKey: ClipLiveShareKeyAgreementPublicKey
   public let displayName: String
   public let deviceName: String
+  public let clientKind: ClipLiveShareServerRoomV4ClientKind
+  public let capabilityProfile: ClipLiveShareServerRoomV4CapabilityProfile
 
   public init(
     participantID: ClipLiveShareNativeV3ParticipantID,
     identity: ClipLiveShareIdentityPublicKey,
     pairSignalingPublicKey: ClipLiveShareKeyAgreementPublicKey,
     displayName: String,
-    deviceName: String
+    deviceName: String,
+    clientKind: ClipLiveShareServerRoomV4ClientKind = .nativeApp,
+    capabilityProfile: ClipLiveShareServerRoomV4CapabilityProfile = .nativeV1
   ) throws {
     try serverRoomV4ValidateText(
       displayName,
@@ -163,11 +196,75 @@ public struct ClipLiveShareServerRoomV4MemberDescriptor: Codable, Equatable,
       name: "device name",
       maximum: ClipLiveShareServerRoomV4.maximumDisplayNameBytes
     )
+    guard capabilityProfile.clientKind == clientKind else {
+      throw ClipLiveShareServerRoomV4Error.invalidRoster(
+        "participant kind and capability profile do not match"
+      )
+    }
     self.participantID = participantID
     self.identity = identity
     self.pairSignalingPublicKey = pairSignalingPublicKey
     self.displayName = displayName
     self.deviceName = deviceName
+    self.clientKind = clientKind
+    self.capabilityProfile = capabilityProfile
+  }
+
+  enum CodingKeys: String, CodingKey, CaseIterable {
+    case participantID
+    case identity
+    case pairSignalingPublicKey
+    case displayName
+    case deviceName
+    case clientKind
+    case capabilityProfile
+  }
+
+  private struct DescriptorCodingKey: CodingKey {
+    let stringValue: String
+    let intValue: Int? = nil
+
+    init?(stringValue: String) { self.stringValue = stringValue }
+    init?(intValue: Int) { return nil }
+  }
+
+  public init(from decoder: any Decoder) throws {
+    let exactContainer = try decoder.container(keyedBy: DescriptorCodingKey.self)
+    let actualKeys = Set(exactContainer.allKeys.map(\.stringValue))
+    let expectedKeys = Set(CodingKeys.allCases.map(\.stringValue))
+    guard actualKeys == expectedKeys else {
+      throw DecodingError.dataCorrupted(
+        .init(
+          codingPath: decoder.codingPath,
+          debugDescription: "Member descriptor keys do not match the closed schema"
+        )
+      )
+    }
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    try self.init(
+      participantID: container.decode(
+        ClipLiveShareNativeV3ParticipantID.self,
+        forKey: .participantID
+      ),
+      identity: container.decode(
+        ClipLiveShareIdentityPublicKey.self,
+        forKey: .identity
+      ),
+      pairSignalingPublicKey: container.decode(
+        ClipLiveShareKeyAgreementPublicKey.self,
+        forKey: .pairSignalingPublicKey
+      ),
+      displayName: container.decode(String.self, forKey: .displayName),
+      deviceName: container.decode(String.self, forKey: .deviceName),
+      clientKind: container.decode(
+        ClipLiveShareServerRoomV4ClientKind.self,
+        forKey: .clientKind
+      ),
+      capabilityProfile: container.decode(
+        ClipLiveShareServerRoomV4CapabilityProfile.self,
+        forKey: .capabilityProfile
+      )
+    )
   }
 
   var canonicalRepresentation: Data {
@@ -179,6 +276,8 @@ public struct ClipLiveShareServerRoomV4MemberDescriptor: Codable, Equatable,
     encoder.append(pairSignalingPublicKey.x963Representation)
     encoder.append(displayName)
     encoder.append(deviceName)
+    encoder.append(clientKind.rawValue)
+    encoder.append(capabilityProfile.rawValue)
     return encoder.data
   }
 }

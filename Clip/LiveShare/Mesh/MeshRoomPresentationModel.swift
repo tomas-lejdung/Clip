@@ -269,6 +269,7 @@ final class MeshRoomPresentationModel: ObservableObject {
     func addFriend(_ participantID: String) {
         guard canChangeFriendships,
               let participant = participant(participantID),
+              participant.clientKind.supportsFriendship,
               participant.route.isConnected,
               participant.friendshipState == .available else { return }
         actions.addFriend(participantID)

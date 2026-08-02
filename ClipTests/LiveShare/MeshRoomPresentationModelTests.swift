@@ -964,6 +964,18 @@ struct MeshRoomPresentationModelTests {
         ))
         model.retryFriendship("remote")
         #expect(retried == ["remote"])
+
+        model.update(makeSnapshot(
+            remoteParticipants: [
+                remoteParticipant(
+                    id: "web",
+                    clientKind: .webViewer,
+                    friendshipState: .available
+                )
+            ]
+        ))
+        model.addFriend("web")
+        #expect(added == ["remote"])
     }
 
     @Test
@@ -1222,6 +1234,7 @@ struct MeshRoomPresentationModelTests {
     private func remoteParticipant(
         id: String,
         displayName: String? = nil,
+        clientKind: ClipLiveShareServerRoomV4ClientKind = .nativeApp,
         sources: [MeshRoomRemoteSourceSnapshot] = [],
         systemAudioAvailable: Bool = false,
         diagnostics: [MeshRoomMediaDiagnosticsSnapshot] = [],
@@ -1230,6 +1243,7 @@ struct MeshRoomPresentationModelTests {
         .init(
             id: id,
             displayName: displayName ?? id.capitalized,
+            clientKind: clientKind,
             route: .direct,
             sources: sources,
             systemAudioAvailable: systemAudioAvailable,

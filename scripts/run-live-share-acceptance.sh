@@ -11,7 +11,7 @@ GO_MODULE_CACHE="${GOMODCACHE:-$ROOT/.build/GoModuleCache}"
 DERIVED_DATA="${CLIP_DERIVED_DATA_PATH:-$ROOT/.build/DerivedData}"
 SOURCE_PACKAGES="${CLIP_SOURCE_PACKAGES_PATH:-$ROOT/.build/SourcePackages}"
 
-for command in curl go swift xcodebuild; do
+for command in curl go node swift xcodebuild; do
   if ! command -v "$command" >/dev/null 2>&1; then
     echo "Required command is unavailable: $command" >&2
     exit 69
@@ -25,6 +25,8 @@ if [[ ! -f "$SERVER_ROOT/internal/signaling/room_v4.go" ||
   exit 66
 fi
 
+"$ROOT/scripts/verify-web-viewer-native-boundary.sh"
+
 mkdir -p "$MODULE_CACHE" "$GO_MODULE_CACHE" "$SOURCE_PACKAGES"
 export CLANG_MODULE_CACHE_PATH="$MODULE_CACHE"
 export SWIFTPM_MODULECACHE_OVERRIDE="$MODULE_CACHE"
@@ -36,10 +38,16 @@ echo "Running authoritative opaque-room service tests..."
     GOMODCACHE="$GO_MODULE_CACHE" go test ./...
 )
 
+echo "Running dependency-free browser invite, crypto, mesh, and viewer tests..."
+node --test "$SERVER_ROOT"/web/tests/*.test.mjs
+
 echo "Running v4 invite, admission, roster, and crypto tests..."
 swift test \
   --package-path "$CORE_PACKAGE" \
   --filter ClipLiveShareServerRoomV4
+swift test \
+  --package-path "$CORE_PACKAGE" \
+  --filter ClipLiveShareWebMediaControlInteropTests
 
 echo "Running full-mesh transport and real WebRTC loopback tests..."
 swift test \
@@ -50,6 +58,14 @@ swift test \
   --package-path "$WEBRTC_PACKAGE" \
   --manifest-cache none \
   --filter ClipLiveShareServerMesh
+swift test \
+  --package-path "$WEBRTC_PACKAGE" \
+  --manifest-cache none \
+  --filter WebRTCExactCodecPreferenceTests
+swift test \
+  --package-path "$WEBRTC_PACKAGE" \
+  --manifest-cache none \
+  --filter ReceiveOnly
 
 echo "Running real localhost 2/3/4-participant server-room acceptance..."
 "$ROOT/scripts/run-server-room-v4-acceptance.sh"

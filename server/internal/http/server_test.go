@@ -100,7 +100,7 @@ func TestNativeOnlyCapabilitiesHealthAndSecurityHeaders(t *testing.T) {
 	}
 }
 
-func TestLegacyBrowserAndRoomSurfacesAreAbsent(t *testing.T) {
+func TestLegacyRoomAndSignalingSurfacesAreAbsent(t *testing.T) {
 	t.Parallel()
 	_, server := newHTTPTestServer(t)
 	tests := []struct {
@@ -117,7 +117,6 @@ func TestLegacyBrowserAndRoomSurfacesAreAbsent(t *testing.T) {
 		{http.MethodPut, "/api/native/v3/rendezvous/OLD"},
 		{http.MethodGet, "/api/native/v3/rendezvous/OLD/owner"},
 		{http.MethodGet, "/api/native/v3/rendezvous/OLD/candidate"},
-		{http.MethodGet, "/assets/clip-viewer.js"},
 		{http.MethodGet, "/OLD-ROOM"},
 	}
 	for _, test := range tests {

@@ -518,6 +518,270 @@ struct ServerCoordinatedMeshMediaRuntimeTests {
         await session.runtime.close()
     }
 
+    @Test("web-v1 accepts only an empty manifest and cannot surface media or controls")
+    func webReceiveOnlyProfileIsEnforcedWithoutPairRecovery() async throws {
+        let fixture = try ServerMeshRuntimeFixture()
+        let timestamp = try ClipLiveShareNativeTimestamp(
+            millisecondsSince1970: 1_800_000_000_000
+        )
+        let session = fixture.makeRuntime(now: { timestamp })
+        let events = await session.runtime.events()
+        let eventProbe = ServerMeshRuntimeEventProbe()
+        let eventTask = Task {
+            for await event in events { await eventProbe.record(event) }
+        }
+        try await session.runtime.start(roster: fixture.roster(
+            revision: 1,
+            memberCount: 3,
+            webParticipantIndexes: [1]
+        ))
+        let webID = fixture.nodes[1].participantID
+        let nativeID = fixture.nodes[2].participantID
+        let webTransport = try #require(
+            await session.factory.transport(for: webID)
+        )
+        let nativeTransport = try #require(
+            await session.factory.transport(for: nativeID)
+        )
+
+        let emptyWebSnapshot = try ClipLiveShareNativeV3SourceSnapshot(
+            sessionID: fixture.sessionID,
+            membershipRevision: .init(rawValue: 1),
+            ownerParticipantID: webID,
+            sourceRevision: .init(rawValue: 1),
+            sources: []
+        )
+        await webTransport.emit(.controlMessageReceived(
+            try ClipLiveShareMeshMediaControlCodec.encode(
+                .sourceSnapshot(emptyWebSnapshot)
+            )
+        ))
+        try await serverMeshEventually {
+            try await session.runtime.snapshot().sourceSnapshots[webID]
+                == emptyWebSnapshot
+        }
+
+        let forbiddenWebSource = try fixture.publishedSource(owner: webID)
+        let forbiddenWebSnapshot = try ClipLiveShareNativeV3SourceSnapshot(
+            sessionID: fixture.sessionID,
+            membershipRevision: .init(rawValue: 1),
+            ownerParticipantID: webID,
+            sourceRevision: .init(rawValue: 2),
+            sources: [forbiddenWebSource]
+        )
+        let forbiddenCursor = try ClipLiveShareNativeV3SourceCursor(
+            sessionID: fixture.sessionID,
+            participantID: webID,
+            sourceKey: forbiddenWebSource.key,
+            streamID: forbiddenWebSource.descriptor.stream.id,
+            sequence: 1,
+            position: .init(x: 0.25, y: 0.75)
+        )
+        let forbiddenCollaboration =
+            ClipLiveShareNativeV3CollaborationEvent.pointer(.init(
+                context: try .init(
+                    sessionID: fixture.sessionID,
+                    participantID: webID,
+                    sourceKey: forbiddenWebSource.key,
+                    sequence: 1,
+                    sentAt: timestamp
+                ),
+                position: try .init(x: 0.2, y: 0.4)
+            ))
+        let forbiddenFriendship = try fixture.friendRequest(
+            from: 1,
+            to: 0,
+            issuedAt: timestamp
+        )
+        for message in [
+            ClipLiveShareMeshMediaControlMessage.sourceSnapshot(
+                forbiddenWebSnapshot
+            ),
+            .sourceCursor(forbiddenCursor),
+            .collaboration(forbiddenCollaboration),
+            .friendship(forbiddenFriendship),
+        ] {
+            await webTransport.emit(.controlMessageReceived(
+                try ClipLiveShareMeshMediaControlCodec.encode(message)
+            ))
+        }
+        await webTransport.emit(.remoteVideoTrackAdded(
+            forbiddenWebSource.descriptor.stream.mediaTrackID
+        ))
+        await webTransport.emit(.remoteParticipantAudioAvailable(
+            trackID: "forbidden-web-audio"
+        ))
+
+        // A malformed Web control frame is ignored on only that pair. The
+        // subsequent valid empty manifest proves its control channel remains
+        // usable without SDP/ICE recovery or disturbance to the unrelated
+        // Native edge.
+        await webTransport.emit(.controlMessageReceived(Data([0x00])))
+        let latestEmptyWebSnapshot = try ClipLiveShareNativeV3SourceSnapshot(
+            sessionID: fixture.sessionID,
+            membershipRevision: .init(rawValue: 1),
+            ownerParticipantID: webID,
+            sourceRevision: .init(rawValue: 3),
+            sources: []
+        )
+        await webTransport.emit(.controlMessageReceived(
+            try ClipLiveShareMeshMediaControlCodec.encode(
+                .sourceSnapshot(latestEmptyWebSnapshot)
+            )
+        ))
+
+        let nativeSource = try fixture.publishedSource(owner: nativeID)
+        let nativeSnapshot = try ClipLiveShareNativeV3SourceSnapshot(
+            sessionID: fixture.sessionID,
+            membershipRevision: .init(rawValue: 1),
+            ownerParticipantID: nativeID,
+            sourceRevision: .init(rawValue: 1),
+            sources: [nativeSource]
+        )
+        await nativeTransport.emit(.controlMessageReceived(
+            try ClipLiveShareMeshMediaControlCodec.encode(
+                .sourceSnapshot(nativeSnapshot)
+            )
+        ))
+        await nativeTransport.emit(.remoteVideoTrackAdded(
+            nativeSource.descriptor.stream.mediaTrackID
+        ))
+        await nativeTransport.emit(.remoteParticipantAudioAvailable(
+            trackID: "native-audio"
+        ))
+
+        try await serverMeshEventually {
+            let snapshot = try await session.runtime.snapshot()
+            return snapshot.sourceSnapshots[webID] == latestEmptyWebSnapshot
+                && snapshot.sourceSnapshots[nativeID] == nativeSnapshot
+                && snapshot.remoteVideoTrackIDs[nativeID]
+                    == [nativeSource.descriptor.stream.mediaTrackID]
+                && snapshot.audioTrackIDs[nativeID] == "native-audio"
+        }
+        let snapshot = try await session.runtime.snapshot()
+        #expect(snapshot.sourceSnapshots[webID] == latestEmptyWebSnapshot)
+        #expect(snapshot.remoteVideoTrackIDs[webID]?.isEmpty != false)
+        #expect(snapshot.audioTrackIDs[webID] == nil)
+        #expect(snapshot.sourceCursors[forbiddenWebSource.key] == nil)
+        #expect(snapshot.collaboration[forbiddenWebSource.key] == nil)
+        let receivedForbiddenFriendship = await eventProbe.receivedFriendship(
+            forbiddenFriendship,
+            from: webID
+        )
+        #expect(!receivedForbiddenFriendship)
+        let didFailWebPair = await eventProbe.didFail(webID)
+        #expect(!didFailWebPair)
+
+        #expect(try await session.runtime.remoteVideoStream(
+            for: forbiddenWebSource.descriptor.stream,
+            from: webID
+        ) == nil)
+        #expect(await webTransport.remoteVideoStreamRequestCount() == 0)
+        try await session.runtime.setRemoteParticipantAudioPlaybackEnabled(
+            true,
+            for: webID
+        )
+        #expect(await webTransport.audioPlaybackPreferences().last == false)
+
+        let outboundFriendship = try fixture.friendRequest(
+            from: 0,
+            to: 1,
+            issuedAt: timestamp
+        )
+        await #expect(
+            throws: ServerCoordinatedMeshMediaRuntimeError
+                .unsupportedParticipantCapability
+        ) {
+            try await session.runtime.sendFriendshipMessage(
+                outboundFriendship,
+                to: webID
+            )
+        }
+        try await Task.sleep(for: .milliseconds(450))
+        #expect(await webTransport.restartCount() == 0)
+        #expect(await nativeTransport.restartCount() == 0)
+
+        await session.runtime.close()
+        eventTask.cancel()
+    }
+
+    @Test("collaboration bypasses web-v1 while source cursor metadata remains available")
+    func outboundCollaborationSkipsWebParticipant() async throws {
+        let fixture = try ServerMeshRuntimeFixture()
+        let timestamp = try ClipLiveShareNativeTimestamp(
+            millisecondsSince1970: 1_800_000_000_000
+        )
+        let session = fixture.makeRuntime(now: { timestamp })
+        try await session.runtime.start(roster: fixture.roster(
+            revision: 1,
+            memberCount: 3,
+            webParticipantIndexes: [1]
+        ))
+        let webTransport = try #require(await session.factory.transport(
+            for: fixture.nodes[1].participantID
+        ))
+        let nativeTransport = try #require(await session.factory.transport(
+            for: fixture.nodes[2].participantID
+        ))
+        for transport in [webTransport, nativeTransport] {
+            await transport.emit(.connectionStateChanged(.connected))
+            await transport.emit(.controlChannelStateChanged(.open))
+        }
+        let source = try fixture.publishedSource(
+            owner: fixture.nodes[0].participantID
+        )
+        try await session.runtime.publishLocalSources([source])
+        try await serverMeshEventually {
+            let webCount = await webTransport.controlMessages().count
+            let nativeCount = await nativeTransport.controlMessages().count
+            return webCount == 1 && nativeCount == 1
+        }
+
+        let cursor = try ClipLiveShareNativeV3SourceCursor(
+            sessionID: fixture.sessionID,
+            participantID: fixture.nodes[0].participantID,
+            sourceKey: source.key,
+            streamID: source.descriptor.stream.id,
+            sequence: 1,
+            position: .init(x: 0.4, y: 0.6)
+        )
+        try await session.runtime.broadcastSourceCursor(cursor)
+        try await serverMeshEventually {
+            let webCount = await webTransport.ephemeralControlMessages().count
+            let nativeCount = await nativeTransport
+                .ephemeralControlMessages().count
+            return webCount == 1 && nativeCount == 1
+        }
+
+        let context = try ClipLiveShareNativeV3CollaborationContext(
+            sessionID: fixture.sessionID,
+            participantID: fixture.nodes[0].participantID,
+            sourceKey: source.key,
+            sequence: 1,
+            sentAt: timestamp
+        )
+        try await session.runtime.broadcastCollaboration(.pointer(.init(
+            context: context,
+            position: .init(x: 0.1, y: 0.2)
+        )))
+        try await session.runtime.broadcastCollaboration(.ping(try .init(
+            context: context,
+            position: .init(x: 0.25, y: 0.75),
+            color: .init(red: 250, green: 80, blue: 40),
+            expiresAt: timestamp.adding(milliseconds: 1_000)
+        )))
+        try await serverMeshEventually {
+            let ephemeralCount = await nativeTransport
+                .ephemeralControlMessages().count
+            let reliableCount = await nativeTransport.controlMessages().count
+            return ephemeralCount == 2 && reliableCount == 2
+        }
+        #expect(await webTransport.ephemeralControlMessages().count == 1)
+        #expect(await webTransport.controlMessages().count == 1)
+
+        await session.runtime.close()
+    }
+
     @Test("pointers are ephemeral while durable collaboration stays reliable")
     func collaborationUsesTheAppropriateTransportAndExpires() async throws {
         let fixture = try ServerMeshRuntimeFixture()
@@ -721,15 +985,21 @@ private struct ServerMeshRuntimeFixture {
     func roster(
         revision: UInt64,
         memberCount: Int,
-        localIndex: Int = 0
+        localIndex: Int = 0,
+        webParticipantIndexes: Set<Int> = []
     ) throws -> ServerCoordinatedMeshVerifiedRoster {
         let included = Array(nodes.prefix(memberCount))
         let local = included[localIndex]
-        let members = included.map {
-            ServerCoordinatedMeshVerifiedMember(
-                handle: $0.handle,
-                participantID: $0.participantID,
-                descriptor: $0.descriptor
+        let members = try included.enumerated().map { index, node in
+            let descriptor: ClipLiveShareServerRoomV4MemberDescriptor
+            if webParticipantIndexes.contains(index) {
+                descriptor = try webDescriptor(for: node)
+            } else {
+                descriptor = node.descriptor
+            }
+            return ServerCoordinatedMeshVerifiedMember(
+                handle: node.handle,
+                descriptor: descriptor
             )
         }
         let pairs = try included.filter {
@@ -756,6 +1026,21 @@ private struct ServerMeshRuntimeFixture {
             localParticipantID: local.participantID,
             members: members,
             pairs: pairs
+        )
+    }
+
+    private func webDescriptor(
+        for node: Node
+    ) throws -> ClipLiveShareServerRoomV4MemberDescriptor {
+        try .init(
+            participantID: node.descriptor.participantID,
+            identity: node.descriptor.identity,
+            pairSignalingPublicKey:
+                node.descriptor.pairSignalingPublicKey,
+            displayName: node.descriptor.displayName,
+            deviceName: node.descriptor.deviceName,
+            clientKind: .webViewer,
+            capabilityProfile: .webViewerV1
         )
     }
 
@@ -794,12 +1079,10 @@ private struct ServerMeshRuntimeFixture {
             members: [
                 .init(
                     handle: local.handle,
-                    participantID: local.participantID,
                     descriptor: local.descriptor
                 ),
                 .init(
                     handle: replacement.handle,
-                    participantID: replacement.participantID,
                     descriptor: replacement.descriptor
                 ),
             ],
@@ -1043,6 +1326,8 @@ private actor ServerMeshRuntimeTransport:
     private var remainingControlSendFailures = 0
     private var remainingRemoteDescriptionFailures: Int
     private var restarts = 0
+    private var remoteVideoStreamRequests = 0
+    private var audioPlaybackEnabledValues: [Bool] = []
 
     init(
         configuration: ClipLiveShareNativeV3PeerLinkConfiguration,
@@ -1089,9 +1374,14 @@ private actor ServerMeshRuntimeTransport:
     }
     func remoteVideoStream(
         for _: ClipLiveShareStreamDescriptor
-    ) -> WebRTCRemoteVideoStream? { nil }
+    ) -> WebRTCRemoteVideoStream? {
+        remoteVideoStreamRequests += 1
+        return nil
+    }
     func setOutboundMediaEnabled(_: Bool) {}
-    func setRemoteParticipantAudioPlaybackEnabled(_: Bool) {}
+    func setRemoteParticipantAudioPlaybackEnabled(_ enabled: Bool) {
+        audioPlaybackEnabledValues.append(enabled)
+    }
     func setRemoteParticipantAudioVolume(_: Double) {}
     func restartICE() { restarts += 1 }
     func statistics() -> ClipLiveShareNativeV3PeerLinkTransportStatistics {
@@ -1112,6 +1402,12 @@ private actor ServerMeshRuntimeTransport:
         remainingControlSendFailures = max(0, count)
     }
     func restartCount() -> Int { restarts }
+    func remoteVideoStreamRequestCount() -> Int {
+        remoteVideoStreamRequests
+    }
+    func audioPlaybackPreferences() -> [Bool] {
+        audioPlaybackEnabledValues
+    }
 }
 
 private func serverMeshEventually(

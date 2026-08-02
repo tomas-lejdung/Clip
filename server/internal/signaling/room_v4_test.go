@@ -244,6 +244,38 @@ func TestRoomHubInviteAndHandlesStayStableAcrossJoinsAndReconnect(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
+	beforeAuthentication, _ := hub.Snapshot(roomID)
+	if err := hub.AuthenticateMemberReconnect(
+		roomID,
+		b.Handle,
+		reconnectHash,
+	); err != nil {
+		t.Fatalf("AuthenticateMemberReconnect() = %v", err)
+	}
+	if err := hub.AuthenticateMemberReconnect(
+		roomID,
+		roomTestHandle(238),
+		reconnectHash,
+	); !errors.Is(err, ErrRoomUnauthorized) {
+		t.Fatalf("unknown member authentication = %v", err)
+	}
+	wrongHash := reconnectHash
+	wrongHash[0] ^= 0xff
+	if err := hub.AuthenticateMemberReconnect(
+		roomID,
+		b.Handle,
+		wrongHash,
+	); !errors.Is(err, ErrRoomUnauthorized) {
+		t.Fatalf("wrong capability authentication = %v", err)
+	}
+	afterAuthentication, _ := hub.Snapshot(roomID)
+	if afterAuthentication != beforeAuthentication {
+		t.Fatalf(
+			"read-only authentication changed snapshot: before=%#v after=%#v",
+			beforeAuthentication,
+			afterAuthentication,
+		)
+	}
 	reconnectedPeer := &fakePeer{}
 	reconnected, err := hub.ReconnectMember(roomID, b.Handle, reconnectHash, "b-second", reconnectedPeer)
 	if err != nil || reconnected.Handle != b.Handle {

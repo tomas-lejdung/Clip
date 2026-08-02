@@ -132,7 +132,11 @@ func (s *Service) nativeRoomWebSocket(writer http.ResponseWriter, request *http.
 	}
 	defer s.releaseCoordinatorConnection(source)
 
-	connection, err := s.upgrader.Upgrade(writer, request, nil)
+	connection, err := s.upgrader.Upgrade(
+		writer,
+		request,
+		browserRoomWebSocketResponseHeader(request),
+	)
 	if err != nil {
 		return
 	}
@@ -153,7 +157,13 @@ func (s *Service) nativeRoomWebSocket(writer http.ResponseWriter, request *http.
 	defer socket.Wait()
 	defer socket.Close(signaling.CloseNormal, "room socket disconnected")
 
-	session, err := s.attachNativeRoomSocket(roomID, connectionID, socket, request)
+	session, err := s.attachNativeRoomSocket(
+		roomID,
+		connectionID,
+		socket,
+		request,
+		source,
+	)
 	if err != nil {
 		_ = socket.Send(roomErrorMessage(err))
 		socket.Close(signaling.ClosePolicyViolation, "room authentication rejected")
@@ -192,9 +202,32 @@ func (s *Service) nativeRoomWebSocket(writer http.ResponseWriter, request *http.
 	}
 }
 
-func (s *Service) attachNativeRoomSocket(roomID, connectionID string, socket *signaling.Socket, request *http.Request) (signaling.RoomSession, error) {
+func (s *Service) attachNativeRoomSocket(
+	roomID string,
+	connectionID string,
+	socket *signaling.Socket,
+	request *http.Request,
+	source string,
+) (signaling.RoomSession, error) {
 	fields := strings.Fields(request.Header.Get("Authorization"))
 	if len(fields) == 0 {
+		credential, reconnect, err := s.browserReconnectCredential(
+			request,
+			roomID,
+			source,
+		)
+		if err != nil {
+			return signaling.RoomSession{}, err
+		}
+		if reconnect {
+			return s.roomHub.ReconnectMember(
+				roomID,
+				credential.memberHandle,
+				credential.reconnectHash,
+				connectionID,
+				socket,
+			)
+		}
 		return s.roomHub.OpenCandidate(roomID, connectionID, socket)
 	}
 	if len(fields) != 2 {

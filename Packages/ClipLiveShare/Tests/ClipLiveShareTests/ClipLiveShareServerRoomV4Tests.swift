@@ -196,6 +196,99 @@ struct ClipLiveShareServerRoomV4Tests {
     }
   }
 
+  @Test("member descriptors carry one closed versioned participant profile")
+  func memberDescriptorProfiles() throws {
+    let fixture = try V4Fixture()
+    let native = try fixture.descriptor(
+      participantByte: 0x31,
+      signer: fixture.aliceSigner,
+      keyAgreement: fixture.aliceKeyAgreement,
+      name: "Native Participant"
+    )
+    #expect(native.clientKind == .nativeApp)
+    #expect(native.capabilityProfile == .nativeV1)
+
+    let web = try ClipLiveShareServerRoomV4MemberDescriptor(
+      participantID: native.participantID,
+      identity: native.identity,
+      pairSignalingPublicKey: native.pairSignalingPublicKey,
+      displayName: "Web Participant",
+      deviceName: "Safari",
+      clientKind: .webViewer,
+      capabilityProfile: .webViewerV1
+    )
+    #expect(web.clientKind == .webViewer)
+    #expect(web.capabilityProfile == .webViewerV1)
+    #expect(web.canonicalRepresentation != native.canonicalRepresentation)
+
+    let encoded = try JSONEncoder().encode(web)
+    let root = try #require(
+      JSONSerialization.jsonObject(with: encoded) as? [String: Any]
+    )
+    #expect(root["clientKind"] as? String == "webViewer")
+    #expect(root["capabilityProfile"] as? String == "webViewerV1")
+    #expect(
+      try JSONDecoder().decode(
+        ClipLiveShareServerRoomV4MemberDescriptor.self,
+        from: encoded
+      ) == web
+    )
+
+    #expect(throws: ClipLiveShareServerRoomV4Error.self) {
+      try ClipLiveShareServerRoomV4MemberDescriptor(
+        participantID: native.participantID,
+        identity: native.identity,
+        pairSignalingPublicKey: native.pairSignalingPublicKey,
+        displayName: "Invalid Participant",
+        deviceName: "Invalid Device",
+        clientKind: .nativeApp,
+        capabilityProfile: .webViewerV1
+      )
+    }
+
+    for mutation in [
+      { (value: inout [String: Any]) in
+        _ = value.removeValue(forKey: "capabilityProfile")
+      },
+      { (value: inout [String: Any]) in value["capabilityProfile"] = "futureV99" },
+      { (value: inout [String: Any]) in value["clientKind"] = "nativeApp" },
+      { (value: inout [String: Any]) in value["capabilities"] = ["publish": true] },
+    ] {
+      var invalid = root
+      mutation(&invalid)
+      let data = try JSONSerialization.data(withJSONObject: invalid)
+      #expect(throws: (any Error).self) {
+        try JSONDecoder().decode(
+          ClipLiveShareServerRoomV4MemberDescriptor.self,
+          from: data
+        )
+      }
+    }
+
+    let vector = try V4WebMemberDescriptorFixture.load()
+    #expect(vector.descriptor == web)
+    #expect(
+      ClipLiveShareBase64URL.encode(web.canonicalRepresentation)
+        == vector.descriptorCanonicalBase64URL
+    )
+    #expect(vector.signedJoinKnock.knock.descriptor == web)
+    #expect(vector.identityPublicKeyBase64URL == web.identity.rawValue)
+    #expect(
+      vector.signatureBase64URL
+        == vector.signedJoinKnock.signature.rawValue
+    )
+    #expect(
+      ClipLiveShareBase64URL.encode(
+        vector.signedJoinKnock.knock.canonicalRepresentation
+      ) == vector.joinKnockCanonicalBase64URL
+    )
+    try vector.signedJoinKnock.verify(
+      roomID: fixture.roomID,
+      sessionID: fixture.sessionID,
+      admissionCapability: fixture.admissionCapability
+    )
+  }
+
   @Test("rosters are bounded, canonical, and order independent")
   func rosterValidationAndOrdering() throws {
     let fixture = try V4Fixture()
@@ -588,6 +681,86 @@ struct ClipLiveShareServerRoomV4Tests {
     }
   }
 
+  @Test("Swift opens and verifies the browser interop fixture")
+  func browserPairInteropVector() throws {
+    let fixture = try V4Fixture()
+    var (_, browserChannel, context) = try fixture.pairChannels()
+    let nativeHandle = try V4Fixture.fixedMemberHandle(0x11)
+    let browserHandle = try V4Fixture.fixedMemberHandle(0x22)
+    let expectedNativeDescriptor = try fixture.descriptor(
+      participantByte: 0x31,
+      signer: fixture.aliceSigner,
+      keyAgreement: fixture.aliceKeyAgreement,
+      name: "Native Fixture"
+    )
+    let expectedBrowserDescriptor = try ClipLiveShareServerRoomV4MemberDescriptor(
+      participantID: V4Fixture.fixedParticipantID(0x32),
+      identity: fixture.bobSigner.publicKey,
+      pairSignalingPublicKey: fixture.bobKeyAgreement.publicKey,
+      displayName: "Web Fixture",
+      deviceName: "Browser",
+      clientKind: .webViewer,
+      capabilityProfile: .webViewerV1
+    )
+    let testFile = URL(fileURLWithPath: #filePath)
+    let fixtureURL = testFile
+      .deletingLastPathComponent()
+      .deletingLastPathComponent()
+      .appendingPathComponent(
+        "Fixtures/server-room-v4-browser-pair.json"
+      )
+    let root = try #require(
+      JSONSerialization.jsonObject(with: Data(contentsOf: fixtureURL)) as? [String: Any]
+    )
+    #expect(root["roomId"] as? String == fixture.roomID.rawValue)
+    #expect(root["sessionId"] as? String == fixture.sessionID.rawValue)
+    #expect(root["roomAgreementSecret"] as? String == fixture.roomAgreementSecret.rawValue)
+    #expect(root["creatorIdentity"] as? String == fixture.creatorSigner.publicKey.rawValue)
+    #expect(root["nativeHandle"] as? String == nativeHandle.rawValue)
+    #expect(root["browserHandle"] as? String == browserHandle.rawValue)
+    #expect(root["pairId"] as? String == context.pairID.rawValue)
+
+    let decoder = JSONDecoder()
+    let nativeDescriptor = try decoder.decode(
+      ClipLiveShareServerRoomV4MemberDescriptor.self,
+      from: JSONSerialization.data(withJSONObject: try #require(root["nativeDescriptor"]))
+    )
+    let browserDescriptor = try decoder.decode(
+      ClipLiveShareServerRoomV4MemberDescriptor.self,
+      from: JSONSerialization.data(withJSONObject: try #require(root["browserDescriptor"]))
+    )
+    #expect(nativeDescriptor == expectedNativeDescriptor)
+    #expect(browserDescriptor == expectedBrowserDescriptor)
+
+    let opaqueValue = try #require(root["opaqueAdmissionRecord"] as? String)
+    let opaqueBytes = try #require(ClipLiveShareBase64URL.decode(opaqueValue))
+    let signedAdmission = try fixture.roomCipher.openAdmissionRecord(
+      .init(ciphertext: opaqueBytes)
+    )
+    try signedAdmission.verify(
+      creatorIdentity: fixture.creatorSigner.publicKey,
+      roomID: fixture.roomID,
+      sessionID: fixture.sessionID,
+      expectedHandle: browserHandle
+    )
+    #expect(signedAdmission.record.descriptor == expectedBrowserDescriptor)
+
+    let envelopeObject = try #require(root["envelope"] as? [String: Any])
+    let payloadValue = try #require(envelopeObject["payload"] as? String)
+    let ciphertext = try #require(ClipLiveShareBase64URL.decode(payloadValue))
+    let envelope = try ClipLiveShareServerRoomV4PairSignalEnvelope(
+      from: .init(rawValue: try #require(envelopeObject["from"] as? String)),
+      to: .init(rawValue: try #require(envelopeObject["to"] as? String)),
+      pairID: .init(rawValue: try #require(envelopeObject["pairId"] as? String)),
+      sequence: try #require(envelopeObject["sequence"] as? UInt64),
+      ciphertext: ciphertext
+    )
+    #expect(
+      try browserChannel.open(envelope)
+        == .offer(epoch: .init(rawValue: 1), sdp: "v=0\r\n")
+    )
+  }
+
   @Test("creator HTTP request matches the Go create-room contract")
   func creatorCreateContract() throws {
     let fixture = try V4Fixture()
@@ -609,6 +782,30 @@ struct ClipLiveShareServerRoomV4Tests {
     #expect(root["ownerToken"] as? String == owner.rawValue)
     #expect(root["creatorHandle"] as? String == candidate.rawValue)
     #expect(root["descriptor"] as? String == descriptor.rawValue)
+  }
+}
+
+private struct V4WebMemberDescriptorFixture: Decodable {
+  let descriptor: ClipLiveShareServerRoomV4MemberDescriptor
+  let descriptorCanonicalBase64URL: String
+  let joinKnockCanonicalBase64URL: String
+  let identityPublicKeyBase64URL: String
+  let signatureBase64URL: String
+  let signedJoinKnock: ClipLiveShareServerRoomV4SignedJoinKnock
+
+  static func load() throws -> Self {
+    let testFile = URL(fileURLWithPath: #filePath)
+    let repositoryRoot =
+      testFile
+      .deletingLastPathComponent()  // ClipLiveShareTests
+      .deletingLastPathComponent()  // Tests
+      .deletingLastPathComponent()  // ClipLiveShare
+      .deletingLastPathComponent()  // Packages
+      .deletingLastPathComponent()  // repository
+    let fixtureURL = repositoryRoot.appendingPathComponent(
+      "Packages/ClipLiveShare/Tests/Fixtures/server-room-v4-web-member-descriptor.json"
+    )
+    return try JSONDecoder().decode(Self.self, from: Data(contentsOf: fixtureURL))
   }
 }
 
@@ -672,7 +869,9 @@ private struct V4Fixture {
       identity: signer.publicKey,
       pairSignalingPublicKey: keyAgreement.publicKey,
       displayName: name,
-      deviceName: "Private Device"
+      deviceName: "Private Device",
+      clientKind: .nativeApp,
+      capabilityProfile: .nativeV1
     )
   }
 

@@ -1782,7 +1782,9 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
                     identity: identity.publicKey,
                     pairSignalingPublicKey: pairIdentity.publicKey,
                     displayName: names.displayName,
-                    deviceName: names.deviceName
+                    deviceName: names.deviceName,
+                    clientKind: .nativeApp,
+                    capabilityProfile: .nativeV1
                 )
 
                 let accessWord: String?

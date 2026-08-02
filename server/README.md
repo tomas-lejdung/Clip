@@ -1,19 +1,64 @@
-# Clip Native Room Server
+# Clip Room v4 Server
 
-This process coordinates Clip's native-v4 encrypted WebRTC mesh. It owns a
-bounded opaque room roster and routes encrypted pair signaling; video, audio,
-source metadata, cursor/annotation state, participant names, SDP, and ICE
-candidates remain end-to-end encrypted and travel only over direct peer links.
+This process coordinates Clip's encrypted server-room-v4 WebRTC mesh and serves
+the repository-owned receive-only web client. It owns a bounded opaque room
+roster and routes encrypted pair signaling; video, audio, source metadata,
+cursor/annotation state, participant names, SDP, and ICE candidates remain
+end-to-end encrypted and travel only over direct peer links.
 
-A room contains at most four participants. The resulting topology is always a
-complete P2P mesh: two participants have one pair, three have three pairs, and
-four have six pairs. Adding or removing a participant does not replace any
-unaffected pair.
+A room contains at most four participants across Native and Web profiles. The
+resulting topology is always a complete P2P mesh: two participants have one
+pair, three have three pairs, and four have six pairs. Adding or removing a
+participant does not replace any unaffected pair. Native and Web use the same
+admission, roster, encrypted pair-signaling, fixed-transceiver, and ordered
+DataChannel contract. Web is a receive-only capability profile, not a separate
+server or Native peer-link path.
 
-The invite's URL fragment is client-only and must never appear in an HTTP or
-WebSocket request. The server sees only the opaque 256-bit room ID in the path,
-opaque ciphertext, random routing handles, connection timing, and roster
-revision.
+With the unmodified Clip binary and viewer assets, the invite's URL fragment is
+client-only and never appears in an HTTP or WebSocket request. Opening the
+viewer exposes only the non-authorizing eight-character presentation code in
+`GET /ROOMCODE`; after local fragment decryption, room APIs use the opaque
+256-bit room ID. An honest server otherwise sees only opaque ciphertext,
+random routing handles, connection timing, and roster revision. It cannot read
+the encrypted Native/Web profile, identity, source, codec, or media.
+
+The room-service origin is part of the trusted Web client distribution. A
+malicious or compromised deployment can serve modified JavaScript that reads
+and exfiltrates the fragment, so Clip does not claim secrecy from a malicious
+serving origin. Public viewer links require HTTPS. HTTP is accepted only for
+the exact loopback development hosts `localhost`, `127.0.0.1`, and `[::1]`.
+
+## Web viewer
+
+The same binary embeds the viewer shell and its complete dependency-free asset
+set:
+
+```text
+GET /ROOMCODE
+GET /assets/clip-viewer.js
+GET /assets/clip-viewer.css
+```
+
+`ROOMCODE` is exactly eight uppercase ASCII letters/digits, query strings are
+rejected, HTML is never personalized with room data, and assets are served only
+from an allowlist. Viewer pages use a restrictive same-origin Content Security
+Policy and load no third-party script, font, style, analytics, or CDN resource.
+
+The web participant joins the normal v4 candidate socket and owns one direct
+`RTCPeerConnection` with every other room member. It receives compatible Native
+video using the exact selected codec and one system-audio track per publisher,
+but publishes no media and has no room administration, friendship, or
+collaboration capability.
+The selected codec is never replaced or transcoded for a browser; an
+unsupported decoder is reported as **Unsupported Encoding** when the codec is
+observable before negotiation fails. Otherwise that peer's video may remain
+unavailable or black; Clip still does not start a fallback or second encoder.
+Web-v1 targets current desktop Safari and Chromium.
+
+The creator-certified Native/Web profile is an authenticated participant
+declaration, not platform attestation. An admitted Web-declared peer is held to
+the receive-only wire capability, but a custom client could claim `nativeV1`
+unless a future release adds Native application attestation.
 
 ## Run locally
 
@@ -68,6 +113,12 @@ resource bounds, server version, and validated ICE configuration:
   The creator uses `Authorization: Bearer <ownerToken>`, a reconnecting member
   uses `Authorization: Reconnect <capability>` plus
   `X-Clip-Member-Handle`, and a fresh candidate sends no authorization.
+- `POST /api/native/v4/rooms/{room}/browser-reconnect` accepts a same-origin
+  request whose `Authorization: Bearer <reconnectCapability>` and strict body
+  identify the existing member. It returns a source-bound, single-use opaque
+  ticket that expires after 30 seconds. The browser presents that ticket in the
+  WebSocket subprotocol, never a URL, query, or cookie; the room hub still
+  performs the authoritative reconnect-capability validation.
 
 Outer message types are `candidate-opened`, `join-knock`, `admit-candidate`,
 `deny-candidate`, `member-admitted`, `roster-snapshot`, `pair-signal`,
@@ -122,7 +173,9 @@ Tests cover strict wire decoding, room and socket limits, full 2/3/4-member
 rosters, all pair directions, stable room/handle retries, admission and denial,
 pair-isolated sequence failures, reconnect grace, noncreator leave, creator
 exit/expiry, shutdown, security headers, origin policy, and real localhost
-HTTP/WebSocket flows.
+HTTP/WebSocket flows. Web-specific tests also cover exact viewer-route grammar,
+static asset allowlisting and cache validation, CSP isolation, fragment-free
+HTML, candidate admission, and one-use browser reconnect tickets.
 
 ## Docker
 

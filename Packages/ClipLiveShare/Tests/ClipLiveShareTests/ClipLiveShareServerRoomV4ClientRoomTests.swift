@@ -709,7 +709,9 @@ struct ClipLiveShareServerRoomV4ClientRoomTests {
       identity: mesh.fixture.participants[1].signer.publicKey,
       pairSignalingPublicKey: mesh.fixture.participants[2].pairIdentity.publicKey,
       displayName: "Duplicate identity",
-      deviceName: "Test Mac"
+      deviceName: "Test Mac",
+      clientKind: .nativeApp,
+      capabilityProfile: .nativeV1
     )
     let record = ClipLiveShareServerRoomV4AdmissionRecord(
       roomID: mesh.fixture.roomID,
@@ -741,7 +743,9 @@ struct ClipLiveShareServerRoomV4ClientRoomTests {
       identity: mesh.fixture.participants[3].signer.publicKey,
       pairSignalingPublicKey: mesh.fixture.participants[3].pairIdentity.publicKey,
       displayName: "Duplicate participant",
-      deviceName: "Test Mac"
+      deviceName: "Test Mac",
+      clientKind: .nativeApp,
+      capabilityProfile: .nativeV1
     )
     let participantRecord = ClipLiveShareServerRoomV4AdmissionRecord(
       roomID: mesh.fixture.roomID,
@@ -820,7 +824,9 @@ private struct ClientRoomParticipant: Sendable {
       identity: signer.publicKey,
       pairSignalingPublicKey: pairIdentity.publicKey,
       displayName: "Participant \(index + 1)",
-      deviceName: "Test Mac \(index + 1)"
+      deviceName: "Test Mac \(index + 1)",
+      clientKind: .nativeApp,
+      capabilityProfile: .nativeV1
     )
   }
 }

@@ -473,16 +473,32 @@ struct MeshRoomLocalParticipantSnapshot: Equatable, Sendable {
     let id: String
     let displayName: String
     let deviceName: String?
+    let clientKind: ClipLiveShareServerRoomV4ClientKind
 
     init(
         id: String,
         displayName: String,
-        deviceName: String? = nil
+        deviceName: String? = nil,
+        clientKind: ClipLiveShareServerRoomV4ClientKind = .nativeApp
     ) {
         self.id = id
         self.displayName = displayName
         self.deviceName = deviceName
+        self.clientKind = clientKind
     }
+}
+
+extension ClipLiveShareServerRoomV4ClientKind {
+    var participantKindTitle: String {
+        switch self {
+        case .nativeApp:
+            String(localized: "Native")
+        case .webViewer:
+            String(localized: "Web")
+        }
+    }
+
+    var supportsFriendship: Bool { self == .nativeApp }
 }
 
 struct MeshRoomInviteSnapshot: Equatable, Sendable,
@@ -874,6 +890,7 @@ struct MeshRoomRemoteParticipantSnapshot: Equatable, Identifiable, Sendable {
     let id: String
     let displayName: String
     let deviceName: String?
+    let clientKind: ClipLiveShareServerRoomV4ClientKind
     let route: MeshRoomConnectionRoute
     let connectedDuration: TimeInterval?
     let sources: [MeshRoomRemoteSourceSnapshot]
@@ -887,6 +904,7 @@ struct MeshRoomRemoteParticipantSnapshot: Equatable, Identifiable, Sendable {
         id: String,
         displayName: String,
         deviceName: String? = nil,
+        clientKind: ClipLiveShareServerRoomV4ClientKind = .nativeApp,
         route: MeshRoomConnectionRoute,
         connectedDuration: TimeInterval? = nil,
         sources: [MeshRoomRemoteSourceSnapshot] = [],
@@ -899,6 +917,7 @@ struct MeshRoomRemoteParticipantSnapshot: Equatable, Identifiable, Sendable {
         self.id = id
         self.displayName = displayName
         self.deviceName = deviceName
+        self.clientKind = clientKind
         self.route = route
         self.connectedDuration = connectedDuration.map { max(0, $0) }
         self.sources = sources
