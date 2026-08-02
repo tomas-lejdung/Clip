@@ -97,8 +97,36 @@ struct MenuBarAudioState: Equatable, Sendable {
     }
 }
 
-enum MenuBarNativeV3InviteEntry {
-    static func parse(_ value: String) -> ClipLiveShareNativeV3Invite? {
+struct MenuBarLiveShareFriendRow: Equatable, Identifiable, Sendable {
+    let id: String
+    let displayName: String
+    let deviceName: String
+    let isOnline: Bool
+    let issue: String?
+
+    init(
+        id: String,
+        displayName: String,
+        deviceName: String,
+        isOnline: Bool,
+        issue: String? = nil
+    ) {
+        self.id = id
+        self.displayName = displayName
+        self.deviceName = deviceName
+        self.isOnline = isOnline
+        self.issue = issue
+    }
+
+    var status: String {
+        isOnline
+            ? String(localized: "Room Available")
+            : String(localized: "No Room")
+    }
+}
+
+enum MenuBarServerRoomInviteEntry {
+    static func parse(_ value: String) -> ClipLiveShareServerRoomV4Invite? {
         let trimmed = value.trimmingCharacters(
             in: .whitespacesAndNewlines
         )
@@ -106,34 +134,172 @@ enum MenuBarNativeV3InviteEntry {
               let url = URL(string: trimmed) else {
             return nil
         }
-        return try? ClipLiveShareNativeV3Invite(url: url)
+        return try? ClipLiveShareServerRoomV4Invite(url: url)
     }
 }
 
-struct MenuBarNativeV3JoinRequest: Equatable, Sendable,
+enum MenuBarServerRoomAccessWord {
+    static let maximumUTF8ByteCount = 256
+
+    /// Matches the v4 admission policy's canonical access-word form without
+    /// coupling the menu to the proof implementation itself.
+    static func normalize(_ value: String) -> String? {
+        let normalized = value.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        ).uppercased()
+        guard !normalized.isEmpty,
+              normalized.utf8.count <= maximumUTF8ByteCount else {
+            return nil
+        }
+        return normalized
+    }
+}
+
+struct MenuBarServerRoomJoinRequest: Equatable, Sendable,
     CustomStringConvertible, CustomDebugStringConvertible
 {
-    let invite: ClipLiveShareNativeV3Invite
+    let invite: ClipLiveShareServerRoomV4Invite
     let accessWord: String?
+    /// Saved-friend presence joins always ask the room creator to confirm the
+    /// admission, independent of the room's general approval preference.
+    let requiresCreatorApproval: Bool
 
     init(
-        invite: ClipLiveShareNativeV3Invite,
-        accessWord: String?
+        invite: ClipLiveShareServerRoomV4Invite,
+        accessWord: String?,
+        requiresCreatorApproval: Bool = false
     ) {
         self.invite = invite
-        let normalized = accessWord.map(
-            ClipLiveShareNativeV3AccessWordProof.normalize
+        self.accessWord = accessWord.flatMap(
+            MenuBarServerRoomAccessWord.normalize
         )
-        self.accessWord = normalized?.isEmpty == false ? normalized : nil
+        self.requiresCreatorApproval = requiresCreatorApproval
     }
 
     var description: String {
-        "MenuBarNativeV3JoinRequest("
+        "MenuBarServerRoomJoinRequest("
             + "invite: <redacted>, "
-            + "accessWord: \(accessWord == nil ? "<none>" : "<redacted>"))"
+            + "accessWord: \(accessWord == nil ? "<none>" : "<redacted>"), "
+            + "requiresCreatorApproval: \(requiresCreatorApproval))"
     }
 
     var debugDescription: String { description }
+}
+
+enum MenuBarLiveShareConnectionStatus: Equatable, Sendable {
+    case idle
+    case creating
+    case joining(roomName: String)
+    case accessWordRequired(
+        roomName: String,
+        invite: ClipLiveShareServerRoomV4Invite,
+        requiresCreatorApproval: Bool
+    )
+    case awaitingApproval(roomName: String)
+
+    enum PaneContent: Equatable {
+        case entry
+        case connection
+        case accessWord
+    }
+
+    var paneContent: PaneContent {
+        switch self {
+        case .idle:
+            .entry
+        case .accessWordRequired:
+            .accessWord
+        case .creating, .joining, .awaitingApproval:
+            .connection
+        }
+    }
+
+    var title: String {
+        switch self {
+        case .idle:
+            ""
+        case .creating:
+            String(localized: "Creating Room…")
+        case .joining:
+            String(localized: "Joining…")
+        case .accessWordRequired:
+            String(localized: "Access Word Required")
+        case .awaitingApproval:
+            String(localized: "Waiting for Approval")
+        }
+    }
+
+    var detail: String {
+        switch self {
+        case .idle:
+            ""
+        case .creating:
+            String(localized: "Preparing a secure room invitation.")
+        case let .joining(roomName):
+            String(localized: "Connecting securely to \(roomName).")
+        case let .accessWordRequired(roomName, _, _):
+            String(
+                localized:
+                    "Enter the Access Word for \(roomName) to continue."
+            )
+        case let .awaitingApproval(roomName):
+            String(
+                localized:
+                    "The room creator of \(roomName) must allow you before you can join."
+            )
+        }
+    }
+
+    var accessWordInvite: ClipLiveShareServerRoomV4Invite? {
+        guard case let .accessWordRequired(_, invite, _) = self else {
+            return nil
+        }
+        return invite
+    }
+
+    var accessWordRequiresCreatorApproval: Bool {
+        guard case let .accessWordRequired(
+            _, _, requiresCreatorApproval
+        ) = self else {
+            return false
+        }
+        return requiresCreatorApproval
+    }
+}
+
+enum MenuBarFriendPresencePolicy {
+    static func rows(
+        from snapshot: MeshFriendPresenceControllerSnapshot
+    ) -> [MenuBarLiveShareFriendRow] {
+        snapshot.friends.map { friend in
+            .init(
+                id: friend.id,
+                displayName: friend.displayName,
+                deviceName: friend.deviceName,
+                isOnline: friend.availability == .online,
+                issue: friend.issue
+            )
+        }
+    }
+
+    /// Only an unexpired, identity-verified presence record is joinable.
+    /// Saved-friend discovery never downgrades to an old or user-pasted URL.
+    static func verifiedJoinRequest(
+        friendID: String,
+        snapshot: MeshFriendPresenceControllerSnapshot
+    ) -> MenuBarServerRoomJoinRequest? {
+        guard let friend = snapshot.friends.first(where: {
+            $0.id == friendID
+        }), friend.availability == .online,
+        let invite = friend.verifiedInvite else {
+            return nil
+        }
+        return .init(
+            invite: invite,
+            accessWord: nil,
+            requiresCreatorApproval: true
+        )
+    }
 }
 
 @MainActor
@@ -148,6 +314,10 @@ final class MenuBarPopoverModel: ObservableObject {
     @Published private(set) var recentRecordings: [MenuBarRecentRecordingRow]
     @Published private(set) var isLastAreaAvailable: Bool
     @Published private(set) var isFullscreenAvailable: Bool
+    @Published private(set) var liveShareConnectionStatus:
+        MenuBarLiveShareConnectionStatus
+    @Published private(set) var liveShareFriends:
+        [MenuBarLiveShareFriendRow]
 
     init(
         displays: [MenuBarDisplayRow] = [],
@@ -157,7 +327,10 @@ final class MenuBarPopoverModel: ObservableObject {
         showClickHighlights: Bool = false,
         recentRecordings: [MenuBarRecentRecordingRow] = [],
         isLastAreaAvailable: Bool = false,
-        isFullscreenAvailable: Bool = false
+        isFullscreenAvailable: Bool = false,
+        liveShareFriends: [MenuBarLiveShareFriendRow] = [],
+        liveShareConnectionStatus:
+            MenuBarLiveShareConnectionStatus = .idle
     ) {
         self.displays = displays
         self.microphone = microphone
@@ -166,6 +339,8 @@ final class MenuBarPopoverModel: ObservableObject {
         self.recentRecordings = Array(recentRecordings.prefix(Self.recentRecordingLimit))
         self.isLastAreaAvailable = isLastAreaAvailable
         self.isFullscreenAvailable = isFullscreenAvailable
+        self.liveShareFriends = liveShareFriends
+        self.liveShareConnectionStatus = liveShareConnectionStatus
         self.preparedDisplayID = displays.contains(where: { $0.id == preparedDisplayID })
             ? preparedDisplayID
             : nil
@@ -214,12 +389,34 @@ final class MenuBarPopoverModel: ObservableObject {
     func replaceRecentRecordings(_ recordings: [MenuBarRecentRecordingRow]) {
         recentRecordings = Array(recordings.prefix(Self.recentRecordingLimit))
     }
+
+    func setLiveShareConnectionStatus(
+        _ status: MenuBarLiveShareConnectionStatus
+    ) {
+        liveShareConnectionStatus = status
+    }
+
+    func replaceLiveShareFriends(
+        _ friends: [MenuBarLiveShareFriendRow]
+    ) {
+        liveShareFriends = friends.sorted {
+            if $0.isOnline != $1.isOnline { return $0.isOnline }
+            let order = $0.displayName.localizedCaseInsensitiveCompare(
+                $1.displayName
+            )
+            return order == .orderedSame
+                ? $0.id < $1.id
+                : order == .orderedAscending
+        }
+    }
 }
 
 @MainActor
 struct MenuBarActions {
-    let createNativeV3Room: () -> Void
-    let joinNativeV3Invite: (MenuBarNativeV3JoinRequest) -> Void
+    let createLiveShareRoom: () -> Void
+    let joinLiveShareInvite: (MenuBarServerRoomJoinRequest) -> Void
+    let joinLiveShareFriend: (String) -> Void
+    let removeLiveShareFriend: (String) -> Void
     let captureArea: () -> Void
     let lastArea: () -> Void
     let fullscreen: () -> Void
@@ -236,10 +433,12 @@ struct MenuBarActions {
     let quit: () -> Void
 
     init(
-        createNativeV3Room: @escaping () -> Void = {},
-        joinNativeV3Invite: @escaping (
-            MenuBarNativeV3JoinRequest
+        createLiveShareRoom: @escaping () -> Void = {},
+        joinLiveShareInvite: @escaping (
+            MenuBarServerRoomJoinRequest
         ) -> Void = { _ in },
+        joinLiveShareFriend: @escaping (String) -> Void = { _ in },
+        removeLiveShareFriend: @escaping (String) -> Void = { _ in },
         captureArea: @escaping () -> Void,
         lastArea: @escaping () -> Void,
         fullscreen: @escaping () -> Void,
@@ -255,8 +454,10 @@ struct MenuBarActions {
         checkForUpdates: @escaping () -> Void = {},
         quit: @escaping () -> Void
     ) {
-        self.createNativeV3Room = createNativeV3Room
-        self.joinNativeV3Invite = joinNativeV3Invite
+        self.createLiveShareRoom = createLiveShareRoom
+        self.joinLiveShareInvite = joinLiveShareInvite
+        self.joinLiveShareFriend = joinLiveShareFriend
+        self.removeLiveShareFriend = removeLiveShareFriend
         self.captureArea = captureArea
         self.lastArea = lastArea
         self.fullscreen = fullscreen
@@ -274,6 +475,11 @@ struct MenuBarActions {
     }
 }
 
+enum MenuBarPopoverRoute: Equatable {
+    case main
+    case liveShare
+}
+
 struct MenuBarPopoverView: View {
     static let contentWidth = ClipPopoverDesign.width
     /// Fallback used only if synchronous SwiftUI fitting-size measurement is
@@ -281,8 +487,9 @@ struct MenuBarPopoverView: View {
     static let contentSize = CGSize(width: contentWidth, height: 980)
 
     @StateObject private var model: MenuBarPopoverModel
-    @State private var nativeV3InviteEntry = ""
-    @State private var nativeV3AccessWord = ""
+    @State private var serverRoomInviteEntry = ""
+    @State private var serverRoomAccessWord = ""
+    @State private var route: MenuBarPopoverRoute = .main
     let actions: MenuBarActions
     private let maximumHeight: CGFloat
     private let onContentHeightChange: (CGFloat) -> Void
@@ -290,16 +497,28 @@ struct MenuBarPopoverView: View {
     init(
         model: MenuBarPopoverModel,
         actions: MenuBarActions,
+        initialRoute: MenuBarPopoverRoute = .main,
         maximumHeight: CGFloat = 10_000,
         onContentHeightChange: @escaping (CGFloat) -> Void = { _ in }
     ) {
         _model = StateObject(wrappedValue: model)
+        _route = State(initialValue: initialRoute)
         self.actions = actions
         self.maximumHeight = maximumHeight
         self.onContentHeightChange = onContentHeightChange
     }
 
+    @ViewBuilder
     var body: some View {
+        switch route {
+        case .main:
+            mainPane
+        case .liveShare:
+            liveSharePane
+        }
+    }
+
+    private var mainPane: some View {
         ClipPopoverPane(
             maximumHeight: maximumHeight,
             onContentHeightChange: onContentHeightChange,
@@ -313,7 +532,6 @@ struct MenuBarPopoverView: View {
                 version
             },
             content: {
-                liveShareSection
                 captureSection
                 if let preparedDisplay = model.preparedDisplay {
                     preparedTargetSection(preparedDisplay)
@@ -323,6 +541,25 @@ struct MenuBarPopoverView: View {
                     recentRecordingsSection
                 }
                 applicationSection
+            }
+        )
+    }
+
+    private var liveSharePane: some View {
+        ClipPopoverPane(
+            maximumHeight: maximumHeight,
+            onContentHeightChange: onContentHeightChange,
+            icon: "dot.radiowaves.left.and.right",
+            title: String(localized: "Live Share"),
+            subtitle: String(localized: "Create or join a room"),
+            backTitle: String(localized: "Clip"),
+            onBack: { route = .main },
+            accessibilityIdentifier: "clip.menuBarPopover.liveShare",
+            headerTrailing: {
+                version
+            },
+            content: {
+                liveShareSection
             }
         )
     }
@@ -398,18 +635,40 @@ struct MenuBarPopoverView: View {
                     }
                     .accessibilityLabel("\(display.name), \(display.resolution)")
                 }
+
+                ClipPopoverRowDivider()
+                actionRow(
+                    String(localized: "Live Share"),
+                    systemImage: "dot.radiowaves.left.and.right",
+                    identifier: "clip.menu.liveShare"
+                ) {
+                    route = .liveShare
+                }
             }
         }
     }
 
+    @ViewBuilder
     private var liveShareSection: some View {
-        ClipPopoverSection(String(localized: "Live Share")) {
+        switch model.liveShareConnectionStatus.paneContent {
+        case .entry:
+            liveShareEntrySection
+        case .connection:
+            liveShareConnectionSection
+        case .accessWord:
+            liveShareAccessWordSection
+        }
+    }
+
+    @ViewBuilder
+    private var liveShareEntrySection: some View {
+        ClipPopoverSection(String(localized: "Room")) {
             VStack(spacing: 0) {
                 actionRow(
                     String(localized: "Create Room"),
                     systemImage: "person.2.badge.plus",
                     identifier: "clip.menu.liveShare.createRoom",
-                    action: actions.createNativeV3Room
+                    action: actions.createLiveShareRoom
                 )
 
                 ClipPopoverRowDivider()
@@ -421,42 +680,42 @@ struct MenuBarPopoverView: View {
                     HStack(spacing: 8) {
                         TextField(
                             String(localized: "Paste a Clip room invite"),
-                            text: $nativeV3InviteEntry
+                            text: $serverRoomInviteEntry
                         )
                         .textFieldStyle(.roundedBorder)
                         .lineLimit(1)
                         .accessibilityIdentifier(
                             "clip.menu.liveShare.invite"
                         )
-                        .onSubmit(joinNativeV3Invite)
+                        .onSubmit(joinLiveShareInvite)
 
                         ClipPopoverButton(
                             String(localized: "Join"),
                             systemImage: "arrow.right",
                             prominence: .primary,
-                            isEnabled: parsedNativeV3Invite != nil,
+                            isEnabled: parsedServerRoomInvite != nil,
                             accessibilityIdentifier:
                                 "clip.menu.liveShare.join",
-                            action: joinNativeV3Invite
+                            action: joinLiveShareInvite
                         )
                     }
 
                     SecureField(
                         String(localized: "Access Word (optional)"),
-                        text: $nativeV3AccessWord
+                        text: $serverRoomAccessWord
                     )
                     .textFieldStyle(.roundedBorder)
                     .lineLimit(1)
                     .accessibilityIdentifier(
                         "clip.menu.liveShare.accessWord"
                     )
-                    .onSubmit(joinNativeV3Invite)
+                    .onSubmit(joinLiveShareInvite)
 
                     Text(inviteEntryGuidance)
                         .font(.caption2)
                         .foregroundStyle(
-                            nativeV3InviteEntry.isEmpty
-                                || parsedNativeV3Invite != nil
+                            serverRoomInviteEntry.isEmpty
+                                || parsedServerRoomInvite != nil
                                 ? AnyShapeStyle(.secondary)
                                 : AnyShapeStyle(.red)
                         )
@@ -471,30 +730,216 @@ struct MenuBarPopoverView: View {
                 .padding(.vertical, ClipPopoverDesign.rowVerticalPadding)
             }
         }
+
+        ClipPopoverSection(
+            model.liveShareFriends.isEmpty
+                ? String(localized: "Friends")
+                : String(
+                    localized:
+                        "Friends · \(model.liveShareFriends.count)"
+                )
+        ) {
+            if model.liveShareFriends.isEmpty {
+                Text(
+                    String(
+                        localized:
+                            "Friends you add from a room will appear here."
+                    )
+                )
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(
+                    .horizontal,
+                    ClipPopoverDesign.rowHorizontalPadding
+                )
+                .padding(.vertical, ClipPopoverDesign.rowVerticalPadding)
+            } else {
+                VStack(spacing: 0) {
+                    ForEach(
+                        Array(model.liveShareFriends.enumerated()),
+                        id: \.element.id
+                    ) { index, friend in
+                        Button {
+                            if friend.isOnline {
+                                actions.joinLiveShareFriend(friend.id)
+                            }
+                        } label: {
+                            HStack(spacing: 9) {
+                                Circle()
+                                    .fill(
+                                        friend.isOnline
+                                            ? Color.green
+                                            : Color.secondary.opacity(0.45)
+                                    )
+                                    .frame(width: 8, height: 8)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(friend.displayName)
+                                        .font(.subheadline.weight(.medium))
+                                    Text(friend.deviceName)
+                                        .font(.caption2)
+                                        .foregroundStyle(.secondary)
+                                        .lineLimit(1)
+                                }
+                                Spacer(minLength: 8)
+                                Text(friend.status)
+                                    .font(.caption.weight(.medium))
+                                    .foregroundStyle(
+                                        friend.isOnline
+                                            ? Color.green
+                                            : Color.secondary
+                                    )
+                            }
+                            .padding(
+                                .horizontal,
+                                ClipPopoverDesign.rowHorizontalPadding
+                            )
+                            .padding(
+                                .vertical,
+                                ClipPopoverDesign.rowVerticalPadding
+                            )
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .modifier(
+                            ClipPopoverHoverEffect(
+                                isInteractive: friend.isOnline
+                            )
+                        )
+                        .help(friend.issue ?? friend.status)
+                        .accessibilityIdentifier(
+                            "clip.menu.liveShare.friend.\(friend.id)"
+                        )
+                        .contextMenu {
+                            Button(
+                                String(localized: "Remove Friend"),
+                                role: .destructive
+                            ) {
+                                actions.removeLiveShareFriend(friend.id)
+                            }
+                        }
+
+                        if index < model.liveShareFriends.count - 1 {
+                            ClipPopoverRowDivider(leadingInset: 28)
+                        }
+                    }
+                }
+            }
+        }
     }
 
-    private var parsedNativeV3Invite: ClipLiveShareNativeV3Invite? {
-        MenuBarNativeV3InviteEntry.parse(nativeV3InviteEntry)
+    private var liveShareConnectionSection: some View {
+        ClipPopoverSection(String(localized: "Room")) {
+            HStack(spacing: 12) {
+                ProgressView()
+                    .controlSize(.small)
+                    .accessibilityHidden(true)
+
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(model.liveShareConnectionStatus.title)
+                        .font(.subheadline.weight(.semibold))
+                    Text(model.liveShareConnectionStatus.detail)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, ClipPopoverDesign.rowHorizontalPadding)
+            .padding(.vertical, ClipPopoverDesign.rowVerticalPadding)
+            .accessibilityElement(children: .combine)
+            .accessibilityIdentifier(
+                "clip.menu.liveShare.connectionStatus"
+            )
+        }
+    }
+
+    private var liveShareAccessWordSection: some View {
+        ClipPopoverSection(String(localized: "Room")) {
+            VStack(alignment: .leading, spacing: 10) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(model.liveShareConnectionStatus.title)
+                        .font(.subheadline.weight(.semibold))
+                    Text(model.liveShareConnectionStatus.detail)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                HStack(spacing: 8) {
+                    SecureField(
+                        String(localized: "Access Word"),
+                        text: $serverRoomAccessWord
+                    )
+                    .textFieldStyle(.roundedBorder)
+                    .lineLimit(1)
+                    .accessibilityIdentifier(
+                        "clip.menu.liveShare.requiredAccessWord"
+                    )
+                    .onSubmit(submitRequiredAccessWord)
+
+                    ClipPopoverButton(
+                        String(localized: "Continue"),
+                        systemImage: "arrow.right",
+                        prominence: .primary,
+                        isEnabled: canSubmitRequiredAccessWord,
+                        accessibilityIdentifier:
+                            "clip.menu.liveShare.submitAccessWord",
+                        action: submitRequiredAccessWord
+                    )
+                }
+            }
+            .padding(.horizontal, ClipPopoverDesign.rowHorizontalPadding)
+            .padding(.vertical, ClipPopoverDesign.rowVerticalPadding)
+        }
+    }
+
+    private var canSubmitRequiredAccessWord: Bool {
+        model.liveShareConnectionStatus.accessWordInvite != nil
+            && MenuBarServerRoomAccessWord.normalize(
+                serverRoomAccessWord
+            ) != nil
+    }
+
+    private func submitRequiredAccessWord() {
+        guard canSubmitRequiredAccessWord,
+              let invite =
+                model.liveShareConnectionStatus.accessWordInvite
+        else { return }
+        actions.joinLiveShareInvite(
+            MenuBarServerRoomJoinRequest(
+                invite: invite,
+                accessWord: serverRoomAccessWord,
+                requiresCreatorApproval:
+                    model.liveShareConnectionStatus
+                        .accessWordRequiresCreatorApproval
+            )
+        )
+    }
+
+    private var parsedServerRoomInvite: ClipLiveShareServerRoomV4Invite? {
+        MenuBarServerRoomInviteEntry.parse(serverRoomInviteEntry)
     }
 
     private var inviteEntryGuidance: String {
-        if nativeV3InviteEntry.isEmpty {
+        if serverRoomInviteEntry.isEmpty {
             return String(
                 localized:
                     "Paste the complete invite from another Clip participant."
             )
         }
-        return parsedNativeV3Invite == nil
+        return parsedServerRoomInvite == nil
             ? String(localized: "This is not a valid native Clip room invite.")
             : String(localized: "Ready to join this room.")
     }
 
-    private func joinNativeV3Invite() {
-        guard let invite = parsedNativeV3Invite else { return }
-        actions.joinNativeV3Invite(
-            MenuBarNativeV3JoinRequest(
+    private func joinLiveShareInvite() {
+        guard let invite = parsedServerRoomInvite else { return }
+        actions.joinLiveShareInvite(
+            MenuBarServerRoomJoinRequest(
                 invite: invite,
-                accessWord: nativeV3AccessWord
+                accessWord: serverRoomAccessWord
             )
         )
     }

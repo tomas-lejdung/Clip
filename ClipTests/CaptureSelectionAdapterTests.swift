@@ -498,6 +498,15 @@ struct CaptureSelectionAdapterTests {
         CATransaction.flush()
         RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.05))
 
+        // Other app-hosted AppKit tests run on the same process and can order
+        // their own panels during the settling run loop above. Reassert this
+        // panel's WindowServer ordering immediately before the synchronous hit
+        // checks so the test measures transparency routing, not unrelated
+        // test-window churn.
+        panel.orderFrontRegardless()
+        panel.displayIfNeeded()
+        CATransaction.flush()
+
         #expect(!panel.ignoresMouseEvents)
         #expect(!panel.isMovable)
         #expect(!panel.isMovableByWindowBackground)

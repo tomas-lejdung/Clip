@@ -1,4 +1,8 @@
 import AppKit
+#if DEBUG
+import OSLog
+#endif
+import QuartzCore
 import SwiftUI
 
 /// Capture-excluded panel shared by native-v3 collaboration overlays.
@@ -36,6 +40,98 @@ final class LiveShareOverlayPanel: NSPanel {
     }
 }
 
+/// Window-source annotations use a capture-excluded panel ordered directly
+/// above the source. When WindowServer verifies that relative placement, every
+/// unrelated window above the source occludes the annotation panel naturally.
+/// A conservative floating/masked fallback remains available when cross-process
+/// relative placement cannot be verified. Fullscreen capture has no single
+/// source window and remains an unmasked floating overlay.
+enum LiveShareCollaborationSourceOverlayTarget: Equatable {
+    case window(windowNumber: Int, windowLevel: Int)
+    case fullscreen
+
+    var panelLevel: NSWindow.Level {
+        switch self {
+        case let .window(_, windowLevel):
+            NSWindow.Level(rawValue: windowLevel)
+        case .fullscreen:
+            .floating
+        }
+    }
+
+    var collectionBehavior: NSWindow.CollectionBehavior {
+        switch self {
+        case .window:
+            [
+                .moveToActiveSpace,
+                .canJoinAllApplications,
+                .fullScreenAuxiliary,
+                .transient,
+                .ignoresCycle,
+            ]
+        case .fullscreen:
+            [
+                .canJoinAllSpaces,
+                .fullScreenAuxiliary,
+                .stationary,
+                .ignoresCycle,
+            ]
+        }
+    }
+
+    var relativeWindowNumber: Int? {
+        guard case let .window(windowNumber, _) = self else { return nil }
+        return windowNumber
+    }
+
+    static func visibleWindow(
+        _ snapshot: LiveShareCollaborationSourceWindowSnapshot?
+    ) -> Self? {
+        guard let snapshot, snapshot.isOnScreen else { return nil }
+        return .window(
+            windowNumber: snapshot.windowNumber,
+            windowLevel: snapshot.windowLevel
+        )
+    }
+}
+
+enum LiveShareCollaborationSourceOverlayPresentationMode: Equatable {
+    case sourceRelative
+    case maskedFallback
+    case fullscreen
+    case hidden
+}
+
+struct LiveShareCollaborationSourceWindowSnapshot: Equatable, Sendable {
+    let frame: CGRect
+    let windowNumber: Int
+    let windowLevel: Int
+    let isOnScreen: Bool
+
+    static func resolve(
+        windowNumber: CGWindowID,
+        information: [String: Any]
+    ) -> Self? {
+        guard
+            let bounds = information[kCGWindowBounds as String]
+                as? [String: Any],
+            let frame = CGRect(
+                dictionaryRepresentation: bounds as CFDictionary
+            )
+        else { return nil }
+        return .init(
+            frame: frame,
+            windowNumber: Int(windowNumber),
+            windowLevel:
+                (information[kCGWindowLayer as String] as? NSNumber)?.intValue
+                    ?? NSWindow.Level.normal.rawValue,
+            isOnScreen:
+                (information[kCGWindowIsOnscreen as String] as? NSNumber)?
+                    .boolValue == true
+        )
+    }
+}
+
 /// Presents remote pointers and ink above the publisher's original source
 /// without burning those annotations back into ScreenCaptureKit video.
 ///
@@ -44,43 +140,157 @@ final class LiveShareOverlayPanel: NSPanel {
 /// avoids feedback loops and preserves native sharpness at every viewer scale.
 @MainActor
 final class LiveShareCollaborationSourceOverlayCoordinator {
+#if DEBUG
+    private static let maskLogger = Logger(
+        subsystem: ApplicationDirectories.bundleIdentifier,
+        category: "live-share-host-mask"
+    )
+#endif
+
+    typealias WindowSnapshotProvider = @MainActor (Int) ->
+        [LiveShareCollaborationOcclusionWindowSnapshot]?
+    typealias RelativeOrderAction = @MainActor (
+        LiveShareOverlayPanel,
+        Int
+    ) -> Void
+    typealias RelativeOrderVerifier = @MainActor (
+        Int,
+        Int
+    ) -> Bool
+
     private struct Entry {
         let panel: LiveShareOverlayPanel
         let overlay: NativeViewerCollaborationOverlayView
+        let visibilityMask: CAShapeLayer
     }
 
     private var entries: [String: Entry] = [:]
+    /// Geometry changes comparatively rarely and require querying AppKit / the
+    /// window server. Keep the last resolved frame so collaboration snapshots
+    /// can repaint immediately without waiting for the 250 ms geometry poll.
+    private var sourceFrames: [String: CGRect] = [:]
+    private var sourceTargets:
+        [String: LiveShareCollaborationSourceOverlayTarget] = [:]
+    private var orderingCounts: [String: Int] = [:]
+    private var relativeOrderingCounts: [String: Int] = [:]
+    private var maskedFallbackCounts: [String: Int] = [:]
+    private var presentationModes:
+        [String: LiveShareCollaborationSourceOverlayPresentationMode] = [:]
+    private let windowSnapshotProvider: WindowSnapshotProvider
+    private let relativeOrderAction: RelativeOrderAction
+    private let relativeOrderVerifier: RelativeOrderVerifier
+
+    init(
+        windowSnapshotProvider: WindowSnapshotProvider? = nil,
+        relativeOrderAction: RelativeOrderAction? = nil,
+        relativeOrderVerifier: RelativeOrderVerifier? = nil
+    ) {
+        self.windowSnapshotProvider = windowSnapshotProvider ?? { windowNumber in
+            Self.windowServerWindowsFrontToBack(through: windowNumber)
+        }
+        self.relativeOrderAction = relativeOrderAction ?? { panel, windowNumber in
+            panel.order(.above, relativeTo: windowNumber)
+        }
+        self.relativeOrderVerifier = relativeOrderVerifier
+            ?? { panelWindowNumber, sourceWindowNumber in
+                Self.windowServerConfirmsAdjacency(
+                    panelWindowNumber: panelWindowNumber,
+                    sourceWindowNumber: sourceWindowNumber
+                )
+            }
+    }
 
     func update(
         sourceID: String,
         sourceFrame: CGRect,
+        target: LiveShareCollaborationSourceOverlayTarget,
         snapshot: NativeViewerCollaborationOverlaySnapshot,
         isVisible: Bool
     ) {
-        guard
-            isVisible,
-            sourceFrame.width > 0,
-            sourceFrame.height > 0
-        else {
+        guard sourceFrame.width > 0, sourceFrame.height > 0 else {
             remove(sourceID: sourceID)
             return
         }
+        sourceFrames[sourceID] = sourceFrame
+        sourceTargets[sourceID] = target
         let entry = entries[sourceID] ?? makeEntry(sourceID: sourceID)
-        entry.panel.setFrame(sourceFrame, display: true, animate: false)
-        entry.overlay.frame = CGRect(origin: .zero, size: sourceFrame.size)
-        entry.overlay.contentFrame = entry.overlay.bounds
+        layout(
+            entry,
+            sourceFrame: sourceFrame,
+            snapshot: snapshot,
+            isVisible: isVisible
+        )
+        orderingCounts[sourceID, default: 0] += 1
+        guard reconcilePresentation(
+            entry,
+            sourceID: sourceID,
+            sourceFrame: sourceFrame,
+            target: target
+        ) else {
+            entry.panel.orderOut(nil)
+            return
+        }
+    }
+
+    /// Repaints collaboration state against the last resolved source frame.
+    /// Pointer traffic calls this from the room snapshot path; it deliberately
+    /// performs no capture/window geometry work.
+    func updateSnapshot(
+        sourceID: String,
+        snapshot: NativeViewerCollaborationOverlaySnapshot,
+        isVisible: Bool
+    ) {
+        // This path receives pointer traffic at up to 60 Hz. It must remain a
+        // pure layer repaint: WindowServer geometry/order reconciliation is
+        // owned by `update`, which runs on the dedicated placement cadence.
+        guard let entry = entries[sourceID] else { return }
         entry.overlay.update(snapshot)
-        entry.panel.orderFrontRegardless()
+        entry.overlay.isHidden = !isVisible
+    }
+
+    private func layout(
+        _ entry: Entry,
+        sourceFrame: CGRect,
+        snapshot: NativeViewerCollaborationOverlaySnapshot,
+        isVisible: Bool
+    ) {
+        if entry.panel.frame != sourceFrame {
+            entry.panel.setFrame(sourceFrame, display: true, animate: false)
+        }
+        let overlayFrame = CGRect(origin: .zero, size: sourceFrame.size)
+        if entry.overlay.frame != overlayFrame {
+            entry.overlay.frame = overlayFrame
+        }
+        // Resizing an NSPanel may resize its content view synchronously before
+        // the frame comparison above. Keep the drawable source rect independent
+        // of that AppKit side effect; otherwise the host panel can have the
+        // correct size while pointers, pings, and strokes all render against a
+        // stale zero-sized content frame.
+        if entry.overlay.contentFrame != entry.overlay.bounds {
+            entry.overlay.contentFrame = entry.overlay.bounds
+        }
+        entry.overlay.update(snapshot)
+        entry.overlay.isHidden = !isVisible
     }
 
     func remove(sourceID: String) {
+        sourceFrames[sourceID] = nil
+        sourceTargets[sourceID] = nil
+        orderingCounts[sourceID] = nil
+        relativeOrderingCounts[sourceID] = nil
+        maskedFallbackCounts[sourceID] = nil
+        presentationModes[sourceID] = nil
+        removeEntry(sourceID: sourceID)
+    }
+
+    private func removeEntry(sourceID: String) {
         guard let entry = entries.removeValue(forKey: sourceID) else { return }
         entry.panel.orderOut(nil)
         entry.panel.contentView = nil
     }
 
     func retainSources(_ sourceIDs: Set<String>) {
-        for sourceID in entries.keys where !sourceIDs.contains(sourceID) {
+        for sourceID in sourceFrames.keys where !sourceIDs.contains(sourceID) {
             remove(sourceID: sourceID)
         }
     }
@@ -91,6 +301,69 @@ final class LiveShareCollaborationSourceOverlayCoordinator {
             entry.panel.contentView = nil
         }
         entries.removeAll(keepingCapacity: false)
+        sourceFrames.removeAll(keepingCapacity: false)
+        sourceTargets.removeAll(keepingCapacity: false)
+        orderingCounts.removeAll(keepingCapacity: false)
+        relativeOrderingCounts.removeAll(keepingCapacity: false)
+        maskedFallbackCounts.removeAll(keepingCapacity: false)
+        presentationModes.removeAll(keepingCapacity: false)
+    }
+
+    /// Narrow test/debug seam proving a snapshot repaint did not wait for a
+    /// later geometry query.
+    func renderedSnapshot(
+        sourceID: String
+    ) -> NativeViewerCollaborationOverlaySnapshot? {
+        entries[sourceID]?.overlay.renderedSnapshot
+    }
+
+    func renderedContentFrame(sourceID: String) -> CGRect? {
+        entries[sourceID]?.overlay.contentFrame
+    }
+
+    func renderedAnnotationLayerCount(sourceID: String) -> Int {
+        entries[sourceID]?.overlay.layer?.sublayers?.count ?? 0
+    }
+
+    func target(
+        sourceID: String
+    ) -> LiveShareCollaborationSourceOverlayTarget? {
+        sourceTargets[sourceID]
+    }
+
+    func orderingCount(sourceID: String) -> Int {
+        orderingCounts[sourceID, default: 0]
+    }
+
+    func relativeOrderingCount(sourceID: String) -> Int {
+        relativeOrderingCounts[sourceID, default: 0]
+    }
+
+    func maskedFallbackCount(sourceID: String) -> Int {
+        maskedFallbackCounts[sourceID, default: 0]
+    }
+
+    func presentationMode(
+        sourceID: String
+    ) -> LiveShareCollaborationSourceOverlayPresentationMode? {
+        presentationModes[sourceID]
+    }
+
+    func isVisible(sourceID: String) -> Bool {
+        guard let entry = entries[sourceID] else { return false }
+        return entry.panel.isVisible && !entry.overlay.isHidden
+    }
+
+    func panelWindowNumber(sourceID: String) -> Int? {
+        entries[sourceID]?.panel.windowNumber
+    }
+
+    func visibilityMaskBounds(sourceID: String) -> CGRect? {
+        entries[sourceID]?.visibilityMask.path?.boundingBoxOfPath
+    }
+
+    func hasVisibilityMask(sourceID: String) -> Bool {
+        entries[sourceID]?.overlay.layer?.mask != nil
     }
 
     private func makeEntry(sourceID: String) -> Entry {
@@ -103,9 +376,406 @@ final class LiveShareCollaborationSourceOverlayCoordinator {
         let overlay = NativeViewerCollaborationOverlayView(frame: .zero)
         overlay.interactionMode = .disabled
         panel.contentView = overlay
-        let entry = Entry(panel: panel, overlay: overlay)
+        let visibilityMask = CAShapeLayer()
+        visibilityMask.fillColor = NSColor.white.cgColor
+        visibilityMask.fillRule = .nonZero
+        let entry = Entry(
+            panel: panel,
+            overlay: overlay,
+            visibilityMask: visibilityMask
+        )
         entries[sourceID] = entry
         return entry
+    }
+
+    /// Returns false when WindowServer cannot verify any visible source
+    /// content. The caller keeps the entry alive but orders it out, allowing a
+    /// later geometry/snapshot refresh to restore the same panel without a
+    /// recreate flash.
+    private func applyVisibilityMask(
+        to entry: Entry,
+        target: LiveShareCollaborationSourceOverlayTarget,
+        sourceFrame: CGRect
+    ) -> Bool {
+        guard let sourceWindowNumber = target.relativeWindowNumber else {
+            entry.overlay.layer?.mask = nil
+            return true
+        }
+        guard let windows = windowSnapshotProvider(sourceWindowNumber) else {
+#if DEBUG
+            Self.logMaskPresentation(
+                mode: .hidden,
+                sourceWindowNumber: sourceWindowNumber,
+                sourceWindowFrame: nil,
+                panelFrame: sourceFrame,
+                visibleAreaRatio: nil,
+                reason: "window-list-unavailable"
+            )
+#endif
+            setVisibleLocalRects([], on: entry)
+            return false
+        }
+        guard let sourceWindow = windows.first(where: {
+            $0.windowNumber == sourceWindowNumber
+        }) else {
+#if DEBUG
+            Self.logMaskPresentation(
+                mode: .hidden,
+                sourceWindowNumber: sourceWindowNumber,
+                sourceWindowFrame: nil,
+                panelFrame: sourceFrame,
+                visibleAreaRatio: nil,
+                reason: "source-window-missing"
+            )
+#endif
+            setVisibleLocalRects([], on: entry)
+            return false
+        }
+#if DEBUG
+        Self.logMaskGeometry(
+            sourceWindowNumber: sourceWindowNumber,
+            sourceWindowFrame: sourceWindow.frame,
+            panelFrame: sourceFrame,
+            panelBackingScale: entry.panel.backingScaleFactor,
+            candidateCount: max(0, windows.count - 1)
+        )
+        var cumulativeVisibleAreaRatio = 1.0
+#endif
+        let onEvaluation:
+            ((LiveShareCollaborationOcclusionEvaluation) -> Void)?
+#if DEBUG
+        onEvaluation = { evaluation in
+            let previousVisibleAreaRatio = cumulativeVisibleAreaRatio
+            cumulativeVisibleAreaRatio = evaluation.cumulativeVisibleAreaRatio
+            let failedClosed = switch evaluation.disposition {
+            case .invalidAlpha, .invalidFrame: true
+            default: false
+            }
+            guard evaluation.cumulativeVisibleAreaRatio
+                    < previousVisibleAreaRatio || failedClosed
+            else { return }
+            Self.logMaskCandidate(
+                sourceWindowNumber: sourceWindowNumber,
+                evaluation: evaluation
+            )
+        }
+#else
+        onEvaluation = nil
+#endif
+        guard let visibleGlobalRects =
+            LiveShareCollaborationVisibleRegionGeometry.visibleRects(
+                sourceFrame: sourceWindow.frame,
+                windowsFrontToBack: windows,
+                sourceWindowNumber: sourceWindowNumber,
+                excludedWindowNumbers: Set(
+                    entries.values.map(\.panel.windowNumber)
+                ),
+                // This fallback is presented at `.floating`. Higher-level
+                // WindowServer surfaces naturally remain above it, so only
+                // candidates at or below this level need rectangular
+                // subtraction.
+                maximumOccludingWindowLayer: Int(
+                    NSWindow.Level.floating.rawValue
+                ),
+                onEvaluation: onEvaluation
+            )
+        else {
+#if DEBUG
+            Self.logMaskPresentation(
+                mode: .hidden,
+                sourceWindowNumber: sourceWindowNumber,
+                sourceWindowFrame: sourceWindow.frame,
+                panelFrame: sourceFrame,
+                visibleAreaRatio: cumulativeVisibleAreaRatio,
+                reason: "visible-region-unverifiable"
+            )
+#endif
+            setVisibleLocalRects([], on: entry)
+            return false
+        }
+        guard !visibleGlobalRects.isEmpty else {
+#if DEBUG
+            Self.logMaskPresentation(
+                mode: .hidden,
+                sourceWindowNumber: sourceWindowNumber,
+                sourceWindowFrame: sourceWindow.frame,
+                panelFrame: sourceFrame,
+                visibleAreaRatio: cumulativeVisibleAreaRatio,
+                reason: "fully-covered"
+            )
+#endif
+            setVisibleLocalRects([], on: entry)
+            return false
+        }
+        guard let visibleLocalRects =
+            LiveShareCollaborationVisibleRegionGeometry.localRects(
+                visibleGlobalRects: visibleGlobalRects,
+                sourceFrame: sourceWindow.frame,
+                localSize: sourceFrame.size
+            ), !visibleLocalRects.isEmpty
+        else {
+#if DEBUG
+            Self.logMaskPresentation(
+                mode: .hidden,
+                sourceWindowNumber: sourceWindowNumber,
+                sourceWindowFrame: sourceWindow.frame,
+                panelFrame: sourceFrame,
+                visibleAreaRatio: cumulativeVisibleAreaRatio,
+                reason: "local-region-empty"
+            )
+#endif
+            setVisibleLocalRects([], on: entry)
+            return false
+        }
+        setVisibleLocalRects(visibleLocalRects, on: entry)
+#if DEBUG
+        Self.logMaskPresentation(
+            mode: .maskedFallback,
+            sourceWindowNumber: sourceWindowNumber,
+            sourceWindowFrame: sourceWindow.frame,
+            panelFrame: sourceFrame,
+            visibleAreaRatio: cumulativeVisibleAreaRatio,
+            reason: "relative-order-unverified"
+        )
+#endif
+        return true
+    }
+
+#if DEBUG
+    private static func logMaskGeometry(
+        sourceWindowNumber: Int,
+        sourceWindowFrame: CGRect,
+        panelFrame: CGRect,
+        panelBackingScale: CGFloat,
+        candidateCount: Int
+    ) {
+        maskLogger.debug(
+            "Host mask geometry sourceWindow=\(sourceWindowNumber, privacy: .public) sourceX=\(Double(sourceWindowFrame.minX), privacy: .public) sourceY=\(Double(sourceWindowFrame.minY), privacy: .public) sourceWidth=\(Double(sourceWindowFrame.width), privacy: .public) sourceHeight=\(Double(sourceWindowFrame.height), privacy: .public) panelX=\(Double(panelFrame.minX), privacy: .public) panelY=\(Double(panelFrame.minY), privacy: .public) panelWidth=\(Double(panelFrame.width), privacy: .public) panelHeight=\(Double(panelFrame.height), privacy: .public) panelBackingScale=\(Double(panelBackingScale), privacy: .public) candidates=\(candidateCount, privacy: .public)"
+        )
+    }
+
+    private static func logMaskCandidate(
+        sourceWindowNumber: Int,
+        evaluation: LiveShareCollaborationOcclusionEvaluation
+    ) {
+        let window = evaluation.window
+        let ownerProcessID = window.ownerProcessID ?? -1
+        let ownerName = window.ownerName ?? "unknown"
+        let layer = window.windowLayer ?? Int.min
+        maskLogger.debug(
+            "Host mask candidate sourceWindow=\(sourceWindowNumber, privacy: .public) window=\(window.windowNumber, privacy: .public) ownerPID=\(ownerProcessID, privacy: .public) owner=\(ownerName, privacy: .private(mask: .hash)) layer=\(layer, privacy: .public) alpha=\(window.alpha, privacy: .public) x=\(Double(window.frame.minX), privacy: .public) y=\(Double(window.frame.minY), privacy: .public) width=\(Double(window.frame.width), privacy: .public) height=\(Double(window.frame.height), privacy: .public) disposition=\(evaluation.disposition.rawValue, privacy: .public) cumulativeVisibleAreaRatio=\(evaluation.cumulativeVisibleAreaRatio, privacy: .public)"
+        )
+    }
+
+    private static func logMaskPresentation(
+        mode: LiveShareCollaborationSourceOverlayPresentationMode,
+        sourceWindowNumber: Int,
+        sourceWindowFrame: CGRect?,
+        panelFrame: CGRect,
+        visibleAreaRatio: Double?,
+        reason: String
+    ) {
+        let sourceSize = sourceWindowFrame?.size ?? .zero
+        maskLogger.debug(
+            "Host mask presentation mode=\(presentationModeName(mode), privacy: .public) sourceWindow=\(sourceWindowNumber, privacy: .public) sourceWidth=\(Double(sourceSize.width), privacy: .public) sourceHeight=\(Double(sourceSize.height), privacy: .public) panelWidth=\(Double(panelFrame.width), privacy: .public) panelHeight=\(Double(panelFrame.height), privacy: .public) visibleAreaRatio=\(visibleAreaRatio ?? -1, privacy: .public) reason=\(reason, privacy: .public)"
+        )
+    }
+
+    private static func presentationModeName(
+        _ mode: LiveShareCollaborationSourceOverlayPresentationMode
+    ) -> String {
+        switch mode {
+        case .sourceRelative: "source-relative"
+        case .maskedFallback: "masked-fallback"
+        case .fullscreen: "fullscreen"
+        case .hidden: "hidden"
+        }
+    }
+#endif
+
+    private func setVisibleLocalRects(_ rects: [CGRect], on entry: Entry) {
+        let path = CGMutablePath()
+        rects.forEach { path.addRect($0) }
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        entry.visibilityMask.frame = entry.overlay.bounds
+        entry.visibilityMask.path = path
+        entry.overlay.layer?.mask = entry.visibilityMask
+        CATransaction.commit()
+    }
+
+    private static func windowServerWindowsFrontToBack(
+        through sourceWindowNumber: Int
+    )
+        -> [LiveShareCollaborationOcclusionWindowSnapshot]? {
+        guard
+            let information = CGWindowListCopyWindowInfo(
+                [.optionOnScreenOnly, .excludeDesktopElements],
+                kCGNullWindowID
+            ) as? [[String: Any]]
+        else { return nil }
+        var result: [LiveShareCollaborationOcclusionWindowSnapshot] = []
+        result.reserveCapacity(information.count)
+        var foundSource = false
+        for window in information {
+            guard
+                let number = window[kCGWindowNumber as String] as? NSNumber,
+                let bounds = window[kCGWindowBounds as String]
+                    as? [String: Any],
+                let frame = CGRect(
+                    dictionaryRepresentation: bounds as CFDictionary
+                ),
+                let alpha = window[kCGWindowAlpha as String] as? NSNumber,
+                let isOnScreen = window[kCGWindowIsOnscreen as String]
+                    as? NSNumber
+            else {
+                // The list is front-to-back. Dropping an unparseable entry
+                // could let a floating cursor appear over an unknown window,
+                // so fail closed instead.
+                return nil
+            }
+            result.append(.init(
+                windowNumber: number.intValue,
+                frame: frame,
+                alpha: alpha.doubleValue,
+                isOnScreen: isOnScreen.boolValue,
+                ownerProcessID:
+                    (window[kCGWindowOwnerPID as String] as? NSNumber)?.intValue,
+                ownerName: window[kCGWindowOwnerName as String] as? String,
+                windowLayer:
+                    (window[kCGWindowLayer as String] as? NSNumber)?.intValue
+            ))
+            if number.intValue == sourceWindowNumber {
+                foundSource = true
+                break
+            }
+        }
+        // Entries behind the source cannot occlude it and are intentionally
+        // not parsed. Their optional/malformed metadata must not hide an
+        // otherwise verifiable collaboration overlay.
+        return foundSource ? result : nil
+    }
+
+    private func reconcilePresentation(
+        _ entry: Entry,
+        sourceID: String,
+        sourceFrame: CGRect,
+        target: LiveShareCollaborationSourceOverlayTarget
+    ) -> Bool {
+        entry.panel.collectionBehavior = target.collectionBehavior
+        switch target {
+        case .fullscreen:
+            entry.panel.level = target.panelLevel
+            entry.overlay.layer?.mask = nil
+            entry.panel.orderFrontRegardless()
+            presentationModes[sourceID] = .fullscreen
+#if DEBUG
+            Self.logMaskPresentation(
+                mode: .fullscreen,
+                sourceWindowNumber: 0,
+                sourceWindowFrame: sourceFrame,
+                panelFrame: entry.panel.frame,
+                visibleAreaRatio: 1,
+                reason: "display-source"
+            )
+#endif
+            return true
+
+        case let .window(sourceWindowNumber, _):
+            // Use the source's raw level. A floating panel cannot be inserted
+            // between ordinary application windows, even when its relative
+            // order call names the right source window.
+            entry.panel.level = target.panelLevel
+            if relativeOrderVerifier(
+                entry.panel.windowNumber,
+                sourceWindowNumber
+            ) {
+                // WindowServer now owns occlusion at compositor cadence. A
+                // retained rectangular mask would reintroduce delayed reveals.
+                entry.overlay.layer?.mask = nil
+                presentationModes[sourceID] = .sourceRelative
+#if DEBUG
+                Self.logMaskPresentation(
+                    mode: .sourceRelative,
+                    sourceWindowNumber: sourceWindowNumber,
+                    sourceWindowFrame: sourceFrame,
+                    panelFrame: entry.panel.frame,
+                    visibleAreaRatio: 1,
+                    reason: "adjacency-already-verified"
+                )
+#endif
+                return true
+            }
+
+            // Stable placement needs no order churn. Repair only after the
+            // WindowServer snapshot proves that activation, Spaces, or another
+            // application reorder disturbed the source-relative pair.
+            relativeOrderingCounts[sourceID, default: 0] += 1
+            relativeOrderAction(entry.panel, sourceWindowNumber)
+            if relativeOrderVerifier(
+                entry.panel.windowNumber,
+                sourceWindowNumber
+            ) {
+                entry.overlay.layer?.mask = nil
+                presentationModes[sourceID] = .sourceRelative
+#if DEBUG
+                Self.logMaskPresentation(
+                    mode: .sourceRelative,
+                    sourceWindowNumber: sourceWindowNumber,
+                    sourceWindowFrame: sourceFrame,
+                    panelFrame: entry.panel.frame,
+                    visibleAreaRatio: 1,
+                    reason: "adjacency-repaired"
+                )
+#endif
+                return true
+            }
+
+            // Cross-process placement can be disturbed by app activation,
+            // Spaces, or same-app window reordering. Preserve the conservative
+            // fallback: float the panel but reveal only verified source regions.
+            guard applyVisibilityMask(
+                to: entry,
+                target: target,
+                sourceFrame: sourceFrame
+            ) else {
+                presentationModes[sourceID] = .hidden
+                return false
+            }
+            entry.panel.level = .floating
+            entry.panel.orderFrontRegardless()
+            maskedFallbackCounts[sourceID, default: 0] += 1
+            presentationModes[sourceID] = .maskedFallback
+            return true
+        }
+    }
+
+    private static func windowServerConfirmsAdjacency(
+        panelWindowNumber: Int,
+        sourceWindowNumber: Int
+    ) -> Bool {
+        guard
+            let information = CGWindowListCopyWindowInfo(
+                [.optionOnScreenOnly, .excludeDesktopElements],
+                kCGNullWindowID
+            ) as? [[String: Any]]
+        else { return false }
+        var previousWindowNumber: Int?
+        for window in information {
+            guard
+                let number = window[kCGWindowNumber as String] as? NSNumber
+            else {
+                // Exact adjacency cannot be proven when a WindowServer entry
+                // is malformed. Fall back instead of painting over it.
+                return false
+            }
+            let windowNumber = number.intValue
+            if windowNumber == sourceWindowNumber {
+                return previousWindowNumber == panelWindowNumber
+            }
+            previousWindowNumber = windowNumber
+        }
+        return false
     }
 }
 
@@ -246,28 +916,38 @@ private struct MeshFocusedWindowControlView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .contentShape(Rectangle())
             }
-            .buttonStyle(
-                MeshOverlayButtonStyle(
-                    tint: snapshot.state == .shareable
-                        ? .secondary
-                        : .red
-                )
+            .buttonStyle(.plain)
+            .foregroundStyle(
+                snapshot.state == .shareable ? Color.primary : Color.red
             )
             .disabled(!snapshot.state.isEnabled)
+            .opacity(snapshot.state.isEnabled ? 1 : 0.45)
+            .modifier(
+                ClipPopoverHoverEffect(
+                    isInteractive: snapshot.state.isEnabled
+                )
+            )
             .accessibilityIdentifier(
                 "clip.meshRoom.focusedWindow.primary"
             )
 
+            Rectangle()
+                .fill(.primary.opacity(0.12))
+                .frame(width: 1, height: 18)
+                .accessibilityHidden(true)
+
             Button(action: toggleSide) {
                 Image(
                     systemName:
-                        side == .left ? "arrow.right" : "arrow.left"
+                        side == .left ? "chevron.right" : "chevron.left"
                 )
-                .font(.system(size: 10, weight: .bold))
-                .frame(width: 27, height: 30)
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(.secondary)
+                .frame(width: 29, height: 30)
                 .contentShape(Rectangle())
             }
-            .buttonStyle(MeshOverlayButtonStyle(tint: .secondary))
+            .buttonStyle(.plain)
+            .modifier(ClipPopoverHoverEffect())
             .help(String(localized: "Move control to the other side"))
             .accessibilityIdentifier("clip.meshRoom.focusedWindow.move")
         }

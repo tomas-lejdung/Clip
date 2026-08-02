@@ -516,6 +516,10 @@ public final class ClipLiveShareNativeV3WebRTCPeerLinkTransport:
   private var localICECandidateCount = 0
   private var remoteICECandidateCount = 0
   private var isNegotiating = false
+  /// A second request can arrive while the canonical offerer is waiting for
+  /// its answer. Coalesce it until signaling returns to stable instead of
+  /// creating a competing offer against the same transceiver/MID layout.
+  private var hasPendingOfferRequest = false
   private var didStart = false
   private var isClosed = false
   private var remoteVideoTracks:
@@ -722,21 +726,26 @@ public final class ClipLiveShareNativeV3WebRTCPeerLinkTransport:
   }
 
   public func requestNegotiation() async throws {
-    try beginNegotiation()
-    defer { finishNegotiation() }
-    let rtcOffer = try await createDescription(kind: .offer)
-    let configured = RTCSessionDescription(
-      type: .offer,
-      sdp: WebRTCOpusMusicSDP.applying(
-        to: WebRTCH264EncoderFactory.upgradingProfileLevels(in: rtcOffer.sdp)
+    guard try beginOfferNegotiationOrDefer() else { return }
+    do {
+      let rtcOffer = try await createDescription(kind: .offer)
+      let configured = RTCSessionDescription(
+        type: .offer,
+        sdp: WebRTCOpusMusicSDP.applying(
+          to: WebRTCH264EncoderFactory.upgradingProfileLevels(in: rtcOffer.sdp)
+        )
       )
-    )
-    try await setLocalDescription(configured)
-    emit(
-      .localNegotiation(
-        .sessionDescription(.init(kind: .offer, sdp: configured.sdp))
+      try await setLocalDescription(configured)
+      emit(
+        .localNegotiation(
+          .sessionDescription(.init(kind: .offer, sdp: configured.sdp))
+        )
       )
-    )
+      finishNegotiation()
+    } catch {
+      finishNegotiation()
+      throw error
+    }
   }
 
   public func applyRemoteDescription(
@@ -753,16 +762,22 @@ public final class ClipLiveShareNativeV3WebRTCPeerLinkTransport:
       try await applyRemoteOffer(description)
     case .answer:
       try beginNegotiation()
-      defer { finishNegotiation() }
-      let state = onQueue { connection.signalingState }
-      guard state == .haveLocalOffer else {
-        throw ClipLiveShareNativeV3WebRTCPeerLinkError
-          .invalidSessionDescriptionKind
+      do {
+        let state = onQueue { connection.signalingState }
+        guard state == .haveLocalOffer else {
+          throw ClipLiveShareNativeV3WebRTCPeerLinkError
+            .invalidSessionDescriptionKind
+        }
+        try await setRemoteDescription(
+          RTCSessionDescription(type: .answer, sdp: description.sdp)
+        )
+        await flushPendingRemoteICECandidates()
+        finishNegotiation()
+      } catch {
+        finishNegotiation()
+        throw error
       }
-      try await setRemoteDescription(
-        RTCSessionDescription(type: .answer, sdp: description.sdp)
-      )
-      await flushPendingRemoteICECandidates()
+      try await drainPendingOfferRequestIfNeeded()
     }
   }
 
@@ -819,6 +834,27 @@ public final class ClipLiveShareNativeV3WebRTCPeerLinkTransport:
     }
   }
 
+  /// Sends a replaceable cursor sample directly to the native DataChannel.
+  /// Unlike durable control state, a sample that encounters pressure is
+  /// dropped rather than queued or surfaced as a peer failure.
+  public func sendEphemeralControlMessage(_ data: Data) async -> Bool {
+    onQueue {
+      guard !isClosed,
+        let controlChannel,
+        controlChannel.readyState == .open,
+        controlBufferPolicy.permits(
+          payloadByteCount: data.count,
+          bufferedAmountBytes: controlChannel.bufferedAmount
+        )
+      else {
+        return false
+      }
+      return controlChannel.sendData(
+        RTCDataBuffer(data: data, isBinary: true)
+      )
+    }
+  }
+
   public func remoteVideoStream(
     for descriptor: ClipLiveShareStreamDescriptor
   ) async -> WebRTCRemoteVideoStream? {
@@ -856,6 +892,20 @@ public final class ClipLiveShareNativeV3WebRTCPeerLinkTransport:
     }
   }
 
+  /// Compatibility seam retained for the server-coordinated room runtime.
+  /// Slot-specific allocation and peer-level bandwidth seeding are not part
+  /// of the networking change, so every sender keeps the complete fallback
+  /// policy exactly as it did before v4.
+  public func updateSenderPolicies(
+    _ policiesBySlot: [Int: WebRTCSenderPolicy],
+    fallback: WebRTCSenderPolicy,
+    videoEncodingMode: LiveShareEncodingMode
+  ) async {
+    _ = policiesBySlot
+    _ = videoEncodingMode
+    await updateSenderPolicy(fallback)
+  }
+
   public func updateVideoCodecPreference(
     _ codec: WebRTCVideoCodec
   ) async throws {
@@ -878,6 +928,28 @@ public final class ClipLiveShareNativeV3WebRTCPeerLinkTransport:
     }
   }
 
+  public func rollbackLocalOfferIfNeeded() async throws {
+    let state = try onQueue { () throws -> RTCSignalingState in
+      try ensureOpen()
+      return connection.signalingState
+    }
+    switch state {
+    case .stable:
+      return
+    case .haveLocalOffer, .haveLocalPrAnswer:
+      try await setLocalDescription(
+        RTCSessionDescription(type: .rollback, sdp: "")
+      )
+      onQueue { hasPendingOfferRequest = false }
+    case .haveRemoteOffer, .haveRemotePrAnswer, .closed:
+      throw ClipLiveShareNativeV3WebRTCPeerLinkError
+        .invalidSessionDescriptionKind
+    @unknown default:
+      throw ClipLiveShareNativeV3WebRTCPeerLinkError
+        .invalidSessionDescriptionKind
+    }
+  }
+
   public func setRemoteParticipantAudioPlaybackEnabled(_ enabled: Bool) async {
     onQueue {
       remoteParticipantAudioPlaybackEnabled = enabled
@@ -894,11 +966,18 @@ public final class ClipLiveShareNativeV3WebRTCPeerLinkTransport:
   }
 
   public func restartICE() async throws {
-    try onQueue {
+    let shouldCreateOffer = try onQueue {
       try ensureOpen()
       connection.restartIce()
+      return linkConfiguration.role == .offerer
     }
-    try await requestNegotiation()
+    // Native-v3 uses the lower participant ID as the permanent offerer. Both
+    // endpoints may observe the same ICE failure, but the answerer must only
+    // prepare to consume the canonical peer's restart offer; originating a
+    // second offer would violate the signed pair context and create glare.
+    if shouldCreateOffer {
+      try await requestNegotiation()
+    }
   }
 
   public func statistics() async throws
@@ -1014,6 +1093,12 @@ public final class ClipLiveShareNativeV3WebRTCPeerLinkTransport:
         removeReceiver(receiverID)
       case let .failed(message):
         emit(.failed(message))
+      case let .iceGatheringDiagnostic(code, url, message):
+        emit(.iceGatheringDiagnostic(
+          code: code,
+          url: url,
+          message: message
+        ))
       }
     }
   }
@@ -1535,6 +1620,40 @@ public final class ClipLiveShareNativeV3WebRTCPeerLinkTransport:
     }
   }
 
+  private func beginOfferNegotiationOrDefer() throws -> Bool {
+    try onQueue {
+      try ensureOpen()
+      guard linkConfiguration.role == .offerer else {
+        throw ClipLiveShareNativeV3WebRTCPeerLinkError
+          .invalidSessionDescriptionKind
+      }
+      guard !isNegotiating, connection.signalingState == .stable else {
+        hasPendingOfferRequest = true
+        return false
+      }
+      isNegotiating = true
+      hasPendingOfferRequest = false
+      localICECandidateCount = 0
+      remoteICECandidateCount = pendingRemoteICECandidates.count
+      return true
+    }
+  }
+
+  private func drainPendingOfferRequestIfNeeded() async throws {
+    let shouldDrain = onQueue { () -> Bool in
+      guard hasPendingOfferRequest,
+        !isNegotiating,
+        connection.signalingState == .stable,
+        linkConfiguration.role == .offerer
+      else { return false }
+      hasPendingOfferRequest = false
+      return true
+    }
+    if shouldDrain {
+      try await requestNegotiation()
+    }
+  }
+
   private func finishNegotiation() {
     onQueue {
       isNegotiating = false
@@ -1545,6 +1664,7 @@ public final class ClipLiveShareNativeV3WebRTCPeerLinkTransport:
     guard !isClosed else { return }
     isClosed = true
     isNegotiating = false
+    hasPendingOfferRequest = false
     pendingRemoteICECandidates.removeAll(keepingCapacity: false)
     delegate.detach()
     connection.delegate = nil
@@ -1729,6 +1849,7 @@ private final class ClipLiveShareNativeV3WebRTCPeerDelegate:
     case negotiationNeeded
     case receiverAdded(String, RTCMediaStreamTrack)
     case receiverRemoved(String)
+    case iceGatheringDiagnostic(code: Int, url: String, message: String)
     case failed(String)
   }
 
@@ -1858,9 +1979,10 @@ private final class ClipLiveShareNativeV3WebRTCPeerDelegate:
     didFailToGatherIceCandidate event: RTCIceCandidateErrorEvent
   ) {
     forward(
-      .failed(
-        "ICE gathering failed for \(event.url) "
-          + "(\(event.errorCode)): \(event.errorText)"
+      .iceGatheringDiagnostic(
+        code: Int(event.errorCode),
+        url: event.url,
+        message: event.errorText
       ),
       connection: peerConnection
     )
@@ -1953,7 +2075,18 @@ enum ClipLiveShareNativeV3WebRTCStatisticsParser {
           number(statistic.values["packetsLost"])?.int64Value ?? 0
       }
     }
-    let selectedPair = samples.first {
+    // Current WebRTC statistics expose the authoritative selected pair from
+    // the transport report. Older builds also marked the candidate-pair row
+    // directly, so retain those shapes as compatibility fallbacks.
+    let selectedPair = samples.lazy.compactMap { statistic in
+      guard
+        statistic.type == "transport",
+        let selectedPairID = string(
+          statistic.values["selectedCandidatePairId"]
+        )
+      else { return nil }
+      return samplesByID[selectedPairID]
+    }.first ?? samples.first {
       $0.type == "candidate-pair"
         && number($0.values["selected"])?.boolValue == true
     } ?? samples.first {
@@ -2033,16 +2166,23 @@ enum ClipLiveShareNativeV3WebRTCStatisticsParser {
       guard kind?.lowercased() == "video" else { return nil }
 
       let mid = string(statistic.values["mid"])
+      // The inbound `trackIdentifier` reported by libwebrtc can be the
+      // receiver's generated local identifier, especially on the permanent
+      // offerer side of a symmetric Unified Plan connection. Clip rewrites
+      // and parses each m-line's msid so the MID map is the authoritative,
+      // room-stable media track identifier used by source manifests. Prefer
+      // that map in both directions whenever it is available.
+      let mappedTrackIdentifier = mid.flatMap {
+        direction == .outgoing
+          ? trackIdentifiersByMID.outgoing[$0]
+          : trackIdentifiersByMID.incoming[$0]
+      }
       let trackIdentifier =
-        string(statistic.values["trackIdentifier"])
+        mappedTrackIdentifier
+          ?? string(statistic.values["trackIdentifier"])
           ?? string(statistic.values["mediaSourceId"])
             .flatMap { samplesByID[$0] }
             .flatMap { string($0.values["trackIdentifier"]) }
-          ?? mid.flatMap {
-            direction == .outgoing
-              ? trackIdentifiersByMID.outgoing[$0]
-              : trackIdentifiersByMID.incoming[$0]
-          }
           ?? statistic.id
       let codec = string(statistic.values["codecId"])
         .flatMap { samplesByID[$0] }

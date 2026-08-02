@@ -22,65 +22,55 @@ import (
 
 const maximumOwnerRequestBytes = 1_024
 
-// Service exposes only the opaque native rendezvous transport used to
-// bootstrap Clip's native-v3 participant mesh. Room membership, admission,
-// leadership, media, collaboration, and established peer links are all
-// client-owned and never interpreted by this process.
+// Service exposes the opaque native-v4 room coordinator. It owns only bounded
+// routing handles, roster presence, and encrypted signaling delivery; media,
+// identity, admission secrets, and collaboration contents remain client-owned.
 type Service struct {
-	config               config.Config
-	nativeRendezvous     *signaling.NativeRendezvousHub
-	handler              http.Handler
-	upgrader             websocket.Upgrader
-	connections          chan struct{}
-	candidateConnections chan struct{}
-	admission            *sourceAdmission
-	candidateRoutesMu    sync.Mutex
-	candidateRoutes      map[string]int
-	queueBudget          *signaling.QueuedByteBudget
-	socketsMu            sync.Mutex
-	sockets              map[*signaling.Socket]struct{}
-	socketsWG            sync.WaitGroup
-	closing              bool
-	cancel               context.CancelFunc
-	cleanupDone          chan struct{}
-	shutdownDone         chan struct{}
-	closeOnce            sync.Once
+	config         config.Config
+	roomHub        *signaling.RoomHub
+	friendPresence *friendPresenceStore
+	handler        http.Handler
+	upgrader       websocket.Upgrader
+	connections    chan struct{}
+	admission      *sourceAdmission
+	queueBudget    *signaling.QueuedByteBudget
+	socketsMu      sync.Mutex
+	sockets        map[*signaling.Socket]struct{}
+	socketsWG      sync.WaitGroup
+	closing        bool
+	cancel         context.CancelFunc
+	cleanupDone    chan struct{}
+	shutdownDone   chan struct{}
+	closeOnce      sync.Once
 }
 
 func New(configuration config.Config) (*Service, error) {
-	hub := signaling.NewNativeRendezvousHub(
-		signaling.NativeRendezvousConfiguration{
-			LeaseDuration:        configuration.LeaseDuration,
-			ReconnectGrace:       configuration.ReconnectGrace,
-			MaximumRendezvous:    configuration.MaximumRendezvous,
-			MaximumPendingRoutes: protocol.MaximumPendingRoutes,
-			RouteIdleTimeout:     configuration.RouteIdleTimeout,
-		},
-	)
-	return NewWithRendezvous(configuration, hub)
+	roomHub := signaling.NewRoomHub(signaling.RoomConfiguration{
+		LeaseDuration:        configuration.LeaseDuration,
+		ReconnectGrace:       configuration.ReconnectGrace,
+		CandidateIdleTimeout: configuration.RouteIdleTimeout,
+		MaximumRooms:         configuration.MaximumRendezvous,
+		MaximumPending:       protocol.MaximumPendingCandidates,
+	})
+	return NewWithRoomHub(configuration, roomHub)
 }
 
-func NewWithRendezvous(
+func NewWithRoomHub(
 	configuration config.Config,
-	hub *signaling.NativeRendezvousHub,
+	roomHub *signaling.RoomHub,
 ) (*Service, error) {
 	if err := configuration.Validate(); err != nil {
 		return nil, err
 	}
-	if hub == nil {
-		return nil, errors.New("native rendezvous hub is required")
+	if roomHub == nil {
+		return nil, errors.New("native room hub is required")
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	service := &Service{
-		config:           configuration,
-		nativeRendezvous: hub,
-		connections:      make(chan struct{}, configuration.MaximumConnections),
-		candidateConnections: make(
-			chan struct{},
-			configuration.MaximumConnections-
-				configuration.ReservedCoordinatorConnections,
-		),
-		candidateRoutes: make(map[string]int),
+		config:         configuration,
+		roomHub:        roomHub,
+		friendPresence: newFriendPresenceStore(configuration.MaximumRendezvous * 64),
+		connections:    make(chan struct{}, configuration.MaximumConnections),
 		queueBudget: signaling.NewQueuedByteBudget(
 			configuration.MaximumQueuedBytesTotal,
 		),
@@ -134,7 +124,7 @@ func (s *Service) shutdown() {
 	s.socketsMu.Unlock()
 
 	s.cancel()
-	s.nativeRendezvous.Shutdown("server shutting down")
+	s.roomHub.Shutdown("server shutting down")
 	for _, socket := range activeSockets {
 		socket.Close(signaling.CloseGoingAway, "server shutting down")
 	}
@@ -166,36 +156,32 @@ func (s *Service) routes() http.Handler {
 		"GET /.well-known/clip-native-rendezvous",
 		s.nativeCapabilities,
 	)
+	mux.HandleFunc(
+		"PUT /api/native/v4/rooms/{room}",
+		s.createNativeRoom,
+	)
+	mux.HandleFunc(
+		"GET /api/native/v4/rooms/{room}",
+		s.nativeRoomStatus,
+	)
+	mux.HandleFunc(
+		"DELETE /api/native/v4/rooms/{room}",
+		s.removeNativeRoom,
+	)
+	mux.HandleFunc(
+		"GET /api/native/v4/rooms/{room}/socket",
+		s.nativeRoomWebSocket,
+	)
+	mux.HandleFunc(
+		"PUT /api/native/v4/friends/{routing}/presence",
+		s.putNativeFriendPresence,
+	)
+	mux.HandleFunc(
+		"GET /api/native/v4/friends/{routing}/presence",
+		s.getNativeFriendPresence,
+	)
 	mux.HandleFunc("GET /healthz", s.health)
 	mux.HandleFunc("GET /version", s.version)
-	mux.HandleFunc(
-		"PUT /api/native/v3/rendezvous/{rendezvous}",
-		s.advertiseNativeRendezvous,
-	)
-	mux.HandleFunc(
-		"GET /api/native/v3/rendezvous/{rendezvous}",
-		s.nativeRendezvousStatus,
-	)
-	mux.HandleFunc(
-		"DELETE /api/native/v3/rendezvous/{rendezvous}",
-		s.removeNativeRendezvous,
-	)
-	mux.HandleFunc(
-		"PUT /api/native/v3/rendezvous/{rendezvous}/session",
-		s.activateNativeSession,
-	)
-	mux.HandleFunc(
-		"DELETE /api/native/v3/rendezvous/{rendezvous}/session",
-		s.deactivateNativeSession,
-	)
-	mux.HandleFunc(
-		"GET /api/native/v3/rendezvous/{rendezvous}/owner",
-		s.nativeOwnerWebSocket,
-	)
-	mux.HandleFunc(
-		"GET /api/native/v3/rendezvous/{rendezvous}/candidate",
-		s.nativeCandidateWebSocket,
-	)
 	return s.securityHeaders(mux)
 }
 
@@ -206,7 +192,7 @@ func (s *Service) health(writer http.ResponseWriter, _ *http.Request) {
 func (s *Service) version(writer http.ResponseWriter, _ *http.Request) {
 	writeJSON(writer, http.StatusOK, protocol.VersionResponse{
 		Protocol:        protocol.Identifier,
-		ProtocolVersion: protocol.NativeRendezvousAPIVersion,
+		ProtocolVersion: protocol.NativeRoomAPIVersion,
 		ServerVersion:   s.config.ServerVersion,
 	})
 }
@@ -236,7 +222,8 @@ func (s *Service) cleanupLoop(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			s.nativeRendezvous.Cleanup()
+			s.roomHub.Cleanup()
+			s.friendPresence.cleanup()
 			s.admission.cleanup()
 		}
 	}

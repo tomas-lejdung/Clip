@@ -133,6 +133,49 @@ struct RemoteParticipantPresentationTests {
         )
     }
 
+    @Test("Temporary track loss retains only windows that already existed")
+    func temporaryTrackLossRetainsExistingWindows() {
+        let first = makeSource(instance: "first", stream: "video0")
+        let second = makeSource(
+            instance: "second",
+            stream: "video1",
+            isConnected: false
+        )
+        var presentation = RemoteParticipantPresentation<String>(
+            participantNamespace: Data([1])
+        )
+        _ = presentation.replaceAuthoritativeSources([first, second])
+        _ = presentation.upsertRemoteTrack("track-0", streamID: "video0")
+        let retainedWindow = NativeViewerWindowSnapshot(
+            id: .source(instanceID: first.sourceInstanceID),
+            source: first,
+            isVisible: false,
+            scaleMode: .native,
+            isFullScreen: true
+        )
+
+        #expect(presentation.windowSources(retaining: []) == [first])
+        _ = presentation.removeRemoteTrack(streamID: "video0")
+        let disconnectedFirst = makeSource(
+            instance: "first",
+            stream: "video0",
+            isConnected: false
+        )
+        _ = presentation.replaceAuthoritativeSources([
+            disconnectedFirst,
+            second,
+        ])
+
+        #expect(presentation.readySources.isEmpty)
+        #expect(
+            presentation.windowSources(retaining: [retainedWindow])
+                == [disconnectedFirst]
+        )
+
+        _ = presentation.replaceAuthoritativeSources([second])
+        #expect(presentation.windowSources(retaining: [retainedWindow]).isEmpty)
+    }
+
     @Test("Auto-shared source replacement does not inherit another source's presentation")
     func autoSharedSourcesKeepIndependentPresentation() {
         let initial = makeSource(
@@ -218,7 +261,8 @@ struct RemoteParticipantPresentationTests {
     private func makeSource(
         instance: String,
         stream: String,
-        title: String = "Document"
+        title: String = "Document",
+        isConnected: Bool = true
     ) -> NativeViewerSourceSnapshot {
         NativeViewerSourceSnapshot(
             sourceInstanceID: instance,
@@ -228,7 +272,7 @@ struct RemoteParticipantPresentationTests {
             pixelSize: CGSize(width: 1_280, height: 720),
             sourcePointSize: CGSize(width: 1_280, height: 720),
             isFocused: false,
-            isConnected: true,
+            isConnected: isConnected,
             stateRevision: 1
         )
     }

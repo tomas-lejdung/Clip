@@ -14,7 +14,6 @@ var environmentNames = []string{
 	"CLIP_SERVER_ROUTE_IDLE_TIMEOUT",
 	"CLIP_SERVER_MAXIMUM_RENDEZVOUS",
 	"CLIP_SERVER_MAXIMUM_CONNECTIONS",
-	"CLIP_SERVER_RESERVED_COORDINATOR_CONNECTIONS",
 	"CLIP_SERVER_MAXIMUM_CONNECTIONS_PER_SOURCE",
 	"CLIP_SERVER_RENDEZVOUS_LEASE_OPERATIONS_PER_MINUTE",
 	"CLIP_SERVER_WEBSOCKET_UPGRADES_PER_MINUTE",
@@ -58,7 +57,6 @@ func TestEnvironmentOverridesAreStrictlyParsed(t *testing.T) {
 	t.Setenv("CLIP_SERVER_ROUTE_IDLE_TIMEOUT", "90s")
 	t.Setenv("CLIP_SERVER_MAXIMUM_RENDEZVOUS", "50")
 	t.Setenv("CLIP_SERVER_MAXIMUM_CONNECTIONS", "75")
-	t.Setenv("CLIP_SERVER_RESERVED_COORDINATOR_CONNECTIONS", "10")
 	t.Setenv("CLIP_SERVER_MAXIMUM_CONNECTIONS_PER_SOURCE", "20")
 	t.Setenv("CLIP_SERVER_RENDEZVOUS_LEASE_OPERATIONS_PER_MINUTE", "30")
 	t.Setenv("CLIP_SERVER_WEBSOCKET_UPGRADES_PER_MINUTE", "120")
@@ -76,8 +74,7 @@ func TestEnvironmentOverridesAreStrictlyParsed(t *testing.T) {
 	if configuration.Address != ":9090" ||
 		configuration.LeaseDuration != 10*time.Minute ||
 		configuration.MaximumRendezvous != 50 ||
-		configuration.MaximumConnections != 75 ||
-		configuration.ReservedCoordinatorConnections != 10 {
+		configuration.MaximumConnections != 75 {
 		t.Fatalf("environment configuration = %#v", configuration)
 	}
 	if len(configuration.AllowedOrigins) != 2 || configuration.ICEServers[0].Credential != "temporary" || len(configuration.TrustedProxyCIDRs) != 2 || configuration.MaximumQueuedBytesTotal != 8_388_608 {

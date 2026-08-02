@@ -1,11 +1,27 @@
+import Foundation
 import SwiftUI
 
-private enum MeshRoomPopoverRoute: Equatable {
+enum MeshRoomPopoverRoute: Equatable {
     case overview
+    case sharedWindows
     case streamSettings
     case diagnostics
     case collaboration
     case roomAccess
+}
+
+enum MeshRoomPopoverNavigationPolicy {
+    static func routeAfterAdmissionUpdate(
+        currentRoute: MeshRoomPopoverRoute,
+        previousAdmissionIDs: [String],
+        currentAdmissionIDs: [String]
+    ) -> MeshRoomPopoverRoute {
+        let previous = Set(previousAdmissionIDs)
+        let hasNewRequest = currentAdmissionIDs.contains {
+            !previous.contains($0)
+        }
+        return hasNewRequest ? .overview : currentRoute
+    }
 }
 
 @MainActor
@@ -54,12 +70,66 @@ struct MeshRoomPopoverView: View {
                 route = .overview
             }
         }
+        .onChange(
+            of: model.snapshot.pendingAdmissions.map(\.id)
+        ) { previous, current in
+            route = MeshRoomPopoverNavigationPolicy
+                .routeAfterAdmissionUpdate(
+                    currentRoute: route,
+                    previousAdmissionIDs: previous,
+                    currentAdmissionIDs: current
+                )
+        }
+        .onChange(
+            of: model.snapshot.pendingFriendRequests.map(\.id)
+        ) { previous, current in
+            route = MeshRoomPopoverNavigationPolicy
+                .routeAfterAdmissionUpdate(
+                    currentRoute: route,
+                    previousAdmissionIDs: previous,
+                    currentAdmissionIDs: current
+                )
+        }
+        .confirmationDialog(
+            String(localized: "Change this invite?"),
+            isPresented: Binding(
+                get: {
+                    model.isInviteChangeConfirmationPresented
+                },
+                set: { presented in
+                    if !presented {
+                        model.cancelInviteChange()
+                    }
+                }
+            ),
+            titleVisibility: .visible
+        ) {
+            Button(
+                String(localized: "Change Invite"),
+                role: .destructive,
+                action: model.confirmInviteChange
+            )
+            Button(
+                String(localized: "Cancel"),
+                role: .cancel,
+                action: model.cancelInviteChange
+            )
+        } message: {
+            Text(
+                String(
+                    localized:
+                        "The current link will stop working. Everyone already in the room stays connected."
+                )
+            )
+        }
     }
 
     private var routeTitle: String {
         switch route {
         case .overview:
             String(localized: "Live Share")
+        case .sharedWindows:
+            String(localized: "Shared With You")
         case .streamSettings:
             String(localized: "Stream Settings")
         case .diagnostics:
@@ -75,6 +145,8 @@ struct MeshRoomPopoverView: View {
         switch route {
         case .overview:
             "rectangle.inset.filled.and.person.filled"
+        case .sharedWindows:
+            "square.3.layers.3d.top.filled"
         case .streamSettings:
             "slider.horizontal.3"
         case .diagnostics:
@@ -90,6 +162,8 @@ struct MeshRoomPopoverView: View {
         switch route {
         case .overview:
             "\(model.snapshot.roomName) · \(model.snapshot.phase.title)"
+        case .sharedWindows:
+            sharedWindowsSummary
         default:
             model.snapshot.roomName
         }
@@ -99,7 +173,7 @@ struct MeshRoomPopoverView: View {
         switch model.snapshot.phase {
         case .live:
             .red
-        case .reconnecting, .electingCreator, .leaderlessLocked:
+        case .reconnecting:
             .orange
         case .failed:
             .orange
@@ -110,7 +184,7 @@ struct MeshRoomPopoverView: View {
 
     private var subtitleTint: Color {
         switch model.snapshot.phase {
-        case .failed, .leaderlessLocked:
+        case .failed:
             .orange
         default:
             .secondary
@@ -139,6 +213,8 @@ struct MeshRoomPopoverView: View {
         switch route {
         case .overview:
             overview
+        case .sharedWindows:
+            sharedWindows
         case .streamSettings:
             streamSettings
         case .diagnostics:
@@ -152,27 +228,11 @@ struct MeshRoomPopoverView: View {
 
     private var overview: some View {
         VStack(alignment: .leading, spacing: ClipPopoverDesign.paneSpacing) {
-            authorityBanner
+            roomStatusBanner
+            joinRequests
+            friendRequests
             roomSummary
             localShareSection
-            localAudioSection
-
-            ForEach(model.snapshot.remoteParticipants) { participant in
-                remoteParticipantSection(participant)
-            }
-
-            if model.snapshot.remoteParticipants.contains(where: {
-                !$0.sources.isEmpty
-            }) {
-                ClipPopoverButton(
-                    String(localized: "Bring All Shared Windows to Front"),
-                    systemImage: "square.3.layers.3d.top.filled",
-                    fillsWidth: true,
-                    accessibilityIdentifier:
-                        "clip.meshRoom.bringAllRemoteWindows",
-                    action: model.bringAllRemoteWindowsToFront
-                )
-            }
 
             navigation
             terminalMessage
@@ -180,7 +240,7 @@ struct MeshRoomPopoverView: View {
     }
 
     @ViewBuilder
-    private var authorityBanner: some View {
+    private var roomStatusBanner: some View {
         if let notice = model.snapshot.statusNotice {
             MeshRoomNoticeView(
                 title: notice.title,
@@ -190,36 +250,13 @@ struct MeshRoomPopoverView: View {
             )
         }
 
-        switch model.snapshot.phase {
-        case .electingCreator:
-            MeshRoomNoticeView(
-                title: String(localized: "Choosing a new creator"),
-                message: String(
-                    localized:
-                        "Existing sharing continues while participants certify the next room creator."
-                ),
-                systemImage: "person.crop.circle.badge.clock",
-                tint: .orange
-            )
-        case .leaderlessLocked:
-            MeshRoomNoticeView(
-                title: String(localized: "Room membership is locked"),
-                message: String(
-                    localized:
-                        "Existing peer connections may keep sharing, but nobody can join or change membership until a majority can elect a creator."
-                ),
-                systemImage: "lock.trianglebadge.exclamationmark",
-                tint: .orange
-            )
-        case let .failed(message):
+        if case let .failed(message) = model.snapshot.phase {
             MeshRoomNoticeView(
                 title: String(localized: "Live Share failed"),
                 message: message,
                 systemImage: "exclamationmark.triangle.fill",
                 tint: .orange
             )
-        default:
-            EmptyView()
         }
     }
 
@@ -257,13 +294,13 @@ struct MeshRoomPopoverView: View {
                         Text(model.snapshot.roomName)
                             .font(.subheadline.weight(.semibold))
                             .lineLimit(1)
-                        Text(roomAuthoritySummary)
+                        Text(roomCreatorSummary)
                             .font(.caption2)
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
                     }
                     Spacer(minLength: 8)
-                    if model.snapshot.isLocalLeader,
+                    if model.snapshot.isLocalCreator,
                        model.snapshot.invite != nil {
                         ClipPopoverButton(
                             model.copiedInvite
@@ -294,18 +331,84 @@ struct MeshRoomPopoverView: View {
                 ) {
                     route = .roomAccess
                 }
+
+                ClipPopoverRowDivider(leadingInset: 12)
+
+                ClipPopoverNavigationRow(
+                    String(localized: "Shared With You"),
+                    subtitle: sharedWindowsSummary,
+                    systemImage: "square.3.layers.3d.top.filled",
+                    accessibilityIdentifier:
+                        "clip.meshRoom.navigation.sharedWindows"
+                ) {
+                    route = .sharedWindows
+                }
             }
         }
     }
 
-    private var roomAuthoritySummary: String {
-        if model.snapshot.isLocalLeader {
+    private var sharedWindowsSummary: String {
+        let windows = model.snapshot.remoteSharedSourceCount
+        let people = model.snapshot.sharingRemoteParticipantCount
+        switch (windows, people) {
+        case (0, _):
+            return String(localized: "No shared windows")
+        case (1, 1):
+            return String(localized: "1 window from 1 person")
+        case (1, let people):
+            return String(localized: "1 window from \(people) people")
+        case (let windows, 1):
+            return String(localized: "\(windows) windows from 1 person")
+        case (let windows, let people):
+            return String(
+                localized: "\(windows) windows from \(people) people"
+            )
+        }
+    }
+
+    private var sharedWindows: some View {
+        VStack(alignment: .leading, spacing: ClipPopoverDesign.paneSpacing) {
+            let sharingParticipants = model.snapshot.remoteParticipants.filter {
+                !$0.sources.isEmpty || $0.systemAudioAvailable
+            }
+
+            if sharingParticipants.isEmpty {
+                ClipPopoverSection {
+                    MeshRoomEmptyCardMessage(
+                        String(
+                            localized:
+                                "Shared windows will appear here when another participant starts sharing."
+                        )
+                    )
+                }
+            } else {
+                if sharingParticipants.contains(where: { !$0.sources.isEmpty }) {
+                    ClipPopoverButton(
+                        String(localized: "Bring All Shared Windows to Front"),
+                        systemImage: "square.3.layers.3d.top.filled",
+                        fillsWidth: true,
+                        accessibilityIdentifier:
+                            "clip.meshRoom.bringAllRemoteWindows",
+                        action: model.bringAllRemoteWindowsToFront
+                    )
+                }
+
+                ForEach(sharingParticipants) { participant in
+                    remoteParticipantSection(participant)
+                }
+            }
+        }
+        .accessibilityIdentifier("clip.meshRoom.sharedWindows")
+    }
+
+    private var roomCreatorSummary: String {
+        if model.snapshot.isLocalCreator {
             return String(localized: "You manage this room")
         }
-        if let leader = model.snapshot.currentLeaderDisplayName {
-            return String(localized: "Managed by \(leader)")
+        if let creator = model.snapshot.creatorDisplayName {
+            return String(localized: "Managed by \(creator)")
         }
-        return String(localized: "Leader election required")
+        return String(localized: "Room creator unavailable")
     }
 
     private var roomAccessSummary: String {
@@ -315,9 +418,15 @@ struct MeshRoomPopoverView: View {
                     "\(model.snapshot.pendingAdmissions.count) waiting for approval"
             )
         }
-        return model.snapshot.isLocalLeader
+        if !model.snapshot.pendingFriendRequests.isEmpty {
+            return String(
+                localized:
+                    "\(model.snapshot.pendingFriendRequests.count) friend requests"
+            )
+        }
+        return model.snapshot.isLocalCreator
             ? String(localized: "Invite, approvals, and participants")
-            : String(localized: "Participants and room authority")
+            : String(localized: "Participants and room creator")
     }
 
     private var localShareSection: some View {
@@ -429,6 +538,10 @@ struct MeshRoomPopoverView: View {
                         .padding(.horizontal, ClipPopoverDesign.rowHorizontalPadding)
                         .padding(.bottom, ClipPopoverDesign.rowVerticalPadding)
                 }
+
+                ClipPopoverRowDivider()
+
+                localAudioControls
             }
         }
     }
@@ -440,33 +553,31 @@ struct MeshRoomPopoverView: View {
         return model.snapshot.fullscreen.displayName
     }
 
-    private var localAudioSection: some View {
-        ClipPopoverSection {
-            VStack(spacing: 0) {
-                ClipPopoverToggleRow(
-                    String(localized: "Share System Audio"),
-                    subtitle: String(
-                        localized:
-                            "Each participant controls your audio independently."
-                    ),
-                    systemImage: "speaker.wave.2",
-                    isEnabled:
-                        model.snapshot.phase.allowsMediaChanges
-                            && model.snapshot.settings.canChangeSystemAudio,
-                    accessibilityIdentifier: "clip.meshRoom.systemAudio",
-                    isOn: Binding(
-                        get: {
-                            model.snapshot.settings.systemAudioEnabled
-                        },
-                        set: { model.setSystemAudioEnabled($0) }
-                    )
+    private var localAudioControls: some View {
+        VStack(spacing: 0) {
+            ClipPopoverToggleRow(
+                String(localized: "Share System Audio"),
+                subtitle: String(
+                    localized:
+                        "Each participant controls your audio independently."
+                ),
+                systemImage: "speaker.wave.2",
+                isEnabled:
+                    model.snapshot.phase.allowsMediaChanges
+                        && model.snapshot.settings.canChangeSystemAudio,
+                accessibilityIdentifier: "clip.meshRoom.systemAudio",
+                isOn: Binding(
+                    get: {
+                        model.snapshot.settings.systemAudioEnabled
+                    },
+                    set: { model.setSystemAudioEnabled($0) }
                 )
+            )
 
-                if model.snapshot.fullscreen.isOn,
-                   model.snapshot.settings.systemAudioEnabled {
-                    ClipPopoverRowDivider()
-                    audioExclusionMenu
-                }
+            if model.snapshot.fullscreen.isOn,
+               model.snapshot.settings.systemAudioEnabled {
+                ClipPopoverRowDivider()
+                audioExclusionMenu
             }
         }
     }
@@ -601,8 +712,8 @@ struct MeshRoomPopoverView: View {
         _ participant: MeshRoomRemoteParticipantSnapshot
     ) -> String {
         var values = [participant.displayName]
-        if participant.id == model.snapshot.currentLeaderParticipantID {
-            values.append(String(localized: "Leader"))
+        if participant.id == model.snapshot.creatorParticipantID {
+            values.append(String(localized: "Creator"))
         }
         values.append(participant.route.title)
         return values.joined(separator: " · ")
@@ -887,7 +998,12 @@ struct MeshRoomPopoverView: View {
                                 set: { model.setFrameRate($0) }
                             )
                         ) {
-                            ForEach(LiveShareFrameRate.allCases) { rate in
+                            ForEach(
+                                model.snapshot.settings.availableFrameRates
+                                    .sorted {
+                                        $0.rawValue < $1.rawValue
+                                    }
+                            ) { rate in
                                 Text("\(rate.rawValue)")
                                     .tag(rate)
                             }
@@ -1239,17 +1355,17 @@ struct MeshRoomPopoverView: View {
 
     private var roomAccess: some View {
         VStack(alignment: .leading, spacing: ClipPopoverDesign.paneSpacing) {
-            ClipPopoverSection(String(localized: "Authority")) {
+            ClipPopoverSection(String(localized: "Room Creator")) {
                 HStack(spacing: 10) {
                     Image(systemName: "crown.fill")
                         .foregroundStyle(.yellow)
                     VStack(alignment: .leading, spacing: 2) {
                         Text(
-                            model.snapshot.currentLeaderDisplayName
-                                ?? String(localized: "Election required")
+                            model.snapshot.creatorDisplayName
+                                ?? String(localized: "Room creator unavailable")
                         )
                         .font(.subheadline.weight(.medium))
-                        Text(authorityDetail)
+                        Text(creatorDetail)
                             .font(.caption2)
                             .foregroundStyle(.secondary)
                     }
@@ -1259,36 +1375,43 @@ struct MeshRoomPopoverView: View {
                 .padding(.vertical, ClipPopoverDesign.rowVerticalPadding)
             }
 
-            if model.snapshot.isLocalLeader {
-                leaderAccess
-                pendingAdmissions
+            if model.snapshot.isLocalCreator {
+                creatorAccess
             }
 
             participantsManagement
         }
     }
 
-    private var authorityDetail: String {
-        switch model.snapshot.phase {
-        case .electingCreator:
-            String(localized: "Election in progress")
-        case .leaderlessLocked:
-            String(localized: "No certified creator")
-        default:
-            model.snapshot.isLocalLeader
-                ? String(localized: "You manage admission and membership")
-                : String(localized: "Manages admission and membership")
-        }
+    private var creatorDetail: String {
+        model.snapshot.isLocalCreator
+            ? String(localized: "You manage admission and membership")
+            : String(localized: "Manages admission and membership")
     }
 
     @ViewBuilder
-    private var leaderAccess: some View {
+    private var creatorAccess: some View {
         ClipPopoverSection(String(localized: "Invite & Access")) {
             VStack(spacing: 0) {
                 if let invite = model.snapshot.invite {
-                    HStack {
-                        Text(invite.roomCode)
-                            .font(.subheadline.monospaced().weight(.medium))
+                    HStack(spacing: 8) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(invite.codeLabel)
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                            Text(invite.roomCode)
+                                .font(
+                                    .subheadline.monospaced().weight(.medium)
+                                )
+                            Text(invite.reuseDetail)
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                        .accessibilityElement(children: .combine)
+                        .accessibilityIdentifier(
+                            "clip.meshRoom.inviteCode"
+                        )
                         Spacer()
                         ClipPopoverButton(
                             model.copiedInvite
@@ -1298,14 +1421,18 @@ struct MeshRoomPopoverView: View {
                                 ? "checkmark"
                                 : "doc.on.doc",
                             isEnabled: invite.isAvailable,
+                            accessibilityIdentifier:
+                                "clip.meshRoom.roomAccess.copyInvite",
                             action: model.copyInvite
                         )
                         ClipPopoverButton(
-                            String(localized: "New Invite"),
+                            String(localized: "Change"),
                             systemImage: "arrow.triangle.2.circlepath",
                             isEnabled:
                                 model.snapshot.canChangeAccessWord,
-                            action: model.requestNewInvite
+                            accessibilityIdentifier:
+                                "clip.meshRoom.changeInvite",
+                            action: model.requestInviteChangeConfirmation
                         )
                     }
                     .padding(.horizontal, ClipPopoverDesign.rowHorizontalPadding)
@@ -1350,25 +1477,63 @@ struct MeshRoomPopoverView: View {
                     .padding(.horizontal, ClipPopoverDesign.rowHorizontalPadding)
                     .padding(.vertical, ClipPopoverDesign.rowVerticalPadding)
                 }
+
+                ClipPopoverRowDivider(leadingInset: 12)
+                ClipPopoverToggleRow(
+                    String(localized: "Ask Before Joining"),
+                    subtitle: String(
+                        localized:
+                            "Require Allow or Deny after an invite has been verified."
+                    ),
+                    systemImage: "person.crop.circle.badge.questionmark",
+                    isEnabled:
+                        model.snapshot.canChangeAskBeforeJoining,
+                    accessibilityIdentifier:
+                        "clip.meshRoom.askBeforeJoining",
+                    isOn: Binding(
+                        get: { model.snapshot.askBeforeJoining },
+                        set: { model.setAskBeforeJoining($0) }
+                    )
+                )
             }
         }
     }
 
     @ViewBuilder
-    private var pendingAdmissions: some View {
-        if !model.snapshot.pendingAdmissions.isEmpty {
+    private var joinRequests: some View {
+        if model.snapshot.isLocalCreator,
+           !model.snapshot.pendingAdmissions.isEmpty {
+            let count = model.snapshot.pendingAdmissions.count
             ClipPopoverSection(
-                String(
-                    localized:
-                        "Waiting · \(model.snapshot.pendingAdmissions.count)"
-                )
+                count == 1
+                    ? String(localized: "Join Request")
+                    : String(localized: "Join Requests")
             ) {
+                Label(
+                    String(localized: "\(count) waiting"),
+                    systemImage: "bell.badge.fill"
+                )
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.orange)
+                .accessibilityIdentifier(
+                    "clip.meshRoom.joinRequests.count"
+                )
+            } content: {
                 VStack(spacing: 0) {
                     ForEach(
                         Array(model.snapshot.pendingAdmissions.enumerated()),
                         id: \.element.id
                     ) { index, admission in
-                        HStack(spacing: 8) {
+                        HStack(spacing: 10) {
+                            Image(
+                                systemName:
+                                    "person.crop.circle.badge.questionmark"
+                            )
+                            .font(.title3)
+                            .foregroundStyle(.orange)
+                            .frame(width: 24)
+                            .accessibilityHidden(true)
+
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(admission.displayName)
                                     .font(.subheadline.weight(.medium))
@@ -1381,13 +1546,17 @@ struct MeshRoomPopoverView: View {
                             Spacer()
                             ClipPopoverButton(
                                 String(localized: "Deny"),
-                                prominence: .secondary
+                                prominence: .secondary,
+                                accessibilityIdentifier:
+                                    "clip.meshRoom.joinRequest.deny.\(admission.id)"
                             ) {
                                 model.denyAdmission(admission.id)
                             }
                             ClipPopoverButton(
                                 String(localized: "Allow"),
-                                prominence: .primary
+                                prominence: .primary,
+                                accessibilityIdentifier:
+                                    "clip.meshRoom.joinRequest.allow.\(admission.id)"
                             ) {
                                 model.approveAdmission(admission.id)
                             }
@@ -1410,6 +1579,91 @@ struct MeshRoomPopoverView: View {
         }
     }
 
+    @ViewBuilder
+    private var friendRequests: some View {
+        if !model.snapshot.pendingFriendRequests.isEmpty {
+            let count = model.snapshot.pendingFriendRequests.count
+            ClipPopoverSection(
+                count == 1
+                    ? String(localized: "Friend Request")
+                    : String(localized: "Friend Requests")
+            ) {
+                Label(
+                    String(localized: "\(count) waiting"),
+                    systemImage: "person.crop.circle.badge.plus"
+                )
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.blue)
+                .accessibilityIdentifier(
+                    "clip.meshRoom.friendRequests.count"
+                )
+            } content: {
+                VStack(spacing: 0) {
+                    ForEach(
+                        Array(
+                            model.snapshot.pendingFriendRequests.enumerated()
+                        ),
+                        id: \.element.id
+                    ) { index, request in
+                        HStack(spacing: 10) {
+                            Image(
+                                systemName:
+                                    "person.crop.circle.badge.plus"
+                            )
+                            .font(.title3)
+                            .foregroundStyle(.blue)
+                            .frame(width: 24)
+                            .accessibilityHidden(true)
+
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(request.displayName)
+                                    .font(.subheadline.weight(.medium))
+                                Text(
+                                    request.deviceName
+                                        ?? String(
+                                            localized:
+                                                "Wants to add you as a friend"
+                                        )
+                                )
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            ClipPopoverButton(
+                                String(localized: "Deny"),
+                                prominence: .secondary,
+                                accessibilityIdentifier:
+                                    "clip.meshRoom.friendRequest.deny.\(request.id)"
+                            ) {
+                                model.denyFriendRequest(request.id)
+                            }
+                            ClipPopoverButton(
+                                String(localized: "Allow"),
+                                prominence: .primary,
+                                accessibilityIdentifier:
+                                    "clip.meshRoom.friendRequest.allow.\(request.id)"
+                            ) {
+                                model.allowFriendRequest(request.id)
+                            }
+                        }
+                        .padding(
+                            .horizontal,
+                            ClipPopoverDesign.rowHorizontalPadding
+                        )
+                        .padding(
+                            .vertical,
+                            ClipPopoverDesign.rowVerticalPadding
+                        )
+                        if index
+                            < model.snapshot.pendingFriendRequests.count - 1 {
+                            ClipPopoverRowDivider(leadingInset: 12)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     private var participantsManagement: some View {
         ClipPopoverSection(
             String(
@@ -1423,9 +1677,10 @@ struct MeshRoomPopoverView: View {
                     name: model.snapshot.localParticipant.displayName,
                     detail: model.snapshot.localParticipant.deviceName,
                     isLocal: true,
-                    isLeader:
+                    isCreator:
                         model.snapshot.localParticipant.id
-                            == model.snapshot.currentLeaderParticipantID
+                            == model.snapshot.creatorParticipantID,
+                    friendshipState: nil
                 )
 
                 ForEach(model.snapshot.remoteParticipants) { participant in
@@ -1436,9 +1691,10 @@ struct MeshRoomPopoverView: View {
                         detail: participant.deviceName
                             ?? participant.route.title,
                         isLocal: false,
-                        isLeader:
+                        isCreator:
                             participant.id
-                                == model.snapshot.currentLeaderParticipantID
+                                == model.snapshot.creatorParticipantID,
+                        friendshipState: participant.friendshipState
                     )
                 }
             }
@@ -1450,7 +1706,8 @@ struct MeshRoomPopoverView: View {
         name: String,
         detail: String?,
         isLocal: Bool,
-        isLeader: Bool
+        isCreator: Bool,
+        friendshipState: MeshRoomFriendshipState?
     ) -> some View {
         HStack(spacing: 9) {
             Circle()
@@ -1465,8 +1722,8 @@ struct MeshRoomPopoverView: View {
                             .font(.caption2)
                             .foregroundStyle(.secondary)
                     }
-                    if isLeader {
-                        Text(String(localized: "Leader"))
+                    if isCreator {
+                        Text(String(localized: "Creator"))
                             .font(.caption2.weight(.semibold))
                             .foregroundStyle(.orange)
                     }
@@ -1478,22 +1735,85 @@ struct MeshRoomPopoverView: View {
                 }
             }
             Spacer()
-            if model.snapshot.isLocalLeader, !isLocal {
-                Button(role: .destructive) {
-                    model.removeParticipant(id)
-                } label: {
-                    Image(systemName: "person.crop.circle.badge.minus")
+            if !isLocal {
+                HStack(spacing: 8) {
+                    friendshipControl(
+                        participantID: id,
+                        state: friendshipState ?? .available
+                    )
+                    if model.snapshot.isLocalCreator {
+                        Button(role: .destructive) {
+                            model.removeParticipant(id)
+                        } label: {
+                            Image(
+                                systemName:
+                                    "person.crop.circle.badge.minus"
+                            )
+                        }
+                        .buttonStyle(.borderless)
+                        .help(String(localized: "Remove from room"))
+                        .accessibilityLabel(
+                            String(localized: "Remove from room")
+                        )
+                        .accessibilityIdentifier(
+                            "clip.meshRoom.participant.remove.\(id)"
+                        )
+                    }
                 }
-                .buttonStyle(.borderless)
-                .help(String(localized: "Remove from room"))
-                .accessibilityLabel(String(localized: "Remove from room"))
-                .accessibilityIdentifier(
-                    "clip.meshRoom.participant.remove.\(id)"
-                )
             }
         }
         .padding(.horizontal, ClipPopoverDesign.rowHorizontalPadding)
         .padding(.vertical, ClipPopoverDesign.rowVerticalPadding)
+    }
+
+    @ViewBuilder
+    private func friendshipControl(
+        participantID: String,
+        state: MeshRoomFriendshipState
+    ) -> some View {
+        switch state {
+        case .available:
+            ClipPopoverButton(
+                String(localized: "Add Friend"),
+                systemImage: "person.badge.plus",
+                prominence: .secondary,
+                accessibilityIdentifier:
+                    "clip.meshRoom.participant.addFriend.\(participantID)"
+            ) {
+                model.addFriend(participantID)
+            }
+        case .incomingRequest:
+            Label(
+                String(localized: "Needs Reply"),
+                systemImage: "person.crop.circle.badge.questionmark"
+            )
+            .font(.caption.weight(.medium))
+            .foregroundStyle(.blue)
+        case .requestPending:
+            Label(
+                String(localized: "Request Sent"),
+                systemImage: "clock"
+            )
+            .font(.caption.weight(.medium))
+            .foregroundStyle(.secondary)
+        case .trusted:
+            Label(
+                String(localized: "Friend"),
+                systemImage: "person.crop.circle.badge.checkmark"
+            )
+            .font(.caption.weight(.medium))
+            .foregroundStyle(.green)
+        case .failed:
+            ClipPopoverButton(
+                String(localized: "Retry"),
+                systemImage: "arrow.clockwise",
+                prominence: .secondary,
+                accessibilityIdentifier:
+                    "clip.meshRoom.participant.retryFriend.\(participantID)"
+            ) {
+                model.retryFriendship(participantID)
+            }
+        }
     }
 
     @ViewBuilder
@@ -1534,7 +1854,7 @@ struct MeshRoomPopoverView: View {
                         action: model.leaveRoom
                     )
 
-                    if model.snapshot.isLocalLeader {
+                    if model.snapshot.isLocalCreator {
                         Button(role: .destructive) {
                             model.endRoomForEveryone()
                         } label: {
@@ -1761,15 +2081,27 @@ private struct MeshRoomPeerDiagnosticsRow: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text(peer.displayName)
                     .font(.subheadline.weight(.medium))
-                Text(peer.route.title)
+                Text(peerConnectionDetail)
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }
             Spacer()
-            if let roundTrip = peer.roundTripMilliseconds {
-                Text("\(Int(roundTrip.rounded())) ms")
-                    .font(.caption.monospacedDigit())
+            VStack(alignment: .trailing, spacing: 2) {
+                if let roundTrip = peer.roundTripMilliseconds {
+                    Text("\(Int(roundTrip.rounded())) ms")
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                }
+                if let available = peer.availableOutgoingBitrateBps {
+                    Text(
+                        String(
+                            localized:
+                                "\(formatBitrate(Int(min(available, Double(Int.max))))) available"
+                        )
+                    )
+                    .font(.caption2.monospacedDigit())
                     .foregroundStyle(.secondary)
+                }
             }
             Text(
                 String(localized: "\(peer.packetsLost) lost")
@@ -1779,6 +2111,12 @@ private struct MeshRoomPeerDiagnosticsRow: View {
         }
         .padding(.horizontal, ClipPopoverDesign.rowHorizontalPadding)
         .padding(.vertical, ClipPopoverDesign.rowVerticalPadding)
+    }
+
+    private var peerConnectionDetail: String {
+        let sent = formatByteCount(peer.bytesSent)
+        let received = formatByteCount(peer.bytesReceived)
+        return "\(peer.route.title) · ↑ \(sent) · ↓ \(received)"
     }
 }
 
@@ -1830,6 +2168,13 @@ private func formatBitrate(_ bitsPerSecond: Int) -> String {
         return "\(megabits.formatted(.number.precision(.fractionLength(0...1)))) Mbps"
     }
     return "\(bitsPerSecond / 1_000) kbps"
+}
+
+private func formatByteCount(_ bytes: UInt64) -> String {
+    ByteCountFormatter.string(
+        fromByteCount: Int64(min(bytes, UInt64(Int64.max))),
+        countStyle: .file
+    )
 }
 
 /// Reusable entry point for editing codec-specific sender controls. This is

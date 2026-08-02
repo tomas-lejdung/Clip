@@ -1,0 +1,103 @@
+{
+  "roomId": "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE",
+  "creatorHandle": "AgICAgICAgICAgICAgICAg",
+  "memberHandle": "AwMDAwMDAwMDAwMDAwMDAw",
+  "messages": [
+    {
+      "name": "candidate-opened",
+      "message": {
+        "type": "candidate-opened",
+        "version": 4,
+        "candidateHandle": "AwMDAwMDAwMDAwMDAwMDAw",
+        "roomDescriptor": "BQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQU"
+      }
+    },
+    {
+      "name": "creator-member-admitted",
+      "message": {
+        "type": "member-admitted",
+        "version": 4,
+        "memberHandle": "AgICAgICAgICAgICAgICAg",
+        "roster": {
+          "revision": 2,
+          "creatorHandle": "AgICAgICAgICAgICAgICAg",
+          "members": [
+            {
+              "handle": "AgICAgICAgICAgICAgICAg",
+              "descriptor": "BQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQU",
+              "connected": true
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "member-admitted",
+      "message": {
+        "type": "member-admitted",
+        "version": 4,
+        "memberHandle": "AwMDAwMDAwMDAwMDAwMDAw",
+        "reconnectCapability": "BAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQ",
+        "roster": {
+          "revision": 3,
+          "creatorHandle": "AgICAgICAgICAgICAgICAg",
+          "members": [
+            {
+              "handle": "AgICAgICAgICAgICAgICAg",
+              "descriptor": "BQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQU",
+              "connected": true
+            },
+            {
+              "handle": "AwMDAwMDAwMDAwMDAwMDAw",
+              "descriptor": "BgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgY",
+              "connected": true
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "roster-snapshot",
+      "message": {
+        "type": "roster-snapshot",
+        "version": 4,
+        "roster": {
+          "revision": 3,
+          "creatorHandle": "AgICAgICAgICAgICAgICAg",
+          "members": [
+            {
+              "handle": "AgICAgICAgICAgICAgICAg",
+              "descriptor": "BQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQU",
+              "connected": true
+            },
+            {
+              "handle": "AwMDAwMDAwMDAwMDAwMDAw",
+              "descriptor": "BgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgY",
+              "connected": true
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "pair-signal",
+      "message": {
+        "type": "pair-signal",
+        "version": 4,
+        "sequence": 1,
+        "payload": "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcH",
+        "from": "AgICAgICAgICAgICAgICAg",
+        "to": "AwMDAwMDAwMDAwMDAwMDAw",
+        "pairId": "LjIVx8KDdzl4gf3-NxR_0Rs1BVtaVMO0DB89lbPmvHo"
+      }
+    },
+    {
+      "name": "room-ended",
+      "message": {
+        "type": "room-ended",
+        "version": 4,
+        "reason": "creator-left"
+      }
+    }
+  ]
+}

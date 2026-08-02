@@ -50,6 +50,225 @@ struct LiveShareCapturePolicyTests {
         #expect(!configuration.showsClickHighlights)
     }
 
+    @Test("encoder dimensions preserve the established even-pixel contract")
+    func videoEncoderGeometry() {
+        #expect(
+            LiveShareCapturePolicy.videoEncoderCompatibleDimension(2_763)
+                == 2_762
+        )
+        #expect(
+            LiveShareCapturePolicy.videoEncoderCompatibleDimension(1_203)
+                == 1_202
+        )
+        #expect(
+            LiveShareCapturePolicy.videoEncoderCompatibleDimension(1_920)
+                == 1_920
+        )
+        #expect(
+            LiveShareCapturePolicy.videoEncoderCompatibleDimension(1)
+                == 2
+        )
+    }
+
+    @Test("H.264 aspect-fits large sources while software codecs stay native")
+    func codecCaptureGeometry() {
+        #expect(LiveShareCapturePolicy.captureGeometry(
+            sourceWidth: 1_920,
+            sourceHeight: 1_080,
+            codec: .h264
+        ) == LiveShareCaptureGeometry(width: 1_920, height: 1_080))
+        #expect(LiveShareCapturePolicy.captureGeometry(
+            sourceWidth: 1_605,
+            sourceHeight: 1_108,
+            codec: .h264
+        ) == LiveShareCaptureGeometry(width: 1_605, height: 1_108))
+        #expect(LiveShareCapturePolicy.streamGeometry(
+            captureGeometry: LiveShareCaptureGeometry(
+                width: 1_605,
+                height: 1_108
+            ),
+            codec: .h264
+        ) == LiveShareCaptureGeometry(width: 1_604, height: 1_108))
+        #expect(LiveShareCapturePolicy.streamGeometry(
+            captureGeometry: LiveShareCaptureGeometry(
+                width: 1_605,
+                height: 1_109
+            ),
+            codec: .vp8
+        ) == LiveShareCaptureGeometry(width: 1_605, height: 1_109))
+
+        #expect(LiveShareCapturePolicy.captureGeometry(
+            sourceWidth: 5_120,
+            sourceHeight: 2_880,
+            codec: .h264
+        ) == LiveShareCaptureGeometry(width: 4_096, height: 2_304))
+        #expect(LiveShareCapturePolicy.captureGeometry(
+            sourceWidth: 5_120,
+            sourceHeight: 1_440,
+            codec: .h264
+        ) == LiveShareCaptureGeometry(width: 4_096, height: 1_152))
+        #expect(LiveShareCapturePolicy.captureGeometry(
+            sourceWidth: 2_880,
+            sourceHeight: 5_120,
+            codec: .h264
+        ) == LiveShareCaptureGeometry(width: 2_304, height: 4_096))
+        #expect(LiveShareCapturePolicy.captureGeometry(
+            sourceWidth: 6_016,
+            sourceHeight: 3_384,
+            codec: .h264
+        ) == LiveShareCaptureGeometry(width: 4_096, height: 2_304))
+
+        let sixtyFPSH264 = LiveShareCapturePolicy.captureGeometry(
+            sourceWidth: 6_016,
+            sourceHeight: 3_384,
+            codec: .h264,
+            framesPerSecond: 60
+        )
+        let sixtyFPSMacroblocks = ((sixtyFPSH264.width + 15) / 16)
+            * ((sixtyFPSH264.height + 15) / 16)
+        #expect(sixtyFPSMacroblocks * 60 <= 2_073_600)
+        #expect(
+            sixtyFPSH264
+                != LiveShareCaptureGeometry(width: 4_096, height: 2_304)
+        )
+
+        #expect(LiveShareCapturePolicy.captureGeometry(
+            sourceWidth: 6_016,
+            sourceHeight: 3_384,
+            codec: .vp8,
+            framesPerSecond: 60
+        ) == LiveShareCaptureGeometry(width: 6_016, height: 3_384))
+        #expect(LiveShareCapturePolicy.captureGeometry(
+            sourceWidth: 6_017,
+            sourceHeight: 3_385,
+            codec: .vp8
+        ) == LiveShareCaptureGeometry(width: 6_017, height: 3_385))
+        for codec in [LiveShareVideoCodec.vp9, .av1] {
+            #expect(LiveShareCapturePolicy.captureGeometry(
+                sourceWidth: 6_017,
+                sourceHeight: 3_385,
+                codec: codec
+            ) == LiveShareCaptureGeometry(width: 6_017, height: 3_385))
+            #expect(LiveShareCapturePolicy.streamGeometry(
+                captureGeometry: LiveShareCaptureGeometry(
+                    width: 6_017,
+                    height: 3_385
+                ),
+                codec: codec
+            ) == LiveShareCaptureGeometry(width: 6_017, height: 3_385))
+        }
+    }
+
+    @Test("H.264 geometry stays within hardware side, luma, and macroblock limits")
+    func h264GeometryLimits() {
+        for (width, height) in [
+            (5_120, 2_880),
+            (6_016, 3_384),
+            (8_000, 1_000),
+            (1_000, 8_000),
+            (4_097, 2_305),
+        ] {
+            let geometry = LiveShareCapturePolicy.captureGeometry(
+                sourceWidth: width,
+                sourceHeight: height,
+                codec: .h264
+            )
+            let streamGeometry = LiveShareCapturePolicy.streamGeometry(
+                captureGeometry: geometry,
+                codec: .h264
+            )
+            #expect(streamGeometry.width <= 4_096)
+            #expect(streamGeometry.height <= 4_096)
+            #expect(streamGeometry.width * streamGeometry.height <= 4_096 * 2_304)
+            #expect(
+                ((streamGeometry.width + 15) / 16)
+                    * ((streamGeometry.height + 15) / 16)
+                    <= 36_864
+            )
+            #expect(streamGeometry.width.isMultiple(of: 2))
+            #expect(streamGeometry.height.isMultiple(of: 2))
+        }
+
+        // Although its visible luma is below the nominal limit, codec padding
+        // on both odd sides would otherwise exceed H.264 Level 5.2.
+        let pathological = LiveShareCapturePolicy.captureGeometry(
+            sourceWidth: 4_081,
+            sourceHeight: 2_307,
+            codec: .h264
+        )
+        #expect(
+            ((pathological.width + 15) / 16)
+                * ((pathological.height + 15) / 16)
+                <= 36_864
+        )
+    }
+
+    @Test("window capture keeps the established external and Retina resolution matrix")
+    func windowCaptureResolutionMatrix() {
+        // A genuine 1× window must remain nominal even while a Retina display
+        // is active. Asking ScreenCaptureKit for `.best` in that topology makes
+        // WindowServer compose at 2× and filter the result back to 1×.
+        #expect(LiveShareCapturePolicy.windowCaptureResolution(
+            sourcePixelWidth: 1_159,
+            sourcePixelHeight: 668,
+            sourcePointWidth: 1_159,
+            sourcePointHeight: 668
+        ) == .nominal)
+
+        // A genuine 2× source must keep `.best`; `.nominal` would discard the
+        // Retina backing pixels before the networking pipeline sees them.
+        #expect(LiveShareCapturePolicy.windowCaptureResolution(
+            sourcePixelWidth: 2_318,
+            sourcePixelHeight: 1_336,
+            sourcePointWidth: 1_159,
+            sourcePointHeight: 668
+        ) == .best)
+
+        // WindowServer geometry can be one pixel short because of edge
+        // rounding. The near-2× source must still be recognized as Retina.
+        #expect(LiveShareCapturePolicy.windowCaptureResolution(
+            sourcePixelWidth: 2_317,
+            sourcePixelHeight: 1_335,
+            sourcePointWidth: 1_159,
+            sourcePointHeight: 668
+        ) == .best)
+    }
+
+    @Test("codec and color settings keep the established capture pixel formats")
+    func capturePixelFormats() {
+        for codec in [LiveShareVideoCodec.vp8, .vp9, .av1] {
+            #expect(LiveShareCapturePolicy.captureVideoConfiguration(
+                width: 1_920,
+                height: 1_080,
+                framesPerSecond: 30,
+                codec: codec,
+                colorMode: .compatibleRec709
+            ).pixelFormat == .rec709VideoRange)
+            #expect(LiveShareCapturePolicy.captureVideoConfiguration(
+                width: 1_920,
+                height: 1_080,
+                framesPerSecond: 30,
+                codec: codec,
+                colorMode: .fullRangeRec709
+            ).pixelFormat == .rec709FullRange)
+        }
+
+        #expect(LiveShareCapturePolicy.captureVideoConfiguration(
+            width: 1_920,
+            height: 1_080,
+            framesPerSecond: 30,
+            codec: .h264,
+            colorMode: .compatibleRec709
+        ).pixelFormat == .rec709BGRA)
+        #expect(LiveShareCapturePolicy.captureVideoConfiguration(
+            width: 1_920,
+            height: 1_080,
+            framesPerSecond: 30,
+            codec: .vp8,
+            colorMode: .nativeDisplay
+        ).pixelFormat == .bgra)
+    }
+
     @Test("audio exclusion process state is publication-neutral")
     func audioFilterProcessState() {
         let processes = LiveShareCapturePolicy.audioFilterProcessIdentifiers(

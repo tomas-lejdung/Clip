@@ -171,10 +171,12 @@ struct ClipLiveShareNativeV3CollaborationTests {
       )
     ) {
       try state.apply(
-        .pointer(
-          ClipLiveShareNativeV3PointerEvent(
+        .ping(
+          try ClipLiveShareNativeV3PingEvent(
             context: try fixture.context(sequence: 5),
-            position: nil
+            position: try .init(x: 0.5, y: 0.5),
+            color: fixture.color,
+            expiresAt: try fixture.now.adding(milliseconds: 2_000)
           )
         ),
         authenticatedParticipantID: fixture.viewer,
@@ -182,6 +184,48 @@ struct ClipLiveShareNativeV3CollaborationTests {
       )
     }
     #expect(state == before)
+
+    // Stale replaceable samples are ignored instead of destabilizing a peer.
+    try state.apply(
+      .pointer(.init(
+        context: try fixture.context(sequence: 1),
+        position: nil
+      )),
+      authenticatedParticipantID: fixture.viewer,
+      at: fixture.now
+    )
+    #expect(state == before)
+  }
+
+  @Test("replaceable pointers cannot invalidate reliable annotation ordering")
+  func pointerAndDurableSequenceLanesAreIndependent() throws {
+    let fixture = try CollaborationFixture()
+    var state = fixture.state()
+
+    // A high pointer sequence may arrive after earlier samples were dropped.
+    try state.apply(
+      .pointer(.init(
+        context: try fixture.context(sequence: 100),
+        position: try .init(x: 0.2, y: 0.4)
+      )),
+      authenticatedParticipantID: fixture.viewer,
+      at: fixture.now
+    )
+
+    // The reliable lane starts independently, so its first ping remains valid.
+    try state.apply(
+      .ping(try .init(
+        context: try fixture.context(sequence: 1),
+        position: try .init(x: 0.3, y: 0.5),
+        color: fixture.color,
+        expiresAt: try fixture.now.adding(milliseconds: 2_000)
+      )),
+      authenticatedParticipantID: fixture.viewer,
+      at: fixture.now
+    )
+
+    #expect(state.pointers[fixture.viewer] != nil)
+    #expect(state.pings.count == 1)
   }
 
   @Test("authenticated sender and source instance cannot be forged")
@@ -361,6 +405,52 @@ struct ClipLiveShareNativeV3CollaborationTests {
     )
     state.pruneExpired(at: try fixture.now.adding(milliseconds: 101))
     #expect(state.pings.isEmpty)
+  }
+
+  @Test("stationary pointer expires defensively after two seconds")
+  func pointerInactivityExpiry() throws {
+    let fixture = try CollaborationFixture()
+    var state = fixture.state()
+    // The receiver clock is deliberately ahead of the sender. The activity
+    // lease starts at local observation time, not at a cross-device wall clock.
+    let observedAt = try fixture.now.adding(milliseconds: 10_000)
+    try state.apply(
+      .pointer(.init(
+        context: try fixture.context(sequence: 1),
+        position: try .init(x: 0.25, y: 0.75)
+      )),
+      authenticatedParticipantID: fixture.viewer,
+      at: observedAt
+    )
+
+    let beforeExpiry = try observedAt.adding(
+      milliseconds:
+        ClipLiveShareNativeV3CollaborationLimits
+          .pointerInactivityTimeoutMilliseconds - 1
+    )
+    #expect(state.pruneExpired(at: beforeExpiry) == false)
+    #expect(state.pointers[fixture.viewer] != nil)
+
+    let atExpiry = try observedAt.adding(
+      milliseconds:
+        ClipLiveShareNativeV3CollaborationLimits
+          .pointerInactivityTimeoutMilliseconds
+    )
+    let didExpirePointer = state.pruneExpired(at: atExpiry)
+    #expect(didExpirePointer)
+    #expect(state.pointers.isEmpty)
+
+    // Expiry removes only presentation state. The sequence ledger remains so
+    // a delayed older pointer sample cannot resurrect the cursor.
+    try state.apply(
+      .pointer(.init(
+        context: try fixture.context(sequence: 1),
+        position: try .init(x: 0.5, y: 0.5)
+      )),
+      authenticatedParticipantID: fixture.viewer,
+      at: atExpiry
+    )
+    #expect(state.pointers.isEmpty)
   }
 
   @Test("a fresh source instance owns a fresh sequence ledger")

@@ -4,11 +4,16 @@ import Foundation
 struct MeshRoomPresentationActions {
     var copyText: (String) -> Void
     var setAccessWordEnabled: (Bool) -> Void
+    var setAskBeforeJoining: (Bool) -> Void
     var replaceAccessWord: () -> Void
-    var requestNewInvite: () -> Void
+    var changeInvite: () -> Void
     var approveAdmission: (String) -> Void
     var denyAdmission: (String) -> Void
     var removeParticipant: (String) -> Void
+    var addFriend: (String) -> Void
+    var allowFriendRequest: (String) -> Void
+    var denyFriendRequest: (String) -> Void
+    var retryFriendship: (String) -> Void
     var shareFocusedWindow: () -> Void
     var shareWindow: (String) -> Void
     var stopLocalSource: (String) -> Void
@@ -50,11 +55,16 @@ struct MeshRoomPresentationActions {
     init(
         copyText: @escaping (String) -> Void = { _ in },
         setAccessWordEnabled: @escaping (Bool) -> Void = { _ in },
+        setAskBeforeJoining: @escaping (Bool) -> Void = { _ in },
         replaceAccessWord: @escaping () -> Void = {},
-        requestNewInvite: @escaping () -> Void = {},
+        changeInvite: @escaping () -> Void = {},
         approveAdmission: @escaping (String) -> Void = { _ in },
         denyAdmission: @escaping (String) -> Void = { _ in },
         removeParticipant: @escaping (String) -> Void = { _ in },
+        addFriend: @escaping (String) -> Void = { _ in },
+        allowFriendRequest: @escaping (String) -> Void = { _ in },
+        denyFriendRequest: @escaping (String) -> Void = { _ in },
+        retryFriendship: @escaping (String) -> Void = { _ in },
         shareFocusedWindow: @escaping () -> Void = {},
         shareWindow: @escaping (String) -> Void = { _ in },
         stopLocalSource: @escaping (String) -> Void = { _ in },
@@ -105,11 +115,16 @@ struct MeshRoomPresentationActions {
     ) {
         self.copyText = copyText
         self.setAccessWordEnabled = setAccessWordEnabled
+        self.setAskBeforeJoining = setAskBeforeJoining
         self.replaceAccessWord = replaceAccessWord
-        self.requestNewInvite = requestNewInvite
+        self.changeInvite = changeInvite
         self.approveAdmission = approveAdmission
         self.denyAdmission = denyAdmission
         self.removeParticipant = removeParticipant
+        self.addFriend = addFriend
+        self.allowFriendRequest = allowFriendRequest
+        self.denyFriendRequest = denyFriendRequest
+        self.retryFriendship = retryFriendship
         self.shareFocusedWindow = shareFocusedWindow
         self.shareWindow = shareWindow
         self.stopLocalSource = stopLocalSource
@@ -151,6 +166,7 @@ struct MeshRoomPresentationActions {
 final class MeshRoomPresentationModel: ObservableObject {
     @Published private(set) var snapshot: MeshRoomViewSnapshot
     @Published private(set) var copiedInvite = false
+    @Published private(set) var isInviteChangeConfirmationPresented = false
 
     private let actions: MeshRoomPresentationActions
     private let copiedFeedbackDuration: Duration
@@ -168,10 +184,13 @@ final class MeshRoomPresentationModel: ObservableObject {
 
     func update(_ snapshot: MeshRoomViewSnapshot) {
         self.snapshot = snapshot
+        if !canManageRoom {
+            isInviteChangeConfirmationPresented = false
+        }
     }
 
     func copyInvite() {
-        guard snapshot.isLocalLeader,
+        guard snapshot.isLocalCreator,
               let invite = snapshot.invite,
               invite.isAvailable else { return }
         actions.copyText(invite.url.absoluteString)
@@ -181,6 +200,12 @@ final class MeshRoomPresentationModel: ObservableObject {
     func setAccessWordEnabled(_ enabled: Bool) {
         guard canManageRoom, snapshot.canChangeAccessWord else { return }
         actions.setAccessWordEnabled(enabled)
+    }
+
+    func setAskBeforeJoining(_ enabled: Bool) {
+        guard canManageRoom,
+              snapshot.canChangeAskBeforeJoining else { return }
+        actions.setAskBeforeJoining(enabled)
     }
 
     func replaceAccessWord() {
@@ -199,9 +224,22 @@ final class MeshRoomPresentationModel: ObservableObject {
         actions.copyText(accessWord)
     }
 
-    func requestNewInvite() {
+    func requestInviteChangeConfirmation() {
         guard canManageRoom else { return }
-        actions.requestNewInvite()
+        isInviteChangeConfirmationPresented = true
+    }
+
+    func cancelInviteChange() {
+        isInviteChangeConfirmationPresented = false
+    }
+
+    func confirmInviteChange() {
+        guard isInviteChangeConfirmationPresented, canManageRoom else {
+            isInviteChangeConfirmationPresented = false
+            return
+        }
+        isInviteChangeConfirmationPresented = false
+        actions.changeInvite()
     }
 
     func approveAdmission(_ participantID: String) {
@@ -226,6 +264,42 @@ final class MeshRoomPresentationModel: ObservableObject {
                   $0.id == participantID
               }) else { return }
         actions.removeParticipant(participantID)
+    }
+
+    func addFriend(_ participantID: String) {
+        guard canChangeFriendships,
+              let participant = participant(participantID),
+              participant.route.isConnected,
+              participant.friendshipState == .available else { return }
+        actions.addFriend(participantID)
+    }
+
+    func allowFriendRequest(_ requestID: String) {
+        guard canChangeFriendships,
+              snapshot.pendingFriendRequests.contains(where: {
+                  $0.id == requestID
+              }) else { return }
+        actions.allowFriendRequest(requestID)
+    }
+
+    func denyFriendRequest(_ requestID: String) {
+        guard canChangeFriendships,
+              snapshot.pendingFriendRequests.contains(where: {
+                  $0.id == requestID
+              }) else { return }
+        actions.denyFriendRequest(requestID)
+    }
+
+    func retryFriendship(_ participantID: String) {
+        guard canChangeFriendships,
+              let participant = participant(participantID),
+              participant.route.isConnected else { return }
+        switch participant.friendshipState {
+        case .requestPending, .failed:
+            actions.retryFriendship(participantID)
+        case .available, .incomingRequest, .trusted:
+            return
+        }
     }
 
     func shareFocusedWindow() {
@@ -438,20 +512,27 @@ final class MeshRoomPresentationModel: ObservableObject {
     }
 
     func endRoomForEveryone() {
-        guard snapshot.isLocalLeader,
+        guard snapshot.isLocalCreator,
               snapshot.canEndRoom,
               !snapshot.phase.isTerminal else { return }
         actions.endRoomForEveryone()
     }
 
     private var canManageRoom: Bool {
-        snapshot.isLocalLeader
-            && snapshot.currentLeaderParticipantID != nil
+        snapshot.isLocalCreator
+            && snapshot.creatorParticipantID != nil
             && snapshot.phase.isConnected
-            && snapshot.phase != .leaderlessLocked
     }
 
     private var canChangeLocalMedia: Bool {
+        snapshot.phase.allowsMediaChanges
+    }
+
+    /// A reconnecting room retains its last verified roster so windows can
+    /// remain visible, but it has no reliable participant channel on which to
+    /// begin or retry a friendship handshake. Treat only the live phase as an
+    /// actionable friendship state.
+    private var canChangeFriendships: Bool {
         snapshot.phase.allowsMediaChanges
     }
 

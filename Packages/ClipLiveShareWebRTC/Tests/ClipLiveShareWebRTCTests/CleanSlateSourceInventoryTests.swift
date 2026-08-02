@@ -11,8 +11,15 @@ struct CleanSlateWebRTCSourceInventoryTests {
 
     let removedFileNames: Set<String> = [
       "ClipLiveShareNativeFriendViewerSession.swift",
+      "ClipLiveShareNativeV3PeerNegotiationHandoff.swift",
       "ClipLiveShareSignalingTransport.swift",
       "ClipLiveShareV1ViewerSession.swift",
+      "ClipNativeRendezvousCandidateTransport.swift",
+      "ClipNativeRendezvousHTTPClient.swift",
+      "ClipNativeRendezvousNetwork.swift",
+      "ClipNativeRendezvousOwnerTransport.swift",
+      "ClipNativeRendezvousProtocol.swift",
+      "ClipNativeRendezvousTransportSupport.swift",
       "RemoteStreamRegistry.swift",
       "WebRTCInboundStatistics.swift",
       "WebRTCOutboundStatistics.swift",
@@ -26,6 +33,7 @@ struct CleanSlateWebRTCSourceInventoryTests {
 
     let removedSymbols = [
       "ClipLiveShareNativeFriendViewerSession",
+      "ClipLiveShareNativeV3PeerNegotiationHandoff",
       "ClipLiveShareSignalingTransport",
       "ClipLiveShareV1ViewerSession",
       "RemoteStreamRegistry",
@@ -34,6 +42,11 @@ struct CleanSlateWebRTCSourceInventoryTests {
       "WebRTCPeerViewer",
       "ClipNativeRendezvousHostTransport",
       "ClipNativeRendezvousViewerTransport",
+      "ClipNativeRendezvousCandidateTransport",
+      "ClipNativeRendezvousHTTPClient",
+      "ClipNativeRendezvousOwnerTransport",
+      "ClipNativeRendezvousSerializedSocket",
+      "ClipNativeRendezvousTarget",
       "hostPreparing",
       "hostActive",
       "The friend is not currently sharing.",
@@ -49,8 +62,8 @@ struct CleanSlateWebRTCSourceInventoryTests {
     }
   }
 
-  @Test("native rendezvous v3 cannot regain legacy host/viewer wire vocabulary")
-  func excludesLegacyRendezvousWireVocabulary() throws {
+  @Test("removed rendezvous protocols cannot return to production sources")
+  func excludesRemovedRendezvousWireVocabulary() throws {
     let repository = repositoryRoot()
     let activeRoots = [
       packageRoot()
@@ -61,29 +74,23 @@ struct CleanSlateWebRTCSourceInventoryTests {
     let activeFiles = try activeRoots.flatMap {
       try sourceFiles(in: $0, extensions: ["go", "swift"])
         .filter { !$0.lastPathComponent.hasSuffix("_test.go") }
-    } + [
-      repository.appending(path: "README.md"),
-      repository.appending(path: "server/README.md"),
-      repository.appending(path: "docs/clip-native-rendezvous-v3.md"),
-    ]
-
-    #expect(
-      !FileManager.default.fileExists(
-        atPath: repository
-          .appending(path: "docs/clip-native-rendezvous-v1.md").path
-      ),
-      "The superseded v1 rendezvous document must not return"
-    )
+    }
 
     let removedVocabulary = [
       "/api/native/v1",
+      "/api/native/v3/rendezvous",
       "hostWebSocketPathTemplate",
       "viewerWebSocketPathTemplate",
+      "ownerWebSocketPathTemplate",
+      "candidateWebSocketPathTemplate",
       "HostWebSocketPathTemplate",
       "ViewerWebSocketPathTemplate",
       "native-host-unavailable",
       "ClipNativeRendezvousHostTransport",
       "ClipNativeRendezvousViewerTransport",
+      "ClipNativeRendezvousCandidateTransport",
+      "ClipNativeRendezvousOwnerTransport",
+      "ClipNativeRendezvousHTTPClient",
       "MessageNativeHostUnavailable",
       "ErrNativeHostUnavailable",
       "ErrStaleHost",

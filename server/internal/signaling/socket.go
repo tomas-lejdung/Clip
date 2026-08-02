@@ -174,8 +174,10 @@ func (s *Socket) Send(message protocol.Message) error {
 	}
 
 	limitedRouteID := ""
-	if message.Type == protocol.MessageNativeRelay {
-		limitedRouteID = message.RouteID
+	if message.Type == protocol.MessagePairSignal {
+		// Pair signaling shares a participant socket, so backpressure for one
+		// pair must not consume the entire socket queue or disturb other pairs.
+		limitedRouteID = message.PairID
 	}
 
 	s.mu.Lock()

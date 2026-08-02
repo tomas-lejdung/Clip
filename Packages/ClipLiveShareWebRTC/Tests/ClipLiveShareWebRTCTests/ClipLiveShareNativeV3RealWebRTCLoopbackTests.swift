@@ -557,7 +557,8 @@ private actor NativeV3RealLinkRelay {
         }
       case let .failed(message):
         endpoint.failures.append(message)
-      case .negotiationNeeded, .routeChanged, .statisticsChanged:
+      case .negotiationNeeded, .routeChanged, .statisticsChanged,
+           .iceGatheringDiagnostic:
         break
       }
     }

@@ -57,4 +57,30 @@ struct LiveShareAccessCodeTests {
         #expect(disabled == nil)
         #expect(generationCount == 1)
     }
+
+    @Test("join approval starts from creator snapshot, never candidate preference")
+    @MainActor
+    func initialRoomJoinApprovalDefault() {
+        let enabled = LiveShareSettings(askBeforeJoining: true)
+        let disabled = LiveShareSettings(askBeforeJoining: false)
+
+        #expect(
+            ApplicationCoordinator.initialMeshAskBeforeJoining(
+                for: enabled,
+                joiningRoom: false
+            )
+        )
+        #expect(
+            !ApplicationCoordinator.initialMeshAskBeforeJoining(
+                for: disabled,
+                joiningRoom: false
+            )
+        )
+        #expect(
+            !ApplicationCoordinator.initialMeshAskBeforeJoining(
+                for: enabled,
+                joiningRoom: true
+            )
+        )
+    }
 }

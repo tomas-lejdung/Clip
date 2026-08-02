@@ -1,6 +1,6 @@
 # Clip acceptance harness
 
-## Native Live Share local acceptance
+## Server-coordinated Live Share local acceptance
 
 Run the deterministic, pointer-free in-repository lane with:
 
@@ -8,75 +8,58 @@ Run the deterministic, pointer-free in-repository lane with:
 ./scripts/run-live-share-acceptance.sh
 ```
 
-The script needs no sibling checkout. It runs the Go opaque-rendezvous suite,
-builds the real `server/cmd/clip-live-share-server` binary, launches it on an
-unused loopback port, and validates its health, version, capabilities, bounded
-lease, and encrypted route behavior. It then runs the `ClipLiveShare`,
-`ClipLiveShareWebRTC`, app-hosted mesh, presentation, and clean-entry suites
-against the same source.
+The script needs no sibling checkout. It runs the Go authoritative-room suite,
+the v4 invite/admission/roster protocol tests, real WebRTC loopback and mesh
+reconciliation tests, a real localhost two/three/four-participant service run,
+and the app-hosted room, media-runtime, coordinator, presentation, and composed
+three-participant suites against the same source.
 
 ### Current local result — `DONE`
 
-The frozen-tree lane passed on 2026-07-31 and ended
-`Clip native-v3 local acceptance passed`. Recorded evidence:
+The v4 acceptance lane proves a client-secret stable invite, authoritative
+server rosters, opaque pair signaling, deterministic full-mesh reconciliation,
+pair-local recovery, and terminal creator departure. The server sees room and
+route identifiers but never receives the invite fragment, private identity
+keys, decrypted pair messages, media, or collaboration content.
 
-- server tests plus real loopback server launch and opaque encrypted route
-  checks;
-- 72 focused native-v3 protocol, security, membership, authority, leadership,
-  and lifecycle tests;
-- 8 native rendezvous transport tests;
-- WebRTC mesh-manager and real WebRTC loopback package gates;
-- the app-hosted bootstrap, encrypted-rendezvous, room-session, runtime,
-  presentation, clean-entry, and three/four-participant mesh suites;
-- strict package totals of ClipCore 81, ClipMedia 74, ClipCapture 37,
-  ClipLiveShare 97, and ClipLiveShareWebRTC 66; and
-- `go test -race ./...` plus `go vet ./...`.
+This is a clean-slate v4 gate. There is no compatibility negotiation, legacy
+connection fallback, leadership transfer, quorum, election, or locked-room
+phase. The room creator owns admission for the room lifetime. An ordinary
+participant may leave without disturbing other pairs; creator departure ends
+the room for everyone.
 
-The complete stable-signed hosted app suite separately passed 364 of 365 tests
-with zero failures. Its one deliberate skip is an external acceptance lane; it
-is not evidence of a product or deterministic-test failure.
+The real localhost acceptance records rosters of two, three, and four
+participants; direct-pair totals of one, three, and six; twelve directed
+encrypted signaling routes at four participants; a byte-stable invite across
+joins; zero private values exposed to the service; preserved remaining pairs
+after an ordinary leave; and one terminal room-ended fanout after creator
+departure.
 
-This is a native-v3-only gate. It does not run a browser participant, protocol
-negotiation, compatibility fallback, role upgrade, media mirror, or separate
-host/viewer application path. Static source acceptance fails when shipped
-**Create Room** or **Join Invite** depends on any connection path other than the
-common native-v3 participant session.
+The complete deterministic gate also passes `./scripts/test.sh`, Core 81,
+Media 74, Capture 40, LiveShare 86, WebRTC 76, the Go service suites, strict
+Swift 6 app/test compilation, project/localization audits, and 394 hosted app
+tests. The hosted suite's only skip is the deliberately opt-in visual snapshot
+lane.
 
-The Go tests use actual localhost WebSockets and prove that the service remains
-an opaque transport: random rendezvous and route allocation, bounded leases,
-route isolation, monotonic relay sequences, origin policy, security headers,
-strict JSON, encrypted payload ceilings, and idempotent cleanup. The service
-must not parse or own admission, participant identity, membership, peer-link
-topology, source state, collaboration state, or media.
+Protocol and transport tests cover:
 
-Native protocol tests cover:
-
-- P-256 identity and ECDH, HKDF-SHA256, AES-GCM, deterministic signing vectors,
-  directional keys, authenticated context, replay/tamper/sequence rejection,
-  and strict native-v3 envelopes.
-- A self-contained invite, mandatory join-capability proof, optional independent
-  Access Word proof, explicit leader approval/denial, bounded provisional
-  admission, and cleanup on timeout or failure.
-- Short-lived credentials, canonical signed membership snapshots, independent
-  membership/publisher/peer-link revisions, participant/source namespacing, and
-  transactional commit.
-- Graceful leadership transfer, one deterministic strict-majority successor
-  after unexpected leader loss, complete authority-chain catch-up across missed
-  ordinary membership and multiple leadership terms, fork/rollback rejection,
-  and `leaderlessLocked` behavior without quorum.
-- Current-leader authority locks below strict-majority reachability. Admission,
-  invite/access-word changes, and membership mutation remain closed until a
-  ready quorum confirms the exact current authority chain.
-- Rejection of wrong-session, wrong-route, wrong-leader, wrong-pair, expired,
-  duplicate-identity, stale-revision, over-capacity, malformed, and unsigned
-  input.
-
-Native WebRTC tests cover one direct authenticated peer connection and one
-ordered native-v3 DataChannel per pair; four random-identity video slots and one
-optional Opus audio track per participant direction; exact H.264/VP8 choices;
-VP9 → VP8 and AV1 → VP9 → VP8 fallback; transactional codec switching;
-bounded SDP/ICE/control/collaboration input; directional RTP statistics;
-low-water state replay; and idempotent teardown.
+- P-256 participant identity and pair proof, HKDF-SHA256, AES-GCM,
+  authenticated context, replay/tamper/sequence rejection, and strict v4 wire
+  envelopes.
+- A reusable fragment-secret invite, optional independent Access Word proof,
+  optional creator approval, bounded admission, authoritative roster revisions,
+  and cleanup on timeout or failure.
+- One independently negotiated WebRTC connection and ordered data channel per
+  participant pair, with exact pair isolation and retry of recoverable
+  sequence/member/backpressure failures without ending the room.
+- Stable media and collaboration state across signaling reconnects; reconnecting
+  the service must not tear down an already usable P2P connection.
+- Rejection of wrong-room, wrong-participant, wrong-pair, expired,
+  duplicate-identity, stale-revision, malformed, oversized, and unsigned input.
+- Signed four-step friendship with durable idempotent recovery, directional
+  encrypted friend-presence mailboxes, identity-pinned friend join, mandatory
+  creator Allow/Deny, and Access Word retry without exposing private values to
+  the service.
 
 The deterministic topology suite proves:
 
@@ -90,10 +73,12 @@ The deterministic topology suite proves:
 - Provisional media stays quarantined until membership commits.
 
 Presentation tests cover one common participant popover; `Your Share`; remote
-sources grouped by participant; independent per-participant audio mute/volume;
-directional diagnostics; source add/update/remove; Fit, Native, Follow and
-fullscreen; hide/reopen and bring-to-front; source-aware 1×/Retina geometry;
-focus and native cursor context; exact participant cleanup; and the
+sources in the compact `Shared With You` pane; independent per-participant
+audio mute/volume; directional diagnostics using the negotiated codec rather
+than the selected preference; source add/update/remove and rejoin recovery;
+Fit, Native, Follow and fullscreen; hide/reopen and bring-to-front;
+source-aware 1×/Retina geometry; focus and native cursor context; exact
+participant cleanup; authoritative stale-capture-notice clearing; and the
 room-global final-video-window prompt, which offers Stay Connected or Leave
 Room only while a remote audio track remains.
 
@@ -114,11 +99,11 @@ sleep/wake behavior, or soak stability.
 
 | Surface | Completed automated evidence | Not established by that evidence |
 | --- | --- | --- |
-| Native-v3 protocol | Canonical crypto vectors, typed bounds, invite/Access Word proof, explicit admission, signed membership, leadership, replay/tamper rejection and transactional teardown. | Traffic-analysis resistance, production service availability or private-key compromise. |
-| Go service | Bounded opaque leases/routes, strict ciphertext relay, origin policy, security headers and real localhost WebSockets without participant state. | Multi-replica routing, production TLS/reverse proxy or remote NAT traversal. |
+| Server-room v4 protocol | Canonical crypto vectors, typed bounds, stable invite/Access Word proof, optional explicit admission, authoritative rosters, replay/tamper rejection and transactional teardown. | Traffic-analysis resistance, production service availability or private-key compromise. |
+| Go service | Authoritative bounded room membership and pair routing, strict ciphertext relay, origin policy, security headers and real localhost WebSockets without private invite material or decrypted content. | Multi-replica routing, production TLS/reverse proxy or remote NAT traversal. |
 | Mesh WebRTC | 1/3/6 authenticated links, independent negotiation and congestion, reserved source/audio tracks, codec fallback, RTP statistics and decoded stereo Opus quality. | Real ScreenCaptureKit system audio, controlled TURN, physical thermal behavior or four independently signed GUI processes. |
-| Participant UI | Common room model, local and grouped remote sources, per-participant audio/diagnostics, admissions, leadership, window modes and collaboration overlays. | Production Spaces/displays, native window ordering, click consumption or capture exclusion. |
-| Distribution | Native-v3-only source audit, dependency pins, sandbox entitlements and opaque service container structure. | Final signed DMG, published image provenance and notarization. |
+| Participant UI | Common room model, expanded local sources plus compact remote-source detail, per-participant audio, negotiated-codec diagnostics, ordinary and friend admission, private friend presence, immutable creator identity, window modes, rejoin recovery, stale-notice cleanup and collaboration overlays. | Production Spaces/displays, native window ordering, click consumption or capture exclusion. |
+| Distribution | Clean-slate v4 source audit, dependency pins, sandbox entitlements and privacy-preserving service structure. | Final signed DMG, published image provenance and notarization. |
 
 The optional Access Word is checked by Clip inside the encrypted admission
 route; its text is never sent to the service. Changing it applies to future
@@ -132,47 +117,63 @@ independently launched signed Clip GUI processes. All participants must share
 and receive privacy-authorized real ScreenCaptureKit content concurrently;
 exercise one through four windows, Fullscreen, resize, per-participant real
 system audio and exclusions; prove pointer/ping/ink and capture exclusion;
-transfer leadership; recover one leader crash with quorum; and stop cleanly.
+remove and reconnect ordinary members; confirm creator departure ends the room
+for every remaining member; create a replacement room; and stop cleanly.
 Four participants must establish all six links. Physical multi-display/Spaces
 and Retina/non-Retina combinations, direct Internet ICE, controlled TURN,
 repeated churn, CPU/upstream/thermal/audio-mix observation, and the required
 soak remain mandatory separate gates. Loopback is never described as complete
 real-world Live Share evidence.
 
-### Signed three/four-process report gate — `EXTERNAL_GATE`
+### Signed multi-process GUI gate — `THREE_PROCESS_DONE`
 
-The report harness and validator are implemented, but no three/four-process
-signed GUI report is recorded as passed for this frozen tree yet.
+The controlled three-process run used Clip's stable signed identity, isolated
+participant state, the real v4 local service, and only production Create Room,
+Join Invite, source, friendship, leave/rejoin, and room-ending controls. A, B,
+and C joined with the same unchanged invite; each reported three participants
+and two direct links. They published one real ScreenCaptureKit window each,
+and each received two windows from the other two people. Diagnostics showed
+three media streams, actual negotiated AV1 and source resolution, P2P bytes,
+and available bitrate.
 
-The smallest machine-validated real-app gate launches three signed participants
-by default (or four with `--participants 4`):
+C then left. A and B retained their direct link and each other's window. C
+rejoined from the original clipboard invite and immediately recovered both
+remote publishers. C's signed friend request to A completed after approval;
+after leaving again C saw A as Live through private friend presence, selected
+A, waited for the mandatory creator decision, and rejoined after A chose
+Allow. Creator **End for Everyone** returned B and C directly to idle. A
+unified-log audit found no Clip RTCP/SDP, `Capture is not running`, election,
+locked-room, or crash report.
+
+The final post-review repeat used a fresh signed three-process run and the same
+production controls. Each participant published a persistent real window and
+reported two links plus three media streams. C left while A and B retained
+their link and windows, then rejoined from the original unchanged invite and
+immediately recovered both remote publishers. Creator termination returned all
+three directly to idle. Participant and server logs contained no SDP/RTCP-mux,
+capture, signaling-loss, election, locked-room, or crash error.
+
+This is real evidence for the three-participant window, reconnect, friends,
+diagnostics, and termination path. It does not claim the still-pending four
+participant/six-link gate, real system audio/exclusions, Fullscreen, remote
+Internet/TURN, physical display/Spaces combinations, performance observation,
+or soak run.
+
+Launch three isolated instances with:
 
 ```sh
-./scripts/launch-native-v3-mesh-acceptance.sh \
-  --allow-native-v3-mesh-multi-instance \
+./scripts/launch-server-room-v4-mesh-acceptance.sh \
+  --allow-server-room-v4-mesh-multi-instance \
   /absolute/path/to/Clip.app \
-  --participants 3
+  --participants 3 \
+  --menu-bar-popovers
 ```
 
-The launcher accepts only Clip's exact stable certificate-based designated
-requirement, leaf-certificate fingerprint, and Team ID; creates one private
-temporary run directory; and assigns fixed sanitized process labels. This is
-the same requirement macOS uses to preserve Clip's privacy grants across
-signed updates. The owner then uses only the production Create Room, Join
-Invite, admission, source, and audio controls. Every participant must publish
-at least one video source. Audio is an explicit gate: omit
-`--require-system-audio` to require zero tracks, or include it to require
-exactly one system-audio track from every participant.
-
-Each app writes an owner-only report signed by its participant identity and
-bound to its locally committed leader-signed membership. The cross-process
-validator requires one session/revision/leader/term, all `n × (n - 1)` local
-ready link views, symmetric concrete direct/TURN routes, and publication counts
-that every receiver agrees with. Connected apps with no published video cannot
-pass. A private control file then asks all apps to terminate through AppKit;
-the final stage requires every signed report to retain the proven-ready
-topology and record a clean `ended` state. No invite, access word, owner
-capability, or private identity is exported.
+Use `--participants 4` for the six-pair gate. The launcher only verifies the
+signed app and creates fresh per-run participant state; it does not bypass or
+simulate any production room action. `--menu-bar-popovers` exercises the real
+status-item popovers for manual testing; omit it when Computer Use needs the
+separately addressable participant windows.
 
 The default acceptance lane is deterministic and permission-free:
 

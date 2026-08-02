@@ -15,7 +15,6 @@ public enum ClipLiveShareNativeV3 {
   public static let maximumControlMessageBytes = 196_400
 
   public static let participantIDByteCount = 16
-  public static let maximumCapabilities = 64
   /// Each peer connection reserves four deterministic video slots. This is a
   /// native-v3 wire invariant rather than an alias to another protocol.
   public static let reservedVideoSlotsPerParticipant = 4
@@ -35,30 +34,13 @@ public enum ClipLiveShareNativeV3 {
   /// connections.
   public static let defaultProductAdmissionLimit = 4
 
-  public static let maximumMembershipCredentialLifetimeMilliseconds: Int64 =
-    5 * 60 * 1_000
-  public static let maximumMembershipSnapshotLifetimeMilliseconds: Int64 =
-    5 * 60 * 1_000
   public static let transportNonceByteCount = 32
-  public static let possessionChallengeByteCount = 32
-  public static let maximumPossessionChallengeLifetimeMilliseconds: Int64 =
-    60 * 1_000
-  public static let maximumPeerLinkRenegotiationRequestLifetimeMilliseconds:
-    Int64 = 60 * 1_000
-  public static let maximumLeadershipProposalLifetimeMilliseconds: Int64 =
-    60 * 1_000
-  public static let maximumParticipantLeaveRequestLifetimeMilliseconds: Int64 =
-    60 * 1_000
-  public static let maximumAuthorityTransitions = 8
   public static let maximumClockSkewMilliseconds: Int64 = 30 * 1_000
 }
 
 public enum ClipLiveShareNativeV3Error: Error, Equatable, Sendable {
   case invalidParticipantID
   case invalidText(name: String)
-  case invalidCapability(String)
-  case invalidCapabilities(String)
-  case incompatibleCapabilities(missing: [ClipLiveShareNativeV3Capability])
   case invalidRevision(name: String)
   case staleMembershipRevision(expectedGreaterThan: UInt64, actual: UInt64)
   case staleSourceRevision(
@@ -74,13 +56,10 @@ public enum ClipLiveShareNativeV3Error: Error, Equatable, Sendable {
   case invalidBinaryValue(name: String, expectedBytes: Int)
   case invalidPeerLinkContext
   case unknownControlMessageType(String)
-  case invalidLeadershipTerm
-  case staleLeadershipTerm(expectedGreaterThan: UInt64, actual: UInt64)
-  case duplicateLeadershipVote
-  case conflictingLeadershipVote
-  case insufficientLeadershipQuorum(required: Int, actual: Int)
-  case invalidLeadershipCertificate
-  case invalidAuthorityChain
+  case staleRoomAdmissionPolicyRevision(
+    expectedGreaterThan: UInt64,
+    actual: UInt64
+  )
   case staleRoomTerminationRevision(expectedGreaterThan: UInt64, actual: UInt64)
   case selfPeerLink
   case participantLimit(maximum: Int, actual: Int)
@@ -89,8 +68,6 @@ public enum ClipLiveShareNativeV3Error: Error, Equatable, Sendable {
   case duplicateSource
   case unknownParticipant(ClipLiveShareNativeV3ParticipantID)
   case participantIdentityChanged(ClipLiveShareNativeV3ParticipantID)
-  case invalidLeader
-  case invalidMembership
   case invalidSourceOwnership
   case invalidTopology
   case contextMismatch
@@ -108,13 +85,6 @@ extension ClipLiveShareNativeV3Error: LocalizedError {
       "A native v3 participant identifier must contain exactly 16 bytes."
     case let .invalidText(name):
       "The native v3 \(name) is invalid."
-    case let .invalidCapability(value):
-      "The native v3 capability '\(value)' is invalid."
-    case let .invalidCapabilities(reason):
-      "The native v3 capabilities are invalid: \(reason)"
-    case let .incompatibleCapabilities(missing):
-      "The participant does not support required native v3 capabilities: "
-        + missing.map(\.rawValue).joined(separator: ", ")
     case let .invalidRevision(name):
       "The native v3 \(name) revision must be positive."
     case let .staleMembershipRevision(expected, actual):
@@ -129,20 +99,8 @@ extension ClipLiveShareNativeV3Error: LocalizedError {
       "The native v3 peer-link message does not match its asserted participant pair."
     case let .unknownControlMessageType(type):
       "The native v3 control message type '\(type)' is unsupported."
-    case .invalidLeadershipTerm:
-      "The native v3 leadership term must be positive."
-    case let .staleLeadershipTerm(expected, actual):
-      "Expected a leadership term greater than \(expected), received \(actual)."
-    case .duplicateLeadershipVote:
-      "The native v3 leadership certificate contains a duplicate vote."
-    case .conflictingLeadershipVote:
-      "The participant has already voted for another proposal in this leadership term."
-    case let .insufficientLeadershipQuorum(required, actual):
-      "The native v3 leadership certificate requires \(required) votes; received \(actual)."
-    case .invalidLeadershipCertificate:
-      "The native v3 leadership certificate does not match the last committed membership."
-    case .invalidAuthorityChain:
-      "The native v3 room authority chain is invalid."
+    case let .staleRoomAdmissionPolicyRevision(expected, actual):
+      "Expected a room-admission-policy revision greater than \(expected), received \(actual)."
     case let .staleRoomTerminationRevision(expected, actual):
       "Expected a room-termination revision greater than \(expected), received \(actual)."
     case .selfPeerLink:
@@ -159,10 +117,6 @@ extension ClipLiveShareNativeV3Error: LocalizedError {
       "The native v3 mesh does not contain participant \(participantID)."
     case let .participantIdentityChanged(participantID):
       "Native v3 participant \(participantID) cannot change identity within a room."
-    case .invalidLeader:
-      "The native v3 membership leader is invalid."
-    case .invalidMembership:
-      "The native v3 membership is invalid."
     case .invalidSourceOwnership:
       "A native v3 source may only be published by its owning participant."
     case .invalidTopology:
@@ -185,8 +139,8 @@ extension ClipLiveShareNativeV3Error: LocalizedError {
 
 /// A random, session-scoped participant identifier. It is intentionally not an
 /// identity fingerprint, preventing the wire identifier from becoming a
-/// cross-room tracking identifier. A leader-signed credential binds it to the
-/// participant's persistent native identity.
+/// cross-room tracking identifier. The encrypted server-room descriptor binds
+/// it to the participant's persistent native identity for one room lifetime.
 public struct ClipLiveShareNativeV3ParticipantID: Codable, Equatable, Hashable, Comparable,
   Sendable, CustomStringConvertible
 {
@@ -229,181 +183,6 @@ public struct ClipLiveShareNativeV3ParticipantID: Codable, Equatable, Hashable, 
   public func encode(to encoder: any Encoder) throws {
     var container = encoder.singleValueContainer()
     try container.encode(rawValue)
-  }
-}
-
-/// An open capability token. Unknown tokens survive decoding and relay, which
-/// lets a newer participant advertise optional behavior to older v3 clients.
-/// Unknown *required* tokens still fail compatibility, preventing partial or
-/// ambiguous mesh behavior.
-public struct ClipLiveShareNativeV3Capability: Codable, Equatable, Hashable, Comparable,
-  Sendable, CustomStringConvertible
-{
-  public let rawValue: String
-
-  public init(rawValue: String) throws {
-    let bytes = Array(rawValue.utf8)
-    guard
-      (1...64).contains(bytes.count),
-      bytes.first.map(Self.isAlphaNumeric) == true,
-      bytes.last.map(Self.isAlphaNumeric) == true,
-      bytes.allSatisfy({
-        Self.isAlphaNumeric($0) || $0 == 45 || $0 == 46
-      })
-    else {
-      throw ClipLiveShareNativeV3Error.invalidCapability(rawValue)
-    }
-    self.rawValue = rawValue
-  }
-
-  public var description: String { rawValue }
-
-  public static func < (lhs: Self, rhs: Self) -> Bool {
-    lhs.rawValue < rhs.rawValue
-  }
-
-  public static let completeMesh = try! Self(rawValue: "mesh.complete-v1")
-  public static let participantSources = try! Self(rawValue: "media.participant-sources-v1")
-  public static let peerLinkNegotiation =
-    try! Self(rawValue: "signaling.peer-link-negotiation-v1")
-  public static let leaderSignedMembership =
-    try! Self(rawValue: "membership.leader-signed-v1")
-  public static let bidirectionalMedia =
-    try! Self(rawValue: "media.bidirectional-v1")
-  public static let participantAudio =
-    try! Self(rawValue: "audio.participant-v1")
-  public static let leadershipSuccession =
-    try! Self(rawValue: "membership.quorum-succession-v1")
-  public static let authorityChain =
-    try! Self(rawValue: "membership.authority-chain-v1")
-  public static let collaboration =
-    try! Self(rawValue: "collaboration.pointer-ping-ink-v1")
-  public static let closedControlEnvelope =
-    try! Self(rawValue: "control.closed-envelope-v1")
-
-  public static let nativeV3Baseline: Set<Self> = [
-    .authorityChain,
-    .bidirectionalMedia,
-    .closedControlEnvelope,
-    .collaboration,
-    .completeMesh,
-    .leadershipSuccession,
-    .participantAudio,
-    .participantSources,
-    .peerLinkNegotiation,
-    .leaderSignedMembership,
-  ]
-
-  public init(from decoder: any Decoder) throws {
-    let container = try decoder.singleValueContainer()
-    try self.init(rawValue: container.decode(String.self))
-  }
-
-  public func encode(to encoder: any Encoder) throws {
-    var container = encoder.singleValueContainer()
-    try container.encode(rawValue)
-  }
-
-  private static func isAlphaNumeric(_ byte: UInt8) -> Bool {
-    (48...57).contains(byte) || (97...122).contains(byte)
-  }
-}
-
-/// Supported and required capabilities are kept separately. Compatibility is
-/// strict and symmetric: every side must support every requirement declared by
-/// the other side. Unknown optional capabilities remain forward-compatible.
-public struct ClipLiveShareNativeV3Capabilities: Codable, Equatable, Hashable, Sendable {
-  public let supported: Set<ClipLiveShareNativeV3Capability>
-  public let required: Set<ClipLiveShareNativeV3Capability>
-
-  public init(
-    supported: Set<ClipLiveShareNativeV3Capability>,
-    required: Set<ClipLiveShareNativeV3Capability>
-  ) throws {
-    guard supported.count <= ClipLiveShareNativeV3.maximumCapabilities else {
-      throw ClipLiveShareNativeV3Error.invalidCapabilities("too many supported capabilities")
-    }
-    guard required.count <= ClipLiveShareNativeV3.maximumCapabilities else {
-      throw ClipLiveShareNativeV3Error.invalidCapabilities("too many required capabilities")
-    }
-    guard required.isSubset(of: supported) else {
-      throw ClipLiveShareNativeV3Error.invalidCapabilities(
-        "required capabilities must also be supported"
-      )
-    }
-    self.supported = supported
-    self.required = required
-  }
-
-  public static var current: Self {
-    try! Self(
-      supported: ClipLiveShareNativeV3Capability.nativeV3Baseline,
-      required: ClipLiveShareNativeV3Capability.nativeV3Baseline
-    )
-  }
-
-  public func missingRequirements(
-    for peer: Self
-  ) -> [ClipLiveShareNativeV3Capability] {
-    required.subtracting(peer.supported).sorted()
-  }
-
-  public func validateCompatibility(with peer: Self) throws {
-    let missing = Set(missingRequirements(for: peer))
-      .union(peer.missingRequirements(for: self))
-      .sorted()
-    guard missing.isEmpty else {
-      throw ClipLiveShareNativeV3Error.incompatibleCapabilities(missing: missing)
-    }
-  }
-
-  public func validateNativeV3Baseline() throws {
-    let missing = ClipLiveShareNativeV3Capability.nativeV3Baseline
-      .subtracting(supported)
-      .sorted()
-    guard missing.isEmpty else {
-      throw ClipLiveShareNativeV3Error.incompatibleCapabilities(missing: missing)
-    }
-  }
-
-  private enum CodingKeys: String, CodingKey {
-    case supported
-    case required
-  }
-
-  public init(from decoder: any Decoder) throws {
-    let container = try decoder.container(keyedBy: CodingKeys.self)
-    let supported = try container.decode(
-      [ClipLiveShareNativeV3Capability].self,
-      forKey: .supported
-    )
-    let required = try container.decode(
-      [ClipLiveShareNativeV3Capability].self,
-      forKey: .required
-    )
-    guard Set(supported).count == supported.count, Set(required).count == required.count else {
-      throw ClipLiveShareNativeV3Error.invalidCapabilities("duplicate capability")
-    }
-    try self.init(supported: Set(supported), required: Set(required))
-  }
-
-  public func encode(to encoder: any Encoder) throws {
-    var container = encoder.container(keyedBy: CodingKeys.self)
-    try container.encode(supported.sorted(), forKey: .supported)
-    try container.encode(required.sorted(), forKey: .required)
-  }
-
-  var canonicalRepresentation: Data {
-    var encoder = ClipLiveShareNativeV3CanonicalEncoder(
-      domain: "clip-live-share-native-v3/capabilities"
-    )
-    let supported = supported.sorted()
-    encoder.append(UInt64(supported.count))
-    for capability in supported { encoder.append(capability.rawValue) }
-    let required = required.sorted()
-    encoder.append(UInt64(required.count))
-    for capability in required { encoder.append(capability.rawValue) }
-    return encoder.data
   }
 }
 

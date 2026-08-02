@@ -8,36 +8,41 @@ Recordings remain local: Clip has no account, cloud upload, analytics, or AI
 processing. Live Share is a separate, explicit native collaboration mode:
 every admitted Clip participant can publish up to four sources while receiving
 every other participant over a complete peer-to-peer WebRTC mesh. Clip's
-in-repo Go service provides only bounded opaque rendezvous and ICE discovery;
-it never receives room authority, participant state, source metadata, or
-media. Live Share never writes media to History. See
+in-repo Go service owns the bounded opaque room roster and encrypted pair
+routing; it never receives the client-only invite fragment, participant
+identities or names, decrypted SDP/ICE, source metadata, or media. Live Share
+never writes media to History. See
 [spec.md](spec.md) for the product contract,
 [ARCHITECTURE.md](ARCHITECTURE.md) for recording boundaries, and
 [docs/native-participant-mesh-progress.md](docs/native-participant-mesh-progress.md)
-for the native-v3 protocol, topology, and evidence boundary. The service's
-protocol-neutral bootstrap boundary is documented in
-[docs/clip-native-rendezvous-v3.md](docs/clip-native-rendezvous-v3.md).
+for the current topology and evidence boundary, and
+[docs/server-coordinated-mesh-design.md](docs/server-coordinated-mesh-design.md)
+for the clean-slate v4 room design.
 
 Each participant can send up to four application windows or one fullscreen
 display.
 It uses native Swift/AppKit/SwiftUI and ScreenCaptureKit, with a pinned native
-WebRTC framework. VP8 remains the default. The live codec picker selects a
+WebRTC framework. AV1 is the default, with Native color and a 20 Mbps quality
+ceiling. The live codec picker selects a
 preference: H.264 and VP8 are exact choices, VP9 may fall back to VP8, and AV1
 may fall back to VP9 and then VP8. Each participant pair negotiates
 independently, so the actual directional RTP codec shown in Statistics is
 authoritative. H.264
 uses hardware encoding and caps oversized capture geometry; software VP8, VP9
 profile 0, and AV1 retain native capture geometry. AV1 can consume substantially
-more CPU. Admission, membership, targeted SDP/ICE, source state, diagnostics,
-and collaboration events use the signed and encrypted native-v3 protocol.
-Established pairs use one reliable ordered native-v3 DataChannel. A configured
+more CPU. Admission and membership use the clean-slate server-room v4 protocol;
+targeted SDP/ICE, source state, friendship, diagnostics, and collaboration use
+signed end-to-end encrypted pair messages. Established pairs use one reliable
+ordered DataChannel. A configured
 TURN relay may carry encrypted WebRTC traffic when a direct route is not
 possible, but it gains no room authority.
 
-The pointer-free Live Share lane builds the opaque rendezvous service, exercises
-native-v3 admission, membership, two/three/four-participant mesh topology,
-leadership, collaboration, WebRTC, and presentation state without opening the
-installed app or controlling the pointer. Real ScreenCaptureKit sharing,
+The pointer-free Live Share lane builds the opaque room service and exercises
+v4 admission, membership, stable private invites, same-invite leave/rejoin,
+two/three/four-participant mesh topology, collaboration, WebRTC, and
+presentation state without opening the installed app or controlling the
+pointer. There is no election or leadership transfer: creator departure ends
+the room for everyone. Real ScreenCaptureKit sharing,
 remote Internet/TURN traversal, four signed GUI processes, soak, and physical
 audio remain separate controlled gates. See the [mesh progress
 board](docs/native-participant-mesh-progress.md). Live Share system audio
@@ -97,7 +102,7 @@ The repository keeps generated build output under `.build/`.
 # Permission-free objective master/Crisp/Compact fidelity gate
 ./scripts/run-quality-acceptance.sh
 
-# In-repo native-v3 mesh and opaque rendezvous acceptance
+# In-repo clean-slate v4 room and direct-mesh acceptance
 ./scripts/run-live-share-acceptance.sh
 
 # Opt-in Release benchmark for Preview readiness and Compact export
@@ -125,7 +130,7 @@ The repository keeps generated build output under `.build/`.
 
 `verify-release.sh` is the single unattended release-candidate command. It
 combines the strict source gate, package and app unit tests, deterministic media
-acceptance, in-repository native-v3 mesh/rendezvous acceptance, Release
+acceptance, in-repository server-room v4 mesh acceptance, Release
 packaging, read-only DMG mounting/inspection, signature and entitlement checks,
 and a SHA-256 checksum. It never starts XCTest UI
 automation; the pointer-driving lanes remain separate and explicitly opt-in.
@@ -167,17 +172,16 @@ go run ./cmd/clip-live-share-server
 ```
 
 The default address is `http://localhost:8080`. Set that address in Clip's Live
-Share Settings, then use **Test Connection**. The server keeps room
-leases in memory, exposes `/healthz` and `/version`, and serves native
-rendezvous bounds plus STUN/TURN configuration at
-`/.well-known/clip-native-rendezvous`.
-See [the native rendezvous v3 contract](docs/clip-native-rendezvous-v3.md) for
-the exact owner/candidate HTTP and WebSocket surface.
+Share Settings, then use **Test Connection**. The server keeps opaque v4 rooms
+in memory, exposes `/healthz` and `/version`, and serves room bounds plus
+STUN/TURN configuration at `/.well-known/clip-native-rendezvous`.
+See [the v4 room-server contract](server/README.md) and [mesh design](docs/server-coordinated-mesh-design.md)
+for the exact HTTP, WebSocket, privacy, and lifecycle surface.
 
 For a self-hosted deployment, terminate TLS at a reverse proxy and expose the
-service through HTTPS/WSS. A restart clears in-memory rendezvous leases.
-Existing P2P peers stay connected, but new admissions require a new advertised
-invite. Build the non-root container locally with:
+service through HTTPS/WSS. A restart clears the in-memory rooms and therefore
+ends their membership sessions; create a new room afterward. Build the non-root
+container locally with:
 
 ```bash
 cd server

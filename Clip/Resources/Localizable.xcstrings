@@ -102,6 +102,9 @@
     "%lld strokes" : {
 
     },
+    "%lld waiting" : {
+
+    },
     "%lld waiting for approval" : {
 
     },
@@ -151,6 +154,9 @@
     "80% · 1.25×" : {
 
     },
+    "A participant is waiting to join Clip Live Share" : {
+
+    },
     "A recording is already in progress." : {
 
     },
@@ -161,6 +167,9 @@
 
     },
     "Access Word (optional)" : {
+
+    },
+    "Access Word Required" : {
 
     },
     "Add Window" : {
@@ -205,13 +214,13 @@
     "Apply" : {
 
     },
+    "Ask Before Joining" : {
+
+    },
     "Audio" : {
 
     },
     "Audio is optional" : {
-
-    },
-    "Authority" : {
 
     },
     "Auto" : {
@@ -289,6 +298,15 @@
     "Capturing your screen" : {
 
     },
+    "Change" : {
+
+    },
+    "Change Invite" : {
+
+    },
+    "Change this invite?" : {
+
+    },
     "Check for Updates…" : {
 
     },
@@ -308,12 +326,6 @@
 
     },
     "Choose…" : {
-
-    },
-    "Choosing a new creator" : {
-
-    },
-    "Choosing a new room creator…" : {
 
     },
     "Cleanup candidates" : {
@@ -472,10 +484,13 @@
     "Congestion Behavior" : {
 
     },
-    "Connected · Room membership locked" : {
+    "Connected" : {
 
     },
     "Connecting" : {
+
+    },
+    "Connecting securely to %@." : {
 
     },
     "Connecting…" : {
@@ -530,7 +545,16 @@
     "Couldn’t Update Access Word" : {
 
     },
+    "Couldn’t Update Join Approval" : {
+
+    },
     "Create Room" : {
+
+    },
+    "Create or join a room" : {
+
+    },
+    "Creating Room…" : {
 
     },
     "Creating…" : {
@@ -668,12 +692,6 @@
     "Elapsed time: %@" : {
 
     },
-    "Election in progress" : {
-
-    },
-    "Election required" : {
-
-    },
     "Encode" : {
 
     },
@@ -704,6 +722,9 @@
     "Enter a valid filename format." : {
 
     },
+    "Enter the Access Word for %@ to continue." : {
+
+    },
     "Erase ink after" : {
 
     },
@@ -714,12 +735,6 @@
 
     },
     "Exclude Audio" : {
-
-    },
-    "Existing peer connections may keep sharing, but nobody can join or change membership until a majority can elect a creator." : {
-
-    },
-    "Existing sharing continues while participants certify the next room creator." : {
 
     },
     "Exit Full Screen" : {
@@ -836,6 +851,9 @@
     "Invite & Access" : {
 
     },
+    "Invite Code" : {
+
+    },
     "Invite, approvals, and participants" : {
 
     },
@@ -843,6 +861,15 @@
 
     },
     "Join Invite" : {
+
+    },
+    "Join Request" : {
+
+    },
+    "Join Requests" : {
+
+    },
+    "Joining…" : {
 
     },
     "Keep Recording" : {
@@ -866,10 +893,7 @@
     "Launch Clip at login" : {
 
     },
-    "Leader" : {
-
-    },
-    "Leader election required" : {
+    "Creator" : {
 
     },
     "Leave Room" : {
@@ -947,6 +971,9 @@
     "Microphone: Off" : {
 
     },
+    "Mixed" : {
+
+    },
     "Mode" : {
 
     },
@@ -965,16 +992,13 @@
     "Native · 1×" : {
 
     },
-    "New Invite" : {
-
-    },
     "No Exports" : {
 
     },
-    "No Recordings" : {
+    "No Room" : {
 
     },
-    "No certified creator" : {
+    "No Recordings" : {
 
     },
     "No incoming media statistics available." : {
@@ -1024,9 +1048,6 @@
 
     },
     "Participants" : {
-
-    },
-    "Participants and room authority" : {
 
     },
     "Participants · %lld" : {
@@ -1087,6 +1108,9 @@
 
     },
     "Prepared Target" : {
+
+    },
+    "Preparing a secure room invitation." : {
 
     },
     "Preparing your preview…" : {
@@ -1237,6 +1261,9 @@
     "Requested Bitrate Floor" : {
 
     },
+    "Require Allow or Deny after an invite has been verified." : {
+
+    },
     "Require an access word" : {
 
     },
@@ -1282,6 +1309,9 @@
     "Retake" : {
 
     },
+    "Reusable until you change it." : {
+
+    },
     "Reveal" : {
 
     },
@@ -1323,10 +1353,13 @@
     "Room & Access" : {
 
     },
-    "Room ended" : {
+    "Room Available" : {
 
     },
-    "Room membership is locked" : {
+    "Room creator unavailable" : {
+
+    },
+    "Room ended" : {
 
     },
     "Room participants use this fingerprint to verify this Mac. Reset it only if you want this device to become a new identity." : {
@@ -1533,6 +1566,12 @@
     "The captured video will be permanently discarded." : {
 
     },
+    "The current link will stop working. Everyone already in the room stays connected." : {
+
+    },
+    "The room creator of %@ must allow you before you can join." : {
+
+    },
     "The default Save As location must be a local folder." : {
 
     },
@@ -1602,10 +1641,10 @@
     "The selected recording is no longer available." : {
 
     },
-    "The server does not expose Clip native-v3 rendezvous capabilities (HTTP %lld)." : {
+    "The server does not expose Clip room capabilities (HTTP %lld)." : {
 
     },
-    "The server does not support Clip native-v3 rendezvous." : {
+    "The server does not support Clip room protocol v4." : {
 
     },
     "There is no recording in progress." : {
@@ -1704,13 +1743,16 @@
     "Visible" : {
 
     },
+    "Waiting for Approval" : {
+
+    },
+    "Waiting for approval" : {
+
+    },
     "Waiting for peer connections…" : {
 
     },
     "Waiting for the first video frame…" : {
-
-    },
-    "Waiting · %lld" : {
 
     },
     "Welcome to Clip" : {

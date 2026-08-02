@@ -13,19 +13,49 @@ enum LiveShareWindowCoordinateConversion {
     static func appKitFrame(
         for quartzWindowFrame: CGRect,
         quartzDisplayFrame: CGRect,
-        appKitDisplayFrame: CGRect
+        appKitDisplayFrame: CGRect,
+        preservingFullWindowExtent: Bool = false
     ) -> CGRect? {
-        let intersection = quartzWindowFrame.standardized.intersection(
-            quartzDisplayFrame.standardized
-        )
+        let windowFrame = quartzWindowFrame.standardized
+        let quartzDisplayFrame = quartzDisplayFrame.standardized
+        let appKitDisplayFrame = appKitDisplayFrame.standardized
+        let intersection = windowFrame.intersection(quartzDisplayFrame)
         guard !intersection.isNull, !intersection.isEmpty else { return nil }
-        let localX = intersection.minX - quartzDisplayFrame.minX
-        let localTop = intersection.minY - quartzDisplayFrame.minY
+        guard quartzDisplayFrame.width > 0,
+              quartzDisplayFrame.height > 0,
+              appKitDisplayFrame.width > 0,
+              appKitDisplayFrame.height > 0
+        else { return nil }
+
+        // Quartz/WindowServer uses top-left display coordinates while AppKit
+        // uses bottom-left coordinates. Collaboration overlays opt into the
+        // *entire* source-window extent instead of only its display
+        // intersection. Their visibility masks are calculated against the
+        // entire WindowServer window. Mapping such a mask into a clipped panel
+        // compresses an off-display surviving strip back onto the visible
+        // display, which is why moving a Retina-hosted source partly off-screen
+        // used to reveal progressively more of the pointer. WindowServer
+        // naturally clips the resulting full-extent panel at presentation.
+        //
+        // Apply the display's coordinate ratio as well. It is normally 1, but
+        // making the conversion explicit keeps Quartz pixels and AppKit points
+        // aligned for Retina displays and for deterministic mixed-DPI tests.
+        let representedFrame = preservingFullWindowExtent
+            ? windowFrame
+            : intersection
+        let scaleX = appKitDisplayFrame.width / quartzDisplayFrame.width
+        let scaleY = appKitDisplayFrame.height / quartzDisplayFrame.height
+        let localX = (representedFrame.minX - quartzDisplayFrame.minX) * scaleX
+        let localTop = (representedFrame.minY - quartzDisplayFrame.minY) * scaleY
+        let appKitSize = CGSize(
+            width: representedFrame.width * scaleX,
+            height: representedFrame.height * scaleY
+        )
         return CGRect(
             x: appKitDisplayFrame.minX + localX,
-            y: appKitDisplayFrame.maxY - localTop - intersection.height,
-            width: intersection.width,
-            height: intersection.height
+            y: appKitDisplayFrame.maxY - localTop - appKitSize.height,
+            width: appKitSize.width,
+            height: appKitSize.height
         )
     }
 }

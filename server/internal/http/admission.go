@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/tomas-lejdung/Clip/server/internal/config"
-	"github.com/tomas-lejdung/Clip/server/internal/protocol"
 )
 
 const (
@@ -207,60 +206,4 @@ func (s *Service) acquireCoordinatorConnection(source string) bool {
 func (s *Service) releaseCoordinatorConnection(source string) {
 	<-s.connections
 	s.admission.releaseConnection(source)
-}
-
-func (s *Service) acquireCandidateConnection(
-	source,
-	rendezvousID string,
-) bool {
-	if !s.admission.acquireConnection(source) {
-		return false
-	}
-	if !s.acquireCandidateRouteSlot(rendezvousID) {
-		s.admission.releaseConnection(source)
-		return false
-	}
-	select {
-	case s.candidateConnections <- struct{}{}:
-	default:
-		s.releaseCandidateRouteSlot(rendezvousID)
-		s.admission.releaseConnection(source)
-		return false
-	}
-	select {
-	case s.connections <- struct{}{}:
-		return true
-	default:
-		<-s.candidateConnections
-		s.releaseCandidateRouteSlot(rendezvousID)
-		s.admission.releaseConnection(source)
-		return false
-	}
-}
-
-func (s *Service) releaseCandidateConnection(source, rendezvousID string) {
-	<-s.connections
-	<-s.candidateConnections
-	s.releaseCandidateRouteSlot(rendezvousID)
-	s.admission.releaseConnection(source)
-}
-
-func (s *Service) acquireCandidateRouteSlot(rendezvousID string) bool {
-	s.candidateRoutesMu.Lock()
-	defer s.candidateRoutesMu.Unlock()
-	if s.candidateRoutes[rendezvousID] >= protocol.MaximumPendingRoutes {
-		return false
-	}
-	s.candidateRoutes[rendezvousID]++
-	return true
-}
-
-func (s *Service) releaseCandidateRouteSlot(rendezvousID string) {
-	s.candidateRoutesMu.Lock()
-	defer s.candidateRoutesMu.Unlock()
-	if s.candidateRoutes[rendezvousID] <= 1 {
-		delete(s.candidateRoutes, rendezvousID)
-		return
-	}
-	s.candidateRoutes[rendezvousID]--
 }

@@ -317,6 +317,11 @@ public struct LiveShareSettings: Codable, Equatable, Sendable {
     public var prioritizeFocusedWindow: Bool
     public var autoShareFocusedWindows: Bool
     public var accessCodeEnabled: Bool
+    /// Full high-entropy native invites admit their holder after all signed
+    /// identity, capability, room-capacity, and optional Access Word checks.
+    /// Enable this preference to add an explicit room-authority decision after
+    /// those checks and before provisional peer links are allocated.
+    public var askBeforeJoining: Bool
     /// Viewing never transmits a pointer unless this explicit local preference
     /// is enabled.
     public var collaborationPointerVisibleByDefault: Bool
@@ -343,17 +348,18 @@ public struct LiveShareSettings: Codable, Equatable, Sendable {
     public var advancedVideoSettings: LiveShareAdvancedVideoSettings
 
     public init(
-        quality: LiveShareQualityPreset = .veryHigh,
+        quality: LiveShareQualityPreset = .max,
         frameRate: LiveShareFrameRate = .thirty,
         encodingMode: LiveShareEncodingMode = .quality,
-        videoCodec: LiveShareVideoCodec = .vp8,
-        colorMode: LiveShareColorMode = .compatibleRec709,
+        videoCodec: LiveShareVideoCodec = .av1,
+        colorMode: LiveShareColorMode = .nativeDisplay,
         systemAudioEnabled: Bool = false,
         excludedAudioApplicationBundleIdentifiers: Set<String> = [],
         cursorUpdatesMatchFrameRate: Bool = false,
         prioritizeFocusedWindow: Bool = true,
         autoShareFocusedWindows: Bool = false,
         accessCodeEnabled: Bool = false,
+        askBeforeJoining: Bool = false,
         collaborationPointerVisibleByDefault: Bool = false,
         collaborationPingDurationSeconds: Int = 2,
         collaborationInkColor:
@@ -375,6 +381,7 @@ public struct LiveShareSettings: Codable, Equatable, Sendable {
         self.prioritizeFocusedWindow = prioritizeFocusedWindow
         self.autoShareFocusedWindows = autoShareFocusedWindows
         self.accessCodeEnabled = accessCodeEnabled
+        self.askBeforeJoining = askBeforeJoining
         self.collaborationPointerVisibleByDefault =
             collaborationPointerVisibleByDefault
         self.collaborationPingDurationSeconds = Self.clamp(
@@ -404,6 +411,7 @@ public struct LiveShareSettings: Codable, Equatable, Sendable {
         case adaptiveBitrateEnabled
         case autoShareFocusedWindows
         case accessCodeEnabled
+        case askBeforeJoining
         case collaborationPointerVisibleByDefault
         case collaborationPingDurationSeconds
         case collaborationInkColor
@@ -413,11 +421,11 @@ public struct LiveShareSettings: Codable, Equatable, Sendable {
 
     public init(from decoder: any Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        quality = try container.decodeIfPresent(LiveShareQualityPreset.self, forKey: .quality) ?? .veryHigh
+        quality = try container.decodeIfPresent(LiveShareQualityPreset.self, forKey: .quality) ?? .max
         frameRate = try container.decodeIfPresent(LiveShareFrameRate.self, forKey: .frameRate) ?? .thirty
         encodingMode = try container.decodeIfPresent(LiveShareEncodingMode.self, forKey: .encodingMode) ?? .quality
-        videoCodec = try container.decodeIfPresent(LiveShareVideoCodec.self, forKey: .videoCodec) ?? .vp8
-        colorMode = try container.decodeIfPresent(LiveShareColorMode.self, forKey: .colorMode) ?? .compatibleRec709
+        videoCodec = try container.decodeIfPresent(LiveShareVideoCodec.self, forKey: .videoCodec) ?? .av1
+        colorMode = try container.decodeIfPresent(LiveShareColorMode.self, forKey: .colorMode) ?? .nativeDisplay
         systemAudioEnabled = try container.decodeIfPresent(Bool.self, forKey: .systemAudioEnabled) ?? false
         excludedAudioApplicationBundleIdentifiers = Self.normalizedBundleIdentifiers(
             try container.decodeIfPresent(
@@ -434,6 +442,10 @@ public struct LiveShareSettings: Codable, Equatable, Sendable {
             ?? true
         autoShareFocusedWindows = try container.decodeIfPresent(Bool.self, forKey: .autoShareFocusedWindows) ?? false
         accessCodeEnabled = try container.decodeIfPresent(Bool.self, forKey: .accessCodeEnabled) ?? false
+        askBeforeJoining = try container.decodeIfPresent(
+            Bool.self,
+            forKey: .askBeforeJoining
+        ) ?? false
         collaborationPointerVisibleByDefault = try container.decodeIfPresent(
             Bool.self,
             forKey: .collaborationPointerVisibleByDefault
@@ -478,6 +490,7 @@ public struct LiveShareSettings: Codable, Equatable, Sendable {
         try container.encode(prioritizeFocusedWindow, forKey: .prioritizeFocusedWindow)
         try container.encode(autoShareFocusedWindows, forKey: .autoShareFocusedWindows)
         try container.encode(accessCodeEnabled, forKey: .accessCodeEnabled)
+        try container.encode(askBeforeJoining, forKey: .askBeforeJoining)
         try container.encode(
             collaborationPointerVisibleByDefault,
             forKey: .collaborationPointerVisibleByDefault

@@ -216,10 +216,10 @@ enum LiveShareServerConnectionProbeError: LocalizedError, Equatable, Sendable {
             String(localized: "The Live Share server returned an invalid response.")
         case let .incompatibleStatus(status):
             String(
-                localized: "The server does not expose Clip native-v3 rendezvous capabilities (HTTP \(status))."
+                localized: "The server does not expose Clip room capabilities (HTTP \(status))."
             )
         case .incompatibleProtocol:
-            String(localized: "The server does not support Clip native-v3 rendezvous.")
+            String(localized: "The server does not support Clip room protocol v4.")
         }
     }
 }
@@ -233,17 +233,17 @@ struct LiveShareServerProbeResponse: Sendable {
 struct LiveShareServerConnectionProbe: Sendable {
     typealias Execute = @Sendable (URLRequest) async throws -> LiveShareServerProbeResponse
 
-    private let client: ClipNativeRendezvousHTTPClient
+    private let client: ClipLiveShareServerRoomV4HTTPClient
 
     init(execute: @escaping Execute) {
-        client = ClipNativeRendezvousHTTPClient(
+        client = ClipLiveShareServerRoomV4HTTPClient(
             transport: LiveShareServerProbeHTTPTransport(
                 handler: execute
             )
         )
     }
 
-    private init(client: ClipNativeRendezvousHTTPClient) {
+    private init(client: ClipLiveShareServerRoomV4HTTPClient) {
         self.client = client
     }
 
@@ -252,13 +252,13 @@ struct LiveShareServerConnectionProbe: Sendable {
             _ = try await client.discover(at: endpoint.rootURL)
         } catch is CancellationError {
             throw CancellationError()
-        } catch let error as ClipNativeRendezvousError {
+        } catch let error as ClipLiveShareServerRoomV4TransportError {
             switch error {
-            case let .rejected(statusCode):
+            case let .rejected(statusCode, _):
                 throw LiveShareServerConnectionProbeError
                     .incompatibleStatus(statusCode)
             case .invalidCapabilities, .invalidResponse,
-                 .responseTooLarge, .incompatibleServer:
+                 .responseTooLarge:
                 throw LiveShareServerConnectionProbeError
                     .incompatibleProtocol
             default:
@@ -277,7 +277,7 @@ struct LiveShareServerConnectionProbe: Sendable {
         configuration.timeoutIntervalForResource = 5
         let session = URLSession(configuration: configuration)
         return Self(
-            client: ClipNativeRendezvousHTTPClient(
+            client: ClipLiveShareServerRoomV4HTTPClient(
                 transport: URLSessionClipLiveShareHTTPTransport(
                     session: session
                 )

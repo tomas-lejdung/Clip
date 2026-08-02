@@ -129,7 +129,7 @@ struct LiveShareCodecViewSnapshot: Equatable, Sendable {
     let acceleration: LiveShareCodecAcceleration
 
     init(
-        codec: LiveShareVideoCodec = .vp8,
+        codec: LiveShareVideoCodec = .av1,
         acceleration: LiveShareCodecAcceleration = .unknown
     ) {
         self.codec = codec
@@ -176,10 +176,10 @@ struct LiveShareSettingsViewSnapshot: Equatable, Sendable {
     let canChangeAutoShare: Bool
 
     init(
-        quality: LiveShareQualityPreset = .veryHigh,
+        quality: LiveShareQualityPreset = .max,
         frameRate: LiveShareFrameRate = .thirty,
         codec: LiveShareCodecViewSnapshot = .init(),
-        colorMode: LiveShareColorMode = .compatibleRec709,
+        colorMode: LiveShareColorMode = .nativeDisplay,
         systemAudioEnabled: Bool = false,
         audioExclusionApplications: [LiveShareAudioApplicationViewSnapshot] = [],
         excludedAudioApplicationIDs: Set<String> = [],

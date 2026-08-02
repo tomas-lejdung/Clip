@@ -45,40 +45,67 @@ appearance matrix moves to that client's post-update acceptance.
 
 ## Verification snapshot
 
-Current native Live Share service replacement checkpoint on
+Current server-coordinated Live Share replacement checkpoint on
 `codex/native-participant-mesh`:
 
-- [x] Replace browser-v1/native-v2 host/viewer entry with one clean-slate
-  native-v3 participant session for both Create and Join.
-- [x] Reduce the Go service to bounded opaque native rendezvous, health/version,
-  and validated STUN/TURN discovery.
-- [x] Add signed transactional admission, complete-mesh topology, symmetric
-  source/audio state, collaboration events, and leadership state.
-- [x] Complete production participant UI/lifecycle wiring, remove obsolete
-  v1/v2/Friends production sources, and pass deterministic two/three/four
-  participant topology, source/audio, removal, failure, and leadership gates.
-- [x] Lock current-leader authority below strict-majority reachability, gate
-  rendezvous/admission/membership mutation while locked, require exact-chain
-  quorum confirmation to restore, and catch up valid complete authority
-  history after missed membership or leadership terms.
-- [x] Pass the frozen-tree local gate: server tests; 72 focused
-  protocol/security/lifecycle tests; 8 rendezvous tests; WebRTC manager and
-  real-loopback package gates; hosted native-v3 mesh suites; strict package
-  totals of Core 81, Media 74, Capture 37, LiveShare 97, and WebRTC 66; and
-  server `go test -race ./...` plus `go vet ./...`.
-- [x] Pass the complete stable-signed hosted app suite: 364 of 365 tests, zero
-  failures, with one deliberate external-lane skip.
-- [ ] External gate: launch three and four independent signed Clip GUI
-  processes and exercise production Create/Join, real privacy-authorized
-  ScreenCaptureKit video/system audio, leadership, removal, reconnect, and
-  clean termination.
+- [x] Replace the prior host/viewer and client-consensus paths with one
+  clean-slate server-room-v4 participant session for both Create and Join.
+- [x] Make the Go service authoritative for a bounded opaque roster and
+  encrypted pair-signal routing while keeping invite fragments, identities,
+  SDP/ICE plaintext, source metadata, collaboration content, and media private.
+- [x] Keep one byte-stable invite across joins, leaves, reconnects, and roster
+  revisions; only explicit **New Invite** rotates it.
+- [x] Reconcile one retained direct WebRTC transport per unordered participant
+  pair: one link for two participants, three for three, and six for four.
+- [x] Isolate transient admission, sequence, member, backpressure, and pair
+  failures so they cannot roll back an unrelated pair or end the creator room.
+- [x] Preserve the approved capture, sender, encoding, source-aware 1x/Retina,
+  cursor, audio, viewer, and quality behavior from before the mesh rewrite.
+- [x] Remove creator election, quorum, authority-chain, succession, and
+  leaderless-lock behavior. Ordinary members may leave independently; creator
+  departure ends the room for everyone.
+- [x] Pass the full deterministic gate: `./scripts/test.sh`, Core 81, Media 74,
+  Capture 40, LiveShare 86, WebRTC 76, Go tests, localization/project audits,
+  strict Swift 6 app/test compilation, and 394 passing hosted app tests. The
+  only hosted skip is the deliberately opt-in visual snapshot lane.
+- [x] Pass real localhost service acceptance for roster sizes `2, 3, 4`, pair
+  totals `1, 3, 6`, stable invite reuse, private-value exclusion, ordinary leave,
+  and terminal creator departure.
+- [x] Pass the composed three-client app test covering the complete three-edge
+  mesh, all-source replication, signaling reconnect, ordinary member leave,
+  and terminal creator departure.
+- [x] Pass a real three-process signed GUI run on the local v4 service: all
+  three participants joined with the same unchanged invite, reached three
+  members/two direct links each, published one real window each, and each
+  received two windows from the other two people. A member leave preserved the
+  remaining pair and windows; same-invite rejoin restored both remote
+  publishers immediately. A friend request, explicit Allow/Deny, private
+  presence join, and second explicit approval all completed. Creator **End for
+  Everyone** returned both members directly to idle without an election or
+  locked-room state. The unified-log audit found no Clip RTCP/SDP,
+  `Capture is not running`, election, locked-room, or crash diagnostic.
+- [x] Repeat the signed three-process leave/rejoin path after the final
+  signaling-outbox review: each participant published one persistent real
+  window, all three reported two links and three media streams, C left without
+  disturbing A-B, and the original unchanged invite restored C's two remote
+  windows. Creator termination returned all three to idle, with no hidden
+  SDP/RTCP-mux, capture, signaling, election, locked-room, or crash log entry.
+- [x] Complete the eight-item stabilization pass: pair-local SDP recreation and
+  same-invite rejoin, canonical app/web fragment-secret invite, signed friends
+  and private presence, negotiated-codec/directional diagnostics, authoritative
+  stale-capture-notice clearing, remote-window recovery after rejoin, compact
+  **Shared With You** presentation, and AV1/Native/Max 20 Mbps defaults.
+- [ ] External gate: repeat the controlled run with four independent signed
+  Clip GUI processes and exercise real system audio/exclusions, Fullscreen,
+  removal/reconnect, creator exit, and clean termination.
 - [ ] External gate: pass controlled direct Internet ICE and TURN, physical
   multi-display/Spaces and Retina combinations, CPU/upstream/thermal/audio-mix
   observation, repeated churn, and the required soak.
 
 The deterministic implementation is complete; the unchecked items are release
 acceptance evidence, not disabled production entry points. Create Room and Join
-Invite are enabled only through the clean-slate native-v3 participant path.
+Invite are enabled only through the clean-slate server-room-v4 participant
+path.
 
 The authoritative current board and evidence boundary are in
 [`docs/native-participant-mesh-progress.md`](docs/native-participant-mesh-progress.md).

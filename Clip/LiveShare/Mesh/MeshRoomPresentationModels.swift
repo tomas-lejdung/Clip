@@ -76,7 +76,20 @@ struct MeshParticipantCollaborationConfiguration: Equatable, Sendable {
 struct MeshRoomMediaCounterKey: Equatable, Hashable, Sendable {
     let participantID: String
     let trackIdentifier: String
+    let sourceIdentifier: String
     let direction: MeshRoomMediaDiagnosticsSnapshot.Direction
+
+    init(
+        participantID: String,
+        trackIdentifier: String,
+        sourceIdentifier: String,
+        direction: MeshRoomMediaDiagnosticsSnapshot.Direction
+    ) {
+        self.participantID = participantID
+        self.trackIdentifier = trackIdentifier
+        self.sourceIdentifier = sourceIdentifier
+        self.direction = direction
+    }
 }
 
 struct MeshRoomMediaCounterSample: Equatable, Sendable {
@@ -166,8 +179,6 @@ enum MeshRoomPhase: Equatable, Sendable {
     case connecting
     case live(elapsedSeconds: TimeInterval)
     case reconnecting
-    case electingCreator
-    case leaderlessLocked
     case ending
     case ended(message: String?)
     case failed(message: String)
@@ -183,10 +194,6 @@ enum MeshRoomPhase: Equatable, Sendable {
             )
         case .reconnecting:
             String(localized: "Reconnecting…")
-        case .electingCreator:
-            String(localized: "Choosing a new room creator…")
-        case .leaderlessLocked:
-            String(localized: "Connected · Room membership locked")
         case .ending:
             String(localized: "Ending room…")
         case let .ended(message):
@@ -198,7 +205,7 @@ enum MeshRoomPhase: Equatable, Sendable {
 
     var isConnected: Bool {
         switch self {
-        case .live, .reconnecting, .electingCreator, .leaderlessLocked:
+        case .live, .reconnecting:
             true
         case .connecting, .ending, .ended, .failed:
             false
@@ -207,9 +214,9 @@ enum MeshRoomPhase: Equatable, Sendable {
 
     var allowsMediaChanges: Bool {
         switch self {
-        case .live, .reconnecting, .electingCreator, .leaderlessLocked:
+        case .live:
             true
-        case .connecting, .ending, .ended, .failed:
+        case .connecting, .reconnecting, .ending, .ended, .failed:
             false
         }
     }
@@ -226,6 +233,7 @@ enum MeshRoomPhase: Equatable, Sendable {
 
 enum MeshRoomConnectionRoute: Equatable, Sendable {
     case connecting
+    case connected
     case direct
     case turn
     case disconnected
@@ -234,6 +242,8 @@ enum MeshRoomConnectionRoute: Equatable, Sendable {
         switch self {
         case .connecting:
             String(localized: "Connecting")
+        case .connected:
+            String(localized: "Connected")
         case .direct:
             "P2P"
         case .turn:
@@ -244,7 +254,7 @@ enum MeshRoomConnectionRoute: Equatable, Sendable {
     }
 
     var isConnected: Bool {
-        self == .direct || self == .turn
+        self == .connected || self == .direct || self == .turn
     }
 }
 
@@ -319,6 +329,18 @@ struct MeshRoomInviteSnapshot: Equatable, Sendable,
     }
 
     var debugDescription: String { description }
+
+    /// This code identifies the reusable invitation, not the room itself.
+    /// Keeping the distinction explicit in the presentation model prevents a
+    /// rotated invitation from being mistaken for a renamed room (and vice
+    /// versa).
+    var codeLabel: String {
+        String(localized: "Invite Code")
+    }
+
+    var reuseDetail: String {
+        String(localized: "Reusable until you change it.")
+    }
 }
 
 struct MeshRoomPendingAdmissionSnapshot: Equatable, Identifiable, Sendable {
@@ -429,6 +451,12 @@ struct MeshRoomMediaDiagnosticsSnapshot: Equatable, Identifiable, Sendable {
     }
 
     let id: String
+    /// Exact source-instance identity shared by every per-peer sender for one
+    /// locally published source. RTP track identifiers are reusable transport
+    /// slots, so `id` identifies a displayed diagnostics row while this value
+    /// is the key used to collapse those peer-specific rows into a publishing
+    /// summary without merging a replacement source into its predecessor.
+    let sourceIdentifier: String
     let sourceName: String
     let direction: Direction
     let codec: String?
@@ -444,6 +472,7 @@ struct MeshRoomMediaDiagnosticsSnapshot: Equatable, Identifiable, Sendable {
 
     init(
         id: String,
+        sourceIdentifier: String? = nil,
         sourceName: String,
         direction: Direction,
         codec: String? = nil,
@@ -458,6 +487,7 @@ struct MeshRoomMediaDiagnosticsSnapshot: Equatable, Identifiable, Sendable {
         processingLatencyMilliseconds: Double? = nil
     ) {
         self.id = id
+        self.sourceIdentifier = sourceIdentifier ?? id
         self.sourceName = sourceName
         self.direction = direction
         self.codec = codec
@@ -472,6 +502,117 @@ struct MeshRoomMediaDiagnosticsSnapshot: Equatable, Identifiable, Sendable {
         self.processingLatencyMilliseconds =
             processingLatencyMilliseconds.map { max(0, $0) }
     }
+
+    /// Presents local publication as sources rather than raw WebRTC senders.
+    ///
+    /// One source has a sender on every direct peer link, and WebRTC may keep
+    /// a superseded sender row in its statistics report briefly after track
+    /// replacement. Active source-instance identities remove those stale rows.
+    /// Remaining rows are summarized with total upload/loss plus the weakest
+    /// current delivery dimensions, cadence, drops and latency. Exact peer
+    /// RTT/loss remains in `MeshRoomPeerDiagnosticsSnapshot` and Connections.
+    static func publishingSources(
+        from diagnostics: [Self],
+        activeSourceIdentifiers: Set<String>
+    ) -> [Self] {
+        let activeOutgoing = diagnostics.filter {
+            $0.direction == .outgoing
+                && activeSourceIdentifiers.contains($0.sourceIdentifier)
+        }
+        return Dictionary(
+            grouping: activeOutgoing,
+            by: \.sourceIdentifier
+        )
+        .map { sourceIdentifier, rows in
+            let ordered = rows.sorted { $0.id < $1.id }
+            let canonical = ordered[0]
+            let weakestResolution = ordered
+                .filter { $0.width > 0 && $0.height > 0 }
+                .min {
+                    let lhsProduct = $0.width
+                        .multipliedReportingOverflow(by: $0.height)
+                    let rhsProduct = $1.width
+                        .multipliedReportingOverflow(by: $1.height)
+                    let lhsPixels = lhsProduct.overflow
+                        ? Int.max
+                        : lhsProduct.partialValue
+                    let rhsPixels = rhsProduct.overflow
+                        ? Int.max
+                        : rhsProduct.partialValue
+                    if lhsPixels != rhsPixels {
+                        return lhsPixels < rhsPixels
+                    }
+                    if $0.width != $1.width {
+                        return $0.width < $1.width
+                    }
+                    return $0.height < $1.height
+                }
+            let frameRates = ordered.map(\.framesPerSecond)
+            let codecs = Set(ordered.compactMap(\.codec))
+            let pressure = ordered.max {
+                if $0.queuePressureDrops
+                    != $1.queuePressureDrops {
+                    return $0.queuePressureDrops
+                        < $1.queuePressureDrops
+                }
+                return ($0.queuePressureReason ?? "")
+                    < ($1.queuePressureReason ?? "")
+            }
+            return Self(
+                id: "outgoing-\(sourceIdentifier)",
+                sourceIdentifier: sourceIdentifier,
+                sourceName: canonical.sourceName,
+                direction: .outgoing,
+                codec: codecs.count == 1
+                    ? codecs.first
+                    : codecs.isEmpty
+                        ? nil
+                        : String(localized: "Mixed"),
+                width: weakestResolution?.width ?? 0,
+                height: weakestResolution?.height ?? 0,
+                // Every row has already been resolved to the active source.
+                // Zero therefore means an active peer is currently stalled,
+                // not that the row is an unrelated empty sender slot.
+                framesPerSecond: frameRates.min() ?? 0,
+                bitsPerSecond: saturatingSum(
+                    ordered.map(\.bitsPerSecond)
+                ),
+                droppedFrames:
+                    ordered.map(\.droppedFrames).max() ?? 0,
+                queuePressureDrops:
+                    ordered.map(\.queuePressureDrops).max() ?? 0,
+                queuePressureReason: pressure?.queuePressureReason,
+                packetsLost: saturatingSum(
+                    ordered.map(\.packetsLost)
+                ),
+                processingLatencyMilliseconds: ordered
+                    .compactMap(\.processingLatencyMilliseconds)
+                    .max()
+            )
+        }
+        .sorted { lhs, rhs in
+            if lhs.sourceName != rhs.sourceName {
+                return lhs.sourceName.localizedStandardCompare(
+                    rhs.sourceName
+                ) == .orderedAscending
+            }
+            return lhs.sourceIdentifier < rhs.sourceIdentifier
+        }
+    }
+
+    private static func saturatingSum(_ values: [Int]) -> Int {
+        values.reduce(into: 0) { result, value in
+            let (sum, overflow) = result.addingReportingOverflow(value)
+            result = overflow ? Int.max : sum
+        }
+    }
+
+    private static func saturatingSum(_ values: [Int64]) -> Int64 {
+        values.reduce(into: 0) { result, value in
+            let (sum, overflow) = result.addingReportingOverflow(value)
+            result = overflow ? Int64.max : sum
+        }
+    }
 }
 
 struct MeshRoomPeerDiagnosticsSnapshot: Equatable, Identifiable, Sendable {
@@ -479,6 +620,9 @@ struct MeshRoomPeerDiagnosticsSnapshot: Equatable, Identifiable, Sendable {
     let displayName: String
     let route: MeshRoomConnectionRoute
     let roundTripMilliseconds: Double?
+    let availableOutgoingBitrateBps: Double?
+    let bytesSent: UInt64
+    let bytesReceived: UInt64
     let packetsLost: Int64
 
     init(
@@ -486,12 +630,19 @@ struct MeshRoomPeerDiagnosticsSnapshot: Equatable, Identifiable, Sendable {
         displayName: String,
         route: MeshRoomConnectionRoute,
         roundTripMilliseconds: Double? = nil,
+        availableOutgoingBitrateBps: Double? = nil,
+        bytesSent: UInt64 = 0,
+        bytesReceived: UInt64 = 0,
         packetsLost: Int64 = 0
     ) {
         self.participantID = participantID
         self.displayName = displayName
         self.route = route
         self.roundTripMilliseconds = roundTripMilliseconds.map { max(0, $0) }
+        self.availableOutgoingBitrateBps = availableOutgoingBitrateBps
+            .flatMap { $0.isFinite ? max(0, $0) : nil }
+        self.bytesSent = bytesSent
+        self.bytesReceived = bytesReceived
         self.packetsLost = max(0, packetsLost)
     }
 
@@ -551,6 +702,7 @@ struct MeshRoomRemoteParticipantSnapshot: Equatable, Identifiable, Sendable {
     let systemAudioEnabled: Bool
     let volume: Double
     let diagnostics: [MeshRoomMediaDiagnosticsSnapshot]
+    let friendshipState: MeshRoomFriendshipState
 
     init(
         id: String,
@@ -562,7 +714,8 @@ struct MeshRoomRemoteParticipantSnapshot: Equatable, Identifiable, Sendable {
         systemAudioAvailable: Bool = false,
         systemAudioEnabled: Bool = true,
         volume: Double = 1,
-        diagnostics: [MeshRoomMediaDiagnosticsSnapshot] = []
+        diagnostics: [MeshRoomMediaDiagnosticsSnapshot] = [],
+        friendshipState: MeshRoomFriendshipState = .available
     ) {
         self.id = id
         self.displayName = displayName
@@ -574,6 +727,7 @@ struct MeshRoomRemoteParticipantSnapshot: Equatable, Identifiable, Sendable {
         self.systemAudioEnabled = systemAudioEnabled
         self.volume = min(max(volume, 0), 1)
         self.diagnostics = diagnostics.filter { $0.direction == .incoming }
+        self.friendshipState = friendshipState
     }
 
     var visibleSourceCount: Int {
@@ -587,18 +741,18 @@ struct MeshRoomViewSnapshot: Equatable, Sendable,
     let phase: MeshRoomPhase
     let roomName: String
     let localParticipant: MeshRoomLocalParticipantSnapshot
-    /// Immutable provenance for the participant that created the room.
-    ///
-    /// This must not change when authority is transferred after a graceful
-    /// departure or quorum-certified recovery election.
-    let foundingCreatorParticipantID: String?
-    /// The participant that currently owns admission and membership authority.
-    let currentLeaderParticipantID: String?
+    /// Immutable participant that created and owns the room. The clean-slate
+    /// server-coordinated mesh never transfers this role; creator departure
+    /// ends the room for every member.
+    let creatorParticipantID: String?
     let invite: MeshRoomInviteSnapshot?
     let accessWordEnabled: Bool
     let accessWord: String?
     let canChangeAccessWord: Bool
+    let askBeforeJoining: Bool
+    let canChangeAskBeforeJoining: Bool
     let pendingAdmissions: [MeshRoomPendingAdmissionSnapshot]
+    let pendingFriendRequests: [MeshRoomPendingFriendRequestSnapshot]
     let localSources: [MeshRoomLocalSourceSnapshot]
     let fullscreen: LiveShareFullscreenViewSnapshot
     let canShareFocusedWindow: Bool
@@ -618,13 +772,15 @@ struct MeshRoomViewSnapshot: Equatable, Sendable,
         phase: MeshRoomPhase,
         roomName: String,
         localParticipant: MeshRoomLocalParticipantSnapshot,
-        foundingCreatorParticipantID: String? = nil,
-        currentLeaderParticipantID: String?,
+        creatorParticipantID: String?,
         invite: MeshRoomInviteSnapshot? = nil,
         accessWordEnabled: Bool = false,
         accessWord: String? = nil,
         canChangeAccessWord: Bool = true,
+        askBeforeJoining: Bool = false,
+        canChangeAskBeforeJoining: Bool = true,
         pendingAdmissions: [MeshRoomPendingAdmissionSnapshot] = [],
+        pendingFriendRequests: [MeshRoomPendingFriendRequestSnapshot] = [],
         localSources: [MeshRoomLocalSourceSnapshot] = [],
         fullscreen: LiveShareFullscreenViewSnapshot = .init(
             isOn: false,
@@ -651,14 +807,20 @@ struct MeshRoomViewSnapshot: Equatable, Sendable,
             ? String(localized: "Live Share")
             : trimmedRoomName
         self.localParticipant = localParticipant
-        self.foundingCreatorParticipantID = foundingCreatorParticipantID
-        self.currentLeaderParticipantID = currentLeaderParticipantID
+        self.creatorParticipantID = creatorParticipantID
         self.invite = invite
         self.accessWordEnabled = accessWordEnabled
         self.accessWord = accessWord
         self.canChangeAccessWord = canChangeAccessWord
+        self.askBeforeJoining = askBeforeJoining
+        self.canChangeAskBeforeJoining = canChangeAskBeforeJoining
         self.pendingAdmissions = Self.unique(
             pendingAdmissions,
+            excluding: localParticipant.id,
+            id: \.id
+        )
+        self.pendingFriendRequests = Self.unique(
+            pendingFriendRequests,
             excluding: localParticipant.id,
             id: \.id
         )
@@ -688,35 +850,35 @@ struct MeshRoomViewSnapshot: Equatable, Sendable,
         self.canEndRoom = canEndRoom
     }
 
-    var isLocalLeader: Bool {
-        currentLeaderParticipantID == localParticipant.id
+    var isLocalCreator: Bool {
+        creatorParticipantID == localParticipant.id
     }
 
     var participantCount: Int {
         1 + remoteParticipants.count
     }
 
+    var remoteSharedSourceCount: Int {
+        remoteParticipants.reduce(0) { count, participant in
+            count + participant.sources.count
+        }
+    }
+
+    var sharingRemoteParticipantCount: Int {
+        remoteParticipants.count { !$0.sources.isEmpty }
+    }
+
     var connectedParticipantCount: Int {
         1 + remoteParticipants.count(where: { $0.route.isConnected })
     }
 
-    var currentLeaderDisplayName: String? {
-        guard let currentLeaderParticipantID else { return nil }
-        if currentLeaderParticipantID == localParticipant.id {
+    var creatorDisplayName: String? {
+        guard let creatorParticipantID else { return nil }
+        if creatorParticipantID == localParticipant.id {
             return localParticipant.displayName
         }
         return remoteParticipants.first {
-            $0.id == currentLeaderParticipantID
-        }?.displayName
-    }
-
-    var foundingCreatorDisplayName: String? {
-        guard let foundingCreatorParticipantID else { return nil }
-        if foundingCreatorParticipantID == localParticipant.id {
-            return localParticipant.displayName
-        }
-        return remoteParticipants.first {
-            $0.id == foundingCreatorParticipantID
+            $0.id == creatorParticipantID
         }?.displayName
     }
 

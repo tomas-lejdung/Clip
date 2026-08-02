@@ -86,7 +86,7 @@ Settings
 Quit Clip
 ```
 
-The idle popover includes **Create Room** and **Join Invite**. Once a native-v3
+The idle popover includes **Create Room** and **Join Invite**. Once a v4
 room session exists, the entire popover switches to the common participant room
 surface rather than mixing recording and sharing actions in one menu.
 
@@ -94,7 +94,7 @@ surface rather than mixing recording and sharing actions in one menu.
 
 # Live Share
 
-## Native-v3 room model
+## Server-coordinated v4 room model
 
 Live Share is a clean-slate native Clip participant mesh. **Create Room** and
 **Join Invite** both start the same participant session directly. There is no
@@ -102,10 +102,10 @@ permanent host/viewer media role, browser participant, legacy protocol
 negotiation, in-place upgrade, role handoff, media mirror, or compatibility
 fallback.
 
-The room creator is the initial admission and membership leader. Leadership is
-a room-control responsibility only: the leader does not relay another
-participant's media and does not own another participant's source state. Every
-admitted participant can concurrently:
+The room creator owns admission and room-level controls. The service owns only
+the authoritative opaque roster and encrypted pair-signal routing; neither the
+creator nor the service relays another participant's media or owns another
+participant's source state. Every admitted participant can concurrently:
 
 - Publish up to four exact windows or one mutually exclusive fullscreen
   display.
@@ -126,13 +126,23 @@ session. Late callbacks from a superseded session are ignored.
 
 ## Invite and admission
 
-Creating a room reserves a fresh opaque rendezvous, creates a native-v3 session
-and room agreement key, and produces one self-contained invite. The invite
-contains only the endpoint and the cryptographic material needed to locate and
-authenticate the room: protocol version, rendezvous and session identifiers,
-founding and current-leader identities, room agreement public key, and a
-high-entropy join capability. A room name or rendezvous identifier by itself
-never authorizes membership.
+Creating a room reserves a fresh opaque service-room identifier, creates a
+client-only room agreement secret and stable admission capability, and produces
+one self-contained invite for both Clip and a future web viewer:
+
+```text
+https://service.example/ROOMCODE#v=4&key=<sealed-client-payload>&join=<admission-capability>
+```
+
+`ROOMCODE` is an eight-character presentation code. It is not the service API
+room ID and grants no access. The encrypted `key` payload contains the opaque
+256-bit API room ID, session binding, creator identity, room agreement secret,
+and a copy of the admission capability. `join` derives the payload-encryption
+key and authorizes a candidate to knock. Neither fragment value is ever present
+in an HTTP path, query, header, server log, or outer WebSocket message. The
+client decrypts the API room ID before contacting the service; that opaque ID
+is routing material and never authorizes membership by itself. AES-GCM
+authenticated data binds the sealed payload to the exact `/ROOMCODE` path.
 
 The room popover provides:
 
@@ -141,78 +151,117 @@ The room popover provides:
   fresh join material without disrupting admitted participants.
 - An optional generated **Access Word** that can be enabled, copied, replaced,
   or disabled for future admissions.
-- Pending admission requests with explicit **Allow** and **Deny** actions.
+- An optional **Ask Before Joining** setting. It is off by default.
+- When approval is required, prominent pending admission cards with explicit
+  **Allow** and **Deny** actions.
 
 The join capability is the mandatory anonymous admission secret. The optional
 Access Word is an independent short confirmation shared separately. The
-candidate proves both inside an encrypted native-v3 route, bound to the exact
-session, rendezvous, participant identity, route, challenge, and leader. The
-rendezvous service never receives either secret or a plaintext proof.
+candidate proves both inside an encrypted server-room-v4 knock, bound to the
+exact room, session, participant identity, and creator. The room service never
+receives either secret or a plaintext proof.
 Replacing or disabling the Access Word affects future candidates only and does
 not eject admitted participants.
 
 Every Clip installation owns a persistent P-256 signing identity stored as
-device-only Keychain material. Possession of an invite, identity, route, room
-name, or Access Word does not itself grant membership. The current certified
-leader must explicitly approve each candidate. Approval issues a short-lived
-room membership credential and begins a bounded transactional join; denial,
-timeout, invalid proof, missing peer link, or room-capacity failure removes all
-provisional resources.
+device-only Keychain material. A room name, rendezvous identifier, identity, or
+Access Word alone never grants membership. By default, successful proof of the
+full high-entropy invite capability auto-admits a candidate after identity,
+capability, optional Access Word, duplicate, capacity, and room-availability
+validation. **Ask Before Joining** adds a creator-controlled approval boundary
+after those checks. The signed room descriptor tells an authenticated
+candidate whether approval is required; while waiting, Clip identifies the
+room and current admission authority without exposing room contents. Approval
+or automatic admission installs one creator-signed encrypted member descriptor
+in the service roster. Denial, timeout, invalid proof, or room-capacity failure
+removes all candidate resources.
 
-## Membership and leadership
+## Membership and room lifetime
 
-The current leader signs the authoritative membership snapshot. Every member
-verifies the leader, room/session binding, membership revision, participant
-identities, capability baseline, expiry, and all required local peer links
-before applying a newer snapshot. Participant IDs are random per room and
-source identity is the tuple of publisher participant ID and source-instance
-ID.
+The service publishes one complete authoritative opaque roster after every
+membership change. Every member decrypts and verifies each creator-signed
+descriptor, room/session binding, revision, creator continuity, and identity
+uniqueness before reconciling its peer links. Participant IDs are random per
+room and source identity is the tuple of publisher participant ID and
+source-instance ID.
 
-An ordinary participant may leave without ending the room. The leader has two
-distinct actions:
+For every unordered participant pair there is exactly one independent direct
+WebRTC connection. For A, B, and C the topology is A-B, A-C, and B-C. Applying
+a new roster is set reconciliation: retained pairs are never replaced merely
+because another participant joined, left, or reconnected. A pair failure is
+isolated to that pair and cannot roll back any other connection.
 
-- **Leave Room** selects the deterministic eligible successor, commits a new
-  leadership term and membership without the departing leader, publishes a
-  replacement invite, and then closes the departing participant's links.
-- **End Room for Everyone** signs terminal room state and closes all peer links,
-  capture sessions, remote presentations, audio, overlays, and rendezvous
-  routes.
+When an ordinary participant rejoins, its fresh member incarnation replaces
+only its stale pair/source state. Every ready pair exchanges the publisher's
+current authoritative source manifest, so all active windows reappear without
+requiring the publisher to stop and reshare them.
 
-If the leader disappears unexpectedly, established peer media and control stay
-active while the survivors run a term-scoped election. A strict majority of
-the last committed membership can certify exactly one deterministic successor
-and resume admissions with a replacement invite. Without that quorum the room
-enters `leaderlessLocked`: existing surviving links may continue, but joins,
-reconnects, removal, Access Word changes, and other membership mutations are
-rejected. Preserving the same server lease after an ungraceful loss is not
-required.
+An ordinary participant may leave without ending the room; the service removes
+only that participant and broadcasts the next complete roster. The creator has
+one terminal **End Room for Everyone** action. If the creator explicitly leaves
+or its signaling reconnect grace expires, the service ends the room for every
+participant. There is no election, successor, authority chain, quorum, or
+`leaderlessLocked` phase.
+
+The invite URL remains byte-for-byte stable across joins, leaves, reconnects,
+descriptor refreshes, and roster revisions. Only the explicit **New Invite**
+action rotates the admission capability and changes the copied URL; it does not
+replace the room ID or interrupt admitted participants.
+
+## Friends
+
+A participant may send **Add Friend** from another participant's room row.
+Friendship is established only after a signed request, explicit remote
+acceptance, requester acknowledgement, and accepter commit receipt cross that
+pair's already-authenticated reliable DataChannel. Both devices durably commit
+the same persistent P-256 identity or neither presents the relationship as
+trusted. Requests and receipts are idempotent and crash recoverable.
+
+Every friendship owns two independent opaque presence mailboxes: one for each
+direction. Each mailbox contains a random routing ID and random symmetric read
+secret exchanged only over the authenticated pair. A participant with an
+active room publishes a short-lived, signed, AES-GCM-encrypted copy of the
+current canonical v4 invite separately for each friend. The service stores only
+the opaque routing ID, monotonic revision, expiry, and bounded ciphertext. It
+never receives the friend graph, identity, name, trust decision, room code, API
+room ID, invite fragment, or presence key.
+
+The idle Live Share pane lists saved friends that are currently sharing.
+Selecting a friend decrypts and verifies their presence, pins the expected
+identity, and joins through the normal v4 room path. A saved-friend join always
+appears to that friend as a prominent **Allow** or **Deny** request even when
+the room's general **Ask Before Joining** setting is off. The candidate sees a
+clear waiting state. Removing a friend deletes both local mailbox secrets and
+stops future discovery; it does not remove an already admitted room member.
 
 ## Common participant popover
 
-Every participant sees the same fluid, content-sized room popover. Leadership
-changes available authority actions, not the media layout. The popover uses
+Every participant sees the same fluid, content-sized room popover. Creator
+authority changes available room actions, not the media layout. The popover uses
 shared pane, section, row, toggle, picker, metric, and action-button components
 so the creator and later joiners remain visually identical.
 
-The current leader sees Copy/New Invite, Access Word, pending approval, member
-removal, and End Room authority. Other participants see the same room identity
-and current-leader status without disabled host-only placeholders. When
-leadership moves, those controls move to the successor in place.
+The creator sees Copy/New Invite, Access Word, Ask Before Joining,
+pending approval, member removal, and End Room authority. Other participants
+see the same room identity and participant state without disabled creator-only
+placeholders. A pending request raises the menu-bar attention state and appears
+as a top-level Allow/Deny card; it is never hidden inside room settings.
 
 The overview contains:
 
 - Room name and invite state.
 - **Your Share**, with the participant's local sources, add/share controls,
   system-audio publication, app-audio exclusions, and local stream state.
-- One section per remote participant, with that participant's visible and
-  hidden windows, audio playback state, volume, connection route, and
-  directional diagnostics.
+- A compact **Shared With You** navigation row summarizing `N windows from M
+  people`. Its fluid detail pane groups visible and hidden windows, audio
+  playback, volume, connection route, and bring-to-front controls by remote
+  participant. **Your Share** remains expanded on the overview.
 - Room participants and pending admission state.
 - Stream Settings and Statistics.
 - Pointer, ping, and drawing controls.
 - **Bring All to Front**, plus per-source show/bring-forward controls.
-- **Leave Room**, and **End Room for Everyone** only when the local participant
-  holds valid leader authority.
+- **Leave Room** for an ordinary participant, and **End Room for Everyone** for
+  the creator.
 
 Starting or remaining connected with zero local sources is valid. Each remote
 participant section shows an explicit waiting state until that participant
@@ -225,6 +274,12 @@ Clip shares exact windows rather than every window owned by an application.
 Each participant may share up to four exact windows concurrently. Each source
 keeps its stable reserved WebRTC track slot for the lifetime of the room so
 adding or removing a source does not require a new peer connection.
+
+A source-scoped capture failure is a transient notice, not persistent room
+state. Clip clears it only after authoritative publication/capture state proves
+that source recovered, or after the failed source or participant incarnation is
+removed. A recovered source must not leave a stale `Capture is not running`
+banner over otherwise working sharing controls.
 
 Fullscreen is locally exclusive:
 
@@ -287,6 +342,14 @@ resolution so mixed-display topology never causes a destructive resample.
 Source geometry, scale metadata, and native cursor behavior are re-evaluated
 when a shared window moves between displays.
 
+The server-room-v4 mesh replaces only room signaling, membership, and peer
+coordination. It must reuse the established capture and media contract without
+changing its algorithms: source-aware 1×/Retina resolution, geometry and pixel
+formats, cursor/focus behavior, codec-specific H.264 constraints, codec
+transition ordering and rollback, quality allocation, encoder settings,
+system-audio sequencing, and captured-frame delivery remain behaviorally
+identical to the pre-mesh Live Share pipeline.
+
 ## Sharing controls, focus, and cursor
 
 The local participant's currently focused eligible window gets a small
@@ -309,8 +372,13 @@ receiver's local windows.
 
 Every participant may deliberately reveal a collaboration pointer over a
 remote source, create a bounded ping, or draw temporary vector ink. These
-events use the existing pairwise reliable native-v3 DataChannels rather than a
-media encode or server route.
+events use the existing pairwise WebRTC DataChannels rather than a media
+encode or server route. Replaceable pointer motion is coalesced to a latest-
+wins 60 Hz ceiling and may be dropped under transport pressure; pings, ink,
+and clear commands use reliable ordered delivery. Pointer movement refreshes a
+two-second activity lease; the sender emits one hidden sample when movement
+stops, and receivers independently expire stale pointers after the same two
+seconds in case that ephemeral hide packet is lost.
 
 - Pointer and ping events contain origin participant, source key, normalized
   source coordinates, positive sequence, timestamp, visibility, and bounded
@@ -320,6 +388,11 @@ media encode or server route.
 - Pointer and ink are rendered as resolution-independent local overlays at the
   publisher and receivers. They are excluded from source capture to prevent a
   feedback loop and never reduce the encoded source quality.
+- A publisher overlay for an exact-window source is ordered directly above
+  that source in the same WindowServer layer. Unrelated windows above the
+  shared window therefore cover its annotations too; minimizing the source or
+  leaving its Space hides the overlay. Fullscreen annotations remain a
+  display-level overlay because the complete display is their source.
 - Each participant has a stable identity color and visible attribution.
 - A source publisher can clear all ink on its source; each participant can
   clear its own ink; all temporary drawing expires automatically.
@@ -344,12 +417,13 @@ aspect-fits only sources that exceed its 4,096-pixel-side, 4,096 × 2,304 luma,
 or Level 5.2 macroblock envelope; an under-limit odd dimension is cropped by at
 most one final row or column at the encoder boundary.
 
-Compatible Rec.709 is the default 8-bit SDR video-range mode. Full-range
+Compatible Rec.709 is an available 8-bit SDR video-range mode. Full-range
 Rec.709 uses 8-bit full-range YCbCr with VP8, VP9, and AV1; H.264 retains its
 standard Rec.709 conversion. Native Display preserves standard sRGB, Display
 P3, or Rec.709 descriptions through the patched WebRTC frame bridge and native
-remote presentation. An unrecognized input profile falls back to sRGB. These
-modes neither enable 10-bit output nor choose 4:2:0 versus 4:2:2.
+remote presentation and is the default. An unrecognized input profile falls
+back to sRGB. These modes neither enable 10-bit output nor choose 4:2:0 versus
+4:2:2.
 
 Each codec has separately persisted advanced sender controls. Changes remain a
 draft until **Apply**; **Back** or **Cancel** discards the draft and **Reset**
@@ -360,42 +434,43 @@ Applying updates the participant's active senders without replacing established
 peer connections.
 
 H.264 is hardware encoded and geometry-capped. VP8, VP9 profile 0, and AV1 are
-software encoded at native geometry. AV1 may impose substantially higher CPU
-cost, so VP8 remains the default. Thirty FPS is the default and 15 FPS is
-selectable. Sixty FPS may be exposed when the hardware path supports it but is
-not a release requirement.
+software encoded at native geometry. AV1 is the default codec, Native Display
+is the default color mode, and Max (20 Mbps) is the default quality preset.
+Thirty FPS is the default and 15 FPS is selectable. Sixty FPS may be exposed
+when the hardware path supports it but is not a release requirement.
 
 Capture-to-WebRTC pressure is bounded per peer and observable. Each peer link
 favors its latest frame to prevent latency growth; one slow participant cannot
 backpressure another participant's sender. Sustained overload is visible in
 directional diagnostics rather than accumulating an unbounded queue.
 
-## Native-v3 protocol and privacy
+## Server-room-v4 protocol and privacy
 
-Native-v3 is the only supported Live Share connection contract:
+Server-room-v4 is the only supported Live Share connection contract:
 
-- A room has up to four unique participant identities and a
-  leader-signed authoritative membership snapshot.
+- A room has up to four unique participant identities in one complete
+  service-authoritative opaque roster whose member descriptors are
+  creator-signed and end-to-end encrypted.
 - For `n` members, Clip creates `n × (n - 1) / 2` direct WebRTC peer
   connections: 0, 1, 3, or 6 links for one through four participants.
 - Each pair has one canonical participant-pair key, one independent
   negotiation revision, four reserved random-identity video transceivers, one
-  optional Opus audio track per direction, and one reliable ordered native-v3
+  optional Opus audio track per direction, and one reliable ordered
   control DataChannel.
-- The rendezvous service may route encrypted initial admission, targeted SDP,
-  and ICE. After a peer link opens, source state, collaboration, renegotiation,
-  and diagnostics use its authenticated DataChannel. Media is never forwarded
-  by the leader, service, or another participant.
+- The room service routes encrypted admission, targeted SDP, and ICE and
+  broadcasts complete opaque roster snapshots. Source state, collaboration,
+  and diagnostics use authenticated pair DataChannels. Media is never
+  forwarded by the creator, service, or another participant.
 - P-256 ECDH, HKDF-SHA256, AES-GCM, signed possession handshakes, bounded
   sequence spaces, and context-bound proofs protect admission and bootstrap.
   Cross-route, cross-session, cross-pair, replayed, stale, malformed, or
   unauthenticated traffic is rejected before it mutates room state.
-- Membership, each publisher's source state, and each canonical peer link have
-  independent positive revision domains. A stale update in one domain cannot
-  block a newer update in another.
-- Admission is transactional. Provisional peers and media remain quarantined
-  until every required pair is authenticated and the newer signed membership
-  snapshot commits.
+- Roster membership, each publisher's source state, and each canonical peer
+  link have independent positive revision domains. A stale update in one
+  domain cannot block a newer update in another.
+- Admission is transactional. A candidate is absent from the room until the
+  creator returns a valid encrypted admission record and the service commits a
+  newer complete roster.
 - H.264 and VP8 are exact codec choices. VP9 may fall back to VP8, and AV1 may
   fall back to VP9 then VP8 independently for each peer. Actual per-link RTP
   statistics identify each effective codec and route.
@@ -406,7 +481,8 @@ Native-v3 is the only supported Live Share connection contract:
 
 The service sees only bounded random routing identifiers, ciphertext size,
 sequence, nonce, timing, and network metadata. It can deny service and observe
-traffic shape, but cannot approve a candidate, forge membership, decrypt
+traffic shape, but cannot prove an invite or Access Word, forge a valid member
+descriptor, decrypt
 signaling, or access media.
 
 No recording is written to History during Live Share. Raw frames, PCM audio,
@@ -415,10 +491,10 @@ participant's links, local capture, remote presentations, audio,
 collaboration overlays, statistics, and routes. Ending the room removes all
 room state.
 
-The release is intentionally native-v3-only. Obsolete v1/v2 connection,
+The release is intentionally server-room-v4-only. Obsolete connection,
 browser, upgrade, mirroring, handoff, and fallback paths are removed rather
 than retained for compatibility. Existing implementation may remain only when
-it is a protocol-neutral building block that the v3 session still requires;
+it is a protocol-neutral building block that the v4 session still requires;
 implementation convenience alone is not a reason to retain a legacy path,
 wire type, role model, entry point, UI, server route, asset, or test.
 
@@ -1173,9 +1249,12 @@ Each permission should include a button that opens the relevant macOS System Set
 - System audio: Off.
 - Countdown: a silent 3 seconds, with Off, 1, 3, and 5-second choices.
 - Live Share server: `https://clip.tineestudio.se`.
-- Live Share video: VP8, Very High quality (`6 Mbps` ceiling), 30 FPS, Quality mode.
+- Live Share video: AV1, Max quality (`20 Mbps` ceiling), 30 FPS, Quality mode,
+  Native Display color.
 - Live Share System Audio: Off.
 - Live Share Access Word: Off.
+- Live Share Ask Before Joining: Off; verified full invites auto-admit, while
+  friend joins always require Allow or Deny.
 - Live Share Prioritize Focused Window: On.
 - Live Share Auto-share Focused Windows: Off.
 - History retention: 7 days.
@@ -1411,15 +1490,15 @@ package state is not accepted as release provenance.
 ## Live Share service deployment
 
 - The top-level `server/` folder is an independent Go 1.25 module containing
-  the bounded opaque native-v3 rendezvous registry and encrypted signaling
+  the bounded opaque server-room-v4 roster registry and encrypted signaling
   relay, tests, Dockerfile, and Docker Hub publication script.
-- The service owns no participant graph, admission decision, membership
-  snapshot, source state, or media state. It stores only the minimum random
-  routing and lease metadata required to connect native-v3 participants.
+- The service owns the authoritative opaque participant roster, socket
+  presence, reconnect grace, and pair-signal routing. It owns no plaintext
+  identity, admission secret, source state, or media state.
 - Server room state is in-memory and intentionally single-replica for the first
-  v3 release. A restart clears rendezvous leases. Existing WebRTC peer links
-  stay connected; new admissions require the current leader to publish a new
-  invite route.
+  v4 release. A restart clears room state. Existing WebRTC peer links may stay
+  connected temporarily, but every client terminates the room after a bounded
+  signaling outage rather than inventing membership.
 - Internet deployments terminate TLS at a reverse proxy and expose HTTPS/WSS.
   The service publishes validated ICE-server capabilities to participants.
 - The container is CGO-free, non-root, health-checked, and published for
@@ -1515,14 +1594,15 @@ A separate Homebrew tap can be added later if needed.
 - `--ui-scenario=<name>` fixtures are honored only with `--ui-testing`. They use isolated defaults and storage plus inert permission, audio, capture, display, pasteboard, shortcut, and external-AppKit actions; they never request privacy access or enter the real-capture lane.
 - Deterministic launch fixtures cover onboarding, the populated menu-bar popover and displays, denied permissions, recording, paused recording, Preview, History, every Settings tab, and a representative failure surface. Their UI-automation assertions compile in the permission-free suite but execute only after an explicit visible-pointer-control opt-in.
 - A pointer-free hosted visual lane renders the production Settings window at the top and fully scrolled bottom of every tab, writes ten PNGs plus scroll-position metadata, and fails if a scrollable form does not reach its bottom.
-- Live Share's pointer-free lane builds the in-repository opaque Go rendezvous
-  service, exercises real loopback HTTP/WebSocket routing, validates native-v3
-  encrypted admission/bootstrap vectors, and runs the native protocol, mesh,
+- Live Share's pointer-free lane builds the in-repository opaque Go room
+  service, exercises real loopback HTTP/WebSocket routing, validates
+  server-room-v4 encrypted admission and pair-signaling vectors, and runs the
+  native protocol, mesh,
   media, and presentation suites. Deterministic coverage proves:
-  - direct v3 Create Room and Join Invite with no legacy entry point;
+  - direct v4 Create Room and Join Invite with no legacy entry point;
   - invite capability and optional Access Word proof plus explicit approval;
-  - signed identities, credentials, membership snapshots, revision isolation,
-    provisional quarantine, denial, expiry, and bounded cleanup;
+  - signed identities, encrypted member descriptors, complete authoritative
+    rosters, revision isolation, denial, reconnect grace, and bounded cleanup;
   - two-, three-, and four-participant topologies containing 1, 3, and 6
     independent authenticated peer links;
   - concurrent local publication and remote reception from every participant,
@@ -1531,8 +1611,8 @@ A separate Homebrew tap can be added later if needed.
   - common participant-room presentation, remote source grouping,
     Fit/Native/Follow/fullscreen, visibility/fronting, cursor mapping, pointer,
     ping, temporary ink, and exact teardown;
-  - graceful leader transfer, one quorum-certified crash successor, and
-    fail-closed `leaderlessLocked` behavior without majority.
+  - noncreator leave isolation and terminal creator leave/grace expiry with no
+    election or locked phase.
   It does not touch the installed app or control the pointer.
 - Real ScreenCaptureKit, microphone, system-audio, clipboard, drag, Save As, history, and DMG smoke tests run on the development Mac.
 - Real Live Share acceptance separately covers the production ScreenCaptureKit
@@ -1541,8 +1621,8 @@ A separate Homebrew tap can be added later if needed.
   one through four windows plus Fullscreen, independent audio and app-audio
   exclusions, Fit/Native/Follow, local fullscreen, Retina/multi-display
   placement, overlay exclusion and hit testing, pointer/ping/ink, direct/TURN
-  traversal, repeated source and room churn, graceful leader transfer,
-  quorum-backed crash succession, and a ten-minute soak. The four-participant
+  traversal, repeated source and room churn, noncreator leave/reconnect,
+  creator room termination, and a ten-minute soak. The four-participant
   gate must prove all six links. Deliberate rendezvous-service loss after peer
   establishment must not stop established media/control. A one-process model
   test cannot substitute for these signed multi-process gates.
@@ -1610,13 +1690,13 @@ A separate Homebrew tap can be added later if needed.
 - Local launchable DMG distribution.
 - Signed application updates from immutable GitHub Release DMGs, with periodic
   automatic checks and an on-demand **Check for Updates…** action.
-- A native-v3-only Live Share participant mesh using the in-repository opaque
-  rendezvous service, bounded end-to-end-encrypted bootstrap, self-contained
-  invites, persistent device identities, optional Access Word, and explicit
-  leader approval.
+- A server-room-v4-only Live Share participant mesh using the in-repository
+  opaque roster/signaling service, end-to-end-encrypted admission and pair
+  signaling, client-only-fragment invites, persistent device identities,
+  optional Access Word, and optional creator approval.
 - Up to four participants and six direct authenticated WebRTC peer links, with
-  transactional membership, participant removal, graceful leader succession,
-  and strict-majority recovery after unexpected leader loss.
+  authoritative roster reconciliation, participant removal, pair-local failure
+  isolation, reconnect grace, and terminal creator departure.
 - One common participant room popover. Every member can simultaneously publish
   up to four exact windows or one mutually exclusive fullscreen display and
   receive every other member's sources.
@@ -1636,10 +1716,12 @@ A separate Homebrew tap can be added later if needed.
 
 The recording release-critical path is: install and launch from DMG → select →
 record → preview → trim → drag or copy. The independent Live Share path is:
-create a native-v3 room → copy its complete invite → join with invite and
-optional Access Word → explicitly approve admission → every participant shares
-and receives windows/display/audio → exercise pointer/ping/ink → change or stop
-sources independently → transfer leadership or end the room.
+create a server-room-v4 room → copy its stable complete invite → join with invite
+and optional Access Word → auto-admit a verified full invite, or explicitly
+Allow/Deny when Ask Before Joining or a friend join requires it → every
+participant shares and receives windows/display/audio → exercise
+pointer/ping/ink → change or stop sources independently → leave as a
+participant or end as the creator.
 A recording release may remain valid without the networking feature, but a
 release advertising Live Share must pass the Live Share controlled and
 packaging gates above.
@@ -1814,17 +1896,17 @@ The local release uses free Personal Team ID `FJ2BS65H3F`. It is not a Developer
 
 ## Phase 6 — Native participant mesh
 
-- Replace all Live Share creation and joining with direct native-v3 participant
-  sessions.
-- Add invite capability, Access Word, explicit admission, signed membership,
-  complete-mesh peer links, bounded participant lifecycle, and leader
-  succession.
+- Replace all Live Share creation and joining with direct server-room-v4
+  participant sessions.
+- Add stable client-only invite capability, Access Word, optional explicit
+  admission, creator-signed encrypted descriptors, authoritative opaque
+  rosters, complete-mesh peer links, and bounded participant lifecycle.
 - Give every participant the same local sharing controls and one remote
   presentation per other participant.
 - Add per-participant audio, source grouping, diagnostics, pointer, ping, and
   temporary ink.
 - Prove two-, three-, and four-participant operation before publishing the
-  native-v3 release. Remove obsolete connection protocols and role-specific
+  v4 release. Remove obsolete connection protocols and role-specific
   entry paths rather than shipping compatibility code.
 
 This specification is narrow enough for a strong first release while leaving clear room for later improvements.

@@ -551,6 +551,62 @@ struct NativeViewerWindowControllerTests {
         #expect(window.frame == originalFrame)
     }
 
+    @Test("Pair recovery retains the window and rebinds only the replacement track")
+    func pairRecoveryRetainsWindowUntilReplacementTrack() throws {
+        var boundSources: [NativeViewerSourceSnapshot] = []
+        var teardownCount = 0
+        let coordinator = NativeViewerWindowCoordinator(
+            ownerName: "Friend",
+            ownerPublicIdentity: Data(repeating: 7, count: 65),
+            surfaceFactory: {
+                NativeViewerVideoSurfaceAdapter(
+                    view: NSView(),
+                    bind: { boundSources.append($0) },
+                    teardown: { teardownCount += 1 }
+                )
+            }
+        )
+        defer { coordinator.tearDown() }
+        let connected = Self.makeSource()
+        try coordinator.reconcile([connected])
+        coordinator.setSourceVisible(
+            false,
+            sourceInstanceID: connected.sourceInstanceID
+        )
+        coordinator.setScaleMode(
+            .native,
+            sourceInstanceID: connected.sourceInstanceID
+        )
+        let disconnected = NativeViewerSourceSnapshot(
+            sourceInstanceID: connected.sourceInstanceID,
+            streamID: connected.streamID,
+            applicationName: connected.applicationName,
+            windowName: connected.windowName,
+            pixelSize: connected.pixelSize,
+            sourcePointSize: connected.sourcePointSize,
+            isFocused: connected.isFocused,
+            isConnected: false,
+            stateRevision: connected.stateRevision
+        )
+
+        try coordinator.reconcile([disconnected])
+
+        #expect(coordinator.windowCount == 1)
+        #expect(coordinator.windowSnapshots.first?.isVisible == false)
+        #expect(coordinator.windowSnapshots.first?.scaleMode == .native)
+        #expect(boundSources == [connected])
+        #expect(teardownCount == 0)
+
+        let recovered = Self.makeSource(stateRevision: 2)
+        try coordinator.reconcile([recovered])
+
+        #expect(coordinator.windowCount == 1)
+        #expect(coordinator.windowSnapshots.first?.isVisible == false)
+        #expect(coordinator.windowSnapshots.first?.scaleMode == .native)
+        #expect(boundSources == [connected, recovered])
+        #expect(teardownCount == 0)
+    }
+
     private func makeController(
         source: NativeViewerSourceSnapshot = Self.makeSource()
     ) -> NativeViewerWindowController {

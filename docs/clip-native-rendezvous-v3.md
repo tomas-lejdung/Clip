@@ -1,10 +1,17 @@
 # Clip Native Rendezvous API v3
 
+> **Historical, retired design.** This document describes the superseded v3
+> opaque-rendezvous experiment. It is not a supported connection path or a
+> compatibility contract. Current Live Share uses the clean-slate
+> server-coordinated v4 room protocol documented in
+> `docs/server-coordinated-mesh-design.md` and `server/README.md`.
+
 ## Scope
 
-This surface lets native-v3 Clip participants locate a current room invitation
+This surface let native-v3 Clip participants locate a current room invitation
 and exchange bounded opaque messages needed to establish their direct
-peer-to-peer links. It is the only supported Live Share rendezvous service.
+peer-to-peer links. It was the only supported Live Share rendezvous service for
+that experiment.
 There is no browser participant, legacy signaling API, saved-Friend protocol,
 or compatibility route.
 

@@ -174,9 +174,10 @@ struct NativeDeviceIdentityRepositoryTests {
         let validArguments = [
             "Clip",
             AppLaunchConfiguration.uiTestingArgument,
-            AppLaunchConfiguration.nativeV3MeshAcceptanceArgument,
-            AppLaunchConfiguration.nativeV3MeshAcceptanceAcknowledgementArgument,
-            "\(AppLaunchConfiguration.nativeV3MeshParticipantArgumentPrefix)participant-a",
+            AppLaunchConfiguration.meshAcceptanceArgument,
+            AppLaunchConfiguration.meshAcceptanceAcknowledgementArgument,
+            "\(AppLaunchConfiguration.meshAcceptanceParticipantArgumentPrefix)participant-a",
+            "\(AppLaunchConfiguration.meshAcceptanceRunArgumentPrefix)mesh-acceptance-run-0001",
         ]
         let meshConfiguration = AppLaunchConfiguration.resolve(
             arguments: validArguments,
@@ -219,7 +220,7 @@ struct NativeDeviceIdentityRepositoryTests {
                 for: invalidArguments
             )
         )
-        #expect(throws: AppLaunchConfigurationError.invalidNativeV3MeshAcceptanceRequest) {
+        #expect(throws: AppLaunchConfigurationError.invalidMeshAcceptanceRequest) {
             _ = try invalid.makeNativeDeviceIdentityStorage(
                 applicationSupportDirectory: root
             )

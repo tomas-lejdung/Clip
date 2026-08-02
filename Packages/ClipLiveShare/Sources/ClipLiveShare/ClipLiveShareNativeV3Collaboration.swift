@@ -2,9 +2,11 @@ import Foundation
 
 /// Hard wire and state limits for native-v3 collaboration traffic.
 ///
-/// Pointer and ink messages share the authenticated, ordered pair DataChannel.
-/// They deliberately remain small enough that drawing cannot starve membership,
-/// source-state, or peer-link control messages.
+/// Collaboration stays on authenticated pair DataChannels. Replaceable pointer
+/// motion is coalesced and sent latest-wins so stale positions cannot queue;
+/// pings, ink, and clear commands retain reliable ordered delivery. Every
+/// payload remains bounded so drawing cannot starve membership, source-state,
+/// or peer-link control messages.
 public enum ClipLiveShareNativeV3CollaborationLimits {
   public static let maximumParticipantNameUTF8Bytes = 128
   public static let maximumPointsPerStrokeChunk = 128
@@ -13,6 +15,10 @@ public enum ClipLiveShareNativeV3CollaborationLimits {
   public static let maximumActivePingsPerSource = 16
   public static let maximumStrokeLifetimeMilliseconds: Int64 = 60_000
   public static let maximumPingLifetimeMilliseconds: Int64 = 10_000
+  /// A moving collaboration pointer is an activity indicator rather than a
+  /// persistent annotation. Senders explicitly hide it after this interval;
+  /// receivers use the same lease to recover if that ephemeral hide is lost.
+  public static let pointerInactivityTimeoutMilliseconds: Int64 = 2_000
   public static let maximumFutureEventSkewMilliseconds: Int64 = 30_000
 }
 
@@ -609,6 +615,9 @@ public struct ClipLiveShareNativeV3PointerState: Equatable, Hashable, Sendable {
   public let participantID: ClipLiveShareNativeV3ParticipantID
   public let position: ClipLiveShareNativeV3NormalizedPoint
   public let sentAt: ClipLiveShareNativeTimestamp
+  /// Local receive time used for the inactivity lease. Device wall clocks may
+  /// differ, so expiry must not compare a sender timestamp with receiver time.
+  public let lastObservedAt: ClipLiveShareNativeTimestamp
 }
 
 public struct ClipLiveShareNativeV3PingState: Equatable, Hashable, Sendable {
@@ -639,7 +648,13 @@ public struct ClipLiveShareNativeV3CollaborationState: Equatable, Sendable {
     [ClipLiveShareNativeV3StrokeID: ClipLiveShareNativeV3StrokeState] = [:]
   public private(set) var sourceClearEpoch: UInt64 = 0
 
-  private var latestSequences:
+  /// Pointer samples are replaceable and may be dropped under pressure. They
+  /// therefore need an independent replay ledger from durable ping/ink/clear
+  /// events: a newer best-effort sample must never make an older reliable
+  /// annotation look stale when the two delivery paths complete differently.
+  private var latestPointerSequences:
+    [ClipLiveShareNativeV3ParticipantID: UInt64] = [:]
+  private var latestDurableSequences:
     [ClipLiveShareNativeV3ParticipantID: UInt64] = [:]
   private var participantClearEpochs:
     [ClipLiveShareNativeV3ParticipantID: UInt64] = [:]
@@ -672,7 +687,21 @@ public struct ClipLiveShareNativeV3CollaborationState: Equatable, Sendable {
     else {
       throw ClipLiveShareNativeV3CollaborationError.invalidTimestamp
     }
-    let latestSequence = latestSequences[authenticatedParticipantID] ?? 0
+    let isPointer: Bool
+    if case .pointer = event {
+      isPointer = true
+    } else {
+      isPointer = false
+    }
+    let latestSequence = isPointer
+      ? latestPointerSequences[authenticatedParticipantID] ?? 0
+      : latestDurableSequences[authenticatedParticipantID] ?? 0
+    // A replaceable sample can complete after a newer sample on a future
+    // unordered/best-effort transport. Ignore it without turning harmless
+    // pointer reordering into a peer-connection failure.
+    if isPointer, context.sequence <= latestSequence {
+      return
+    }
     guard context.sequence > latestSequence else {
       throw ClipLiveShareNativeV3CollaborationError.staleSequence(
         expectedGreaterThan: latestSequence,
@@ -687,7 +716,11 @@ public struct ClipLiveShareNativeV3CollaborationState: Equatable, Sendable {
       at: now,
       mayClearEntireSource: mayClearEntireSource
     )
-    candidate.latestSequences[authenticatedParticipantID] = context.sequence
+    if isPointer {
+      candidate.latestPointerSequences[authenticatedParticipantID] = context.sequence
+    } else {
+      candidate.latestDurableSequences[authenticatedParticipantID] = context.sequence
+    }
     self = candidate
   }
 
@@ -697,7 +730,12 @@ public struct ClipLiveShareNativeV3CollaborationState: Equatable, Sendable {
     pointers = pointers.filter { participantIDs.contains($0.key) }
     pings.removeAll { !participantIDs.contains($0.participantID) }
     strokes = strokes.filter { participantIDs.contains($0.value.participantID) }
-    latestSequences = latestSequences.filter { participantIDs.contains($0.key) }
+    latestPointerSequences = latestPointerSequences.filter {
+      participantIDs.contains($0.key)
+    }
+    latestDurableSequences = latestDurableSequences.filter {
+      participantIDs.contains($0.key)
+    }
     participantClearEpochs = participantClearEpochs.filter {
       participantIDs.contains($0.key)
     }
@@ -707,11 +745,22 @@ public struct ClipLiveShareNativeV3CollaborationState: Equatable, Sendable {
   public mutating func pruneExpired(
     at now: ClipLiveShareNativeTimestamp
   ) -> Bool {
+    let priorPointers = pointers.count
     let priorPings = pings.count
     let priorStrokes = strokes.count
+    pointers = pointers.filter { _, pointer in
+      let (expiresAt, overflow) = pointer.lastObservedAt.millisecondsSince1970
+        .addingReportingOverflow(
+          ClipLiveShareNativeV3CollaborationLimits
+            .pointerInactivityTimeoutMilliseconds
+        )
+      return overflow || expiresAt > now.millisecondsSince1970
+    }
     pings.removeAll { $0.expiresAt < now }
     strokes = strokes.filter { $0.value.expiresAt >= now }
-    return pings.count != priorPings || strokes.count != priorStrokes
+    return pointers.count != priorPointers
+      || pings.count != priorPings
+      || strokes.count != priorStrokes
   }
 
   private mutating func applyValidated(
@@ -727,7 +776,8 @@ public struct ClipLiveShareNativeV3CollaborationState: Equatable, Sendable {
         pointers[participantID] = ClipLiveShareNativeV3PointerState(
           participantID: participantID,
           position: position,
-          sentAt: value.context.sentAt
+          sentAt: value.context.sentAt,
+          lastObservedAt: now
         )
       } else {
         pointers[participantID] = nil

@@ -38,50 +38,33 @@ func TestSourceRateLimitsResetAfterWindow(t *testing.T) {
 func admissionTestService(configuration config.Config) *Service {
 	return &Service{
 		connections: make(chan struct{}, configuration.MaximumConnections),
-		candidateConnections: make(
-			chan struct{},
-			configuration.MaximumConnections-
-				configuration.ReservedCoordinatorConnections,
-		),
-		candidateRoutes: make(map[string]int),
-		admission:       newSourceAdmission(configuration),
+		admission:   newSourceAdmission(configuration),
 	}
 }
 
-func TestConnectionAdmissionReservesCapacityForCoordinator(t *testing.T) {
+func TestConnectionAdmissionHonorsGlobalCapacity(t *testing.T) {
 	configuration := config.Default("test")
-	configuration.MaximumConnections = 5
-	configuration.ReservedCoordinatorConnections = 2
-	configuration.MaximumConnectionsPerSource = 5
+	configuration.MaximumConnections = 3
+	configuration.MaximumConnectionsPerSource = 3
 	service := admissionTestService(configuration)
 
 	for index := 0; index < 3; index++ {
-		if !service.acquireCandidateConnection("198.51.100.1", "RENDEZVOUS") {
-			t.Fatalf("candidate %d was rejected", index)
+		if !service.acquireCoordinatorConnection("198.51.100.1") {
+			t.Fatalf("room socket %d was rejected", index)
 		}
 	}
-	if service.acquireCandidateConnection("198.51.100.1", "RENDEZVOUS") {
-		t.Fatal("candidate consumed reserved coordinator capacity")
-	}
-	if !service.acquireCoordinatorConnection("198.51.100.1") ||
-		!service.acquireCoordinatorConnection("198.51.100.1") {
-		t.Fatal("reserved coordinator capacity was unavailable")
-	}
 	if service.acquireCoordinatorConnection("198.51.100.1") {
-		t.Fatal("coordinator exceeded total connection capacity")
+		t.Fatal("room socket exceeded total connection capacity")
 	}
 
 	for range 3 {
-		service.releaseCandidateConnection("198.51.100.1", "RENDEZVOUS")
+		service.releaseCoordinatorConnection("198.51.100.1")
 	}
-	service.releaseCoordinatorConnection("198.51.100.1")
-	service.releaseCoordinatorConnection("198.51.100.1")
 }
 
 func TestPerSourceConnectionCapacityIsIndependent(t *testing.T) {
 	configuration := config.Default("test")
 	configuration.MaximumConnections = 10
-	configuration.ReservedCoordinatorConnections = 2
 	configuration.MaximumConnectionsPerSource = 2
 	service := admissionTestService(configuration)
 
@@ -98,31 +81,6 @@ func TestPerSourceConnectionCapacityIsIndependent(t *testing.T) {
 	service.releaseCoordinatorConnection("198.51.100.1")
 	service.releaseCoordinatorConnection("198.51.100.1")
 	service.releaseCoordinatorConnection("198.51.100.2")
-}
-
-func TestPerRendezvousCandidateCapacityIsBounded(t *testing.T) {
-	configuration := config.Default("test")
-	configuration.MaximumConnections = 16
-	configuration.ReservedCoordinatorConnections = 2
-	configuration.MaximumConnectionsPerSource = 16
-	service := admissionTestService(configuration)
-
-	for index := 0; index < 8; index++ {
-		if !service.acquireCandidateConnection("203.0.113.1", "ONE") {
-			t.Fatalf("candidate %d was rejected", index)
-		}
-	}
-	if service.acquireCandidateConnection("203.0.113.1", "ONE") {
-		t.Fatal("ninth candidate route was accepted")
-	}
-	if !service.acquireCandidateConnection("203.0.113.1", "TWO") {
-		t.Fatal("one rendezvous consumed another rendezvous's route capacity")
-	}
-
-	for range 8 {
-		service.releaseCandidateConnection("203.0.113.1", "ONE")
-	}
-	service.releaseCandidateConnection("203.0.113.1", "TWO")
 }
 
 func TestForwardedSourceRequiresExplicitTrustedProxy(t *testing.T) {
@@ -155,8 +113,9 @@ func TestRendezvousLeaseHandlerReturnsTooManyRequestsPerSource(
 		t.Fatal(err)
 	}
 	defer service.Close()
-	body := fmt.Sprintf(`{"ownerToken":%q}`, ownerToken(21))
-	rendezvousID := testNativeRendezvousID(22)
+	body := fmt.Sprintf(`{"ownerToken":%q,"creatorHandle":%q,"descriptor":%q}`,
+		ownerToken(21), roomV4Handle(22), roomV4Descriptor(22))
+	roomID := roomV4ID(22)
 	for attempt, expected := range []int{
 		http.StatusCreated,
 		http.StatusOK,
@@ -164,7 +123,7 @@ func TestRendezvousLeaseHandlerReturnsTooManyRequestsPerSource(
 	} {
 		request := httptest.NewRequest(
 			http.MethodPut,
-			"/api/native/v3/rendezvous/"+rendezvousID,
+			"/api/native/v4/rooms/"+roomID,
 			strings.NewReader(body),
 		)
 		request.RemoteAddr = "198.51.100.44:1234"

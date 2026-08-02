@@ -1,5 +1,8 @@
 import AppKit
 import ClipLiveShare
+#if DEBUG
+import OSLog
+#endif
 import QuartzCore
 
 struct NativeViewerCollaborationPointer: Equatable, Sendable, Identifiable {
@@ -35,6 +38,223 @@ struct NativeViewerCollaborationOverlaySnapshot: Equatable, Sendable {
     static let empty = Self()
 }
 
+enum NativeViewerCollaborationPointerUpdateReason: String, Equatable, Sendable {
+    case movement
+    case invalidOrOutside = "invalid-or-outside"
+    case mouseExited = "mouse-exited"
+    case modeDisabled = "mode-disabled"
+    case inactivity
+}
+
+#if DEBUG
+struct NativeViewerCollaborationPointerDiagnosticEvent: Equatable, Sendable {
+    let reason: NativeViewerCollaborationPointerUpdateReason
+    let sequence: UInt64
+    let elapsedSincePreviousMilliseconds: Int64?
+    let idleSinceMovementMilliseconds: Int64?
+}
+#endif
+
+/// Coalesces replaceable pointer samples without delaying the first sample.
+/// AppKit can deliver mouse-moved events much faster than the display cadence;
+/// sending each one would build an obsolete DataChannel backlog. At most one
+/// latest sample is retained until the next 60 Hz cadence boundary. A single
+/// hidden sample is emitted after two seconds without movement so a stationary
+/// collaboration cursor does not remain painted indefinitely.
+@MainActor
+final class NativeViewerCollaborationPointerCoalescer {
+    struct Update: Equatable, Sendable {
+        let position: ClipLiveShareNativeV3NormalizedPoint?
+        let reason: NativeViewerCollaborationPointerUpdateReason
+    }
+
+#if DEBUG
+    private static let diagnosticLogger = Logger(
+        subsystem: ApplicationDirectories.bundleIdentifier,
+        category: "collaboration-pointer"
+    )
+#endif
+
+    static let maximumUpdatesPerSecond = 60
+    static let minimumInterval: Duration = .nanoseconds(
+        1_000_000_000 / Int64(maximumUpdatesPerSecond)
+    )
+    static let inactivityInterval: Duration = .seconds(2)
+
+    private let interval: Duration
+    private let inactivityInterval: Duration
+    private let output: (ClipLiveShareNativeV3NormalizedPoint?) -> Void
+    private var pending: Update?
+    private var cadenceTask: Task<Void, Never>?
+    private var inactivityTask: Task<Void, Never>?
+    private var hasVisiblePointer = false
+#if DEBUG
+    private let diagnosticNowNanoseconds: () -> UInt64
+    private let diagnosticSink: (NativeViewerCollaborationPointerDiagnosticEvent) -> Void
+    private var diagnosticSequence: UInt64 = 0
+    private var previousDiagnosticNanoseconds: UInt64?
+    private var latestMovementNanoseconds: UInt64?
+#endif
+
+#if DEBUG
+    init(
+        interval: Duration = minimumInterval,
+        inactivityInterval: Duration = inactivityInterval,
+        diagnosticNowNanoseconds: @escaping () -> UInt64 = {
+            DispatchTime.now().uptimeNanoseconds
+        },
+        diagnosticSink: @escaping (
+            NativeViewerCollaborationPointerDiagnosticEvent
+        ) -> Void = { _ in },
+        emit: @escaping (ClipLiveShareNativeV3NormalizedPoint?) -> Void
+    ) {
+        self.interval = interval
+        self.inactivityInterval = inactivityInterval
+        self.diagnosticNowNanoseconds = diagnosticNowNanoseconds
+        self.diagnosticSink = diagnosticSink
+        output = emit
+    }
+#else
+    init(
+        interval: Duration = minimumInterval,
+        inactivityInterval: Duration = inactivityInterval,
+        emit: @escaping (ClipLiveShareNativeV3NormalizedPoint?) -> Void
+    ) {
+        self.interval = interval
+        self.inactivityInterval = inactivityInterval
+        output = emit
+    }
+#endif
+
+    func submit(_ position: ClipLiveShareNativeV3NormalizedPoint?) {
+        submit(
+            position,
+            reason: position == nil ? .modeDisabled : .movement
+        )
+    }
+
+    func submit(
+        _ position: ClipLiveShareNativeV3NormalizedPoint?,
+        reason: NativeViewerCollaborationPointerUpdateReason
+    ) {
+        if position == nil {
+            hasVisiblePointer = false
+            inactivityTask?.cancel()
+            inactivityTask = nil
+        } else {
+            hasVisiblePointer = true
+            scheduleInactivityBoundary()
+        }
+        pending = .init(position: position, reason: reason)
+        guard cadenceTask == nil else { return }
+        emitPending()
+        scheduleCadenceBoundary()
+    }
+
+    /// Internal so deterministic tests can advance the cadence without a
+    /// wall-clock sleep. Production reaches it only from the scheduled task.
+    func cadenceDidElapse() {
+        cadenceTask?.cancel()
+        cadenceTask = nil
+        guard pending != nil else { return }
+        emitPending()
+        scheduleCadenceBoundary()
+    }
+
+    /// Internal so deterministic tests can expire the activity lease without
+    /// a wall-clock sleep. The hidden sample bypasses the motion cadence: it is
+    /// a one-time state transition, not another replaceable movement sample.
+    func inactivityDidElapse() {
+        inactivityTask?.cancel()
+        inactivityTask = nil
+        guard hasVisiblePointer else { return }
+        hasVisiblePointer = false
+        pending = nil
+        emitUpdate(.init(position: nil, reason: .inactivity))
+    }
+
+    func cancel() {
+        cadenceTask?.cancel()
+        cadenceTask = nil
+        inactivityTask?.cancel()
+        inactivityTask = nil
+        hasVisiblePointer = false
+        pending = nil
+    }
+
+    private func emitPending() {
+        guard let pending else { return }
+        self.pending = nil
+        emitUpdate(pending)
+    }
+
+    private func emitUpdate(_ update: Update) {
+#if DEBUG
+        diagnosticSequence &+= 1
+        let nowNanoseconds = diagnosticNowNanoseconds()
+        let elapsedSincePrevious = Self.elapsedMilliseconds(
+            from: previousDiagnosticNanoseconds,
+            to: nowNanoseconds
+        )
+        if update.reason == .movement {
+            latestMovementNanoseconds = nowNanoseconds
+        }
+        let idleSinceMovement = Self.elapsedMilliseconds(
+            from: latestMovementNanoseconds,
+            to: nowNanoseconds
+        )
+        previousDiagnosticNanoseconds = nowNanoseconds
+        let diagnostic = NativeViewerCollaborationPointerDiagnosticEvent(
+            reason: update.reason,
+            sequence: diagnosticSequence,
+            elapsedSincePreviousMilliseconds: elapsedSincePrevious,
+            idleSinceMovementMilliseconds: idleSinceMovement
+        )
+        Self.diagnosticLogger.debug(
+            "pointer reason=\(diagnostic.reason.rawValue, privacy: .public) sequence=\(diagnostic.sequence, privacy: .public) elapsed_ms=\(diagnostic.elapsedSincePreviousMilliseconds ?? -1, privacy: .public) idle_ms=\(diagnostic.idleSinceMovementMilliseconds ?? -1, privacy: .public)"
+        )
+        diagnosticSink(diagnostic)
+#endif
+        output(update.position)
+    }
+
+#if DEBUG
+    private static func elapsedMilliseconds(
+        from startNanoseconds: UInt64?,
+        to endNanoseconds: UInt64
+    ) -> Int64? {
+        guard let startNanoseconds else { return nil }
+        let elapsedNanoseconds = endNanoseconds >= startNanoseconds
+            ? endNanoseconds - startNanoseconds
+            : 0
+        return Int64(clamping: elapsedNanoseconds / 1_000_000)
+    }
+#endif
+
+    private func scheduleCadenceBoundary() {
+        cadenceTask = Task { @MainActor [weak self, interval] in
+            do {
+                try await Task.sleep(for: interval)
+            } catch {
+                return
+            }
+            self?.cadenceDidElapse()
+        }
+    }
+
+    private func scheduleInactivityBoundary() {
+        inactivityTask?.cancel()
+        inactivityTask = Task { @MainActor [weak self, inactivityInterval] in
+            do {
+                try await Task.sleep(for: inactivityInterval)
+            } catch {
+                return
+            }
+            self?.inactivityDidElapse()
+        }
+    }
+}
+
 enum NativeViewerCollaborationInteractionMode: Equatable, Sendable {
     case disabled
     case pointer
@@ -45,7 +265,10 @@ enum NativeViewerCollaborationInteractionMode: Equatable, Sendable {
 
 @MainActor
 struct NativeViewerCollaborationActions {
-    var pointerChanged: (ClipLiveShareNativeV3NormalizedPoint?) -> Void
+    var pointerChanged: (
+        ClipLiveShareNativeV3NormalizedPoint?,
+        NativeViewerCollaborationPointerUpdateReason
+    ) -> Void
     var ping: (ClipLiveShareNativeV3NormalizedPoint) -> Void
     var strokeBegan:
         (ClipLiveShareNativeV3StrokeID, ClipLiveShareNativeV3NormalizedPoint) -> Void
@@ -54,8 +277,10 @@ struct NativeViewerCollaborationActions {
     var strokeEnded: (ClipLiveShareNativeV3StrokeID) -> Void
 
     init(
-        pointerChanged: @escaping (ClipLiveShareNativeV3NormalizedPoint?) -> Void =
-            { _ in },
+        pointerChanged: @escaping (
+            ClipLiveShareNativeV3NormalizedPoint?,
+            NativeViewerCollaborationPointerUpdateReason
+        ) -> Void = { _, _ in },
         ping: @escaping (ClipLiveShareNativeV3NormalizedPoint) -> Void = { _ in },
         strokeBegan: @escaping (
             ClipLiveShareNativeV3StrokeID,
@@ -106,7 +331,10 @@ enum NativeViewerCollaborationGeometry {
 
 @MainActor
 final class NativeViewerCollaborationOverlayView: NSView {
-    var onPointerChanged: (ClipLiveShareNativeV3NormalizedPoint?) -> Void = { _ in }
+    var onPointerChanged: (
+        ClipLiveShareNativeV3NormalizedPoint?,
+        NativeViewerCollaborationPointerUpdateReason
+    ) -> Void = { _, _ in }
     var onPing: (ClipLiveShareNativeV3NormalizedPoint) -> Void = { _ in }
     var onStrokeBegan:
         (ClipLiveShareNativeV3StrokeID, ClipLiveShareNativeV3NormalizedPoint) -> Void =
@@ -118,8 +346,9 @@ final class NativeViewerCollaborationOverlayView: NSView {
 
     var interactionMode: NativeViewerCollaborationInteractionMode = .disabled {
         didSet {
+            guard interactionMode != oldValue else { return }
             if oldValue.acceptsInput, !interactionMode.acceptsInput {
-                onPointerChanged(nil)
+                onPointerChanged(nil, .modeDisabled)
                 finishActiveStroke()
             }
             updateTrackingAreas()
@@ -134,7 +363,8 @@ final class NativeViewerCollaborationOverlayView: NSView {
         }
     }
 
-    private var snapshot = NativeViewerCollaborationOverlaySnapshot.empty
+    private(set) var renderedSnapshot =
+        NativeViewerCollaborationOverlaySnapshot.empty
     private var pointerLayers: [CALayer] = []
     private var pingLayers: [CALayer] = []
     private var strokeLayers: [CALayer] = []
@@ -175,26 +405,30 @@ final class NativeViewerCollaborationOverlayView: NSView {
     }
 
     override func updateTrackingAreas() {
-        if let trackingArea {
+        if interactionMode.acceptsInput {
+            // `.inVisibleRect` keeps this area synchronized with the view's
+            // visible bounds. Retaining the same area is important: remote
+            // source/cursor refreshes can ask AppKit to update tracking areas
+            // at display cadence, and replacing an unchanged area generates
+            // synthetic `mouseExited` events on some Macs.
+            if trackingArea == nil {
+                let replacement = NSTrackingArea(
+                    rect: bounds,
+                    options: [
+                        .activeAlways,
+                        .inVisibleRect,
+                        .mouseEnteredAndExited,
+                        .mouseMoved,
+                    ],
+                    owner: self
+                )
+                addTrackingArea(replacement)
+                trackingArea = replacement
+            }
+        } else if let trackingArea {
             removeTrackingArea(trackingArea)
+            self.trackingArea = nil
         }
-        guard interactionMode.acceptsInput else {
-            trackingArea = nil
-            super.updateTrackingAreas()
-            return
-        }
-        let replacement = NSTrackingArea(
-            rect: bounds,
-            options: [
-                .activeAlways,
-                .inVisibleRect,
-                .mouseEnteredAndExited,
-                .mouseMoved,
-            ],
-            owner: self
-        )
-        addTrackingArea(replacement)
-        trackingArea = replacement
         super.updateTrackingAreas()
     }
 
@@ -220,8 +454,9 @@ final class NativeViewerCollaborationOverlayView: NSView {
     }
 
     override func mouseExited(with event: NSEvent) {
-        lastPointerPosition = nil
-        onPointerChanged(nil)
+        handleMouseExit(
+            atViewLocation: convert(event.locationInWindow, from: nil)
+        )
     }
 
     override func mouseDown(with event: NSEvent) {
@@ -245,8 +480,8 @@ final class NativeViewerCollaborationOverlayView: NSView {
     }
 
     func update(_ snapshot: NativeViewerCollaborationOverlaySnapshot) {
-        guard self.snapshot != snapshot else { return }
-        self.snapshot = snapshot
+        guard renderedSnapshot != snapshot else { return }
+        renderedSnapshot = snapshot
         render()
     }
 
@@ -260,16 +495,46 @@ final class NativeViewerCollaborationOverlayView: NSView {
     }
 
     private func publishPointer(for event: NSEvent) {
-        guard let point = normalizedPoint(for: event) else {
+        publishPointer(
+            atViewLocation: convert(event.locationInWindow, from: nil)
+        )
+    }
+
+    /// Internal test seam for classifying AppKit locations without creating a
+    /// window or depending on display scale.
+    func publishPointer(atViewLocation location: CGPoint) {
+        guard let point = NativeViewerCollaborationGeometry.normalizedPoint(
+            for: location,
+            contentFrame: contentFrame
+        ) else {
             if lastPointerPosition != nil {
                 lastPointerPosition = nil
-                onPointerChanged(nil)
+                onPointerChanged(nil, .invalidOrOutside)
             }
             return
         }
-        guard point != lastPointerPosition else { return }
+        // `mouseMoved` is itself the movement signal. Forward it even if
+        // normalized rounding produces the same coordinate as the prior
+        // sample: after the inactivity lease hides a stationary pointer, that
+        // first same-coordinate event must be able to reveal it again.
         lastPointerPosition = point
-        onPointerChanged(point)
+        onPointerChanged(point, .movement)
+    }
+
+    /// AppKit can deliver a stale exit while rebuilding ancestor tracking
+    /// geometry. An exit is authoritative only when the pointer has actually
+    /// left the rendered source content. The two-second activity lease remains
+    /// responsible for hiding a stationary pointer that stays inside.
+    func handleMouseExit(atViewLocation location: CGPoint) {
+        guard lastPointerPosition != nil else { return }
+        guard NativeViewerCollaborationGeometry.normalizedPoint(
+            for: location,
+            contentFrame: contentFrame
+        ) == nil else {
+            return
+        }
+        lastPointerPosition = nil
+        onPointerChanged(nil, .mouseExited)
     }
 
     private func finishActiveStroke() {
@@ -289,7 +554,7 @@ final class NativeViewerCollaborationOverlayView: NSView {
     private func render() {
         clearRenderedLayers()
         guard contentFrame.width > 0, contentFrame.height > 0 else { return }
-        for stroke in snapshot.strokes {
+        for stroke in renderedSnapshot.strokes {
             let path = CGMutablePath()
             for (index, normalized) in stroke.points.enumerated() {
                 let point = NativeViewerCollaborationGeometry.point(
@@ -315,7 +580,7 @@ final class NativeViewerCollaborationOverlayView: NSView {
             layer?.addSublayer(shape)
             strokeLayers.append(shape)
         }
-        for ping in snapshot.pings {
+        for ping in renderedSnapshot.pings {
             let center = NativeViewerCollaborationGeometry.point(
                 for: ping.position,
                 contentFrame: contentFrame
@@ -336,7 +601,7 @@ final class NativeViewerCollaborationOverlayView: NSView {
             layer?.addSublayer(ring)
             pingLayers.append(ring)
         }
-        for pointer in snapshot.pointers {
+        for pointer in renderedSnapshot.pointers {
             let point = NativeViewerCollaborationGeometry.point(
                 for: pointer.position,
                 contentFrame: contentFrame

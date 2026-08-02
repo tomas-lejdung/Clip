@@ -1,6 +1,6 @@
 import Foundation
 
-/// File-backed identity storage used only by the explicitly guarded native-v3
+/// File-backed identity storage used only by the explicitly guarded
 /// multi-instance acceptance lane.
 ///
 /// Normal Clip launches continue to use `LiveNativeDeviceIdentityKeychain`.
@@ -12,7 +12,7 @@ final class IsolatedNativeDeviceIdentityFileStorage:
     NativeDeviceIdentitySecureStorage,
     @unchecked Sendable
 {
-    static let relativePath = "NativeV3MeshAcceptance/native-device-identity-v1.json"
+    static let relativePath = "MeshAcceptance/native-device-identity-v1.json"
     private static let maximumPayloadByteCount = 64 * 1_024
 
     let fileURL: URL
@@ -92,17 +92,17 @@ extension AppLaunchConfiguration {
         applicationSupportDirectory: URL,
         fileManager: FileManager = .default
     ) throws -> any NativeDeviceIdentitySecureStorage {
-        switch nativeV3MeshAcceptanceRequest {
+        switch meshAcceptanceRequest {
         case .none:
             return LiveNativeDeviceIdentityKeychain()
 
         case .invalid:
-            throw AppLaunchConfigurationError.invalidNativeV3MeshAcceptanceRequest
+            throw AppLaunchConfigurationError.invalidMeshAcceptanceRequest
 
         case .participant:
-            guard mode == .nativeV3MeshAcceptance,
+            guard mode == .meshAcceptance,
                   isolatedStateRoot != nil else {
-                throw AppLaunchConfigurationError.invalidNativeV3MeshAcceptanceRequest
+                throw AppLaunchConfigurationError.invalidMeshAcceptanceRequest
             }
             return IsolatedNativeDeviceIdentityFileStorage(
                 fileURL: applicationSupportDirectory.appendingPathComponent(

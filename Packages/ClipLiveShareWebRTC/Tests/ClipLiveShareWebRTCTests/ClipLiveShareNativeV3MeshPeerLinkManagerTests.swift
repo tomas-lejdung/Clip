@@ -6,6 +6,49 @@ import Testing
 
 @Suite("Native v3 mesh peer-link manager")
 struct ClipLiveShareNativeV3MeshPeerLinkManagerTests {
+  @Test("initial negotiation-needed is ignored until the pair is ready")
+  func initialNegotiationNeededIsSuppressed() async throws {
+    let remote = try meshParticipant(0x10)
+    let local = try meshParticipant(0x20)
+    let factory = MeshFakeTransportFactory()
+    let manager = ClipLiveShareNativeV3MeshPeerLinkManager(
+      localParticipantID: local,
+      transportFactory: factory
+    )
+    let recorder = MeshManagerEventRecorder()
+    let stream = await manager.events()
+    let recording = Task {
+      for await event in stream {
+        await recorder.append(event)
+      }
+    }
+
+    try await manager.reconcileParticipants([local, remote])
+    let transport = try #require(await factory.transport(for: remote))
+    await transport.emit(.negotiationNeeded)
+    try await Task.sleep(for: .milliseconds(30))
+    #expect(
+      !(await recorder.events()).contains {
+        if case .negotiationNeeded = $0 { true } else { false }
+      }
+    )
+
+    await transport.emit(.connectionStateChanged(.connected))
+    await transport.emit(.controlChannelStateChanged(.open))
+    try await meshEventually {
+      await manager.snapshot().links.first?.isReady == true
+    }
+    await transport.emit(.negotiationNeeded)
+    try await meshEventually {
+      await recorder.events().contains {
+        if case .negotiationNeeded = $0 { true } else { false }
+      }
+    }
+
+    recording.cancel()
+    await manager.close()
+  }
+
   @Test("complete membership creates one canonical local edge per peer")
   func createsCanonicalIncidentEdges() async throws {
     let local = try meshParticipant(0x20)
@@ -387,6 +430,113 @@ struct ClipLiveShareNativeV3MeshPeerLinkManagerTests {
     await manager.close()
   }
 
+  @Test("one ICE-server gathering failure is diagnostic, not a peer failure")
+  func iceGatheringFailureIsDiagnostic() async throws {
+    let local = try meshParticipant(0x10)
+    let peer = try meshParticipant(0x20)
+    let factory = MeshFakeTransportFactory()
+    let sleeper = MeshImmediateSleeper()
+    let manager = ClipLiveShareNativeV3MeshPeerLinkManager(
+      localParticipantID: local,
+      transportFactory: factory,
+      reconnectPolicy: .init(delaysMilliseconds: [0]),
+      reconnectSleeper: sleeper
+    )
+    let recorder = MeshManagerEventRecorder()
+    let stream = await manager.events()
+    let recording = Task {
+      for await event in stream {
+        await recorder.append(event)
+      }
+    }
+    try await manager.reconcileParticipants([local, peer])
+    let transport = try #require(await factory.transport(for: peer))
+    await transport.emit(.connectionStateChanged(.connected))
+    await transport.emit(.controlChannelStateChanged(.open))
+    try await meshEventually {
+      (await manager.snapshot()).links.first?.isReady == true
+    }
+
+    await transport.emit(.iceGatheringDiagnostic(
+      code: 701,
+      url: "stun:stun.l.google.com:19302",
+      message: "STUN binding request timed out."
+    ))
+    try await Task.sleep(for: .milliseconds(30))
+
+    #expect(await transport.restartCount() == 0)
+    #expect(await sleeper.sleepCount() == 0)
+    #expect((await manager.snapshot()).links.first?.isReady == true)
+    #expect(!(await recorder.events()).contains { event in
+      switch event {
+      case .linkFailed, .reconnectScheduled, .reconnectExhausted:
+        true
+      default:
+        false
+      }
+    })
+    recording.cancel()
+    await manager.close()
+  }
+
+  @Test("simultaneous pair failure lets only the canonical offerer restart")
+  func reconnectKeepsDeterministicOfferer() async throws {
+    let lower = try meshParticipant(0x10)
+    let upper = try meshParticipant(0x20)
+    let lowerFactory = MeshFakeTransportFactory()
+    let upperFactory = MeshFakeTransportFactory()
+    let lowerManager = ClipLiveShareNativeV3MeshPeerLinkManager(
+      localParticipantID: lower,
+      transportFactory: lowerFactory,
+      reconnectPolicy: .init(delaysMilliseconds: [0]),
+      reconnectSleeper: MeshImmediateSleeper()
+    )
+    let upperManager = ClipLiveShareNativeV3MeshPeerLinkManager(
+      localParticipantID: upper,
+      transportFactory: upperFactory,
+      reconnectPolicy: .init(delaysMilliseconds: [0]),
+      reconnectSleeper: MeshImmediateSleeper()
+    )
+    try await lowerManager.reconcileParticipants([lower, upper])
+    try await upperManager.reconcileParticipants([lower, upper])
+    let lowerTransport = try #require(
+      await lowerFactory.transport(for: upper)
+    )
+    let upperTransport = try #require(
+      await upperFactory.transport(for: lower)
+    )
+    #expect(lowerTransport.configuration.role == .offerer)
+    #expect(upperTransport.configuration.role == .answerer)
+
+    await lowerTransport.emit(.connectionStateChanged(.failed))
+    await upperTransport.emit(.connectionStateChanged(.failed))
+    try await meshEventually {
+      await lowerTransport.restartCount() == 1
+    }
+    try await Task.sleep(for: .milliseconds(30))
+
+    #expect(await upperTransport.restartCount() == 0)
+    #expect(
+      (await upperManager.snapshot()).links.first?.reconnectAttempt == 0
+    )
+    let key = try ClipLiveShareNativeV3PeerLinkKey(lower, upper)
+    try await upperManager.applyRemoteNegotiation(
+      .init(
+        peerLinkKey: key,
+        targetParticipantID: upper,
+        payload: .sessionDescription(.init(kind: .offer, sdp: "restart"))
+      ),
+      from: lower
+    )
+    #expect(
+      await upperTransport.remoteDescriptions()
+        == [.init(kind: .offer, sdp: "restart")]
+    )
+
+    await lowerManager.close()
+    await upperManager.close()
+  }
+
   @Test("statistics stay attributed to their peer")
   func perPeerStatistics() async throws {
     let local = try meshParticipant(0x10)
@@ -657,12 +807,418 @@ struct ClipLiveShareNativeV3MeshPeerLinkManagerTests {
     )
     await manager.close()
   }
+
+  @Test("mesh settings preserve the full pre-v4 policy on every sender")
+  func senderPoliciesDoNotDivideTheSelectedPreset() async throws {
+    let local = try meshParticipant(0x10)
+    let peerA = try meshParticipant(0x20)
+    let peerB = try meshParticipant(0x30)
+    let peerC = try meshParticipant(0x40)
+    let factory = MeshFakeTransportFactory()
+    let manager = ClipLiveShareNativeV3MeshPeerLinkManager(
+      localParticipantID: local,
+      transportFactory: factory
+    )
+    try await manager.reconcileParticipants([local, peerA, peerB])
+    let first = try #require(await factory.transport(for: peerA))
+    let second = try #require(await factory.transport(for: peerB))
+    let fallback = WebRTCSenderPolicy(
+      maximumBitrateBps: 6_000_000,
+      maximumFramesPerSecond: 60,
+      degradationStrategy: .resolution
+    )
+    let policies = [
+      0: WebRTCSenderPolicy(
+        maximumBitrateBps: 4_800_000,
+        maximumFramesPerSecond: 60,
+        degradationStrategy: .resolution,
+        bitratePriority: 4
+      ),
+      1: WebRTCSenderPolicy(
+        maximumBitrateBps: 1_200_000,
+        maximumFramesPerSecond: 60,
+        degradationStrategy: .resolution
+      ),
+    ]
+
+    await manager.updateSenderPolicies(
+      policies,
+      fallback: fallback,
+      videoEncodingMode: .quality
+    )
+
+    let expected = MeshSenderPolicyUpdate(
+      policiesBySlot: [:],
+      fallback: fallback,
+      videoEncodingMode: nil
+    )
+    #expect(await first.senderPolicyUpdates() == [expected])
+    #expect(await second.senderPolicyUpdates() == [expected])
+
+    // The manager still matches the old ownership boundary: the app retains
+    // the participant-wide policy in the concrete factory after updating the
+    // current mesh. Merely creating a future link must not synthesize a new
+    // per-slot allocation inside networking code.
+    try await manager.reconcileParticipants([local, peerA, peerB, peerC])
+    let third = try #require(await factory.transport(for: peerC))
+    #expect(await third.senderPolicyUpdates().isEmpty)
+    await manager.close()
+  }
+}
+
+@Suite("Server-coordinated independent pair reconciliation")
+struct ClipLiveShareServerMeshPeerReconcilerTests {
+  @Test("structural recovery recreates only the failed pair")
+  func structuralRecoveryRecreatesOnlyOnePair() async throws {
+    let participantA = try meshParticipant(0x10)
+    let participantB = try meshParticipant(0x20)
+    let participantC = try meshParticipant(0x30)
+    let factory = MeshFakeTransportFactory()
+    let manager = ClipLiveShareNativeV3MeshPeerLinkManager(
+      localParticipantID: participantA,
+      transportFactory: factory
+    )
+    let reconciler = ClipLiveShareServerMeshPeerReconciler(
+      localParticipantID: participantA,
+      peerLinkManager: manager
+    )
+    let initial = try await reconciler.applyRoster(
+      serverMeshRoster(
+        revision: 1,
+        localParticipantID: participantA,
+        participantIDs: [participantA, participantB, participantC]
+      )
+    )
+    let originalB = try #require(
+      await factory.latestTransport(for: participantB)
+    )
+    let originalC = try #require(
+      await factory.latestTransport(for: participantC)
+    )
+    let originalBPair = try #require(
+      initial.snapshot.pairs.first {
+        $0.link.remoteParticipantID == participantB
+      }
+    )
+
+    let recovered = try await reconciler.recreatePair(with: participantB)
+    let replacementB = try #require(
+      await factory.latestTransport(for: participantB)
+    )
+    let retainedC = try #require(
+      await factory.latestTransport(for: participantC)
+    )
+    let recoveredBPair = try #require(
+      recovered.pairs.first {
+        $0.link.remoteParticipantID == participantB
+      }
+    )
+
+    #expect(replacementB !== originalB)
+    #expect(retainedC === originalC)
+    #expect(await originalB.closeCount() == 1)
+    #expect(await originalC.closeCount() == 0)
+    #expect(await factory.makeCount() == 3)
+    #expect(recoveredBPair.pairID == originalBPair.pairID)
+    #expect(recoveredBPair.epoch == originalBPair.epoch)
+    #expect(recovered.isLocallyComplete)
+
+    await reconciler.close()
+  }
+
+  @Test("two, three and four participants derive one canonical pair each")
+  func completeTopologiesUseOneDeterministicTransportPerPair() async throws {
+    let participants = try [
+      meshParticipant(0x10),
+      meshParticipant(0x20),
+      meshParticipant(0x30),
+      meshParticipant(0x40),
+    ]
+
+    for participantCount in 2...4 {
+      let roster = Set(participants.prefix(participantCount))
+      var factories: [ClipLiveShareNativeV3ParticipantID: MeshFakeTransportFactory] = [:]
+      var reconcilers: [ClipLiveShareServerMeshPeerReconciler] = []
+      var observedPairs:
+        [ClipLiveShareNativeV3PeerLinkKey: [ClipLiveShareServerMeshPairSnapshot]] = [:]
+
+      for localParticipantID in roster {
+        let factory = MeshFakeTransportFactory()
+        let manager = ClipLiveShareNativeV3MeshPeerLinkManager(
+          localParticipantID: localParticipantID,
+          transportFactory: factory
+        )
+        let reconciler = ClipLiveShareServerMeshPeerReconciler(
+          localParticipantID: localParticipantID,
+          peerLinkManager: manager
+        )
+        factories[localParticipantID] = factory
+        reconcilers.append(reconciler)
+
+        let result = try await reconciler.applyRoster(
+          serverMeshRoster(
+            revision: 1,
+            localParticipantID: localParticipantID,
+            participantIDs: roster
+          )
+        )
+        #expect(result.disposition == .applied)
+        #expect(result.failedPairs.isEmpty)
+        #expect(result.snapshot.isLocallyComplete)
+        #expect(result.snapshot.pairs.count == participantCount - 1)
+        for pair in result.snapshot.pairs {
+          observedPairs[pair.id, default: []].append(pair)
+        }
+      }
+
+      var allKeys = Set<ClipLiveShareNativeV3PeerLinkKey>()
+      for (participantID, factory) in factories {
+        let configurations = await factory.configurations()
+        #expect(configurations.count == participantCount - 1)
+        for configuration in configurations {
+          allKeys.insert(configuration.key)
+          #expect(configuration.outboundMediaInitiallyEnabled)
+          #expect(
+            configuration.role
+              == (participantID == configuration.key.lowerParticipantID
+                ? .offerer : .answerer)
+          )
+          let transport = try #require(
+            await factory.transport(
+              for: configuration.remoteParticipantID
+            )
+          )
+          #expect(await transport.startCount() == 1)
+        }
+      }
+      #expect(
+        allKeys.count == participantCount * (participantCount - 1) / 2
+      )
+      #expect(Set(observedPairs.keys) == allKeys)
+      for endpointPairs in observedPairs.values {
+        #expect(endpointPairs.count == 2)
+        #expect(Set(endpointPairs.map(\.pairID)).count == 1)
+        #expect(Set(endpointPairs.map(\.epoch)).count == 1)
+      }
+      for reconciler in reconcilers {
+        await reconciler.close()
+      }
+    }
+  }
+
+  @Test("unrelated roster changes preserve the A-B transport and pair epoch")
+  func retainedPairIdentitySurvivesJoinAndLeave() async throws {
+    let participantA = try meshParticipant(0x10)
+    let participantB = try meshParticipant(0x20)
+    let participantC = try meshParticipant(0x30)
+    let participantD = try meshParticipant(0x40)
+    let factory = MeshFakeTransportFactory()
+    let manager = ClipLiveShareNativeV3MeshPeerLinkManager(
+      localParticipantID: participantA,
+      transportFactory: factory
+    )
+    let reconciler = ClipLiveShareServerMeshPeerReconciler(
+      localParticipantID: participantA,
+      peerLinkManager: manager
+    )
+
+    let two = try await reconciler.applyRoster(
+      serverMeshRoster(
+        revision: 1,
+        localParticipantID: participantA,
+        participantIDs: [participantA, participantB]
+      )
+    )
+    let firstABPair = try #require(
+      two.snapshot.pairs.first { $0.link.remoteParticipantID == participantB }
+    )
+    let firstABTransport = try #require(
+      await factory.transport(for: participantB)
+    )
+
+    _ = try await reconciler.applyRoster(
+      serverMeshRoster(
+        revision: 2,
+        localParticipantID: participantA,
+        participantIDs: [participantA, participantB, participantC]
+      )
+    )
+    _ = try await reconciler.applyRoster(
+      serverMeshRoster(
+        revision: 3,
+        localParticipantID: participantA,
+        participantIDs: [participantA, participantB, participantC, participantD]
+      )
+    )
+    let participantCTransport = try #require(
+      await factory.transport(for: participantC)
+    )
+    let afterLeave = try await reconciler.applyRoster(
+      serverMeshRoster(
+        revision: 4,
+        localParticipantID: participantA,
+        participantIDs: [participantA, participantB, participantD]
+      )
+    )
+
+    let retainedABPair = try #require(
+      afterLeave.snapshot.pairs.first {
+        $0.link.remoteParticipantID == participantB
+      }
+    )
+    let retainedABTransport = try #require(
+      await factory.latestTransport(for: participantB)
+    )
+    #expect(retainedABPair.epoch == firstABPair.epoch)
+    #expect(retainedABTransport === firstABTransport)
+    #expect(await retainedABTransport.startCount() == 1)
+    #expect(await retainedABTransport.closeCount() == 0)
+    #expect(await participantCTransport.closeCount() == 1)
+    #expect(afterLeave.retainedPairs.contains { $0.id == firstABPair.id })
+
+    let duplicate = try await reconciler.applyRoster(
+      serverMeshRoster(
+        revision: 4,
+        localParticipantID: participantA,
+        participantIDs: [participantA, participantB, participantD]
+      )
+    )
+    #expect(duplicate.disposition == .ignoredDuplicate)
+    #expect(await factory.makeCount() == 3)
+
+    let stale = try await reconciler.applyRoster(
+      serverMeshRoster(
+        revision: 2,
+        localParticipantID: participantA,
+        participantIDs: [participantA, participantB]
+      )
+    )
+    #expect(stale.disposition == .ignoredStale)
+    #expect(stale.snapshot.rosterRevision?.rawValue == 4)
+    #expect(stale.snapshot.pairs.count == 2)
+
+    let firstDTransport = try #require(
+      await factory.transport(for: participantD)
+    )
+    let changedPairEpoch = try await reconciler.applyRoster(
+      serverMeshRoster(
+        revision: 5,
+        localParticipantID: participantA,
+        participantIDs: [participantA, participantB, participantD],
+        pairEpochs: [participantD: 2]
+      )
+    )
+    let replacementDTransport = try #require(
+      await factory.latestTransport(for: participantD)
+    )
+    #expect(replacementDTransport !== firstDTransport)
+    #expect(await firstDTransport.closeCount() == 1)
+    #expect(
+      changedPairEpoch.addedPairs.first {
+        $0.link.remoteParticipantID == participantD
+      }?.epoch.rawValue == 2
+    )
+    #expect(
+      changedPairEpoch.removedPairKeys.contains(
+        try ClipLiveShareNativeV3PeerLinkKey(participantA, participantD)
+      )
+    )
+    #expect(
+      changedPairEpoch.retainedPairs.first {
+        $0.link.remoteParticipantID == participantB
+      }?.epoch == firstABPair.epoch
+    )
+    #expect(await factory.latestTransport(for: participantB) === firstABTransport)
+
+    await reconciler.close()
+  }
+
+  @Test("one pair creation failure cannot roll back or block other pairs")
+  func pairFailureIsIsolatedAndRetryable() async throws {
+    let participantA = try meshParticipant(0x10)
+    let participantB = try meshParticipant(0x20)
+    let failingParticipant = try meshParticipant(0x30)
+    let participantD = try meshParticipant(0x40)
+    let factory = MeshFakeTransportFactory()
+    await factory.failCreation(for: failingParticipant)
+    let manager = ClipLiveShareNativeV3MeshPeerLinkManager(
+      localParticipantID: participantA,
+      transportFactory: factory
+    )
+    let reconciler = ClipLiveShareServerMeshPeerReconciler(
+      localParticipantID: participantA,
+      peerLinkManager: manager
+    )
+
+    let first = try await reconciler.applyRoster(
+      serverMeshRoster(
+        revision: 1,
+        localParticipantID: participantA,
+        participantIDs: [
+          participantA, participantB, failingParticipant, participantD,
+        ]
+      )
+    )
+    #expect(first.failedPairs.count == 1)
+    #expect(first.failedPairs.first?.remoteParticipantID == failingParticipant)
+    #expect(first.failedPairs.first?.attempt == 1)
+    #expect(
+      Set(first.snapshot.pairs.map(\.link.remoteParticipantID))
+        == [participantB, participantD]
+    )
+    #expect(!first.snapshot.isLocallyComplete)
+
+    let participantBTransport = try #require(
+      await factory.transport(for: participantB)
+    )
+    let participantDTransport = try #require(
+      await factory.transport(for: participantD)
+    )
+    let participantBEpoch = try #require(
+      first.snapshot.pairs.first {
+        $0.link.remoteParticipantID == participantB
+      }
+    ).epoch
+    let participantDEpoch = try #require(
+      first.snapshot.pairs.first {
+        $0.link.remoteParticipantID == participantD
+      }
+    ).epoch
+
+    await factory.allowCreation(for: failingParticipant)
+    let retried = try await reconciler.retryPair(
+      with: failingParticipant
+    )
+    #expect(retried.failedPairs.isEmpty)
+    #expect(retried.isLocallyComplete)
+    #expect(retried.pairs.count == 3)
+    #expect(
+      retried.pairs.first { $0.link.remoteParticipantID == participantB }?
+        .epoch == participantBEpoch
+    )
+    #expect(
+      retried.pairs.first { $0.link.remoteParticipantID == participantD }?
+        .epoch == participantDEpoch
+    )
+    #expect(await factory.latestTransport(for: participantB) === participantBTransport)
+    #expect(await factory.latestTransport(for: participantD) === participantDTransport)
+    #expect(await participantBTransport.startCount() == 1)
+    #expect(await participantDTransport.startCount() == 1)
+
+    await reconciler.close()
+  }
 }
 
 private enum MeshFakeError: Error {
   case creationFailed
   case restartFailed
   case statisticsFailed
+}
+
+private struct MeshSenderPolicyUpdate: Equatable, Sendable {
+  let policiesBySlot: [Int: WebRTCSenderPolicy]
+  let fallback: WebRTCSenderPolicy
+  let videoEncodingMode: LiveShareEncodingMode?
 }
 
 private actor MeshFakeTransportFactory:
@@ -696,11 +1252,16 @@ private actor MeshFakeTransportFactory:
     failedParticipantIDs.insert(participantID)
   }
 
+  func allowCreation(for participantID: ClipLiveShareNativeV3ParticipantID) {
+    failedParticipantIDs.remove(participantID)
+  }
+
   func configurations() -> [ClipLiveShareNativeV3PeerLinkConfiguration] {
     madeConfigurations
   }
 
   func makeCount() -> Int { madeTransports.count }
+
 
   func transports() -> [MeshFakeTransport] { madeTransports }
 
@@ -740,6 +1301,7 @@ private actor MeshFakeTransport:
   private var candidates: [WebRTCICECandidate] = []
   private var controlMessages: [Data] = []
   private var outboundStates: [Bool]
+  private var senderPolicies: [MeshSenderPolicyUpdate] = []
   private var receiverAudioOperationLog: [String] = []
   private var playbackEnabledValues: [Bool] = []
   private var volumeValues: [Double] = []
@@ -811,6 +1373,30 @@ private actor MeshFakeTransport:
 
   func setOutboundMediaEnabled(_ enabled: Bool) {
     outboundStates.append(enabled)
+  }
+
+  func updateSenderPolicies(
+    _ policiesBySlot: [Int: WebRTCSenderPolicy],
+    fallback: WebRTCSenderPolicy,
+    videoEncodingMode: LiveShareEncodingMode
+  ) {
+    senderPolicies.append(
+      .init(
+        policiesBySlot: policiesBySlot,
+        fallback: fallback,
+        videoEncodingMode: videoEncodingMode
+      )
+    )
+  }
+
+  func updateSenderPolicy(_ policy: WebRTCSenderPolicy) {
+    senderPolicies.append(
+      .init(
+        policiesBySlot: [:],
+        fallback: policy,
+        videoEncodingMode: nil
+      )
+    )
   }
 
   func restartICE() throws {
@@ -894,6 +1480,9 @@ private actor MeshFakeTransport:
   func playbackEnabledHistory() -> [Bool] { playbackEnabledValues }
   func volumeHistory() -> [Double] { volumeValues }
   func outboundMediaStates() -> [Bool] { outboundStates }
+  func senderPolicyUpdates() -> [MeshSenderPolicyUpdate] {
+    senderPolicies
+  }
   func statisticsCallCount() -> Int { statisticsCalls }
   func statisticsWaiterCount() -> Int { statisticsWaiters.count }
 
@@ -943,6 +1532,36 @@ private func meshParticipant(
       repeating: byte,
       count: ClipLiveShareNativeV3.participantIDByteCount
     )
+  )
+}
+
+private func serverMeshRoster(
+  revision: UInt64,
+  localParticipantID: ClipLiveShareNativeV3ParticipantID,
+  participantIDs: Set<ClipLiveShareNativeV3ParticipantID>,
+  pairEpochs: [ClipLiveShareNativeV3ParticipantID: UInt64] = [:]
+) throws -> ClipLiveShareServerMeshRosterSnapshot {
+  let localPairs = try Set(
+    participantIDs.filter { $0 != localParticipantID }.map {
+      remoteParticipantID in
+      let key = try ClipLiveShareNativeV3PeerLinkKey(
+        localParticipantID,
+        remoteParticipantID
+      )
+      var pairIDBytes = Data()
+      pairIDBytes.append(key.lowerParticipantID.bytes.prefix(16))
+      pairIDBytes.append(key.upperParticipantID.bytes.prefix(16))
+      return ClipLiveShareServerMeshDesiredPair(
+        pairID: try .init(bytes: pairIDBytes),
+        epoch: try .init(rawValue: pairEpochs[remoteParticipantID] ?? 1),
+        remoteParticipantID: remoteParticipantID
+      )
+    }
+  )
+  return .init(
+    revision: try .init(rawValue: revision),
+    participantIDs: participantIDs,
+    localPairs: localPairs
   )
 }
 

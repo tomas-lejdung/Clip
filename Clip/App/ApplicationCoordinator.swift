@@ -1,4 +1,5 @@
 import AppKit
+import ClipCapture
 import ClipCore
 import ClipLiveShare
 import ClipLiveShareWebRTC
@@ -121,17 +122,7 @@ enum RecordingCompletionPolicy {
     }
 }
 
-@MainActor
-struct MeshParticipantApplicationActivation {
-    let context: MeshParticipantLaunchContext
-    let bootstrap: any MeshParticipantBootstrapRouting
-    let mediaFactory: ClipLiveShareNativeV3WebRTCTransportFactory
-    let peerLinkManager: ClipLiveShareNativeV3MeshPeerLinkManager
-    let localPresentation: MeshParticipantLocalPresentationState
-    let actions: MeshParticipantCoordinatorActions
-}
-
-enum MeshParticipantApplicationActivationError: Error, LocalizedError {
+enum ServerCoordinatedMeshApplicationError: Error, LocalizedError {
     case roleUnavailable
     case accessWordGenerationFailed
     case connectionFailed(String)
@@ -145,6 +136,396 @@ enum MeshParticipantApplicationActivationError: Error, LocalizedError {
         case let .connectionFailed(message):
             message
         }
+    }
+}
+
+enum ServerMeshJoinPresentationPolicy {
+    enum Transition: Equatable {
+        case unchanged
+        case awaitingApproval(roomName: String)
+        case showActiveRoom
+    }
+
+    static func transition(
+        for phase: ServerCoordinatedMeshRoomSessionPhase,
+        roomName: String
+    ) -> Transition {
+        switch phase {
+        case .waitingForAdmission:
+            return .awaitingApproval(roomName: roomName)
+        case .active:
+            return .showActiveRoom
+        case .idle, .connecting, .ended:
+            return .unchanged
+        }
+    }
+}
+
+/// Lazily installs the existing local capture owner after the v4 room session
+/// has discovered and validated the service's ICE configuration. The room
+/// session creates one WebRTC factory; that exact factory owns both every P2P
+/// link and the unchanged ScreenCaptureKit publication pipeline.
+@MainActor
+private final class ServerCoordinatedMeshLocalMediaBridge {
+    private weak var roomSession: ServerCoordinatedMeshRoomSession?
+    private let localParticipantID: ClipLiveShareNativeV3ParticipantID
+    private let initialSettings: LiveShareSettings
+    private let persistSettings: (LiveShareSettings) -> Void
+    private let discovery: any CaptureContentDiscovering
+    private let maximumActiveSources: Int
+    private let callbackRelay: ServerCoordinatedMeshParticipantCallbackRelay
+    private let failureStream: AsyncStream<MeshParticipantCaptureFailure>
+    private let failureContinuation:
+        AsyncStream<MeshParticipantCaptureFailure>.Continuation
+
+    private var capturePublisher: MeshParticipantCapturePublisher?
+    private var publicationController:
+        MeshParticipantLocalPublicationController?
+    private var mediaFactory: ClipLiveShareNativeV3WebRTCTransportFactory?
+    private var failureForwardingTask: Task<Void, Never>?
+    private var localControlsTask: Task<Void, Never>?
+    private var startRequested = false
+
+    private lazy var focusedWindowControl =
+        MeshFocusedWindowControlCoordinator(
+            actions: .init(
+                share: { [weak self] in
+                    self?.publicationController?.shareFocusedWindow()
+                },
+                stop: { [weak self] in
+                    guard
+                        let instanceID = self?.publicationController?
+                            .focusedWindowControlSnapshot?.sourceInstanceID
+                    else { return }
+                    self?.publicationController?.stopSource(instanceID)
+                }
+            )
+        )
+    private lazy var localStatusHUD = MeshLocalStatusHUDCoordinator(
+        actions: .init(
+            setFullscreenEnabled: { [weak self] enabled in
+                self?.publicationController?.setFullscreenEnabled(enabled)
+            },
+            stopAllMedia: { [weak self] in
+                self?.publicationController?.stopAllMedia()
+            }
+        )
+    )
+
+    init(
+        localParticipantID: ClipLiveShareNativeV3ParticipantID,
+        initialSettings: LiveShareSettings,
+        persistSettings: @escaping (LiveShareSettings) -> Void,
+        discovery: any CaptureContentDiscovering =
+            ScreenCaptureContentDiscovery(),
+        maximumActiveSources: Int =
+            ClipLiveShareNativeV3.defaultMaximumActiveSourcesPerParticipant,
+        callbackRelay: ServerCoordinatedMeshParticipantCallbackRelay
+    ) {
+        let pair = AsyncStream.makeStream(
+            of: MeshParticipantCaptureFailure.self,
+            bufferingPolicy: .bufferingNewest(16)
+        )
+        self.localParticipantID = localParticipantID
+        self.initialSettings = initialSettings
+        self.persistSettings = persistSettings
+        self.discovery = discovery
+        self.maximumActiveSources = maximumActiveSources
+        self.callbackRelay = callbackRelay
+        failureStream = pair.stream
+        failureContinuation = pair.continuation
+    }
+
+    func bind(to roomSession: ServerCoordinatedMeshRoomSession) {
+        precondition(self.roomSession == nil)
+        self.roomSession = roomSession
+    }
+
+    func install(
+        mediaFactory: ClipLiveShareNativeV3WebRTCTransportFactory
+    ) throws {
+        guard self.mediaFactory == nil,
+              let roomSession else {
+            throw ServerCoordinatedMeshApplicationError.connectionFailed(
+                String(localized: "Clip couldn’t prepare local Live Share capture.")
+            )
+        }
+        self.mediaFactory = mediaFactory
+        let publisher = MeshParticipantCapturePublisher(
+            factory: mediaFactory,
+            maximumActiveSources: maximumActiveSources,
+            publishSources: { [weak roomSession] sources in
+                guard let roomSession else { throw CancellationError() }
+                try await roomSession.publishLocalSources(sources)
+            }
+        )
+        capturePublisher = publisher
+        let localParticipantID = localParticipantID
+        let controller = MeshParticipantLocalPublicationController(
+            settings: initialSettings,
+            discovery: discovery,
+            maximumActiveSources: maximumActiveSources,
+            operations: MeshParticipantLocalPublicationOperations(
+                start: { [weak publisher] instanceID, descriptor in
+                    guard let publisher else { throw CancellationError() }
+                    try await publisher.start(
+                        ownerParticipantID: localParticipantID,
+                        sourceInstanceID: instanceID,
+                        capture: descriptor,
+                        preferredSlot: descriptor.stream.order
+                    )
+                },
+                update: { [weak publisher] instanceID, descriptor in
+                    guard let publisher else { throw CancellationError() }
+                    try await publisher.update(
+                        sourceInstanceID: instanceID,
+                        capture: descriptor
+                    )
+                },
+                stop: { [weak publisher] instanceID in
+                    guard let publisher else { throw CancellationError() }
+                    try await publisher.stop(sourceInstanceID: instanceID)
+                },
+                stopAll: { [weak publisher] in
+                    await publisher?.stopAll()
+                },
+                setSystemAudio: { [weak publisher] request in
+                    guard let publisher else { throw CancellationError() }
+                    try await publisher.setSystemAudio(request)
+                },
+                applySettings: { [weak self] settings in
+                    guard let self else { throw CancellationError() }
+                    try await self.applySettings(settings)
+                }
+            ),
+            persistSettings: persistSettings,
+            onChange: { [callbackRelay] snapshot in
+                callbackRelay.publicationChanged(snapshot)
+            },
+            onFailure: { [callbackRelay] message in
+                callbackRelay.publicationFailed(message)
+            }
+        )
+        publicationController = controller
+        failureForwardingTask = Task { [weak self, weak publisher] in
+            guard let publisher else { return }
+            let failures = await publisher.failures()
+            for await failure in failures {
+                guard !Task.isCancelled, let self else { return }
+                failureContinuation.yield(failure)
+            }
+        }
+        if startRequested {
+            controller.start()
+            startLocalControlsLoop()
+        }
+    }
+
+    func client() -> ServerCoordinatedMeshParticipantLocalMediaClient {
+        .init(
+            start: { [weak self] in
+                guard let self else { return }
+                startRequested = true
+                publicationController?.start()
+                startLocalControlsLoop()
+            },
+            hideForApplicationTermination: { [weak self] in
+                self?.focusedWindowControl.hide()
+                self?.localStatusHUD.hide()
+            },
+            stop: { [weak self] in await self?.stop() },
+            shareFocusedWindow: { [weak self] in
+                self?.publicationController?.shareFocusedWindow()
+            },
+            shareWindow: { [weak self] in
+                self?.publicationController?.shareWindow(identifier: $0)
+            },
+            stopSource: { [weak self] in
+                self?.publicationController?.stopSource($0)
+            },
+            setFullscreenEnabled: { [weak self] in
+                self?.publicationController?.setFullscreenEnabled($0)
+            },
+            stopAllMedia: { [weak self] in
+                self?.publicationController?.stopAllMedia()
+            },
+            updateSettings: { [weak self] in
+                self?.publicationController?.updateSettings($0)
+            },
+            activeSources: { [weak self] in
+                self?.publicationController?.activeSourceSnapshots ?? []
+            },
+            activeCaptures: { [weak self] in
+                await self?.capturePublisher?.activeSources ?? []
+            },
+            cursorSnapshot: { [weak self] in
+                self?.publicationController?.cursorSnapshot
+            },
+            settle: { [weak self] in
+                await self?.publicationController?.settlePendingOperations()
+            },
+            failures: { [failureStream] in failureStream }
+        )
+    }
+
+    private func stop() async {
+        startRequested = false
+        localControlsTask?.cancel()
+        localControlsTask = nil
+        focusedWindowControl.tearDown()
+        localStatusHUD.tearDown()
+        failureForwardingTask?.cancel()
+        failureForwardingTask = nil
+        await publicationController?.stop()
+        publicationController = nil
+        await capturePublisher?.stopAll()
+        capturePublisher = nil
+        mediaFactory?.close()
+        mediaFactory = nil
+        failureContinuation.finish()
+    }
+
+    private func startLocalControlsLoop() {
+        guard startRequested, publicationController != nil,
+              localControlsTask == nil else { return }
+        localControlsTask = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                guard let self, startRequested else { return }
+                await refreshLocalSharingControls()
+                do {
+                    try await Task.sleep(for: .milliseconds(250))
+                } catch {
+                    return
+                }
+            }
+        }
+    }
+
+    private func refreshLocalSharingControls() async {
+        guard startRequested, let publicationController else {
+            focusedWindowControl.hide()
+            localStatusHUD.hide()
+            return
+        }
+        if
+            let snapshot = publicationController.focusedWindowControlSnapshot,
+            let visibleFrame = Self.visibleScreenFrame(
+                containing: snapshot.appKitFrame
+            )
+        {
+            focusedWindowControl.show(
+                snapshot: snapshot,
+                visibleScreenFrame: visibleFrame
+            )
+        } else {
+            focusedWindowControl.hide()
+        }
+
+        guard
+            let visibleFrame = NSScreen.main?.visibleFrame
+                ?? NSScreen.screens.first?.visibleFrame
+        else {
+            localStatusHUD.hide()
+            return
+        }
+        let room = await roomSession?.snapshot()
+        let participantCount = room?.verifiedRoom?.members.count ?? 1
+        let localStatus = publicationController.localStatusSnapshot
+        localStatusHUD.show(
+            snapshot: MeshLocalStatusHUDSnapshot(
+                sourceStatuses: localStatus.windowSourceStatuses,
+                participantCount: participantCount,
+                fullscreen: localStatus.fullscreen
+            ),
+            visibleScreenFrame: visibleFrame
+        )
+    }
+
+    private static func visibleScreenFrame(
+        containing frame: CGRect
+    ) -> CGRect? {
+        NSScreen.screens.max {
+            intersectionArea($0.frame, frame)
+                < intersectionArea($1.frame, frame)
+        }?.visibleFrame
+    }
+
+    private static func intersectionArea(
+        _ lhs: CGRect,
+        _ rhs: CGRect
+    ) -> CGFloat {
+        let intersection = lhs.intersection(rhs)
+        guard !intersection.isNull, !intersection.isInfinite else { return 0 }
+        return max(0, intersection.width) * max(0, intersection.height)
+    }
+
+    /// Preserves the pre-v4 media transition exactly. Mesh networking changes
+    /// how many direct peer links exist, not capture quality or encoder policy:
+    /// retain the participant codec for future links, update each current pair
+    /// independently, then apply encoder mode, codec-specific advanced
+    /// settings, and one full sender policy to every active source.
+    private func applySettings(_ settings: LiveShareSettings) async throws {
+        guard let mediaFactory, let roomSession else {
+            throw ServerCoordinatedMeshApplicationError.connectionFailed(
+                String(localized: "Live Share media is not ready.")
+            )
+        }
+        let requestedCodec = MeshParticipantMediaSettingsPolicy.videoCodec(
+            settings.videoCodec
+        )
+        if mediaFactory.videoCodec != requestedCodec {
+            let previousCodec = mediaFactory.videoCodec
+            // This is deliberately committed before current-pair negotiation,
+            // matching the previous participant runtime. A failed peer rolls
+            // back only its own transport; future links retain the requested
+            // participant preference.
+            try mediaFactory.retainVideoCodec(requestedCodec)
+            let snapshot = await roomSession.snapshot()
+            let remotes = snapshot.verifiedRoom?.members
+                .filter { !$0.isLocal }
+                .map(\.descriptor.participantID) ?? []
+            var failures: [String] = []
+            for participantID in remotes {
+                do {
+                    try await roomSession.updateVideoCodecPreference(
+                        requestedCodec,
+                        for: participantID,
+                        rollbackTo: previousCodec
+                    )
+                } catch {
+                    failures.append(participantID.rawValue)
+                }
+            }
+            if !failures.isEmpty {
+                throw ServerCoordinatedMeshApplicationError.connectionFailed(
+                    String(
+                        localized:
+                            "Clip couldn’t update video quality for: \(failures.sorted().joined(separator: ", "))."
+                    )
+                )
+            }
+        }
+        mediaFactory.updateVideoEncodingMode(settings.encodingMode)
+        if let advanced =
+            MeshParticipantMediaSettingsPolicy.advancedVideoConfiguration(
+                settings.advancedVideoSettings.settings(
+                    for: settings.videoCodec
+                ),
+                codec: settings.videoCodec
+            )
+        {
+            mediaFactory.updateAdvancedVideoConfiguration(advanced)
+        }
+        try await applySenderPolicy(settings)
+    }
+
+    private func applySenderPolicy(_ settings: LiveShareSettings) async throws {
+        guard let roomSession else { throw CancellationError() }
+        let policy = LiveShareCapturePolicy.senderPolicy(
+            for: settings
+        )
+        try await roomSession.updateSenderPolicy(policy)
+        mediaFactory?.retainSenderPolicy(policy)
     }
 }
 
@@ -400,6 +781,7 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
     private let applicationUpdater: any ApplicationUpdateServicing
 
     private var statusItem: NSStatusItem?
+    private var meshAcceptanceWindowController: NSWindowController?
     private var activeFluidPopoverSizingToken: UUID?
     private var selectionController: CaptureSelectionController?
     private var applicationSelectionController: ApplicationCaptureSelectionController?
@@ -412,20 +794,23 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
     private var previewLifecycleContext: PreviewLifecycleContext?
     private var historyWindowController: NSWindowController?
     private var onboardingWindowController: NSWindowController?
-    private var meshParticipantRoomSession:
-        MeshParticipantRoomConnectionSession?
-    private var meshParticipantRoomEventTask: Task<Void, Never>?
-    private var meshParticipantRoomStartTask: Task<Void, Never>?
-    private var meshParticipantRoomAttemptToken: UUID?
-    private var meshParticipantPendingJoinInvite:
-        ClipLiveShareNativeV3Invite?
-    private var meshParticipantLocalPresentation =
-        MeshParticipantLocalPresentationState()
-    private var meshParticipantCoordinator: MeshParticipantCoordinator?
-    private var nativeV3MeshAcceptanceReporter:
-        NativeV3MeshAcceptanceReporter?
+    private var serverMeshRoomSession: ServerCoordinatedMeshRoomSession?
+    private var serverMeshStartTask: Task<Void, Never>?
+    private var serverMeshAttemptToken: UUID?
+    private var serverMeshCoordinator:
+        ServerCoordinatedMeshParticipantCoordinator?
     /// Invalidates late participant callbacks after room teardown/replacement.
-    private var meshParticipantRoleToken: UUID?
+    private var serverMeshRoleToken: UUID?
+    private var pendingServerMeshAccessWordRequest:
+        MenuBarServerRoomJoinRequest?
+    /// Friendship and presence outlive individual rooms. Keeping exactly one
+    /// repository instance also keeps handshake recovery and the idle friend
+    /// list on one authoritative view of disk state.
+    private var liveShareDeviceIdentity: NativeDeviceIdentity?
+    private var meshFriendshipRepository: MeshFriendshipRepository?
+    private var meshFriendPresenceController: MeshFriendPresenceController?
+    private var meshFriendPresenceSnapshot =
+        MeshFriendPresenceControllerSnapshot(friends: [])
     private var isStartingLiveShare = false
     private var isPreparingCapture = false
     private var startupTask: Task<Void, Never>?
@@ -442,9 +827,25 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
     private var isPreparingForTermination = false
 
     private var hasActiveLiveShareRole: Bool {
-        meshParticipantRoomSession != nil
-            || meshParticipantCoordinator != nil
-            || meshParticipantRoomStartTask != nil
+        serverMeshRoomSession != nil
+            || serverMeshCoordinator != nil
+            || serverMeshStartTask != nil
+    }
+
+    private var isMeshAcceptanceParticipant: Bool {
+        if case .participant = dependencies.launchConfiguration.meshAcceptanceRequest {
+            return true
+        }
+        return false
+    }
+
+    /// Automated acceptance needs a stable, independently addressable window
+    /// per process. Manual multi-instance acceptance should exercise the real
+    /// menu-bar popover instead. Both presentations retain the same isolated
+    /// participant identity, settings, and production Live Share actions.
+    private var usesMeshAcceptanceWindow: Bool {
+        isMeshAcceptanceParticipant
+            && !dependencies.launchConfiguration.meshAcceptanceUsesMenuBarPopover
     }
 
     init(
@@ -467,25 +868,6 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
         guard statusItem == nil, !isPreparingForTermination else { return }
         installStatusItem()
         statusItem?.button?.isEnabled = false
-        if let request = dependencies.launchConfiguration
-            .nativeV3MeshAcceptanceReportingRequest
-        {
-            do {
-                let reporter = try NativeV3MeshAcceptanceReporter(
-                    request: request
-                )
-                reporter.startTerminationWatcher {
-                    NSApp.terminate(nil)
-                }
-                nativeV3MeshAcceptanceReporter = reporter
-            } catch {
-                ClipLog.lifecycle.error(
-                    "Native-v3 acceptance reporting setup failed: \(error.localizedDescription, privacy: .public)"
-                )
-                NSApp.terminate(nil)
-                return
-            }
-        }
         monitorCaptureEvents()
 
         startupTask = Task { @MainActor [weak self] in
@@ -494,8 +876,20 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
             await dependencies.settings.load()
             guard !Task.isCancelled, !isPreparingForTermination else { return }
             await dependencies.liveSharePreferences.load()
+            if let meshAcceptanceServerEndpoint = dependencies
+                .launchConfiguration.meshAcceptanceServerEndpoint {
+                dependencies.liveSharePreferences.setServerEndpoint(
+                    meshAcceptanceServerEndpoint
+                )
+            }
             guard !Task.isCancelled, !isPreparingForTermination else { return }
-            _ = try? await dependencies.liveShareIdentity.loadOrCreate()
+            do {
+                _ = try await configureMeshFriendServicesIfNeeded()
+            } catch {
+                ClipLog.lifecycle.error(
+                    "Could not initialize Live Share friends: \(error.localizedDescription, privacy: .public)"
+                )
+            }
             await dependencies.audio.refreshDevices()
             guard !Task.isCancelled, !isPreparingForTermination else { return }
             installIdlePopover()
@@ -503,6 +897,7 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
             await applySettings(dependencies.settings.settings)
             guard !Task.isCancelled, !isPreparingForTermination else { return }
             statusItem?.button?.isEnabled = true
+            presentMeshAcceptancePopoverIfNeeded()
             do {
                 let recovery = try await dependencies.history.recoverInterruptedRecordings()
                 for recovered in recovery.recovered {
@@ -544,25 +939,26 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
     }
 
     private func stop(preservingLiveShareForTermination: Bool) {
+        if let meshFriendPresenceController {
+            Task { await meshFriendPresenceController.stop() }
+        }
         if preservingLiveShareForTermination {
-            meshParticipantCoordinator?.hideForApplicationTermination()
+            serverMeshCoordinator?.hideForApplicationTermination()
         } else {
-            nativeV3MeshAcceptanceReporter?.stopTerminationWatcher()
-            nativeV3MeshAcceptanceReporter = nil
-            let meshRoomSession = meshParticipantRoomSession
-            meshParticipantRoomEventTask?.cancel()
-            meshParticipantRoomEventTask = nil
-            meshParticipantRoomStartTask?.cancel()
-            meshParticipantRoomStartTask = nil
-            meshParticipantRoomAttemptToken = nil
-            meshParticipantPendingJoinInvite = nil
-            meshParticipantRoomSession = nil
-            meshParticipantCoordinator?.cancelForApplicationStop()
-            meshParticipantCoordinator = nil
-            meshParticipantRoleToken = nil
-            if let meshRoomSession {
-                Task {
-                    await meshRoomSession.close()
+            let coordinator = serverMeshCoordinator
+            let roomSession = serverMeshRoomSession
+            serverMeshStartTask?.cancel()
+            serverMeshStartTask = nil
+            serverMeshAttemptToken = nil
+            serverMeshRoomSession = nil
+            serverMeshCoordinator = nil
+            serverMeshRoleToken = nil
+            pendingServerMeshAccessWordRequest = nil
+            Task {
+                if let coordinator {
+                    await coordinator.close()
+                } else if let roomSession {
+                    await roomSession.close()
                 }
             }
         }
@@ -595,6 +991,8 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
         previewWindowDelegate = nil
         historyWindowController?.close()
         historyWindowController = nil
+        meshAcceptanceWindowController?.close()
+        meshAcceptanceWindowController = nil
         popover.close()
         if let statusItem {
             statusBar.removeStatusItem(statusItem)
@@ -617,23 +1015,19 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
         maintenanceTask?.cancel()
         maintenanceTask = nil
 
-        if let meshParticipantCoordinator {
-            await meshParticipantCoordinator.endForApplicationTermination()
-            self.meshParticipantCoordinator = nil
+        if let serverMeshCoordinator {
+            await serverMeshCoordinator.endForApplicationTermination()
+            self.serverMeshCoordinator = nil
+        } else if let serverMeshRoomSession {
+            await serverMeshRoomSession.close()
         }
-        meshParticipantRoomStartTask?.cancel()
-        meshParticipantRoomStartTask = nil
-        meshParticipantRoomAttemptToken = nil
-        meshParticipantPendingJoinInvite = nil
-        meshParticipantRoomEventTask?.cancel()
-        meshParticipantRoomEventTask = nil
-        if let meshParticipantRoomSession {
-            await meshParticipantRoomSession.close()
-            self.meshParticipantRoomSession = nil
-        }
-        meshParticipantRoleToken = nil
-        nativeV3MeshAcceptanceReporter?.stopTerminationWatcher()
-
+        serverMeshStartTask?.cancel()
+        serverMeshStartTask = nil
+        serverMeshAttemptToken = nil
+        serverMeshRoomSession = nil
+        serverMeshRoleToken = nil
+        pendingServerMeshAccessWordRequest = nil
+        await meshFriendPresenceController?.stop()
         if pendingRetake != nil, recordingState.phase == .finishing {
             // The in-flight replacement may still finish into History, but the
             // original Preview remains authoritative when Quit interrupts the
@@ -738,11 +1132,17 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
     private func installIdlePopover() {
         guard !isPreparingForTermination else { return }
         let actions = MenuBarActions(
-            createNativeV3Room: { [weak self] in
-                self?.createNativeV3Room()
+            createLiveShareRoom: { [weak self] in
+                self?.createServerCoordinatedMeshRoom()
             },
-            joinNativeV3Invite: { [weak self] request in
-                self?.joinNativeV3Room(request)
+            joinLiveShareInvite: { [weak self] request in
+                self?.joinServerCoordinatedMeshRoom(request)
+            },
+            joinLiveShareFriend: { [weak self] friendID in
+                self?.joinLiveShareFriend(friendID)
+            },
+            removeLiveShareFriend: { [weak self] friendID in
+                self?.removeLiveShareFriend(friendID)
             },
             captureArea: { [weak self] in self?.requestSelection(mode: .captureArea) },
             lastArea: { [weak self] in self?.requestSelection(mode: .lastArea) },
@@ -771,7 +1171,12 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
             checkForUpdates: { [weak self] in self?.checkForUpdates() },
             quit: { NSApp.terminate(nil) }
         )
-        popover.behavior = .transient
+        // Real multi-process mesh acceptance must address each participant's
+        // popover independently. Keeping those explicitly acknowledged test
+        // popovers open also prevents focus changes from hiding participant A
+        // while participant B or C is being exercised. Normal launches retain
+        // the standard transient menu-bar behavior.
+        popover.behavior = usesMeshAcceptanceWindow ? .applicationDefined : .transient
         popover.animates = true
         popover.delegate = self
         installFluidPopoverContent(
@@ -841,7 +1246,11 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
         let shouldRestoreKeyStatus = popover.isShown
         fluidPopoverResizeCoalescer.cancel()
         activeFluidPopoverSizingToken = fluidSizingToken
-        if popover.contentViewController !== popoverContentController {
+        if let acceptanceWindow = meshAcceptanceWindowController?.window {
+            if acceptanceWindow.contentViewController !== popoverContentController {
+                acceptanceWindow.contentViewController = popoverContentController
+            }
+        } else if popover.contentViewController !== popoverContentController {
             popover.contentViewController = popoverContentController
         }
         popoverContentController.replaceContent(
@@ -894,6 +1303,7 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
         // directly animating the private popover window can desynchronize both.
         popover.animates = !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
         popover.contentSize = size
+        meshAcceptanceWindowController?.window?.setContentSize(size)
     }
 
     private func maximumPopoverContentHeight() -> CGFloat {
@@ -932,7 +1342,7 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
         model: MeshRoomPresentationModel
     ) {
         guard !isPreparingForTermination else { return }
-        popover.behavior = .transient
+        popover.behavior = usesMeshAcceptanceWindow ? .applicationDefined : .transient
         popover.animates = true
         popover.delegate = self
         installFluidPopoverContent(
@@ -950,12 +1360,39 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
     @objc
     private func togglePopover(_ sender: NSStatusBarButton) {
         guard !isPreparingForTermination, dependencies.settings.isLoaded else { return }
+        if usesMeshAcceptanceWindow {
+            presentMeshAcceptancePopoverIfNeeded()
+            return
+        }
         if popover.isShown {
             popover.performClose(sender)
             return
         }
         popover.show(relativeTo: sender.bounds, of: sender, preferredEdge: .minY)
         popover.contentViewController?.view.window?.makeKey()
+    }
+
+    private func presentMeshAcceptancePopoverIfNeeded() {
+        guard usesMeshAcceptanceWindow else { return }
+        if meshAcceptanceWindowController == nil {
+            let panel = NSPanel(
+                contentRect: NSRect(origin: .zero, size: popover.contentSize),
+                styleMask: [.titled, .closable, .resizable],
+                backing: .buffered,
+                defer: false
+            )
+            panel.title = dependencies.launchConfiguration
+                .meshAcceptanceParticipantIdentifier ?? "Clip Mesh Participant"
+            panel.identifier = NSUserInterfaceItemIdentifier(
+                "clip.meshAcceptance.participantWindow"
+            )
+            panel.isReleasedWhenClosed = false
+            panel.contentViewController = popoverContentController
+            panel.center()
+            meshAcceptanceWindowController = NSWindowController(window: panel)
+        }
+        meshAcceptanceWindowController?.showWindow(nil)
+        meshAcceptanceWindowController?.window?.makeKeyAndOrderFront(nil)
     }
 
     func popoverWillShow(_ notification: Notification) {
@@ -967,44 +1404,155 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
         }
     }
 
-    // MARK: - Native-v3 participant room
+    // MARK: - Saved-friend presence
 
-    private func createNativeV3Room() {
-        beginNativeV3RoomConnection(joinRequest: nil)
+    @discardableResult
+    private func configureMeshFriendServicesIfNeeded() async throws -> (
+        identity: NativeDeviceIdentity,
+        repository: MeshFriendshipRepository,
+        presence: MeshFriendPresenceController
+    ) {
+        if let identity = liveShareDeviceIdentity,
+           let repository = meshFriendshipRepository,
+           let presence = meshFriendPresenceController {
+            return (identity, repository, presence)
+        }
+
+        let identity = try await dependencies.liveShareIdentity.loadOrCreate()
+        // The status item is disabled during startup, so this MainActor method
+        // cannot race room creation. Re-check after the actor hop nonetheless
+        // so any future caller still reuses the first configured repository.
+        if let identity = liveShareDeviceIdentity,
+           let repository = meshFriendshipRepository,
+           let presence = meshFriendPresenceController {
+            return (identity, repository, presence)
+        }
+
+        let repository = MeshFriendshipRepository(
+            storage: LiveMeshFriendshipFileStorage(
+                applicationSupportDirectory:
+                    dependencies.directories.applicationSupport
+            ),
+            localIdentity: identity.publicKey
+        )
+        let presence = MeshFriendPresenceController(
+            signer: identity.signer,
+            repository: repository,
+            localPresenceServiceEndpoint:
+                dependencies.liveSharePreferences.serverEndpoint,
+            onSnapshotChanged: { [weak self] snapshot in
+                self?.applyMeshFriendPresenceSnapshot(snapshot)
+            }
+        )
+        liveShareDeviceIdentity = identity
+        meshFriendshipRepository = repository
+        meshFriendPresenceController = presence
+        await presence.start(currentInvite: nil)
+        applyMeshFriendPresenceSnapshot(await presence.snapshot())
+        return (identity, repository, presence)
     }
 
-    private func joinNativeV3Room(
-        _ request: MenuBarNativeV3JoinRequest
+    private func applyMeshFriendPresenceSnapshot(
+        _ snapshot: MeshFriendPresenceControllerSnapshot
     ) {
-        if let session = meshParticipantRoomSession,
-           meshParticipantCoordinator == nil,
-           meshParticipantPendingJoinInvite == request.invite {
-            guard let accessWord = request.accessWord else {
+        meshFriendPresenceSnapshot = snapshot
+        menuBarModel.replaceLiveShareFriends(
+            MenuBarFriendPresencePolicy.rows(from: snapshot)
+        )
+    }
+
+    private func synchronizeMeshFriendPresence() {
+        guard let presence = meshFriendPresenceController else { return }
+        Task { @MainActor [weak self] in
+            await presence.synchronizeNow()
+            self?.applyMeshFriendPresenceSnapshot(await presence.snapshot())
+        }
+    }
+
+    private func updateMeshFriendCreatorInvite(
+        _ invite: ClipLiveShareServerRoomV4Invite?,
+        roleToken: UUID
+    ) {
+        guard serverMeshRoleToken == roleToken,
+              let presence = meshFriendPresenceController else { return }
+        Task { @MainActor [weak self] in
+            await presence.updateCurrentInvite(invite)
+            await presence.synchronizeNow()
+            self?.applyMeshFriendPresenceSnapshot(await presence.snapshot())
+        }
+    }
+
+    private func joinLiveShareFriend(_ friendID: String) {
+        guard !friendID.isEmpty,
+              let presence = meshFriendPresenceController else {
+            NSSound.beep()
+            return
+        }
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            let snapshot = await presence.snapshot()
+            applyMeshFriendPresenceSnapshot(snapshot)
+            guard let request = MenuBarFriendPresencePolicy
+                .verifiedJoinRequest(
+                    friendID: friendID,
+                    snapshot: snapshot
+                ) else {
+                // Presence may expire between rendering and clicking. Never
+                // fall back to an older invite or bypass friend approval.
                 NSSound.beep()
                 return
             }
-            Task { @MainActor [weak self] in
-                do {
-                    try await session.provideAccessWord(accessWord)
-                } catch {
-                    self?.presentError(
-                        title: String(
-                            localized: "Couldn’t Submit Access Word"
-                        ),
-                        error: error
-                    )
-                }
-            }
-            return
+            joinServerCoordinatedMeshRoom(request)
         }
-        beginNativeV3RoomConnection(joinRequest: request)
     }
 
-    /// Create and Join both enter the same direct-v3 connection owner. There
-    /// is no host/viewer negotiation, legacy invitation fallback, or role
-    /// handoff in this production path.
-    private func beginNativeV3RoomConnection(
-        joinRequest: MenuBarNativeV3JoinRequest?
+    func removeLiveShareFriend(_ friendID: String) {
+        guard !friendID.isEmpty,
+              let repository = meshFriendshipRepository,
+              let presence = meshFriendPresenceController else {
+            NSSound.beep()
+            return
+        }
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            let snapshot = await presence.snapshot()
+            guard let friend = snapshot.friends.first(where: {
+                $0.id == friendID
+            }) else {
+                NSSound.beep()
+                return
+            }
+            do {
+                try await repository.removeFriend(identity: friend.identity)
+                await presence.synchronizeNow()
+                applyMeshFriendPresenceSnapshot(await presence.snapshot())
+            } catch {
+                ClipLog.lifecycle.error(
+                    "Could not remove a saved Live Share friend: \(error.localizedDescription, privacy: .public)"
+                )
+                NSSound.beep()
+            }
+        }
+    }
+
+    // MARK: - Server-coordinated participant mesh
+
+    private func createServerCoordinatedMeshRoom() {
+        beginServerCoordinatedMeshRoom(joinRequest: nil)
+    }
+
+    private func joinServerCoordinatedMeshRoom(
+        _ request: MenuBarServerRoomJoinRequest
+    ) {
+        beginServerCoordinatedMeshRoom(joinRequest: request)
+    }
+
+    /// Creator and joiner use one production path. The service supplies only
+    /// the opaque authoritative roster and encrypted pair-message routing;
+    /// identity, admission details, signaling, source metadata and media stay
+    /// end-to-end protected by the client-only invite fragment.
+    private func beginServerCoordinatedMeshRoom(
+        joinRequest: MenuBarServerRoomJoinRequest?
     ) {
         guard !isStartingLiveShare,
               !isPreparingCapture,
@@ -1019,175 +1567,297 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
         }
 
         isStartingLiveShare = true
+        pendingServerMeshAccessWordRequest = nil
         let attemptToken = UUID()
-        meshParticipantRoomAttemptToken = attemptToken
+        serverMeshAttemptToken = attemptToken
+        let initialSettings = dependencies.liveSharePreferences.settings
+        if let invite = joinRequest?.invite {
+            menuBarModel.setLiveShareConnectionStatus(
+                .joining(roomName: Self.serverMeshRoomName(invite.roomCode))
+            )
+        } else {
+            menuBarModel.setLiveShareConnectionStatus(.creating)
+        }
         updateLiveShareStatusIcon(.ready)
-        meshParticipantRoomStartTask = Task { @MainActor [weak self] in
+
+        serverMeshStartTask = Task { @MainActor [weak self] in
             guard let self else { return }
             defer {
-                if meshParticipantRoomAttemptToken == attemptToken {
-                    meshParticipantRoomStartTask = nil
+                if serverMeshAttemptToken == attemptToken {
+                    serverMeshStartTask = nil
                     isStartingLiveShare = false
                 }
             }
-
             do {
-                let endpoint = joinRequest?.invite.endpoint
-                    ?? dependencies.liveSharePreferences
-                    .serverEndpoint.rootURL
-                let webRTCConfiguration =
-                    try await Self.nativeV3WebRTCConfiguration(
-                        endpoint: endpoint
-                    )
-                let identity = try await dependencies.liveShareIdentity
-                    .loadOrCreate()
+                let friendServices = try await
+                    configureMeshFriendServicesIfNeeded()
+                let identity = friendServices.identity
+                let friendshipRepository = friendServices.repository
                 try Task.checkCancellation()
-                guard meshParticipantRoomAttemptToken == attemptToken,
+                guard serverMeshAttemptToken == attemptToken,
                       !isPreparingForTermination else {
                     throw CancellationError()
                 }
-                let participant = try Self.makeNativeV3Participant(
-                    identity: identity
+
+                let participantID = ClipLiveShareNativeV3ParticipantID.random()
+                let pairIdentity =
+                    ClipLiveShareServerRoomV4KeyAgreementIdentity()
+                let names = Self.serverMeshParticipantNames()
+                let descriptor = try ClipLiveShareServerRoomV4MemberDescriptor(
+                    participantID: participantID,
+                    identity: identity.publicKey,
+                    pairSignalingPublicKey: pairIdentity.publicKey,
+                    displayName: names.displayName,
+                    deviceName: names.deviceName
                 )
-                let session: MeshParticipantRoomConnectionSession
+
+                let accessWord: String?
+                let askBeforeJoining: Bool
+                let bootstrap: ServerCoordinatedMeshRoomSessionBootstrap
                 if let joinRequest {
-                    session = try .candidate(
-                        invite: joinRequest.invite,
-                        participant: participant,
-                        signer: identity.signer,
-                        accessWord: joinRequest.accessWord,
-                        webRTCConfiguration: webRTCConfiguration
-                    )
-                    meshParticipantLocalPresentation =
-                        Self.initialMeshPresentation(
+                    accessWord = nil
+                    askBeforeJoining = false
+                    let candidate = try ClipLiveShareServerRoomV4ClientRoom
+                        .makeCandidate(
                             invite: joinRequest.invite,
-                            isLocalLeader: false
+                            pairKeyIdentity: pairIdentity,
+                            localDescriptor: descriptor,
+                            signer: identity.signer,
+                            accessWord: joinRequest.accessWord,
+                            requiresCreatorApproval:
+                                joinRequest.requiresCreatorApproval
                         )
-                    meshParticipantPendingJoinInvite = joinRequest.invite
-                } else {
-                    let initialAccessWord =
-                        try Self.initialMeshAccessWord(
-                            for:
-                                dependencies.liveSharePreferences
-                                    .settings,
-                            generator: {
-                                try LiveShareAccessCode.generate()
-                            }
-                        )
-                    session = try .creator(
-                        endpoint: dependencies.liveSharePreferences
-                            .serverEndpoint.rootURL,
-                        sessionID: .random(),
-                        participant: participant,
-                        signer: identity.signer,
-                        requiredAccessWord: initialAccessWord,
-                        webRTCConfiguration: webRTCConfiguration
+                    bootstrap = .init(
+                        candidate,
+                        invite: joinRequest.invite
                     )
-                    meshParticipantLocalPresentation =
-                        Self.initialMeshPresentation(
-                            invite: nil,
-                            isLocalLeader: true,
-                            accessWord: initialAccessWord
+                } else {
+                    accessWord = try Self.initialMeshAccessWord(
+                        for: initialSettings,
+                        generator: { try LiveShareAccessCode.generate() }
+                    )
+                    askBeforeJoining = Self.initialMeshAskBeforeJoining(
+                        for: initialSettings,
+                        joiningRoom: false
+                    )
+                    let admissionPolicy = try Self.serverMeshAdmissionPolicy(
+                        accessWord: accessWord,
+                        askBeforeJoining: askBeforeJoining
+                    )
+                    let creator = try ClipLiveShareServerRoomV4ClientRoom
+                        .makeCreator(
+                            serviceEndpoint: dependencies.liveSharePreferences
+                                .serverEndpoint.rootURL,
+                            roomID: .random(),
+                            memberHandle: .random(),
+                            sessionID: .random(),
+                            ownerCapability: .random(),
+                            roomAgreementSecret: .random(),
+                            admissionCapability: .random(),
+                            pairKeyIdentity: pairIdentity,
+                            localDescriptor: descriptor,
+                            signer: identity.signer,
+                            admissionPolicy: admissionPolicy
                         )
-                    meshParticipantPendingJoinInvite = nil
+                    bootstrap = .init(creator)
                 }
 
-                try Task.checkCancellation()
-                guard meshParticipantRoomAttemptToken == attemptToken,
-                      meshParticipantRoomSession == nil,
-                      meshParticipantCoordinator == nil,
-                      !isPreparingForTermination else {
-                    await session.close()
-                    throw CancellationError()
-                }
+                let relay =
+                    ServerCoordinatedMeshParticipantCallbackRelay()
+                let mediaBridge = ServerCoordinatedMeshLocalMediaBridge(
+                    localParticipantID: participantID,
+                    initialSettings: initialSettings,
+                    persistSettings: { [weak self] settings in
+                        self?.dependencies.liveSharePreferences
+                            .replaceSettings(with: settings)
+                    },
+                    callbackRelay: relay
+                )
+                let roomSession = ServerCoordinatedMeshRoomSession(
+                    bootstrap: bootstrap,
+                    mediaFactory: {
+                        [mediaBridge, participantID]
+                        capabilities, sendPairSignal in
+                        var peerConfiguration =
+                            MeshParticipantMediaSettingsPolicy
+                                .peerConfiguration(
+                                    .clipDefault,
+                                    settings: initialSettings
+                                )
+                        peerConfiguration.iceServers =
+                            capabilities.webRTCICEServers
+                        let factory = try
+                            ClipLiveShareNativeV3WebRTCTransportFactory(
+                                configuration: .init(
+                                    peer: peerConfiguration
+                                )
+                            )
+                        let manager =
+                            ClipLiveShareNativeV3MeshPeerLinkManager(
+                                localParticipantID: participantID,
+                                transportFactory: factory
+                            )
+                        let reconciler = ClipLiveShareServerMeshPeerReconciler(
+                            localParticipantID: participantID,
+                            peerLinkManager: manager
+                        )
+                        let links = ServerCoordinatedMeshMediaLinkAdapter(
+                            manager: manager,
+                            reconciler: reconciler
+                        )
+                        let runtime = ServerCoordinatedMeshMediaRuntime(
+                            links: links,
+                            sendPairSignal: sendPairSignal
+                        )
+                        try await mediaBridge.install(mediaFactory: factory)
+                        return ServerCoordinatedMeshMediaClient(runtime)
+                    }
+                )
+                mediaBridge.bind(to: roomSession)
 
-                meshParticipantRoomSession = session
-                let events = await session.events()
-                meshParticipantRoomEventTask =
-                    Task { @MainActor [weak self] in
-                        for await event in events {
-                            guard !Task.isCancelled, let self else {
+                let roleToken = UUID()
+                let coordinator =
+                    ServerCoordinatedMeshParticipantCoordinator(
+                        localParticipantID: participantID,
+                        localIdentity: identity.publicKey.x963Representation,
+                        localDisplayName: names.displayName,
+                        localDeviceName: names.deviceName,
+                        session: .init(roomSession),
+                        localMedia: mediaBridge.client(),
+                        initialSettings: initialSettings,
+                        friendshipDependencies: .init(
+                            signer: identity.signer,
+                            repository: friendshipRepository,
+                            presenceServiceEndpoint:
+                                dependencies.liveSharePreferences
+                                    .serverEndpoint
+                        ),
+                        accessWord: accessWord,
+                        askBeforeJoining: askBeforeJoining,
+                        persistAdmissionPreferences: {
+                            [weak self] accessCodeEnabled, askBeforeJoining in
+                            self?.dependencies.liveSharePreferences
+                                .updateSettings {
+                                    $0.accessCodeEnabled = accessCodeEnabled
+                                    $0.askBeforeJoining = askBeforeJoining
+                                }
+                        },
+                        onSessionEnded: { [weak self] in
+                            self?.serverMeshParticipantDidEnd(
+                                roleToken: roleToken
+                            )
+                        },
+                        onCreatorInviteChanged: { [weak self] invite in
+                            self?.updateMeshFriendCreatorInvite(
+                                invite,
+                                roleToken: roleToken
+                            )
+                        },
+                        onFriendshipsChanged: { [weak self] in
+                            guard self?.serverMeshRoleToken == roleToken else {
                                 return
                             }
-                            await self.handleMeshRoomConnectionEvent(
-                                event,
-                                from: session
+                            self?.synchronizeMeshFriendPresence()
+                        },
+                        onRoomPhaseChanged: { [weak self] phase in
+                            self?.serverMeshJoinPhaseDidChange(
+                                phase,
+                                joinRequest: joinRequest,
+                                roleToken: roleToken
                             )
+                        },
+                        onAccessWordRequired: { [weak self] in
+                            guard let self,
+                                  serverMeshRoleToken == roleToken,
+                                  let joinRequest else { return }
+                            pendingServerMeshAccessWordRequest = joinRequest
+                        },
+                        onMenuBarStatusChanged: { [weak self] status in
+                            guard let self else { return }
+                            updateLiveShareStatusIcon(
+                                status,
+                                roleToken: roleToken
+                            )
+                            if status == .admissionRequest {
+                                presentPendingMeshAdmission()
+                            }
                         }
+                    )
+                relay.owner = coordinator
+
+                try Task.checkCancellation()
+                guard serverMeshAttemptToken == attemptToken,
+                      serverMeshRoomSession == nil,
+                      serverMeshCoordinator == nil,
+                      !isPreparingForTermination else {
+                    await coordinator.close()
+                    throw CancellationError()
+                }
+
+                serverMeshRoleToken = roleToken
+                serverMeshRoomSession = roomSession
+                serverMeshCoordinator = coordinator
+                if joinRequest != nil {
+                    installIdlePopover()
+                } else {
+                    menuBarModel.setLiveShareConnectionStatus(.idle)
+                    installMeshParticipantPopover(
+                        model: coordinator.presentationModel
+                    )
+                }
+                updateLiveShareStatusIcon(.ready)
+                coordinator.start()
+                if usesMeshAcceptanceWindow {
+                    presentMeshAcceptancePopoverIfNeeded()
+                } else if let button = statusItem?.button {
+                    if !popover.isShown {
+                        popover.show(
+                            relativeTo: button.bounds,
+                            of: button,
+                            preferredEdge: .minY
+                        )
                     }
-                try await session.start()
+                    popover.contentViewController?.view.window?.makeKey()
+                }
             } catch is CancellationError {
                 return
             } catch {
-                guard meshParticipantRoomAttemptToken == attemptToken else {
-                    return
-                }
-                failMeshRoomConnection(
-                    error.localizedDescription,
-                    session: meshParticipantRoomSession
-                )
+                guard serverMeshAttemptToken == attemptToken else { return }
+                failServerCoordinatedMeshStart(error)
             }
         }
     }
 
-    private static func nativeV3WebRTCConfiguration(
-        endpoint: URL
-    ) async throws -> ClipLiveShareNativeV3WebRTCConfiguration {
-        let capabilities: ClipNativeRendezvousCapabilities
-        do {
-            capabilities = try await ClipNativeRendezvousHTTPClient()
-                .discover(at: endpoint)
-        } catch {
-            throw MeshParticipantApplicationActivationError
-                .connectionFailed(
-                    String(
-                        localized:
-                            "Clip couldn’t load this room server’s native connection settings. \(error.localizedDescription)"
-                    )
-                )
+    private static func serverMeshAdmissionPolicy(
+        accessWord: String?,
+        askBeforeJoining: Bool
+    ) throws -> ClipLiveShareServerRoomV4AdmissionPolicy {
+        if let accessWord {
+            return try .requiringAccessWord(
+                accessWord,
+                askBeforeJoining: askBeforeJoining
+            )
         }
-
-        var peerConfiguration = WebRTCPeerConfiguration.clipDefault
-        peerConfiguration.iceServers = capabilities.webRTCICEServers
-        return ClipLiveShareNativeV3WebRTCConfiguration(
-            peer: peerConfiguration
-        )
+        return .open(askBeforeJoining: askBeforeJoining)
     }
 
-    private static func makeNativeV3Participant(
-        identity: NativeDeviceIdentity
-    ) throws -> ClipLiveShareNativeV3Participant {
+    private static func serverMeshParticipantNames() -> (
+        displayName: String,
+        deviceName: String
+    ) {
         let hostName = Host.current().localizedName?
             .trimmingCharacters(in: .whitespacesAndNewlines)
-        let displayName = hostName.flatMap {
-            $0.isEmpty ? nil : $0
-        } ?? String(localized: "This Mac")
-        return try .init(
-            participantID: .random(),
-            identity: identity.publicKey,
-            displayName: displayName,
-            capabilities: .current
-        )
+        let name = hostName.flatMap { $0.isEmpty ? nil : $0 }
+            ?? String(localized: "This Mac")
+        return (name, name)
     }
 
-    private static func initialMeshPresentation(
-        invite: ClipLiveShareNativeV3Invite?,
-        isLocalLeader: Bool,
-        accessWord: String? = nil
-    ) -> MeshParticipantLocalPresentationState {
-        var state = MeshParticipantLocalPresentationState(
-            roomName: meshRoomName(invite: invite),
-            invite: invite.flatMap(meshInviteSnapshot)
-        )
-        state.accessWordEnabled = isLocalLeader && accessWord != nil
-        state.accessWord = isLocalLeader ? accessWord : nil
-        state.canChangeAccessWord = isLocalLeader
-        return state
+    private static func serverMeshRoomName(
+        _ roomCode: ClipLiveShareServerRoomV4RoomCode
+    ) -> String {
+        String(localized: "Room \(roomCode.rawValue)")
     }
 
-    /// Resolves the persisted default before the owner route is created so
-    /// its signed room descriptor and the first popover frame agree about
-    /// whether an Access Word is required.
     static func initialMeshAccessWord(
         for settings: LiveShareSettings,
         generator: () throws -> String
@@ -1196,554 +1866,92 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
         return try generator()
     }
 
-    /// Native-v3 room presentation is derived only from the shared invitation,
-    /// so every participant displays the same name without consulting the
-    /// deleted legacy room-name service or inventing a local machine name.
-    private static func meshRoomName(
-        invite: ClipLiveShareNativeV3Invite?
-    ) -> String {
-        guard let invite else {
-            return String(localized: "Live Share")
-        }
-        let roomCode = String(
-            invite.rendezvousID.rawValue.prefix(8)
-        ).uppercased()
-        return String(localized: "Room \(roomCode)")
+    static func initialMeshAskBeforeJoining(
+        for settings: LiveShareSettings,
+        joiningRoom: Bool
+    ) -> Bool {
+        joiningRoom ? false : settings.askBeforeJoining
     }
 
-    private static func meshInviteSnapshot(
-        _ invite: ClipLiveShareNativeV3Invite
-    ) -> MeshRoomInviteSnapshot? {
-        guard let url = try? invite.url else { return nil }
-        return MeshRoomInviteSnapshot(
-            url: url,
-            roomCode: String(
-                invite.rendezvousID.rawValue.prefix(8)
-            ).uppercased()
+    private func serverMeshJoinPhaseDidChange(
+        _ phase: ServerCoordinatedMeshRoomSessionPhase,
+        joinRequest: MenuBarServerRoomJoinRequest?,
+        roleToken: UUID
+    ) {
+        guard serverMeshRoleToken == roleToken,
+              let joinRequest else { return }
+        let transition = ServerMeshJoinPresentationPolicy.transition(
+            for: phase,
+            roomName: Self.serverMeshRoomName(joinRequest.invite.roomCode)
         )
-    }
-
-    private func handleMeshRoomConnectionEvent(
-        _ event: MeshParticipantRoomConnectionEvent,
-        from session: MeshParticipantRoomConnectionSession
-    ) async {
-        guard meshParticipantRoomSession === session,
-              !isPreparingForTermination else { return }
-
-        switch event {
-        case let .phaseChanged(phase):
-            switch phase {
-            case .joining, .publishingInvite, .awaitingApproval,
-                 .preparingPeerLinks:
-                updateLiveShareStatusIcon(.ready)
-            case .active:
-                updateLiveShareStatusIcon(.ready)
-            case .accessWordRequired:
-                // Keep the authenticated rendezvous route alive. The existing
-                // Join fields remain visible, and submitting the same invite
-                // with a word resumes this exact direct-v3 transaction through
-                // `provideAccessWord(_:)`.
-                updateLiveShareStatusIcon(.ready)
-            case .rejected, .timedOut, .failed, .closed, .idle:
-                break
-            }
-
-        case let .inviteChanged(invite):
-            let snapshot = invite.flatMap(Self.meshInviteSnapshot)
-            let roomName = MeshRoomIdentityPolicy.roomName(
-                current: meshParticipantLocalPresentation.roomName,
-                inviteDerivedName: Self.meshRoomName(invite: invite),
-                roomIsActive: meshParticipantCoordinator != nil
+        switch transition {
+        case let .awaitingApproval(roomName):
+            menuBarModel.setLiveShareConnectionStatus(
+                .awaitingApproval(roomName: roomName)
             )
-            meshParticipantLocalPresentation.roomName = roomName
-            meshParticipantLocalPresentation.invite = snapshot
-            meshParticipantCoordinator?.updateRoomName(roomName)
-            meshParticipantCoordinator?.updateRoomInvite(snapshot)
-
-        case .accessWordRequirementChanged:
+            installIdlePopover()
+        case .showActiveRoom:
+            menuBarModel.setLiveShareConnectionStatus(.idle)
+            if let serverMeshCoordinator {
+                installMeshParticipantPopover(
+                    model: serverMeshCoordinator.presentationModel
+                )
+            }
+        case .unchanged:
             break
-
-        case let .admissionRequested(participant):
-            let admission = MeshRoomPendingAdmissionSnapshot(
-                id: participant.participantID.rawValue,
-                displayName: participant.displayName,
-                deviceName: nil
-            )
-            meshParticipantLocalPresentation.pendingAdmissions = [
-                admission
-            ]
-            meshParticipantCoordinator?.updatePendingAdmissions([
-                admission
-            ])
-
-        case let .activationReady(roomActivation):
-            guard meshParticipantCoordinator == nil,
-                  let media = roomActivation.media else {
-                failMeshRoomConnection(
-                    String(
-                        localized:
-                            "Clip couldn’t prepare the native-v3 media connection."
-                    ),
-                    session: session
-                )
-                return
-            }
-            let isLeader =
-                roomActivation.context.signedMembership.snapshot
-                    .leaderParticipantID
-                    == roomActivation.context.localParticipantID
-            meshParticipantLocalPresentation.canChangeAccessWord = isLeader
-            do {
-                try activateMeshParticipant(
-                    MeshParticipantApplicationActivation(
-                        context: roomActivation.context,
-                        bootstrap: roomActivation.bootstrap,
-                        mediaFactory: media.factory,
-                        peerLinkManager: media.peerLinkManager,
-                        localPresentation:
-                            meshParticipantLocalPresentation,
-                        actions: makeMeshParticipantActions(
-                            session: session
-                        )
-                    )
-                )
-                meshParticipantRoomStartTask = nil
-                meshParticipantRoomAttemptToken = nil
-                meshParticipantPendingJoinInvite = nil
-                isStartingLiveShare = false
-            } catch {
-                failMeshRoomConnection(
-                    error.localizedDescription,
-                    session: session
-                )
-            }
-
-        case let .membershipUpdateReady(context):
-            meshParticipantLocalPresentation.pendingAdmissions = []
-            meshParticipantCoordinator?.updatePendingAdmissions([])
-            meshParticipantCoordinator?.commitMembership(
-                context.signedMembership,
-                authorityChain: context.authorityChain,
-                verifiedNonces: context.verifiedPeerTransportNonces,
-                bootstrapAdmissionDigests:
-                    context.bootstrapAdmissionDigests
-            )
-
-        case let .admissionFailed(message):
-            meshParticipantLocalPresentation.pendingAdmissions = []
-            meshParticipantCoordinator?.updatePendingAdmissions([])
-            ClipLog.lifecycle.error(
-                "Native-v3 admission failed while the room stayed active: \(message, privacy: .private)"
-            )
-
-        case let .inviteRefreshFailed(message):
-            ClipLog.lifecycle.error(
-                "Native-v3 invite refresh failed: \(message, privacy: .private)"
-            )
-            if meshParticipantCoordinator != nil {
-                presentError(
-                    title: String(
-                        localized: "Couldn’t Refresh Room Invitation"
-                    ),
-                    error: MeshParticipantApplicationActivationError
-                        .connectionFailed(message)
-                )
-            }
-
-        case let .rejected(reason):
-            meshParticipantLocalPresentation.pendingAdmissions = []
-            meshParticipantCoordinator?.updatePendingAdmissions([])
-            if meshParticipantCoordinator == nil {
-                failMeshRoomConnection(
-                    String(
-                        localized:
-                            "The room rejected this join request (\(reason.rawValue))."
-                    ),
-                    session: session
-                )
-            }
-
-        case let .failed(message):
-            meshParticipantLocalPresentation.pendingAdmissions = []
-            meshParticipantCoordinator?.updatePendingAdmissions([])
-            if meshParticipantCoordinator == nil {
-                failMeshRoomConnection(message, session: session)
-            } else {
-                ClipLog.lifecycle.error(
-                    "Native-v3 admission failed while the room stayed active: \(message, privacy: .private)"
-                )
-            }
-
-        case .closed:
-            if meshParticipantCoordinator == nil {
-                finishMeshRoomConnection(session: session)
-            }
         }
     }
 
-    private func makeMeshParticipantActions(
-        session: MeshParticipantRoomConnectionSession
-    ) -> MeshParticipantCoordinatorActions {
-        MeshParticipantCoordinatorActions(
-            setAccessWordEnabled: { [weak self] enabled in
-                self?.setMeshAccessWordEnabled(
-                    enabled,
-                    session: session
-                )
-            },
-            replaceAccessWord: { [weak self] in
-                self?.replaceMeshAccessWord(session: session)
-            },
-            requestNewInvite: { [weak self] in
-                self?.refreshMeshInvite(session: session)
-            },
-            approveAdmission: { [weak self] rawParticipantID in
-                self?.approveMeshAdmission(
-                    rawParticipantID,
-                    session: session
-                )
-            },
-            denyAdmission: { [weak self] rawParticipantID in
-                self?.denyMeshAdmission(
-                    rawParticipantID,
-                    session: session
-                )
-            },
-            committedContextChanged: {
-                [weak self] context, availability, refresh in
-                await self?.applyMeshCommittedContext(
-                    context,
-                    availability: availability,
-                    refreshInviteIfLocalLeader: refresh,
-                    session: session
-                )
-            },
-            receiveBootstrapForward: { forward, participantID in
-                try await session.receiveBootstrapForward(
-                    forward,
-                    from: participantID
-                )
-            },
-            receiveBootstrapMembership: { membership, participantID in
-                try await session.receiveCommittedMembership(
-                    membership,
-                    from: participantID
-                )
-            }
+    private func failServerCoordinatedMeshStart(_ error: any Error) {
+        isStartingLiveShare = false
+        serverMeshStartTask = nil
+        serverMeshAttemptToken = nil
+        let session = serverMeshRoomSession
+        serverMeshRoomSession = nil
+        serverMeshCoordinator = nil
+        serverMeshRoleToken = nil
+        pendingServerMeshAccessWordRequest = nil
+        menuBarModel.setLiveShareConnectionStatus(.idle)
+        installIdlePopover()
+        updateStatusIcon(
+            symbol: "record.circle",
+            description: String(localized: "Clip")
         )
-    }
-
-    private func refreshMeshInvite(
-        session: MeshParticipantRoomConnectionSession
-    ) {
-        guard meshParticipantRoomSession === session else { return }
-        Task { @MainActor [weak self] in
-            do {
-                try await session.refreshInvite()
-            } catch {
-                self?.presentError(
-                    title: String(
-                        localized: "Couldn’t Create a New Invitation"
-                    ),
-                    error: error
-                )
-            }
-        }
-    }
-
-    private func setMeshAccessWordEnabled(
-        _ enabled: Bool,
-        session: MeshParticipantRoomConnectionSession
-    ) {
-        guard enabled else {
-            updateMeshAccessWord(nil, session: session)
-            return
-        }
-        do {
-            updateMeshAccessWord(
-                try LiveShareAccessCode.generate(),
-                session: session
-            )
-        } catch {
-            presentError(
-                title: String(localized: "Couldn’t Update Access Word"),
-                error: MeshParticipantApplicationActivationError
-                    .accessWordGenerationFailed
-            )
-        }
-    }
-
-    private func replaceMeshAccessWord(
-        session: MeshParticipantRoomConnectionSession
-    ) {
-        guard let value = try? LiveShareAccessCode.generate() else {
-            presentError(
-                title: String(localized: "Couldn’t Update Access Word"),
-                error: MeshParticipantApplicationActivationError
-                    .accessWordGenerationFailed
-            )
-            return
-        }
-        updateMeshAccessWord(value, session: session)
-    }
-
-    private func updateMeshAccessWord(
-        _ value: String?,
-        session: MeshParticipantRoomConnectionSession
-    ) {
-        guard meshParticipantRoomSession === session else { return }
-        let previousEnabled =
-            meshParticipantLocalPresentation.accessWordEnabled
-        let previousValue = meshParticipantLocalPresentation.accessWord
-        Task { @MainActor [weak self] in
-            guard let self,
-                  meshParticipantRoomSession === session else { return }
-            do {
-                try await session.updateRequiredAccessWord(value)
-                meshParticipantLocalPresentation.accessWordEnabled =
-                    value != nil
-                meshParticipantLocalPresentation.accessWord = value
-                meshParticipantCoordinator?
-                    .updateAccessWordPresentation(
-                        enabled: value != nil,
-                        value: value,
-                        canChange: true
-                    )
-            } catch {
-                meshParticipantLocalPresentation.accessWordEnabled =
-                    previousEnabled
-                meshParticipantLocalPresentation.accessWord =
-                    previousValue
-                meshParticipantCoordinator?
-                    .updateAccessWordPresentation(
-                        enabled: previousEnabled,
-                        value: previousValue,
-                        canChange: true
-                    )
-                presentError(
-                    title: String(
-                        localized: "Couldn’t Update Access Word"
-                    ),
-                    error: error
-                )
-            }
-        }
-    }
-
-    private func approveMeshAdmission(
-        _ rawParticipantID: String,
-        session: MeshParticipantRoomConnectionSession
-    ) {
-        guard let participantID =
-            try? ClipLiveShareNativeV3ParticipantID(
-                rawValue: rawParticipantID
-            )
-        else { return }
-        Task { @MainActor [weak self] in
-            do {
-                try await session.approveAdmission(participantID)
-            } catch {
-                self?.presentError(
-                    title: String(
-                        localized: "Couldn’t Approve Participant"
-                    ),
-                    error: error
-                )
-            }
-        }
-    }
-
-    private func denyMeshAdmission(
-        _ rawParticipantID: String,
-        session: MeshParticipantRoomConnectionSession
-    ) {
-        guard let participantID =
-            try? ClipLiveShareNativeV3ParticipantID(
-                rawValue: rawParticipantID
-            )
-        else { return }
-        Task { @MainActor [weak self] in
-            do {
-                try await session.denyAdmission(participantID)
-            } catch {
-                self?.presentError(
-                    title: String(
-                        localized: "Couldn’t Deny Participant"
-                    ),
-                    error: error
-                )
-            }
-        }
-    }
-
-    private func applyMeshCommittedContext(
-        _ context: MeshParticipantBootstrapLaunchContext,
-        availability: MeshParticipantBootstrapRoomAvailability,
-        refreshInviteIfLocalLeader: Bool,
-        session: MeshParticipantRoomConnectionSession
-    ) async {
-        guard meshParticipantRoomSession === session else { return }
-        let isLocalLeader =
-            context.signedMembership.snapshot.leaderParticipantID
-                == context.localParticipantID
-        let canManageRoom =
-            isLocalLeader && availability == .active
-        if !canManageRoom {
-            meshParticipantLocalPresentation.accessWordEnabled = false
-            meshParticipantLocalPresentation.accessWord = nil
-        }
-        meshParticipantLocalPresentation.canChangeAccessWord =
-            canManageRoom
-        meshParticipantCoordinator?.updateAccessWordPresentation(
-            enabled:
-                meshParticipantLocalPresentation.accessWordEnabled,
-            value: meshParticipantLocalPresentation.accessWord,
-            canChange: canManageRoom
-        )
-        do {
-            try await session.applyCommittedContext(
-                context,
-                availability: availability,
-                refreshInviteIfLocalLeader:
-                    refreshInviteIfLocalLeader
-            )
-        } catch {
-            presentError(
-                title: String(
-                    localized: "Couldn’t Refresh Room Invitation"
-                ),
-                error: error
-            )
-        }
-    }
-
-    private func failMeshRoomConnection(
-        _ message: String,
-        session: MeshParticipantRoomConnectionSession?
-    ) {
-        guard let session else {
-            isStartingLiveShare = false
-            meshParticipantRoomStartTask = nil
-            meshParticipantRoomAttemptToken = nil
-            updateStatusIcon(
-                symbol: "record.circle",
-                description: String(localized: "Clip")
-            )
-            presentError(
-                title: String(localized: "Couldn’t Join Live Share"),
-                error: MeshParticipantApplicationActivationError
-                    .connectionFailed(message)
-            )
-            return
-        }
-        guard meshParticipantRoomSession === session else { return }
-        finishMeshRoomConnection(session: session)
+        if let session { Task { await session.close() } }
         presentError(
             title: String(localized: "Couldn’t Join Live Share"),
-            error: MeshParticipantApplicationActivationError
-                .connectionFailed(message)
+            error: error
         )
     }
 
-    private func finishMeshRoomConnection(
-        session: MeshParticipantRoomConnectionSession
-    ) {
-        guard meshParticipantRoomSession === session else { return }
-        meshParticipantRoomEventTask?.cancel()
-        meshParticipantRoomEventTask = nil
-        meshParticipantRoomStartTask?.cancel()
-        meshParticipantRoomStartTask = nil
-        meshParticipantRoomAttemptToken = nil
-        meshParticipantPendingJoinInvite = nil
-        meshParticipantRoomSession = nil
+    private func serverMeshParticipantDidEnd(roleToken: UUID) {
+        guard !isPreparingForTermination,
+              serverMeshRoleToken == roleToken else { return }
+        updateMeshFriendCreatorInvite(nil, roleToken: roleToken)
+        let accessWordRequest = pendingServerMeshAccessWordRequest
+        pendingServerMeshAccessWordRequest = nil
+        let session = serverMeshRoomSession
+        serverMeshStartTask?.cancel()
+        serverMeshStartTask = nil
+        serverMeshAttemptToken = nil
+        serverMeshRoomSession = nil
+        serverMeshCoordinator = nil
+        serverMeshRoleToken = nil
         isStartingLiveShare = false
-        meshParticipantLocalPresentation = .init()
-        if meshParticipantCoordinator == nil {
-            meshParticipantRoleToken = nil
-            installIdlePopover()
-            updateStatusIcon(
-                symbol: "record.circle",
-                description: String(localized: "Clip")
+        if let accessWordRequest {
+            menuBarModel.setLiveShareConnectionStatus(
+                .accessWordRequired(
+                    roomName: Self.serverMeshRoomName(
+                        accessWordRequest.invite.roomCode
+                    ),
+                    invite: accessWordRequest.invite,
+                    requiresCreatorApproval:
+                        accessWordRequest.requiresCreatorApproval
+                )
             )
+        } else {
+            menuBarModel.setLiveShareConnectionStatus(.idle)
         }
-        Task {
-            await session.close()
-        }
-    }
-
-    /// Installs the symmetric native-v3 participant after direct v3 room
-    /// creation or admission has produced an authenticated, fully linked
-    /// membership context. Creator and joiners enter this exact same path.
-    func activateMeshParticipant(
-        _ activation: MeshParticipantApplicationActivation
-    ) throws {
-        guard !isPreparingForTermination,
-              meshParticipantCoordinator == nil,
-              recordingPresentationModel == nil,
-              !isPreparingCapture else {
-            throw MeshParticipantApplicationActivationError.roleUnavailable
-        }
-
-        let roleToken = UUID()
-        let coordinator = try MeshParticipantCoordinator(
-            context: activation.context,
-            bootstrap: activation.bootstrap,
-            mediaFactory: activation.mediaFactory,
-            peerLinkManager: activation.peerLinkManager,
-            initialLocalSettings:
-                dependencies.liveSharePreferences.settings,
-            persistLocalSettings: { [weak self] settings in
-                self?.dependencies.liveSharePreferences.replaceSettings(
-                    with: settings
-                )
-            },
-            localPresentation: activation.localPresentation,
-            actions: activation.actions,
-            acceptanceReporter: nativeV3MeshAcceptanceReporter,
-            onSessionEnded: { [weak self] in
-                self?.meshParticipantDidEnd(roleToken: roleToken)
-            },
-            onMenuBarStatusChanged: { [weak self] status in
-                self?.updateLiveShareStatusIcon(
-                    status,
-                    roleToken: roleToken
-                )
-            }
-        )
-
-        meshParticipantRoleToken = roleToken
-        meshParticipantCoordinator = coordinator
-        installMeshParticipantPopover(model: coordinator.presentationModel)
-        updateLiveShareStatusIcon(.ready)
-        coordinator.start()
-        if let button = statusItem?.button {
-            if !popover.isShown {
-                popover.show(
-                    relativeTo: button.bounds,
-                    of: button,
-                    preferredEdge: .minY
-                )
-            }
-            popover.contentViewController?.view.window?.makeKey()
-        }
-    }
-
-    private func meshParticipantDidEnd(roleToken: UUID) {
-        guard !isPreparingForTermination,
-              meshParticipantRoleToken == roleToken,
-              meshParticipantCoordinator != nil else { return }
-        let roomSession = meshParticipantRoomSession
-        meshParticipantRoomEventTask?.cancel()
-        meshParticipantRoomEventTask = nil
-        meshParticipantRoomStartTask?.cancel()
-        meshParticipantRoomStartTask = nil
-        meshParticipantRoomAttemptToken = nil
-        meshParticipantPendingJoinInvite = nil
-        meshParticipantRoomSession = nil
-        meshParticipantCoordinator = nil
-        meshParticipantRoleToken = nil
-        meshParticipantLocalPresentation = .init()
-
         installIdlePopover()
         updateStatusIcon(
             symbol: "record.circle",
@@ -1752,12 +1960,9 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
         Task { @MainActor [weak self] in
             await self?.refreshMenuBarModel()
         }
-        if let roomSession {
-            Task {
-                await roomSession.close()
-            }
-        }
+        if let session { Task { await session.close() } }
     }
+
 
     private func recordPreparedDisplay(_ displayID: CGDirectDisplayID) {
         guard !hasActiveLiveShareRole,
@@ -3464,7 +3669,7 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
             historyDirectory: historyDirectory,
             storageActions: storageActions,
             applyLiveShareAdvancedSettings: { [weak self] codec, advanced in
-                self?.meshParticipantCoordinator?.presentationModel
+                self?.serverMeshCoordinator?.presentationModel
                     .setAdvancedVideoSettings(advanced, for: codec)
             }
         )
@@ -3758,8 +3963,25 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
         _ status: MeshParticipantMenuBarStatus,
         roleToken: UUID
     ) {
-        guard meshParticipantRoleToken == roleToken else { return }
+        guard serverMeshRoleToken == roleToken else { return }
         updateLiveShareStatusIcon(status)
+    }
+
+    private func presentPendingMeshAdmission() {
+        NSApp.requestUserAttention(.informationalRequest)
+        if usesMeshAcceptanceWindow {
+            presentMeshAcceptancePopoverIfNeeded()
+            return
+        }
+        guard let button = statusItem?.button else { return }
+        if !popover.isShown {
+            popover.show(
+                relativeTo: button.bounds,
+                of: button,
+                preferredEdge: .minY
+            )
+        }
+        popover.contentViewController?.view.window?.makeKey()
     }
 
     private func presentError(title: String, error: any Error) {

@@ -97,10 +97,9 @@ public struct ClipLiveShareNativeV3PeerLinkConfiguration: Equatable, Sendable {
   public let role: ClipLiveShareNativeV3PeerLinkRole
   public let controlChannel: ClipLiveShareNativeV3ControlChannelConfiguration
   public let mediaLayout: ClipLiveShareNativeV3PeerMediaLayout
-  /// False while a possession-verified pair is still quarantined behind a
-  /// provisional admission. SDP/ICE and the reliable control channel may be
-  /// established, but local audio/video cannot leave this participant until
-  /// the complete leader-signed membership is committed.
+  /// False while a server-room pair is still quarantined behind admission.
+  /// SDP/ICE and the reliable control channel may be established, but local
+  /// audio/video cannot leave until the authoritative roster admits the peer.
   public let outboundMediaInitiallyEnabled: Bool
 
   init(
@@ -291,6 +290,11 @@ public enum ClipLiveShareNativeV3PeerLinkTransportEvent: Equatable, Sendable {
   case remoteParticipantAudioRemoved(trackID: String)
   case routeChanged(WebRTCConnectionRoute)
   case statisticsChanged(ClipLiveShareNativeV3PeerLinkTransportStatistics)
+  /// One ICE-server candidate failed to gather. This is diagnostic only: a
+  /// peer can remain fully connected through host, peer-reflexive or another
+  /// relay candidate, so only the authoritative connection-state callback may
+  /// start recovery or quarantine this participant.
+  case iceGatheringDiagnostic(code: Int, url: String, message: String)
   case failed(String)
 }
 
@@ -303,12 +307,22 @@ public protocol ClipLiveShareNativeV3PeerLinkTransport: Sendable {
   func applyRemoteDescription(_ description: WebRTCSessionDescription) async throws
   func addRemoteICECandidate(_ candidate: WebRTCICECandidate) async throws
   func sendControlMessage(_ data: Data) async throws
+  /// Best-effort delivery for replaceable high-frequency state such as a
+  /// cursor sample. Backpressure or link loss drops this sample immediately;
+  /// callers must never queue it behind durable room state.
+  func sendEphemeralControlMessage(_ data: Data) async -> Bool
   func remoteVideoStream(
     for descriptor: ClipLiveShareStreamDescriptor
   ) async -> WebRTCRemoteVideoStream?
   func setOutboundMediaEnabled(_ enabled: Bool) async
   func updateSenderPolicy(_ policy: WebRTCSenderPolicy) async
+  func updateSenderPolicies(
+    _ policiesBySlot: [Int: WebRTCSenderPolicy],
+    fallback: WebRTCSenderPolicy,
+    videoEncodingMode: LiveShareEncodingMode
+  ) async
   func updateVideoCodecPreference(_ codec: WebRTCVideoCodec) async throws
+  func rollbackLocalOfferIfNeeded() async throws
   func setRemoteParticipantAudioPlaybackEnabled(_ enabled: Bool) async
   func setRemoteParticipantAudioVolume(_ volume: Double) async
   func restartICE() async throws
@@ -328,9 +342,32 @@ public extension ClipLiveShareNativeV3PeerLinkTransport {
     _ = policy
   }
 
+  func updateSenderPolicies(
+    _ policiesBySlot: [Int: WebRTCSenderPolicy],
+    fallback: WebRTCSenderPolicy,
+    videoEncodingMode: LiveShareEncodingMode
+  ) async {
+    _ = policiesBySlot
+    _ = videoEncodingMode
+    await updateSenderPolicy(fallback)
+  }
+
   func updateVideoCodecPreference(_ codec: WebRTCVideoCodec) async throws {
     _ = codec
   }
+
+  func sendEphemeralControlMessage(_ data: Data) async -> Bool {
+    do {
+      try await sendControlMessage(data)
+      return true
+    } catch {
+      return false
+    }
+  }
+
+  /// Cancels an in-flight local offer before a transactional codec
+  /// restoration. Stable transports have nothing to roll back.
+  func rollbackLocalOfferIfNeeded() async throws {}
 }
 
 /// Creates exactly one concrete transport for each canonical unordered
@@ -791,6 +828,23 @@ public actor ClipLiveShareNativeV3MeshPeerLinkManager {
     try await link.transport.sendControlMessage(data)
   }
 
+  /// Sends one replaceable sample without turning transient DataChannel
+  /// pressure into peer degradation. The next cursor sample supersedes this
+  /// one, so neither this manager nor the transport retains a retry queue.
+  @discardableResult
+  public func sendEphemeralControlMessage(
+    _ data: Data,
+    to remoteParticipantID: ClipLiveShareNativeV3ParticipantID
+  ) async -> Bool {
+    guard data.count <= maximumControlMessageBytes,
+      let link = try? activeLink(to: remoteParticipantID),
+      link.controlChannelState == .open
+    else {
+      return false
+    }
+    return await link.transport.sendEphemeralControlMessage(data)
+  }
+
   /// Resolves one source descriptor against only its owning participant's
   /// negotiated receiver tracks.
   public func remoteVideoStream(
@@ -835,6 +889,19 @@ public actor ClipLiveShareNativeV3MeshPeerLinkManager {
     }
   }
 
+  /// Compatibility seam for callers written during the server-mesh migration.
+  /// Networking must not divide or reshape the selected media preset, so the
+  /// complete fallback policy is applied unchanged to every current sender.
+  public func updateSenderPolicies(
+    _ policiesBySlot: [Int: WebRTCSenderPolicy],
+    fallback: WebRTCSenderPolicy,
+    videoEncodingMode: LiveShareEncodingMode
+  ) async {
+    _ = policiesBySlot
+    _ = videoEncodingMode
+    await updateSenderPolicy(fallback)
+  }
+
   public func updateVideoCodecPreference(
     _ codec: WebRTCVideoCodec,
     for remoteParticipantID: ClipLiveShareNativeV3ParticipantID,
@@ -847,6 +914,13 @@ public actor ClipLiveShareNativeV3MeshPeerLinkManager {
       try? await link.transport.updateVideoCodecPreference(previousCodec)
       throw error
     }
+  }
+
+  public func rollbackLocalOfferIfNeeded(
+    for remoteParticipantID: ClipLiveShareNativeV3ParticipantID
+  ) async throws {
+    let link = try activeLink(to: remoteParticipantID)
+    try await link.transport.rollbackLocalOfferIfNeeded()
   }
 
   public func setRemoteParticipantAudioVolume(
@@ -1004,16 +1078,20 @@ public actor ClipLiveShareNativeV3MeshPeerLinkManager {
 
     switch event {
     case let .localNegotiation(payload):
-      emit(
-        .targetedNegotiation(
-          .init(
-            peerLinkKey: peerLinkKey,
-            targetParticipantID: remoteParticipantID,
-            payload: payload
-          )
-        )
+      let targeted = ClipLiveShareNativeV3TargetedNegotiation(
+        peerLinkKey: peerLinkKey,
+        targetParticipantID: remoteParticipantID,
+        payload: payload
       )
+      emit(.targetedNegotiation(targeted))
     case .negotiationNeeded:
+      // Creating the answerer's fixed four-video/one-audio sender layout can
+      // make libwebrtc raise `negotiationNeeded` while the initial answer is
+      // still being installed. That media is already represented by the
+      // initial SDP. Forwarding the callback before the pair is ready races a
+      // redundant offer against the outstanding exchange and can corrupt the
+      // shared MID/RTCP-mux layout on a later join.
+      guard snapshot(for: link).isReady else { break }
       emit(
         .negotiationNeeded(
           peerLinkKey: peerLinkKey,
@@ -1095,6 +1173,12 @@ public actor ClipLiveShareNativeV3MeshPeerLinkManager {
           )
         )
       )
+    case .iceGatheringDiagnostic:
+      // A STUN/TURN candidate error is not a peer-link failure. In particular,
+      // public STUN servers can time out while a same-LAN host candidate keeps
+      // carrying media and control. The connection-state callback remains the
+      // single source of truth for reconnect scheduling.
+      break
     case let .failed(message):
       emit(
         .linkFailed(
@@ -1118,6 +1202,7 @@ public actor ClipLiveShareNativeV3MeshPeerLinkManager {
       !isClosed,
       var link = links[peerLinkKey],
       link.generation == generation,
+      link.configuration.role == .offerer,
       link.reconnectTask == nil
     else { return }
 
@@ -1167,6 +1252,7 @@ public actor ClipLiveShareNativeV3MeshPeerLinkManager {
       !isClosed,
       var link = links[peerLinkKey],
       link.generation == generation,
+      link.configuration.role == .offerer,
       link.reconnectAttempt == attempt
     else { return }
     link.reconnectTask = nil

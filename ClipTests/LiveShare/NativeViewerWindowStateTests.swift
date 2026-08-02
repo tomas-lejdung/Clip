@@ -129,6 +129,8 @@ struct NativeViewerWindowStateTests {
         _ = registry.reconcile([connected])
         let id = NativeViewerWindowID.source(instanceID: "one")
         _ = registry.setVisible(false, for: id)
+        registry.setScaleMode(.native, for: id)
+        registry.setFullScreen(true, for: id)
         let disconnected = NativeViewerSourceSnapshot(
             sourceInstanceID: connected.sourceInstanceID,
             streamID: connected.streamID,
@@ -146,10 +148,14 @@ struct NativeViewerWindowStateTests {
         #expect(registry.reconcile([connected]) == [.update(.init(
             id: id,
             source: connected,
-            isVisible: false
+            isVisible: false,
+            scaleMode: .native,
+            isFullScreen: true
         ))])
         #expect(registry.windows[id]?.source.isConnected == true)
         #expect(registry.windows[id]?.isVisible == false)
+        #expect(registry.windows[id]?.scaleMode == .native)
+        #expect(registry.windows[id]?.isFullScreen == true)
     }
 
     @Test("Cursor follows focus and clears the previously focused source")

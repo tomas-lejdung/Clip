@@ -186,21 +186,24 @@ struct SettingsPresentationTests {
         let recorder = SettingsProbeRecorder()
         let capabilities = try JSONSerialization.data(
             withJSONObject: [
-                "protocol": "clip-native-rendezvous",
-                "apiVersion": 3,
-                "messageVersion": 3,
-                "serverVersion": "test",
-                "rendezvousPathTemplate":
-                    "/api/native/v3/rendezvous/{rendezvous}",
-                "ownerWebSocketPathTemplate":
-                    "/api/native/v3/rendezvous/{rendezvous}/owner",
-                "candidateWebSocketPathTemplate":
-                    "/api/native/v3/rendezvous/{rendezvous}/candidate",
-                "maximumMessageBytes": 262_144,
-                "maximumDescriptorBytes": 16_384,
-                "maximumOpaquePayloadBytes": 196_000,
-                "maximumPendingRoutes": 8,
-                "maximumRendezvous": 1_024,
+                "protocol": "clip-native-room",
+                "apiVersion": 4,
+                "messageVersion": 4,
+                "serverVersion": "test-v4",
+                "roomPathTemplate": "/api/native/v4/rooms/{room}",
+                "roomWebSocketPathTemplate":
+                    "/api/native/v4/rooms/{room}/socket",
+                "maximumMessageBytes":
+                    ClipLiveShareServerRoomV4.maximumWireMessageBytes,
+                "maximumDescriptorBytes":
+                    ClipLiveShareServerRoomV4.maximumOpaqueDescriptorBytes,
+                "maximumOpaquePayloadBytes":
+                    ClipLiveShareServerRoomV4
+                    .maximumPairSignalCiphertextBytes,
+                "maximumPendingCandidates": 8,
+                "maximumRoomMembers":
+                    ClipLiveShareServerRoomV4.maximumParticipants,
+                "maximumRooms": 1_024,
                 "iceServers": [
                     ["urls": ["stun:stun.l.google.com:19302"]],
                 ],

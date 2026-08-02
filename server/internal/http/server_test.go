@@ -27,7 +27,6 @@ func testConfiguration() config.Config {
 	configuration.ShutdownTimeout = 2 * time.Second
 	configuration.MaximumRendezvous = 32
 	configuration.MaximumConnections = 64
-	configuration.ReservedCoordinatorConnections = 8
 	return configuration
 }
 
@@ -65,15 +64,18 @@ func TestNativeOnlyCapabilitiesHealthAndSecurityHeaders(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var capabilities protocol.NativeRendezvousCapabilities
+	var capabilities protocol.NativeRoomCapabilities
 	if err := json.NewDecoder(response.Body).Decode(&capabilities); err != nil {
 		t.Fatal(err)
 	}
 	response.Body.Close()
 	if response.StatusCode != http.StatusOK ||
 		capabilities.Protocol != protocol.Identifier ||
-		capabilities.APIVersion != protocol.NativeRendezvousAPIVersion ||
-		capabilities.MessageVersion != protocol.NativeMessageVersion ||
+		capabilities.APIVersion != protocol.NativeRoomAPIVersion ||
+		capabilities.MessageVersion != protocol.NativeRoomMessageVersion ||
+		capabilities.RoomPathTemplate != "/api/native/v4/rooms/{room}" ||
+		capabilities.RoomWebSocketPathTemplate != "/api/native/v4/rooms/{room}/socket" ||
+		capabilities.MaximumRoomMembers != protocol.MaximumNativeRoomMembers ||
 		len(capabilities.ICEServers) != 1 ||
 		len(capabilities.ICEServers[0].URLs) != 1 {
 		t.Fatalf("native capabilities = %d, %#v", response.StatusCode, capabilities)
@@ -112,6 +114,9 @@ func TestLegacyBrowserAndRoomSurfacesAreAbsent(t *testing.T) {
 		{http.MethodGet, "/api/native/v1/rendezvous/OLD/viewer"},
 		{http.MethodGet, "/api/native/v3/rendezvous/OLD/host"},
 		{http.MethodGet, "/api/native/v3/rendezvous/OLD/viewer"},
+		{http.MethodPut, "/api/native/v3/rendezvous/OLD"},
+		{http.MethodGet, "/api/native/v3/rendezvous/OLD/owner"},
+		{http.MethodGet, "/api/native/v3/rendezvous/OLD/candidate"},
 		{http.MethodGet, "/assets/clip-viewer.js"},
 		{http.MethodGet, "/OLD-ROOM"},
 	}
@@ -138,11 +143,11 @@ func TestLegacyBrowserAndRoomSurfacesAreAbsent(t *testing.T) {
 
 func TestServiceShutdownClosesNativeCoordinatorSocket(t *testing.T) {
 	service, server := newHTTPTestServer(t)
-	rendezvousID := testNativeRendezvousID(44)
+	roomID := roomV4ID(44)
 	token := ownerToken(45)
-	response := advertiseNative(t, server.URL, rendezvousID, token)
-	response.Body.Close()
-	ownerConnection := dialNativeOwner(t, server.URL, rendezvousID, token)
+	createRoomV4(t, server.URL, roomID, token)
+	ownerConnection := dialRoomV4(t, server.URL, roomID, "Bearer "+token, "")
+	_ = readRoomV4Message(t, ownerConnection, protocol.MessageMemberAdmitted)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
@@ -150,7 +155,10 @@ func TestServiceShutdownClosesNativeCoordinatorSocket(t *testing.T) {
 		t.Fatal(err)
 	}
 	_ = ownerConnection.SetReadDeadline(time.Now().Add(time.Second))
-	if _, _, err := ownerConnection.ReadMessage(); err == nil {
-		t.Fatal("shutdown left native coordinator WebSocket open")
+	for attempt := 0; attempt < 3; attempt++ {
+		if _, _, err := ownerConnection.ReadMessage(); err != nil {
+			return
+		}
 	}
+	t.Fatal("shutdown left native room WebSocket open")
 }

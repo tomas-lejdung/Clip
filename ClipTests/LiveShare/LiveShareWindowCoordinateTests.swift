@@ -1,5 +1,6 @@
 import AppKit
 import ClipCapture
+import ClipLiveShare
 import CoreGraphics
 import Testing
 @testable import Clip
@@ -24,6 +25,69 @@ struct LiveShareWindowCoordinateTests {
             appKitDisplayFrame: CGRect(x: 1_920, y: -100, width: 1_280, height: 1_024)
         )
         #expect(result == CGRect(x: 2_000, y: 424, width: 500, height: 400))
+    }
+
+    @Test("partly off-display windows preserve their full source extent")
+    func partlyOffDisplayWindowPreservesFullExtent() {
+        let result = LiveShareWindowCoordinateConversion.appKitFrame(
+            for: CGRect(x: 800, y: 100, width: 400, height: 400),
+            quartzDisplayFrame: CGRect(x: 0, y: 0, width: 1_000, height: 800),
+            appKitDisplayFrame: CGRect(x: 0, y: 0, width: 1_000, height: 800),
+            preservingFullWindowExtent: true
+        )
+
+        // Only 200 points are physically on this display, but the overlay and
+        // its WindowServer visibility mask must represent the same 400-point
+        // source. WindowServer clips the off-display half at presentation.
+        #expect(result == CGRect(x: 800, y: 300, width: 400, height: 400))
+    }
+
+    @Test("Retina Quartz coordinates convert into AppKit points")
+    func retinaDisplayCoordinateRatioIsApplied() {
+        let result = LiveShareWindowCoordinateConversion.appKitFrame(
+            for: CGRect(x: 200, y: 100, width: 1_200, height: 800),
+            quartzDisplayFrame: CGRect(x: 0, y: 0, width: 3_024, height: 1_964),
+            appKitDisplayFrame: CGRect(x: 0, y: 0, width: 1_512, height: 982)
+        )
+
+        #expect(result == CGRect(x: 100, y: 532, width: 600, height: 400))
+    }
+
+    @Test("local collaboration overlays request full window extent")
+    func localSourceOverlayPreservesFullExtent() {
+        let source = LiveShareSource.window(.init(
+            id: .init(rawValue: 42),
+            windowName: "Fixture",
+            appName: "Fixture"
+        ))
+        let result = MeshLocalSourceOverlayGeometry.appKitFrame(
+            for: source,
+            screenFrames: [
+                .init(
+                    displayID: 1,
+                    quartzFrame: CGRect(
+                        x: 0,
+                        y: 0,
+                        width: 1_000,
+                        height: 800
+                    ),
+                    appKitFrame: CGRect(
+                        x: 0,
+                        y: 0,
+                        width: 1_000,
+                        height: 800
+                    )
+                ),
+            ],
+            quartzWindowFrame: CGRect(
+                x: 800,
+                y: 100,
+                width: 400,
+                height: 400
+            )
+        )
+
+        #expect(result == CGRect(x: 800, y: 300, width: 400, height: 400))
     }
 
     @Test("stale focused-window discovery cannot republish after Stop then Start")

@@ -17,7 +17,6 @@ const (
 	defaultAddress                            = ":8080"
 	defaultMaximumRendezvous                  = 1_024
 	defaultMaximumConnections                 = 2_048
-	defaultReservedCoordinatorConnections     = 64
 	defaultMaximumConnectionsPerSource        = 64
 	defaultRendezvousLeaseOperationsPerMinute = 60
 	defaultWebSocketUpgradesPerMinute         = 240
@@ -43,7 +42,6 @@ type Config struct {
 	ShutdownTimeout                    time.Duration
 	MaximumRendezvous                  int
 	MaximumConnections                 int
-	ReservedCoordinatorConnections     int
 	MaximumConnectionsPerSource        int
 	RendezvousLeaseOperationsPerMinute int
 	WebSocketUpgradesPerMinute         int
@@ -72,7 +70,6 @@ func Default(serverVersion string) Config {
 		ShutdownTimeout:                    10 * time.Second,
 		MaximumRendezvous:                  defaultMaximumRendezvous,
 		MaximumConnections:                 defaultMaximumConnections,
-		ReservedCoordinatorConnections:     defaultReservedCoordinatorConnections,
 		MaximumConnectionsPerSource:        defaultMaximumConnectionsPerSource,
 		RendezvousLeaseOperationsPerMinute: defaultRendezvousLeaseOperationsPerMinute,
 		WebSocketUpgradesPerMinute:         defaultWebSocketUpgradesPerMinute,
@@ -115,9 +112,6 @@ func FromEnvironment(serverVersion string) (Config, error) {
 		return Config{}, err
 	}
 	if configuration.MaximumConnections, err = positiveIntegerEnvironment("CLIP_SERVER_MAXIMUM_CONNECTIONS", configuration.MaximumConnections); err != nil {
-		return Config{}, err
-	}
-	if configuration.ReservedCoordinatorConnections, err = positiveIntegerEnvironment("CLIP_SERVER_RESERVED_COORDINATOR_CONNECTIONS", min(configuration.ReservedCoordinatorConnections, max(1, configuration.MaximumConnections/8))); err != nil {
 		return Config{}, err
 	}
 	if configuration.MaximumConnectionsPerSource, err = positiveIntegerEnvironment("CLIP_SERVER_MAXIMUM_CONNECTIONS_PER_SOURCE", min(configuration.MaximumConnectionsPerSource, configuration.MaximumConnections)); err != nil {
@@ -202,9 +196,6 @@ func (c Config) Validate() error {
 	}
 	if c.MaximumTrackedSources > maximumConfiguredTrackedSources {
 		return fmt.Errorf("tracked source limit exceeds safe maximum %d", maximumConfiguredTrackedSources)
-	}
-	if c.ReservedCoordinatorConnections <= 0 || c.ReservedCoordinatorConnections >= c.MaximumConnections {
-		return errors.New("reserved coordinator connections must be smaller than maximum connections")
 	}
 	if c.MaximumConnectionsPerSource <= 0 || c.MaximumConnectionsPerSource > c.MaximumConnections {
 		return errors.New("connections per source must be between 1 and maximum connections")

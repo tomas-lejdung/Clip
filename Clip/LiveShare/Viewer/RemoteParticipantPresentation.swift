@@ -45,6 +45,27 @@ struct RemoteParticipantPresentation<RemoteTrack> {
         }
     }
 
+    /// Returns the authoritative sources that should currently own native
+    /// viewer windows.
+    ///
+    /// A descriptor that has never acquired a media track is not presented yet.
+    /// Once a window exists, however, temporary pair/track loss must retain that
+    /// receiver-owned window. The authoritative source manifest distinguishes
+    /// that reconnect from a real source removal, which still removes the source
+    /// from this result and closes its window.
+    func windowSources(
+        retaining windows: [NativeViewerWindowSnapshot]
+    ) -> [NativeViewerSourceSnapshot] {
+        guard !isTornDown, participantNamespace != nil else { return [] }
+        let retainedSourceIDs = Set(
+            windows.map(\.source.sourceInstanceID)
+        )
+        return authoritativeSources.filter {
+            remoteTracksByStreamID[$0.streamID] != nil
+                || retainedSourceIDs.contains($0.sourceInstanceID)
+        }
+    }
+
     var sourceKeys: Set<RemoteParticipantSourceKey> {
         Set(authoritativeSources.compactMap { sourceKey(for: $0) })
     }

@@ -5,7 +5,7 @@ import CoreGraphics
 import Testing
 @testable import Clip
 
-@Suite("Native-v3 local publication")
+@Suite("Local publication")
 @MainActor
 struct MeshParticipantLocalPublicationControllerTests {
     @Test

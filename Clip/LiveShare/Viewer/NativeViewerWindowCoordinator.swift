@@ -348,7 +348,14 @@ final class NativeViewerWindowCoordinator {
             try create(snapshot)
             return
         }
-        try entry.surface.bind(to: snapshot.source)
+        // A pair-local ICE/SDP recreation temporarily removes its remote track
+        // while the authoritative source still exists. Keep the existing
+        // surface and native window in place until a replacement track is ready;
+        // attempting to bind the disconnected descriptor would throw and tear
+        // down every window owned by this participant.
+        if snapshot.source.isConnected {
+            try entry.surface.bind(to: snapshot.source)
+        }
         entry.controller.update(
             ownerName: ownerName,
             source: snapshot.source,

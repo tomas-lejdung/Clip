@@ -137,6 +137,82 @@ struct ClipLiveShareNativeV3StatisticsTests {
     #expect(incoming.queuePressureReason == nil)
   }
 
+  @Test("MID mappings override generated RTP track identifiers")
+  func authoritativeMIDMappingsOverrideGeneratedTrackIdentifiers() throws {
+    let statistics = ClipLiveShareNativeV3WebRTCStatisticsParser.parse(
+      [
+        sample(
+          "outbound",
+          "outbound-rtp",
+          [
+            "kind": "video",
+            "mid": "0",
+            "trackIdentifier": "generated-sender-track",
+          ]
+        ),
+        sample(
+          "inbound",
+          "inbound-rtp",
+          [
+            "kind": "video",
+            "mid": "1",
+            "trackIdentifier": "generated-receiver-track",
+          ]
+        ),
+      ],
+      capturedAt: Date(timeIntervalSince1970: 101),
+      trackIdentifiersByMID: .init(
+        outgoing: ["0": "stable-outgoing-track"],
+        incoming: ["1": "stable-incoming-track"]
+      )
+    )
+
+    #expect(
+      statistics.videoSources.first { $0.direction == .outgoing }?
+        .trackIdentifier == "stable-outgoing-track"
+    )
+    #expect(
+      statistics.videoSources.first { $0.direction == .incoming }?
+        .trackIdentifier == "stable-incoming-track"
+    )
+  }
+
+  @Test("standard transport stats select the active candidate pair")
+  func transportSelectedCandidatePairDeterminesRoute() {
+    let statistics = ClipLiveShareNativeV3WebRTCStatisticsParser.parse(
+      [
+        sample(
+          "transport",
+          "transport",
+          ["selectedCandidatePairId": "active-pair"]
+        ),
+        sample(
+          "active-pair",
+          "candidate-pair",
+          [
+            "localCandidateId": "local-candidate",
+            "remoteCandidateId": "remote-candidate",
+            "currentRoundTripTime": 0.012,
+          ]
+        ),
+        sample(
+          "local-candidate",
+          "local-candidate",
+          ["candidateType": "host"]
+        ),
+        sample(
+          "remote-candidate",
+          "remote-candidate",
+          ["candidateType": "relay"]
+        ),
+      ],
+      capturedAt: Date(timeIntervalSince1970: 102)
+    )
+
+    #expect(statistics.route == .relay)
+    #expect(statistics.currentRoundTripTimeMilliseconds == 12)
+  }
+
   @Test("transport snapshot bounds and deduplicates each direction")
   func boundsDirectionalSources() {
     let outgoing = (0..<8).map {

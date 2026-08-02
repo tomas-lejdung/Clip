@@ -27,12 +27,12 @@ func TestSendQueueFullReportsBackpressureWithoutClosingSocket(t *testing.T) {
 	t.Parallel()
 	socket := newUnstartedTestSocket(1, 1, protocol.MaximumMessageBytes)
 	if err := socket.Send(protocol.Message{
-		Type: protocol.MessageNativeOwnerUnavailable,
+		Type: protocol.MessageProtocolError,
 	}); err != nil {
 		t.Fatal(err)
 	}
 	if err := socket.Send(protocol.Message{
-		Type: protocol.MessageNativeOwnerUnavailable,
+		Type: protocol.MessageProtocolError,
 	}); !errors.Is(err, ErrOutboundQueueFull) {
 		t.Fatalf("second Send() = %v", err)
 	}
@@ -47,7 +47,7 @@ func TestSendQueueFullReportsBackpressureWithoutClosingSocket(t *testing.T) {
 
 	<-socket.outbound
 	if err := socket.Send(protocol.Message{
-		Type: protocol.MessageNativeOwnerUnavailable,
+		Type: protocol.MessageProtocolError,
 	}); err != nil {
 		t.Fatalf("Send() after queue capacity returned = %v", err)
 	}
@@ -57,10 +57,10 @@ func TestPerRouteQueueLimitReservesCapacityForOtherRoutes(t *testing.T) {
 	t.Parallel()
 	socket := newUnstartedTestSocket(4, 2, protocol.MaximumMessageBytes)
 	firstRoute := protocol.Message{
-		Type: protocol.MessageNativeRelay, RouteID: "first-route",
+		Type: protocol.MessagePairSignal, PairID: "first-pair",
 	}
 	secondRoute := protocol.Message{
-		Type: protocol.MessageNativeRelay, RouteID: "second-route",
+		Type: protocol.MessagePairSignal, PairID: "second-pair",
 	}
 	if err := socket.Send(firstRoute); err != nil {
 		t.Fatal(err)
@@ -79,11 +79,11 @@ func TestPerRouteQueueLimitReservesCapacityForOtherRoutes(t *testing.T) {
 	}
 }
 
-func TestNativeRelayUsesPerRouteQueueLimit(t *testing.T) {
+func TestPairSignalUsesPerPairQueueLimit(t *testing.T) {
 	t.Parallel()
 	socket := newUnstartedTestSocket(4, 1, protocol.MaximumMessageBytes)
-	firstRoute := protocol.Message{Type: protocol.MessageNativeRelay, RouteID: "first-native-route"}
-	secondRoute := protocol.Message{Type: protocol.MessageNativeRelay, RouteID: "second-native-route"}
+	firstRoute := protocol.Message{Type: protocol.MessagePairSignal, PairID: "first-pair"}
+	secondRoute := protocol.Message{Type: protocol.MessagePairSignal, PairID: "second-pair"}
 	if err := socket.Send(firstRoute); err != nil {
 		t.Fatal(err)
 	}
@@ -98,7 +98,7 @@ func TestNativeRelayUsesPerRouteQueueLimit(t *testing.T) {
 func TestPerRouteQueuedByteLimitIsEnforced(t *testing.T) {
 	t.Parallel()
 	message := protocol.Message{
-		Type: protocol.MessageNativeRelay, RouteID: "byte-route",
+		Type: protocol.MessagePairSignal, PairID: "byte-pair",
 	}
 	encoded, err := json.Marshal(message)
 	if err != nil {
@@ -118,7 +118,7 @@ func TestPerRouteQueuedByteLimitIsEnforced(t *testing.T) {
 
 func TestPerSocketQueuedByteLimitIsEnforced(t *testing.T) {
 	t.Parallel()
-	message := protocol.Message{Type: protocol.MessageNativeOwnerUnavailable}
+	message := protocol.Message{Type: protocol.MessageProtocolError}
 	encoded, err := json.Marshal(message)
 	if err != nil {
 		t.Fatal(err)
@@ -138,7 +138,7 @@ func TestPerSocketQueuedByteLimitIsEnforced(t *testing.T) {
 
 func TestSharedQueuedByteBudgetIsReleasedWithFrames(t *testing.T) {
 	t.Parallel()
-	message := protocol.Message{Type: protocol.MessageNativeOwnerUnavailable}
+	message := protocol.Message{Type: protocol.MessageProtocolError}
 	encoded, err := json.Marshal(message)
 	if err != nil {
 		t.Fatal(err)
@@ -177,7 +177,7 @@ func TestAbortClosesSocketImmediately(t *testing.T) {
 		t.Fatal("Abort() did not close Done")
 	}
 	if err := socket.Send(protocol.Message{
-		Type: protocol.MessageNativeOwnerUnavailable,
+		Type: protocol.MessageProtocolError,
 	}); !errors.Is(err, ErrSocketClosed) {
 		t.Fatalf("Send() after Abort() = %v", err)
 	}
