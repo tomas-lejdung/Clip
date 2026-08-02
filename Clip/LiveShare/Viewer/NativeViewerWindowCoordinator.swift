@@ -76,12 +76,17 @@ final class NativeViewerWindowCoordinator {
     var confirmLeaveWhenLastWindowCloses: () -> Bool = { false }
     var onLeaveRequested: () -> Void = {}
     var onPresentationChanged: () -> Void = {}
+    var onCollaborationControlChanged:
+        (String, NativeViewerCollaborationControlTool, Bool) -> Void = { _, _, _ in }
+    var onCollaborationControlResetToGlobal: (String) -> Void = { _ in }
 
     private var ownerName: String
     private let identityColor: NSColor
     private let surfaceFactory: SurfaceFactory
     private var registry: NativeViewerWindowRegistry
     private var entries: [NativeViewerWindowID: Entry] = [:]
+    private var collaborationControlStates:
+        [String: NativeViewerCollaborationControlState] = [:]
 
     init(
         ownerName: String,
@@ -103,6 +108,9 @@ final class NativeViewerWindowCoordinator {
     }
 
     func reconcile(_ sources: [NativeViewerSourceSnapshot]) throws {
+        let priorSourceInstanceIDs = registry.windows.mapValues {
+            $0.source.sourceInstanceID
+        }
         for change in registry.reconcile(sources) {
             switch change {
             case .create(let snapshot):
@@ -110,7 +118,7 @@ final class NativeViewerWindowCoordinator {
             case .update(let snapshot):
                 try update(snapshot)
             case .remove(let id):
-                remove(id)
+                remove(id, sourceInstanceID: priorSourceInstanceIDs[id])
             case .visibility(let id, let isVisible):
                 setVisibility(isVisible, id: id)
             }
@@ -274,6 +282,37 @@ final class NativeViewerWindowCoordinator {
         content.setCollaborationInteractionMode(mode)
     }
 
+    func setCollaborationControlState(
+        _ state: NativeViewerCollaborationControlState,
+        sourceInstanceID: String
+    ) {
+        collaborationControlStates[sourceInstanceID] = state
+        guard let id = windowID(sourceInstanceID: sourceInstanceID),
+              let controller = entries[id]?.controller else { return }
+        controller.setCollaborationControlState(state)
+    }
+
+    func collaborationControlState(
+        sourceInstanceID: String
+    ) -> NativeViewerCollaborationControlState? {
+        collaborationControlStates[sourceInstanceID]
+    }
+
+    func activateCollaborationControl(
+        _ tool: NativeViewerCollaborationControlTool,
+        sourceInstanceID: String
+    ) {
+        guard let id = windowID(sourceInstanceID: sourceInstanceID),
+              let content = entries[id]?.controller.content else { return }
+        content.activateCollaborationControl(tool)
+    }
+
+    func activateResetCollaborationToGlobal(sourceInstanceID: String) {
+        guard let id = windowID(sourceInstanceID: sourceInstanceID),
+              let content = entries[id]?.controller.content else { return }
+        content.activateResetCollaborationToGlobal()
+    }
+
     func markDisconnected() {
         let disconnected = registry.windows.values.map { snapshot in
             NativeViewerSourceSnapshot(
@@ -297,6 +336,7 @@ final class NativeViewerWindowCoordinator {
             entry.controller.tearDown()
         }
         entries.removeAll()
+        collaborationControlStates.removeAll()
         registry = NativeViewerWindowRegistry()
     }
 
@@ -326,6 +366,25 @@ final class NativeViewerWindowCoordinator {
             registry.setFullScreen(isFullScreen, for: controller.viewerWindowID)
             onPresentationChanged()
         }
+        controller.onCollaborationControlChanged = {
+            [weak self] controller, tool, enabled in
+            guard let self,
+                  let sourceInstanceID = registry.windows[
+                    controller.viewerWindowID
+                  ]?.source.sourceInstanceID else { return }
+            onCollaborationControlChanged(sourceInstanceID, tool, enabled)
+        }
+        controller.onCollaborationControlResetToGlobal = { [weak self] controller in
+            guard let self,
+                  let sourceInstanceID = registry.windows[
+                    controller.viewerWindowID
+                  ]?.source.sourceInstanceID else { return }
+            onCollaborationControlResetToGlobal(sourceInstanceID)
+        }
+        controller.setCollaborationControlState(
+            collaborationControlStates[snapshot.source.sourceInstanceID]
+                ?? .globalDefaults
+        )
         do {
             try surface.bind(to: snapshot.source)
         } catch {
@@ -366,7 +425,13 @@ final class NativeViewerWindowCoordinator {
         // or reposition an already visible native window.
     }
 
-    private func remove(_ id: NativeViewerWindowID) {
+    private func remove(
+        _ id: NativeViewerWindowID,
+        sourceInstanceID: String?
+    ) {
+        if let sourceInstanceID {
+            collaborationControlStates[sourceInstanceID] = nil
+        }
         guard let entry = entries.removeValue(forKey: id) else { return }
         entry.surface.tearDown()
         entry.controller.tearDown()

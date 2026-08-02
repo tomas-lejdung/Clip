@@ -260,6 +260,66 @@ final class MenuBarPopoverModelTests: XCTestCase {
         )
     }
 
+    func testFriendJoinLifecycleStaysOnLiveShareAndPresentsTerminalActions() {
+        let context = MenuBarFriendJoinPresentationContext(
+            friendID: "friend-1",
+            friendName: "Jules",
+            deviceName: "Jules’s Mac",
+            roomName: "Room ABCD1234"
+        )
+        let waiting = MenuBarLiveShareConnectionStatus
+            .awaitingFriendApproval(context)
+        XCTAssertEqual(waiting.paneContent, .connection)
+        XCTAssertEqual(
+            MenuBarLiveShareRoutePolicy.initialRoute(for: waiting),
+            .liveShare
+        )
+        XCTAssertTrue(waiting.showsProgress)
+        XCTAssertTrue(waiting.allowsCancel)
+        XCTAssertTrue(waiting.detail.contains("Jules"))
+        XCTAssertTrue(waiting.detail.contains("Room ABCD1234"))
+        XCTAssertFalse(waiting.allowsBackNavigation)
+
+        let joining = MenuBarLiveShareConnectionStatus.joiningFriend(context)
+        XCTAssertTrue(joining.showsProgress)
+        XCTAssertTrue(joining.allowsCancel)
+        XCTAssertFalse(joining.allowsBackNavigation)
+        XCTAssertEqual(joining.friendContext, context)
+
+        let denied = MenuBarLiveShareConnectionStatus.friendJoinDenied(
+            context,
+            reason: "Jules denied this request."
+        )
+        XCTAssertFalse(denied.showsProgress)
+        XCTAssertTrue(denied.allowsRetry)
+        XCTAssertTrue(denied.allowsDone)
+        XCTAssertTrue(denied.isTerminalFriendJoin)
+        XCTAssertFalse(denied.allowsBackNavigation)
+        XCTAssertEqual(denied.friendContext, context)
+        XCTAssertEqual(
+            MenuBarLiveShareRoutePolicy.initialRoute(for: denied),
+            .liveShare
+        )
+
+        for status in [
+            MenuBarLiveShareConnectionStatus.friendJoinTimedOut(context),
+            .friendJoinFailed(context, message: "Offline"),
+            .friendJoinCanceled(context),
+        ] {
+            XCTAssertTrue(status.isTerminalFriendJoin)
+            XCTAssertTrue(status.allowsRetry)
+            XCTAssertTrue(status.allowsDone)
+            XCTAssertEqual(status.friendContext, context)
+        }
+        XCTAssertEqual(
+            MenuBarLiveShareRoutePolicy.initialRoute(for: .idle),
+            .main
+        )
+        XCTAssertTrue(
+            MenuBarLiveShareConnectionStatus.idle.allowsBackNavigation
+        )
+    }
+
     func testFriendJoinPresentationWaitsForApprovalThenShowsRoom() {
         XCTAssertEqual(
             ServerMeshJoinPresentationPolicy.transition(
@@ -281,6 +341,146 @@ final class MenuBarPopoverModelTests: XCTestCase {
                 roomName: "Room ABCD1234"
             ),
             .showActiveRoom
+        )
+    }
+
+    func testFriendJoinTerminalStateSurvivesRoomShutdown() {
+        let context = MenuBarFriendJoinPresentationContext(
+            friendID: "friend-1",
+            friendName: "Jules",
+            deviceName: "Jules’s Mac",
+            roomName: "Room ABCD1234"
+        )
+
+        XCTAssertEqual(
+            ServerMeshFriendJoinMenuBarPolicy.status(
+                afterRoomEnd: .friendJoinDenied(
+                    context,
+                    reason: "Jules denied this request."
+                )
+            ),
+            .failed
+        )
+        XCTAssertEqual(
+            ServerMeshFriendJoinMenuBarPolicy.status(afterRoomEnd: .idle),
+            .ready
+        )
+        XCTAssertEqual(
+            ServerMeshFriendJoinMenuBarPolicy.status(
+                afterRoomEnd: .friendJoinCanceled(context)
+            ),
+            .ready
+        )
+        XCTAssertEqual(
+            ServerMeshFriendJoinTimeoutPolicy.approvalTimeout,
+            .seconds(300)
+        )
+    }
+
+    func testAdmissionDenialPresentationPreservesGenericAndFriendFlows() {
+        let context = MenuBarFriendJoinPresentationContext(
+            friendID: "friend-1",
+            friendName: "Jules",
+            deviceName: "Jules’s Mac",
+            roomName: "Room ABCD1234"
+        )
+        XCTAssertEqual(
+            ServerMeshAdmissionDenialPresentationPolicy.outcome(
+                friendContext: context,
+                reason: "Not today."
+            ),
+            .friend(context, reason: "Not today.")
+        )
+        XCTAssertEqual(
+            ServerMeshAdmissionDenialPresentationPolicy.outcome(
+                friendContext: nil,
+                reason: "Room is closed."
+            ),
+            .generic(message: "Room is closed.")
+        )
+        XCTAssertEqual(
+            ServerMeshAdmissionDenialPresentationPolicy.outcome(
+                friendContext: nil,
+                reason: ""
+            ),
+            .generic(message: "The room denied admission.")
+        )
+    }
+
+    func testCancelInvalidatesPreCoordinatorFriendJoinAttempt() {
+        let attempt = UUID()
+        XCTAssertTrue(
+            ServerMeshFriendJoinCancellationPolicy.canContinue(
+                attemptToken: attempt,
+                activeAttemptToken: attempt
+            )
+        )
+        XCTAssertFalse(
+            ServerMeshFriendJoinCancellationPolicy.canContinue(
+                attemptToken: attempt,
+                activeAttemptToken: nil
+            )
+        )
+        XCTAssertFalse(
+            ServerMeshFriendJoinCancellationPolicy.canContinue(
+                attemptToken: attempt,
+                activeAttemptToken: UUID()
+            )
+        )
+    }
+
+    func testAccessWordRetryPreservesOnlyTheMatchingFriendContext() throws {
+        let invite = try makeServerRoomInvite()
+        let otherInvite = try makeServerRoomInvite()
+        let context = MenuBarFriendJoinPresentationContext(
+            friendID: "friend-1",
+            friendName: "Jules",
+            deviceName: "Jules’s Mac",
+            roomName: "Room ABCD1234"
+        )
+        let status = MenuBarLiveShareConnectionStatus.accessWordRequired(
+            roomName: context.roomName,
+            invite: invite,
+            requiresCreatorApproval: true
+        )
+        let matchingRequest = MenuBarServerRoomJoinRequest(
+            invite: invite,
+            accessWord: "secret",
+            requiresCreatorApproval: true
+        )
+
+        XCTAssertEqual(
+            ServerMeshFriendAccessWordRetryPolicy.context(
+                status: status,
+                activeFriendContext: context,
+                request: matchingRequest
+            ),
+            context
+        )
+        XCTAssertNil(
+            ServerMeshFriendAccessWordRetryPolicy.context(
+                status: status,
+                activeFriendContext: nil,
+                request: matchingRequest
+            )
+        )
+        XCTAssertNil(
+            ServerMeshFriendAccessWordRetryPolicy.context(
+                status: status,
+                activeFriendContext: context,
+                request: .init(
+                    invite: otherInvite,
+                    accessWord: "secret",
+                    requiresCreatorApproval: true
+                )
+            )
+        )
+        XCTAssertNil(
+            ServerMeshFriendAccessWordRetryPolicy.context(
+                status: .idle,
+                activeFriendContext: context,
+                request: matchingRequest
+            )
         )
     }
 
@@ -501,6 +701,17 @@ final class MenuBarPopoverModelTests: XCTestCase {
             MenuBarLiveShareConnectionStatus
                 .joining(roomName: "Room ABCD1234")
                 .paneContent,
+            .connection
+        )
+        XCTAssertEqual(
+            MenuBarLiveShareConnectionStatus.joiningFriend(
+                .init(
+                    friendID: "friend-1",
+                    friendName: "Jules",
+                    deviceName: "Jules’s Mac",
+                    roomName: "Room ABCD1234"
+                )
+            ).paneContent,
             .connection
         )
     }
@@ -771,6 +982,74 @@ final class MenuBarPopoverModelTests: XCTestCase {
     func testSharedPopoverButtonSizesMatchTheVisualHierarchy() {
         XCTAssertEqual(ClipPopoverButtonSize.standard.height, 28)
         XCTAssertEqual(ClipPopoverButtonSize.bottom.height, 36)
+    }
+
+    func testSplitMenuRowsKeepBalancedPaddingAndAFullActionHitTarget() {
+        XCTAssertEqual(ClipPopoverDesign.rowHorizontalPadding, 12)
+        XCTAssertEqual(ClipPopoverSplitMenuRowDesign.iconSize, 28)
+        XCTAssertEqual(ClipPopoverSplitMenuRowDesign.menuWidth, 44)
+        XCTAssertEqual(ClipPopoverSplitMenuRowDesign.rowHeight, 50)
+        XCTAssertEqual(
+            (ClipPopoverSplitMenuRowDesign.menuWidth
+                - ClipPopoverSplitMenuRowDesign.iconSize) / 2,
+            8
+        )
+        XCTAssertGreaterThanOrEqual(
+            ClipPopoverSplitMenuRowDesign.menuWidth,
+            44
+        )
+
+        let bounds = CGRect(x: 7, y: 11, width: 340, height: 50)
+        let frames = ClipPopoverSplitMenuRowDesign.segmentFrames(in: bounds)
+        XCTAssertEqual(frames.primary.minX, bounds.minX)
+        XCTAssertEqual(frames.primary.minY, bounds.minY)
+        XCTAssertEqual(frames.primary.height, bounds.height)
+        XCTAssertEqual(frames.primary.maxX, frames.menu.minX)
+        XCTAssertEqual(frames.menu.width, 44)
+        XCTAssertEqual(frames.menu.height, bounds.height)
+        XCTAssertEqual(frames.menu.maxX, bounds.maxX)
+        XCTAssertTrue(
+            ClipPopoverSplitMenuRowInteractionPolicy
+                .isPrimaryInteractive(isEnabled: true)
+        )
+        XCTAssertFalse(
+            ClipPopoverSplitMenuRowInteractionPolicy
+                .isPrimaryInteractive(isEnabled: false)
+        )
+        XCTAssertTrue(
+            ClipPopoverSplitMenuRowInteractionPolicy.isMenuInteractive
+        )
+
+        let controller = NSHostingController(
+            rootView: ClipPopoverSplitMenuRow(
+                menuAccessibilityLabel: "Friend Actions",
+                menuHelp: "Friend Actions",
+                primaryAction: {},
+                primaryLabel: {
+                    HStack(spacing: 9) {
+                        Circle().frame(width: 8, height: 8)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Jules")
+                            Text("Jules’s Mac")
+                        }
+                        Spacer(minLength: 8)
+                        Text("Room Available")
+                    }
+                },
+                menuContent: {
+                    Button("Rename") {}
+                }
+            )
+            .frame(width: 340)
+        )
+        controller.view.layoutSubtreeIfNeeded()
+
+        let renderedHeight = ceil(controller.view.fittingSize.height)
+        XCTAssertEqual(
+            renderedHeight,
+            ClipPopoverSplitMenuRowDesign.rowHeight,
+            accuracy: 1
+        )
     }
 
     func testPopoverSizingPolicyPreservesWidthAndCapsHeightToTheVisibleScreen() {

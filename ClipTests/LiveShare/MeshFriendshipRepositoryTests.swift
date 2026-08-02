@@ -237,6 +237,100 @@ struct MeshFriendshipRepositoryTests {
         #expect(recovered.first?.signedRequest == chain.request)
     }
 
+    @Test("local aliases persist, reset safely, and survive reconfirmation")
+    func localAliasLifecycle() async throws {
+        let fixture = try Fixture()
+        let storage = MemoryMeshFriendshipStorage()
+        let repository = MeshFriendshipRepository(
+            storage: storage,
+            localIdentity: fixture.requesterSigner.publicKey,
+            now: { fixture.now }
+        )
+        let chain = try fixture.makeChain(
+            requesterLocator: await repository.makeLocalPublishingLocator(),
+            accepterLocator: .random()
+        )
+        try await repository.recordOutgoingRequest(chain.request)
+        try await repository.stageOutgoingAcknowledgement(
+            chain.acknowledgement,
+            acceptance: chain.acceptance,
+            requestID: chain.requestID
+        )
+        try await repository.commitOutgoingFriendship(
+            receipt: chain.receipt,
+            requestID: chain.requestID
+        )
+        let original = try #require(await repository.snapshot().friends.first)
+
+        try await repository.renameFriend(
+            identity: original.identity,
+            to: "  Jules  "
+        )
+        var renamed = try #require(await repository.snapshot().friends.first)
+        #expect(renamed.displayName == "Jules")
+        #expect(renamed.localAlias == "Jules")
+        #expect(renamed.profile == original.profile)
+        #expect(renamed.localPublishingLocator == original.localPublishingLocator)
+
+        // An idempotent signed reconfirmation may refresh trusted metadata but
+        // must never erase this device's local label.
+        try await repository.commitOutgoingFriendship(
+            receipt: chain.receipt,
+            requestID: chain.requestID
+        )
+        renamed = try #require(await repository.snapshot().friends.first)
+        #expect(renamed.localAlias == "Jules")
+
+        let relaunched = MeshFriendshipRepository(
+            storage: storage,
+            localIdentity: fixture.requesterSigner.publicKey,
+            now: { fixture.now }
+        )
+        #expect(try await relaunched.snapshot().friends.first?.displayName == "Jules")
+
+        try await relaunched.renameFriend(
+            identity: original.identity,
+            to: " \n "
+        )
+        let reset = try #require(await relaunched.snapshot().friends.first)
+        #expect(reset.localAlias == nil)
+        #expect(reset.displayName == reset.profile.displayName)
+    }
+
+    @Test("invalid local aliases fail atomically")
+    func invalidLocalAlias() async throws {
+        let fixture = try Fixture()
+        let storage = MemoryMeshFriendshipStorage()
+        let repository = MeshFriendshipRepository(
+            storage: storage,
+            localIdentity: fixture.requesterSigner.publicKey,
+            now: { fixture.now }
+        )
+        let chain = try fixture.makeChain(
+            requesterLocator: await repository.makeLocalPublishingLocator(),
+            accepterLocator: .random()
+        )
+        try await repository.recordOutgoingRequest(chain.request)
+        try await repository.stageOutgoingAcknowledgement(
+            chain.acknowledgement,
+            acceptance: chain.acceptance,
+            requestID: chain.requestID
+        )
+        try await repository.commitOutgoingFriendship(
+            receipt: chain.receipt,
+            requestID: chain.requestID
+        )
+        let friend = try #require(await repository.snapshot().friends.first)
+
+        await #expect(throws: MeshFriendshipRepositoryError.invalidAlias) {
+            try await repository.renameFriend(
+                identity: friend.identity,
+                to: "Bad\u{0000}Name"
+            )
+        }
+        #expect(try await repository.snapshot().friends.first?.localAlias == nil)
+    }
+
     private struct Chain {
         let requestID: ClipLiveShareServerRoomV4FriendRequestID
         let request: ClipLiveShareServerRoomV4SignedFriendMessage

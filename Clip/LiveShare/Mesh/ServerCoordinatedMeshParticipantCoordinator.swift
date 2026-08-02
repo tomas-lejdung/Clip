@@ -74,6 +74,8 @@ final class ServerCoordinatedMeshParticipantCoordinator {
         ServerCoordinatedMeshRoomSessionPhase
     ) -> Void
     private let onAccessWordRequired: () -> Void
+    private let onAdmissionDenied: (String) -> Void
+    private let onRoomConnectionFailed: (String) -> Void
     private let persistAdmissionPreferences: (Bool, Bool) -> Void
     private let confirmLeaveAfterLastRemoteWindowCloses: () -> Bool
     private let collaborationConfiguration:
@@ -127,9 +129,7 @@ final class ServerCoordinatedMeshParticipantCoordinator {
 
     private var accessWord: String?
     private var askBeforeJoining: Bool
-    private var localPointerVisible: Bool
-    private var localPingModeEnabled = false
-    private var localInkEnabled = false
+    private var collaborationPolicy = MeshRoomCollaborationPolicyReducer()
     private var nativeCursorSequenceBySource:
         [ClipLiveShareNativeV3SourceKey: UInt64] = [:]
     private var collaborationSequenceBySource:
@@ -181,6 +181,8 @@ final class ServerCoordinatedMeshParticipantCoordinator {
             ServerCoordinatedMeshRoomSessionPhase
         ) -> Void = { _ in },
         onAccessWordRequired: @escaping () -> Void = {},
+        onAdmissionDenied: @escaping (String) -> Void = { _ in },
+        onRoomConnectionFailed: @escaping (String) -> Void = { _ in },
         onMenuBarStatusChanged: @escaping (
             MeshParticipantMenuBarStatus
         ) -> Void = { _ in }
@@ -203,13 +205,19 @@ final class ServerCoordinatedMeshParticipantCoordinator {
         self.onFriendshipsChanged = onFriendshipsChanged
         self.onRoomPhaseChanged = onRoomPhaseChanged
         self.onAccessWordRequired = onAccessWordRequired
+        self.onAdmissionDenied = onAdmissionDenied
+        self.onRoomConnectionFailed = onRoomConnectionFailed
         self.onMenuBarStatusChanged = onMenuBarStatusChanged
         collaborationConfiguration = .init(
             settings: initialSettings,
             persistentIdentity: localIdentity
         )
-        localPointerVisible =
-            initialSettings.collaborationPointerVisibleByDefault
+        collaborationPolicy = .init(
+            globalSelection: .init(
+                pointerEnabled:
+                    initialSettings.collaborationPointerVisibleByDefault
+            )
+        )
         localPublication.settings = LiveShareSettingsViewSnapshot(
             quality: initialSettings.quality,
             frameRate: initialSettings.frameRate,
@@ -538,7 +546,15 @@ final class ServerCoordinatedMeshParticipantCoordinator {
             await tearDown(
                 finalMessage: String(localized: "Access Word Required")
             )
+        case let .admissionDenied(reason):
+            onAdmissionDenied(reason)
+            await tearDown(
+                finalMessage: reason.isEmpty
+                    ? String(localized: "The room denied admission.")
+                    : reason
+            )
         case let .failed(message):
+            onRoomConnectionFailed(message)
             fail(message)
         case .closed:
             await tearDown(
@@ -662,6 +678,7 @@ final class ServerCoordinatedMeshParticipantCoordinator {
         }
         remotePresentations.removeAll()
         localSourceOverlays.tearDown()
+        collaborationPolicy.removeAllSources()
         publishCreatorInviteIfNeeded(nil)
         phase = .ended(message: finalMessage)
         hasCompletedShutdown = true
@@ -707,6 +724,18 @@ final class ServerCoordinatedMeshParticipantCoordinator {
         _ sessionSnapshot: ServerCoordinatedMeshRoomSessionSnapshot
     ) async {
         guard let verified = sessionSnapshot.verifiedRoom else { return }
+        if let media = sessionSnapshot.media {
+            let authoritativeRemoteSources = Set(
+                media.sourceSnapshots.values.flatMap(\.sources)
+                    .filter {
+                        $0.key.ownerParticipantID != localParticipantID
+                    }
+                    .map { collaborationPolicyKey(for: $0.key) }
+            )
+            let removed = collaborationPolicy
+                .reconcileAuthoritativeSources(authoritativeRemoteSources)
+            pruneCollaborationBookkeeping(for: removed)
+        }
         let remoteMembers = verified.members.filter { !$0.isLocal }
         let remoteIDs = Set(remoteMembers.map(\.descriptor.participantID))
         for participantID in remoteWindows.keys
@@ -851,6 +880,26 @@ final class ServerCoordinatedMeshParticipantCoordinator {
         }
         coordinator.onLeaveRequested = { [weak self] in self?.leaveRoom() }
         coordinator.onPresentationChanged = { [weak self] in self?.publish() }
+        coordinator.onCollaborationControlChanged = {
+            [weak self] sourceID, tool, enabled in
+            self?.setCollaborationTool(
+                tool,
+                enabled: enabled,
+                for: .init(
+                    participantID: participantID.rawValue,
+                    sourceID: sourceID
+                )
+            )
+        }
+        coordinator.onCollaborationControlResetToGlobal = {
+            [weak self] sourceID in
+            self?.resetCollaborationToolsToGlobal(
+                for: .init(
+                    participantID: participantID.rawValue,
+                    sourceID: sourceID
+                )
+            )
+        }
         remoteWindows[participantID] = coordinator
         audioEnabled[participantID] = true
         audioVolume[participantID] = 1
@@ -907,6 +956,9 @@ final class ServerCoordinatedMeshParticipantCoordinator {
         else { return }
         for published in sources {
             let key = published.key
+            let policy = collaborationPolicy.policy(
+                for: collaborationPolicyKey(for: key)
+            )
             windows.setCollaborationOverlay(
                 overlaySnapshot(
                     media?.collaboration[key],
@@ -914,10 +966,20 @@ final class ServerCoordinatedMeshParticipantCoordinator {
                 ),
                 sourceInstanceID: key.sourceInstanceID.rawValue
             )
+            windows.setCollaborationControlState(
+                .init(
+                    pointerEnabled: policy.selection.pointerEnabled,
+                    pingEnabled: policy.selection.pingEnabled,
+                    drawingEnabled: policy.selection.drawingEnabled,
+                    isUsingGlobalSettings: policy.isUsingGlobalSettings
+                ),
+                sourceInstanceID: key.sourceInstanceID.rawValue
+            )
             let mode: NativeViewerCollaborationInteractionMode
-            if localInkEnabled {
+            if policy.selection.drawingEnabled {
                 mode = .draw(collaborationConfiguration.inkColor)
-            } else if localPointerVisible || localPingModeEnabled {
+            } else if policy.selection.pointerEnabled
+                || policy.selection.pingEnabled {
                 mode = .pointer
             } else {
                 mode = .disabled
@@ -1188,9 +1250,12 @@ final class ServerCoordinatedMeshParticipantCoordinator {
             outgoingDiagnostics: outgoing,
             peerDiagnostics: peerDiagnostics,
             collaboration: .init(
-                isLocalPointerVisible: localPointerVisible,
-                isLocalPingModeEnabled: localPingModeEnabled,
-                isLocalInkEnabled: localInkEnabled,
+                isLocalPointerVisible:
+                    collaborationPolicy.globalSelection.pointerEnabled,
+                isLocalPingModeEnabled:
+                    collaborationPolicy.globalSelection.pingEnabled,
+                isLocalInkEnabled:
+                    collaborationPolicy.globalSelection.drawingEnabled,
                 activePointerCount: roomSnapshot?.media?.collaboration.values
                     .reduce(0) { $0 + $1.pointers.count } ?? 0,
                 annotationStrokeCount:
@@ -1586,17 +1651,16 @@ final class ServerCoordinatedMeshParticipantCoordinator {
                 self?.remoteWindows.values.forEach { $0.bringAllToFront() }
             },
             setLocalPointerVisible: { [weak self] in
-                self?.localPointerVisible = $0
-                if !$0 { self?.broadcastPointerHidden() }
-                self?.refreshCollaborationInteractions()
+                self?.setGlobalCollaborationTool(
+                    .pointer,
+                    enabled: $0
+                )
             },
             setLocalPingModeEnabled: { [weak self] in
-                self?.localPingModeEnabled = $0
-                self?.refreshCollaborationInteractions()
+                self?.setGlobalCollaborationTool(.ping, enabled: $0)
             },
             setLocalInkEnabled: { [weak self] in
-                self?.localInkEnabled = $0
-                self?.refreshCollaborationInteractions()
+                self?.setGlobalCollaborationTool(.drawing, enabled: $0)
             },
             clearAnnotations: { [weak self] in self?.clearAnnotations() },
             retry: { [weak self] in self?.start() },
@@ -1750,6 +1814,104 @@ final class ServerCoordinatedMeshParticipantCoordinator {
         return remoteWindows[id]
     }
 
+    private func setGlobalCollaborationTool(
+        _ tool: MeshRoomCollaborationTool,
+        enabled: Bool
+    ) {
+        let change = collaborationPolicy.setGlobal(tool, enabled: enabled)
+        sendHiddenPointers(for: change.pointerHiddenSources)
+        refreshCollaborationInteractions()
+    }
+
+    private func setCollaborationTool(
+        _ tool: NativeViewerCollaborationControlTool,
+        enabled: Bool,
+        for source: MeshRoomSourceKey
+    ) {
+        let policyTool: MeshRoomCollaborationTool
+        switch tool {
+        case .pointer:
+            policyTool = .pointer
+        case .ping:
+            policyTool = .ping
+        case .drawing:
+            policyTool = .drawing
+        }
+        let change = collaborationPolicy.set(
+            policyTool,
+            enabled: enabled,
+            for: source
+        )
+        sendHiddenPointers(for: change.pointerHiddenSources)
+        refreshCollaborationInteractions()
+    }
+
+    private func resetCollaborationToolsToGlobal(
+        for source: MeshRoomSourceKey
+    ) {
+        let change = collaborationPolicy.useGlobalSettings(for: source)
+        sendHiddenPointers(for: change.pointerHiddenSources)
+        refreshCollaborationInteractions()
+    }
+
+    private func collaborationSelection(
+        for source: ClipLiveShareNativeV3SourceKey
+    ) -> MeshRoomCollaborationToolSelection {
+        collaborationPolicy.policy(
+            for: collaborationPolicyKey(for: source)
+        ).selection
+    }
+
+    private func collaborationPolicyKey(
+        for source: ClipLiveShareNativeV3SourceKey
+    ) -> MeshRoomSourceKey {
+        .init(
+            participantID: source.ownerParticipantID.rawValue,
+            sourceID: source.sourceInstanceID.rawValue
+        )
+    }
+
+    private func nativeSourceKey(
+        for source: MeshRoomSourceKey
+    ) -> ClipLiveShareNativeV3SourceKey? {
+        guard let participantID = try? ClipLiveShareNativeV3ParticipantID(
+            rawValue: source.participantID
+        ),
+              let sourceID = try? ClipLiveShareSourceInstanceID(
+                rawValue: source.sourceID
+              )
+        else { return nil }
+        return .init(
+            ownerParticipantID: participantID,
+            sourceInstanceID: sourceID
+        )
+    }
+
+    private func sendHiddenPointers(
+        for sources: Set<MeshRoomSourceKey>
+    ) {
+        for source in sources {
+            guard let key = nativeSourceKey(for: source) else { continue }
+            queueCollaborationPointer(
+                nil,
+                reason: .modeDisabled,
+                sourceKey: key
+            )
+        }
+    }
+
+    private func pruneCollaborationBookkeeping(
+        for removedSources: Set<MeshRoomSourceKey>
+    ) {
+        guard !removedSources.isEmpty else { return }
+        for source in removedSources {
+            guard let key = nativeSourceKey(for: source) else { continue }
+            collaborationPointerCoalescers.removeValue(forKey: key)?.cancel()
+            collaborationPointerSequenceBySource.removeValue(forKey: key)
+            collaborationSequenceBySource.removeValue(forKey: key)
+        }
+    }
+
     private func clearAnnotations() {
         for key in roomSnapshot?.media?.collaboration.keys.map({ $0 }) ?? [] {
             sendCollaboration(key) { context in
@@ -1770,7 +1932,9 @@ final class ServerCoordinatedMeshParticipantCoordinator {
     ) -> NativeViewerCollaborationActions {
         .init(
             pointerChanged: { [weak self] position, reason in
-                guard let self, localPointerVisible else { return }
+                guard let self,
+                      collaborationSelection(for: sourceKey).pointerEnabled
+                else { return }
                 queueCollaborationPointer(
                     position,
                     reason: reason,
@@ -1778,7 +1942,9 @@ final class ServerCoordinatedMeshParticipantCoordinator {
                 )
             },
             ping: { [weak self] position in
-                guard let self, localPingModeEnabled else { return }
+                guard let self,
+                      collaborationSelection(for: sourceKey).pingEnabled
+                else { return }
                 sendCollaboration(sourceKey) { context in
                     try self.collaborationConfiguration.ping(
                         context: context,
@@ -1787,7 +1953,9 @@ final class ServerCoordinatedMeshParticipantCoordinator {
                 }
             },
             strokeBegan: { [weak self] strokeID, point in
-                guard let self, localInkEnabled else { return }
+                guard let self,
+                      collaborationSelection(for: sourceKey).drawingEnabled
+                else { return }
                 sendCollaboration(sourceKey) { context in
                     try self.collaborationConfiguration.strokeBegin(
                         context: context,
@@ -1797,7 +1965,9 @@ final class ServerCoordinatedMeshParticipantCoordinator {
                 }
             },
             strokePoints: { [weak self] strokeID, points in
-                guard let self, localInkEnabled else { return }
+                guard let self,
+                      collaborationSelection(for: sourceKey).drawingEnabled
+                else { return }
                 sendCollaboration(sourceKey) { context in
                     .strokePoints(try .init(
                         context: context,
@@ -1807,7 +1977,9 @@ final class ServerCoordinatedMeshParticipantCoordinator {
                 }
             },
             strokeEnded: { [weak self] strokeID in
-                guard let self, localInkEnabled else { return }
+                guard let self,
+                      collaborationSelection(for: sourceKey).drawingEnabled
+                else { return }
                 sendCollaboration(sourceKey) { context in
                     .strokeEnd(.init(context: context, strokeID: strokeID))
                 }
@@ -1928,18 +2100,6 @@ final class ServerCoordinatedMeshParticipantCoordinator {
             )
         }
         publish()
-    }
-
-    private func broadcastPointerHidden() {
-        let keys = roomSnapshot?.media?.sourceSnapshots.values
-            .flatMap(\.sources).map(\.key) ?? []
-        for key in keys where key.ownerParticipantID != localParticipantID {
-            queueCollaborationPointer(
-                nil,
-                reason: .modeDisabled,
-                sourceKey: key
-            )
-        }
     }
 
     private func publishNativeCursor() async -> Int {

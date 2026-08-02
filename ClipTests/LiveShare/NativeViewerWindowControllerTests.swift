@@ -108,7 +108,92 @@ struct NativeViewerWindowControllerTests {
                 < content.headerControlFrames.close.minX
         )
         #expect(content.headerControlOpacities.allSatisfy { $0 < 1 })
-        #expect(content.headerControlTintColors.allSatisfy { $0 == .black })
+        #expect(content.headerControlTintColors.allSatisfy { $0 == .white })
+        #expect(content.collaborationControlFrames.count == 3)
+        #expect(content.collaborationControlFrames.values.allSatisfy {
+            $0.width == 24 && $0.height == 22
+        })
+    }
+
+    @Test("Window collaboration controls expose effective state and overrides")
+    func collaborationControlStateAndActions() {
+        let content = NativeViewerContentView(
+            videoView: NSView(),
+            identityColor: .systemPink
+        )
+        content.frame = CGRect(x: 0, y: 0, width: 800, height: 500)
+        var changes: [(NativeViewerCollaborationControlTool, Bool)] = []
+        var resetCount = 0
+        content.onCollaborationControlChanged = { tool, enabled in
+            changes.append((tool, enabled))
+        }
+        content.onCollaborationControlResetToGlobal = {
+            resetCount += 1
+        }
+
+        content.setCollaborationControlState(.init(
+            pointerEnabled: true,
+            pingEnabled: false,
+            drawingEnabled: true,
+            isUsingGlobalSettings: false
+        ))
+        content.layoutSubtreeIfNeeded()
+
+        #expect(!content.isResetCollaborationControlVisible)
+        #expect(content.collaborationControlGroupBorderWidth == 0)
+        #expect(content.collaborationControlFrames.count == 3)
+        for tool in NativeViewerCollaborationControlTool.allCases {
+            #expect(content.collaborationControlToolTips[tool] == tool.title)
+            #expect(
+                content.collaborationControlAccessibilityLabels[tool]
+                    == tool.title
+            )
+        }
+        content.activateCollaborationControl(.pointer)
+        content.activateCollaborationControl(.ping)
+        content.activateResetCollaborationToGlobal()
+        #expect(changes.map(\.0) == [.pointer, .ping])
+        #expect(changes.map(\.1) == [false, true])
+        #expect(resetCount == 1)
+
+        content.setCollaborationControlState(.globalDefaults)
+        #expect(!content.isResetCollaborationControlVisible)
+        #expect(content.collaborationControlGroupBorderWidth == 0)
+    }
+
+    @Test("Sizing control keeps balanced padding in every mode and fullscreen")
+    func sizingControlHorizontalPadding() {
+        let content = NativeViewerContentView(
+            videoView: NSView(),
+            identityColor: .systemPink
+        )
+        content.frame = CGRect(x: 0, y: 0, width: 800, height: 500)
+
+        for mode in [
+            NativeViewerScaleMode.follow,
+            .native,
+            .fit,
+        ] {
+            content.setScaleMode(mode)
+            content.layoutSubtreeIfNeeded()
+            #expect(content.zoomControlHorizontalPadding >= 8)
+            #expect(content.zoomControlHorizontalPadding < 9)
+            #expect(content.zoomControlHugsTitle)
+        }
+
+        content.setFullScreenPresentation(true)
+        for mode in [
+            NativeViewerScaleMode.follow,
+            .native,
+            .fit,
+        ] {
+            content.setScaleMode(mode)
+            content.layoutSubtreeIfNeeded()
+            #expect(content.zoomControlHorizontalPadding >= 8)
+            #expect(content.zoomControlHorizontalPadding < 9)
+            #expect(content.zoomControlHugsTitle)
+        }
+        content.setFullScreenPresentation(false)
     }
 
     @Test("Viewer windows start windowed and never auto-tab")
@@ -456,17 +541,134 @@ struct NativeViewerWindowControllerTests {
         #expect(video.frame.minX == 0)
         #expect(abs(video.frame.midY - content.bounds.midY) <= 0.5)
         #expect(content.isFullScreenHeaderVisible)
+        #expect(content.areFullScreenControlsInteractive)
+        #expect(content.areFullScreenControlsEnabled)
+        #expect(!content.isCloseControlVisible)
+        #expect(content.headerControlFrames.close == .zero)
+        #expect(
+            content.headerControlFrames.zoom.minY
+                == content.headerControlFrames.fullScreen.minY
+        )
+        #expect(content.collaborationControlFrames.values.allSatisfy {
+            $0.minY == content.headerControlFrames.fullScreen.minY
+        })
 
         content.hideFullScreenHeaderForInactivity()
         #expect(!content.isFullScreenHeaderVisible)
+        #expect(!content.areFullScreenControlsInteractive)
+        #expect(!content.areFullScreenControlsEnabled)
         content.setFullScreenPresentation(false)
         #expect(content.isFullScreenHeaderVisible)
+        #expect(content.areFullScreenControlsInteractive)
+        #expect(content.areFullScreenControlsEnabled)
+        #expect(content.isCloseControlVisible)
+        #expect(content.headerControlFrames.close.width > 0)
     }
 
-    @Test("Fullscreen controls reveal only near the top overlay")
+    @Test("Fullscreen Native remains 100 percent and follows the cursor")
+    func fullscreenNativeCropsAndFollowsCursor() {
+        let video = NSView()
+        let content = NativeViewerContentView(videoView: video, identityColor: .systemPink)
+        let source = Self.makeSource(
+            sourcePointSize: CGSize(width: 2_400, height: 1_600)
+        )
+        content.frame = CGRect(x: 0, y: 0, width: 1_200, height: 800)
+        content.update(
+            ownerName: "Friend",
+            source: source,
+            identityColor: .systemPink,
+            resolvedSourceLogicalSize: source.sourcePointSize
+        )
+        content.setScaleMode(.native)
+        // Seed the pan anchor before fullscreen resets its geometry so the
+        // first fullscreen frame lands at the cursor without timer-dependent
+        // interpolation in this deterministic test.
+        content.setCursor(normalizedX: 1, normalizedY: 1)
+        content.setFullScreenPresentation(true)
+        content.layoutSubtreeIfNeeded()
+
+        #expect(video.frame.size == source.sourcePointSize)
+        #expect(video.frame.origin == CGPoint(x: -1_200, y: 0))
+        #expect(content.zoomPercentage == 100)
+
+        content.setCursor(normalizedX: 0, normalizedY: 0)
+        // Settling presentation deterministically exercises the same target
+        // used by the 60 Hz cursor-follow timer without waiting on wall time.
+        content.setPresentationActive(false)
+        content.setPresentationActive(true)
+        #expect(video.frame.origin == CGPoint(x: 0, y: -800))
+
+        content.setFullScreenPresentation(false)
+    }
+
+    @Test("Fullscreen Fit continues to aspect-fit oversized sources")
+    func fullscreenFitStillAspectFits() {
+        let video = NSView()
+        let content = NativeViewerContentView(videoView: video, identityColor: .systemPink)
+        let source = Self.makeSource(
+            sourcePointSize: CGSize(width: 2_400, height: 1_600)
+        )
+        content.frame = CGRect(x: 0, y: 0, width: 1_200, height: 800)
+        content.update(
+            ownerName: "Friend",
+            source: source,
+            identityColor: .systemPink,
+            resolvedSourceLogicalSize: source.sourcePointSize
+        )
+        content.setScaleMode(.fit)
+        content.setFullScreenPresentation(true)
+        content.layoutSubtreeIfNeeded()
+
+        #expect(video.frame == content.bounds)
+        #expect(content.zoomPercentage == 50)
+
+        content.setFullScreenPresentation(false)
+    }
+
+    @Test("Fullscreen pointer activity reuses one pending hide timer")
+    func fullscreenPointerActivityCoalescesHideTimer() {
+        let content = NativeViewerContentView(
+            videoView: NSView(),
+            identityColor: .systemPink
+        )
+        content.setFullScreenPresentation(true)
+        let creationCount = content.fullScreenHideTimerCreationCount
+
+        for _ in 0..<100 {
+            content.noteFullScreenPointerActivityForTesting()
+        }
+
+        #expect(content.fullScreenHideTimerCreationCount == creationCount)
+        content.setFullScreenPresentation(false)
+    }
+
+    @Test("Hidden fullscreen controls resign keyboard focus and disable actions")
+    func hiddenFullscreenControlsResignKeyboardFocus() {
+        let controller = makeController()
+        defer { controller.tearDown() }
+        controller.content.setFullScreenPresentation(true)
+
+        #expect(
+            controller.content.focusFullScreenCollaborationControlForTesting(
+                .pointer
+            )
+        )
+        #expect(controller.content.hasKeyboardFocusedFullScreenControl)
+
+        controller.content.hideFullScreenHeaderImmediatelyForTesting()
+
+        #expect(!controller.content.hasKeyboardFocusedFullScreenControl)
+        #expect(!controller.content.areFullScreenControlsInteractive)
+        #expect(!controller.content.areFullScreenControlsEnabled)
+    }
+
+    @Test("Fullscreen controls reveal on normal pointer movement")
     func fullscreenHeaderRevealRegion() {
         let bounds = CGRect(x: 0, y: 0, width: 1_200, height: 800)
-        let header = CGRect(x: 8, y: 764, width: 1_184, height: 28)
+        let header = NativeViewerContentView.fullScreenControlFrame(
+            bounds: bounds,
+            safeAreaTopInset: 0
+        )
 
         #expect(NativeViewerContentView.shouldRevealFullScreenHeader(
             pointer: CGPoint(x: 600, y: 790),
@@ -478,11 +680,50 @@ struct NativeViewerWindowControllerTests {
             bounds: bounds,
             headerFrame: header
         ))
-        #expect(!NativeViewerContentView.shouldRevealFullScreenHeader(
+        #expect(NativeViewerContentView.shouldRevealFullScreenHeader(
             pointer: CGPoint(x: 600, y: 400),
             bounds: bounds,
             headerFrame: header
         ))
+        #expect(!NativeViewerContentView.shouldRevealFullScreenHeader(
+            pointer: CGPoint(x: -10, y: 400),
+            bounds: bounds,
+            headerFrame: header
+        ))
+    }
+
+    @Test("Fullscreen capsule stays below system chrome and away from the top-right HUD")
+    func fullscreenControlGeometry() {
+        let bounds = CGRect(x: 0, y: 0, width: 1_440, height: 900)
+        let ordinary = NativeViewerContentView.fullScreenControlFrame(
+            bounds: bounds,
+            safeAreaTopInset: 0
+        )
+        let notched = NativeViewerContentView.fullScreenControlFrame(
+            bounds: bounds,
+            safeAreaTopInset: 38
+        )
+        let narrow = NativeViewerContentView.fullScreenControlFrame(
+            bounds: CGRect(x: 0, y: 0, width: 800, height: 600),
+            safeAreaTopInset: 0
+        )
+        let medium = NativeViewerContentView.fullScreenControlFrame(
+            bounds: CGRect(x: 0, y: 0, width: 900, height: 600),
+            safeAreaTopInset: 0
+        )
+
+        #expect(ordinary.size == CGSize(width: 500, height: 36))
+        #expect(ordinary.midX == bounds.midX)
+        #expect(bounds.maxY - ordinary.maxY >= 44)
+        #expect(bounds.maxX - ordinary.maxX >= 200)
+        #expect(bounds.maxY - notched.maxY >= 52)
+        #expect(notched.maxY < ordinary.maxY)
+        #expect(narrow.width == 368)
+        #expect(narrow.midX == 400)
+        #expect(800 - narrow.maxX >= 216)
+        #expect(medium.width == 468)
+        #expect(medium.midX == 450)
+        #expect(900 - medium.maxX >= 216)
     }
 
     @Test("Fullscreen callbacks preserve the persistent sizing mode")
@@ -511,6 +752,66 @@ struct NativeViewerWindowControllerTests {
         #expect(!controller.content.isFullScreenPresentation)
         #expect(controller.scaleMode == .native)
         #expect(states == [true, false])
+    }
+
+    @Test("Fullscreen teardown waits for AppKit to restore the window")
+    func fullscreenTearDownWaitsForExit() {
+        let controller = makeController()
+        guard let window = controller.window else {
+            Issue.record("Expected viewer window")
+            return
+        }
+        let notification = Notification(
+            name: NSWindow.didEnterFullScreenNotification,
+            object: window
+        )
+        controller.windowWillEnterFullScreen(notification)
+        controller.windowDidEnterFullScreen(notification)
+        var exitRequestCount = 0
+
+        controller.tearDown(requestFullScreenExit: { _ in
+            exitRequestCount += 1
+        })
+
+        #expect(exitRequestCount == 1)
+        #expect(controller.isTearDownPendingFullScreenExit)
+        #expect(!controller.hasCompletedTearDown)
+        #expect(window.delegate === controller)
+
+        controller.windowWillExitFullScreen(notification)
+        controller.windowDidExitFullScreen(notification)
+
+        #expect(!controller.isTearDownPendingFullScreenExit)
+        #expect(controller.hasCompletedTearDown)
+        #expect(window.delegate == nil)
+    }
+
+    @Test("Teardown requested during fullscreen entry exits after entry completes")
+    func tearDownDuringFullScreenEntryWaitsForDidEnter() {
+        let controller = makeController()
+        guard let window = controller.window else {
+            Issue.record("Expected viewer window")
+            return
+        }
+        let notification = Notification(
+            name: NSWindow.willEnterFullScreenNotification,
+            object: window
+        )
+        controller.windowWillEnterFullScreen(notification)
+        var exitRequestCount = 0
+
+        controller.tearDown(requestFullScreenExit: { _ in
+            exitRequestCount += 1
+        })
+        #expect(exitRequestCount == 0)
+        #expect(controller.isTearDownPendingFullScreenExit)
+
+        controller.windowDidEnterFullScreen(notification)
+        #expect(exitRequestCount == 1)
+
+        controller.windowWillExitFullScreen(notification)
+        controller.windowDidExitFullScreen(notification)
+        #expect(controller.hasCompletedTearDown)
     }
 
     @Test("Leaving Follow during fullscreen cancels its deferred source resize")
@@ -605,6 +906,67 @@ struct NativeViewerWindowControllerTests {
         #expect(coordinator.windowSnapshots.first?.scaleMode == .native)
         #expect(boundSources == [connected, recovered])
         #expect(teardownCount == 0)
+    }
+
+    @Test("Coordinator applies and routes per-source collaboration controls")
+    func coordinatorRoutesCollaborationControlsBySource() throws {
+        let coordinator = NativeViewerWindowCoordinator(
+            ownerName: "Friend",
+            ownerPublicIdentity: Data(repeating: 9, count: 65),
+            surfaceFactory: {
+                NativeViewerVideoSurfaceAdapter(
+                    view: NSView(),
+                    bind: { _ in },
+                    teardown: {}
+                )
+            }
+        )
+        defer { coordinator.tearDown() }
+        let source = Self.makeSource()
+        let custom = NativeViewerCollaborationControlState(
+            pointerEnabled: true,
+            pingEnabled: false,
+            drawingEnabled: true,
+            isUsingGlobalSettings: false
+        )
+        coordinator.setCollaborationControlState(
+            custom,
+            sourceInstanceID: source.sourceInstanceID
+        )
+        try coordinator.reconcile([source])
+
+        var change: (
+            String,
+            NativeViewerCollaborationControlTool,
+            Bool
+        )?
+        var resetSource: String?
+        coordinator.onCollaborationControlChanged = {
+            change = ($0, $1, $2)
+        }
+        coordinator.onCollaborationControlResetToGlobal = {
+            resetSource = $0
+        }
+        coordinator.activateCollaborationControl(
+            .ping,
+            sourceInstanceID: source.sourceInstanceID
+        )
+        coordinator.activateResetCollaborationToGlobal(
+            sourceInstanceID: source.sourceInstanceID
+        )
+
+        #expect(coordinator.collaborationControlState(
+            sourceInstanceID: source.sourceInstanceID
+        ) == custom)
+        #expect(change?.0 == source.sourceInstanceID)
+        #expect(change?.1 == .ping)
+        #expect(change?.2 == true)
+        #expect(resetSource == source.sourceInstanceID)
+
+        try coordinator.reconcile([])
+        #expect(coordinator.collaborationControlState(
+            sourceInstanceID: source.sourceInstanceID
+        ) == nil)
     }
 
     private func makeController(

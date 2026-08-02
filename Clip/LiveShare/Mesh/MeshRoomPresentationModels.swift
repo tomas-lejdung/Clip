@@ -290,6 +290,185 @@ struct MeshRoomSourceKey: Hashable, Identifiable, Sendable {
     var id: Self { self }
 }
 
+enum MeshRoomCollaborationTool: CaseIterable, Equatable, Sendable {
+    case pointer
+    case ping
+    case drawing
+}
+
+/// The local participant's collaboration tools for one remote source.
+///
+/// Pointer visibility is independent. Ping and drawing both own the primary
+/// mouse gesture, so enabling either one disables the other.
+struct MeshRoomCollaborationToolSelection: Equatable, Sendable {
+    private(set) var pointerEnabled: Bool
+    private(set) var pingEnabled: Bool
+    private(set) var drawingEnabled: Bool
+
+    init(
+        pointerEnabled: Bool = false,
+        pingEnabled: Bool = false,
+        drawingEnabled: Bool = false
+    ) {
+        self.pointerEnabled = pointerEnabled
+        self.drawingEnabled = drawingEnabled
+        self.pingEnabled = pingEnabled && !drawingEnabled
+    }
+
+    func isEnabled(_ tool: MeshRoomCollaborationTool) -> Bool {
+        switch tool {
+        case .pointer:
+            pointerEnabled
+        case .ping:
+            pingEnabled
+        case .drawing:
+            drawingEnabled
+        }
+    }
+
+    mutating func set(
+        _ tool: MeshRoomCollaborationTool,
+        enabled: Bool
+    ) {
+        switch tool {
+        case .pointer:
+            pointerEnabled = enabled
+        case .ping:
+            pingEnabled = enabled
+            if enabled { drawingEnabled = false }
+        case .drawing:
+            drawingEnabled = enabled
+            if enabled { pingEnabled = false }
+        }
+    }
+}
+
+struct MeshRoomCollaborationSourcePolicy: Equatable, Sendable {
+    let selection: MeshRoomCollaborationToolSelection
+    let isUsingGlobalSettings: Bool
+}
+
+struct MeshRoomCollaborationPolicyChange: Equatable, Sendable {
+    let pointerHiddenSources: Set<MeshRoomSourceKey>
+
+    static let none = Self(pointerHiddenSources: [])
+}
+
+/// Pure local policy for global collaboration defaults and per-source
+/// overrides. The full participant/source key is intentional: source instance
+/// identifiers are scoped to their publisher and may collide across peers.
+///
+/// Authoritative source reconciliation is separate from peer/track readiness.
+/// This preserves overrides across a hidden window or temporary WebRTC
+/// recovery, while removing them as soon as the room roster says that source
+/// has ended.
+struct MeshRoomCollaborationPolicyReducer: Equatable, Sendable {
+    private(set) var globalSelection: MeshRoomCollaborationToolSelection
+    private(set) var sourceOverrides:
+        [MeshRoomSourceKey: MeshRoomCollaborationToolSelection] = [:]
+    private(set) var authoritativeSources: Set<MeshRoomSourceKey> = []
+
+    init(
+        globalSelection: MeshRoomCollaborationToolSelection = .init()
+    ) {
+        self.globalSelection = globalSelection
+    }
+
+    func policy(
+        for source: MeshRoomSourceKey
+    ) -> MeshRoomCollaborationSourcePolicy {
+        if let override = sourceOverrides[source] {
+            return .init(
+                selection: override,
+                isUsingGlobalSettings: false
+            )
+        }
+        return .init(
+            selection: globalSelection,
+            isUsingGlobalSettings: true
+        )
+    }
+
+    /// Reconciles only authoritative source membership. Visibility and media
+    /// connectivity must never be passed here because neither ends a source.
+    @discardableResult
+    mutating func reconcileAuthoritativeSources(
+        _ sources: Set<MeshRoomSourceKey>
+    ) -> Set<MeshRoomSourceKey> {
+        let removed = authoritativeSources.subtracting(sources)
+        authoritativeSources = sources
+        sourceOverrides = sourceOverrides.filter { sources.contains($0.key) }
+        return removed
+    }
+
+    /// A global edit deliberately reattaches every window to the defaults,
+    /// even when the selected value happens to match the current global value.
+    @discardableResult
+    mutating func setGlobal(
+        _ tool: MeshRoomCollaborationTool,
+        enabled: Bool
+    ) -> MeshRoomCollaborationPolicyChange {
+        let previouslyVisible = pointerVisibleSources()
+        globalSelection.set(tool, enabled: enabled)
+        sourceOverrides.removeAll(keepingCapacity: true)
+        return change(fromPreviouslyVisible: previouslyVisible)
+    }
+
+    /// The first per-source edit snapshots all global values before changing
+    /// one tool. Subsequent global changes reset this override by design.
+    @discardableResult
+    mutating func set(
+        _ tool: MeshRoomCollaborationTool,
+        enabled: Bool,
+        for source: MeshRoomSourceKey
+    ) -> MeshRoomCollaborationPolicyChange {
+        guard authoritativeSources.contains(source) else { return .none }
+        let wasVisible = policy(for: source).selection.pointerEnabled
+        var selection = sourceOverrides[source] ?? globalSelection
+        selection.set(tool, enabled: enabled)
+        sourceOverrides[source] = selection
+        let isVisible = selection.pointerEnabled
+        return .init(
+            pointerHiddenSources: wasVisible && !isVisible ? [source] : []
+        )
+    }
+
+    @discardableResult
+    mutating func useGlobalSettings(
+        for source: MeshRoomSourceKey
+    ) -> MeshRoomCollaborationPolicyChange {
+        guard authoritativeSources.contains(source),
+              let previous = sourceOverrides.removeValue(forKey: source)
+        else { return .none }
+        return .init(
+            pointerHiddenSources:
+                previous.pointerEnabled && !globalSelection.pointerEnabled
+                    ? [source]
+                    : []
+        )
+    }
+
+    mutating func removeAllSources() {
+        authoritativeSources.removeAll(keepingCapacity: false)
+        sourceOverrides.removeAll(keepingCapacity: false)
+    }
+
+    private func pointerVisibleSources() -> Set<MeshRoomSourceKey> {
+        Set(authoritativeSources.filter {
+            policy(for: $0).selection.pointerEnabled
+        })
+    }
+
+    private func change(
+        fromPreviouslyVisible previouslyVisible: Set<MeshRoomSourceKey>
+    ) -> MeshRoomCollaborationPolicyChange {
+        .init(
+            pointerHiddenSources:
+                previouslyVisible.subtracting(pointerVisibleSources())
+        )
+    }
+}
+
 struct MeshRoomLocalParticipantSnapshot: Equatable, Sendable {
     let id: String
     let displayName: String

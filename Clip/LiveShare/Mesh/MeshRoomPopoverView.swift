@@ -1264,8 +1264,20 @@ struct MeshRoomPopoverView: View {
 
     private var collaboration: some View {
         VStack(alignment: .leading, spacing: ClipPopoverDesign.paneSpacing) {
-            ClipPopoverSection(String(localized: "Your Tools")) {
+            ClipPopoverSection(String(localized: "Global Defaults")) {
                 VStack(spacing: 0) {
+                    Text(
+                        String(
+                            localized:
+                                "These settings apply to every shared window. Changing a global setting resets custom window controls."
+                        )
+                    )
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, ClipPopoverDesign.rowHorizontalPadding)
+                    .padding(.vertical, ClipPopoverDesign.rowVerticalPadding)
+                    ClipPopoverRowDivider()
                     ClipPopoverToggleRow(
                         String(localized: "Reveal My Pointer"),
                         subtitle: String(

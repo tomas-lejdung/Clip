@@ -416,6 +416,51 @@ struct ServerCoordinatedMeshRoomSessionTests {
         eventTask.cancel()
     }
 
+    @Test("candidate maps an admission denial to a typed event")
+    func admissionDenialEmitsTypedEvent() async throws {
+        let fixture = try ServerRoomSessionFixture()
+        let creator = try fixture.creatorBootstrap()
+        let candidate = try fixture.candidateBootstrap(
+            index: 1,
+            invite: creator.invite,
+            requiresCreatorApproval: true
+        )
+        let transport = ServerRoomSessionTransportProbe()
+        let session = fixture.session(
+            bootstrap: .init(candidate, invite: creator.invite),
+            transport: transport,
+            peerFactory: .init()
+        )
+        let events = await session.events()
+        let probe = ServerRoomSessionEventProbe()
+        let eventTask = Task {
+            for await event in events { await probe.record(event) }
+        }
+
+        try await session.start()
+        await transport.emit(.message(.candidateOpened(
+            candidateHandle: fixture.candidateHandles[1],
+            roomDescriptor: creator.createRequest.descriptor
+        )))
+        try await serverRoomSessionEventually {
+            await session.snapshot().phase == .waitingForAdmission
+        }
+        await transport.emit(.message(.denyCandidate(
+            candidateHandle: nil,
+            reason: "Not today."
+        )))
+
+        try await serverRoomSessionEventually {
+            await probe.didDenyAdmission(reason: "Not today.")
+        }
+        if case let .ended(reason) = await session.snapshot().phase {
+            #expect(reason == "Not today.")
+        } else {
+            Issue.record("Expected admission denial to end this attempt")
+        }
+        eventTask.cancel()
+    }
+
     @Test("one pair failure is local and creator end is terminal")
     func isolatedPairFailureAndCreatorEnd() async throws {
         let fixture = try ServerRoomSessionFixture()
@@ -1052,6 +1097,15 @@ private actor ServerRoomSessionEventProbe {
     func didRequireAccessWord() -> Bool {
         values.contains {
             if case .accessWordRequired = $0 { true } else { false }
+        }
+    }
+    func didDenyAdmission(reason: String) -> Bool {
+        values.contains {
+            if case let .admissionDenied(candidate) = $0 {
+                candidate == reason
+            } else {
+                false
+            }
         }
     }
 }

@@ -125,6 +125,13 @@ struct MenuBarLiveShareFriendRow: Equatable, Identifiable, Sendable {
     }
 }
 
+struct MenuBarFriendJoinPresentationContext: Equatable, Sendable {
+    let friendID: String
+    let friendName: String
+    let deviceName: String
+    let roomName: String
+}
+
 enum MenuBarServerRoomInviteEntry {
     static func parse(_ value: String) -> ClipLiveShareServerRoomV4Invite? {
         let trimmed = value.trimmingCharacters(
@@ -190,12 +197,18 @@ enum MenuBarLiveShareConnectionStatus: Equatable, Sendable {
     case idle
     case creating
     case joining(roomName: String)
+    case joiningFriend(MenuBarFriendJoinPresentationContext)
     case accessWordRequired(
         roomName: String,
         invite: ClipLiveShareServerRoomV4Invite,
         requiresCreatorApproval: Bool
     )
     case awaitingApproval(roomName: String)
+    case awaitingFriendApproval(MenuBarFriendJoinPresentationContext)
+    case friendJoinDenied(MenuBarFriendJoinPresentationContext, reason: String)
+    case friendJoinTimedOut(MenuBarFriendJoinPresentationContext)
+    case friendJoinFailed(MenuBarFriendJoinPresentationContext, message: String)
+    case friendJoinCanceled(MenuBarFriendJoinPresentationContext)
 
     enum PaneContent: Equatable {
         case entry
@@ -209,7 +222,9 @@ enum MenuBarLiveShareConnectionStatus: Equatable, Sendable {
             .entry
         case .accessWordRequired:
             .accessWord
-        case .creating, .joining, .awaitingApproval:
+        case .creating, .joining, .joiningFriend, .awaitingApproval,
+             .awaitingFriendApproval, .friendJoinDenied,
+             .friendJoinTimedOut, .friendJoinFailed, .friendJoinCanceled:
             .connection
         }
     }
@@ -222,10 +237,22 @@ enum MenuBarLiveShareConnectionStatus: Equatable, Sendable {
             String(localized: "Creating Room…")
         case .joining:
             String(localized: "Joining…")
+        case let .joiningFriend(context):
+            String(localized: "Joining \(context.friendName)…")
         case .accessWordRequired:
             String(localized: "Access Word Required")
         case .awaitingApproval:
             String(localized: "Waiting for Approval")
+        case .awaitingFriendApproval:
+            String(localized: "Waiting for Approval")
+        case .friendJoinDenied:
+            String(localized: "Join Request Denied")
+        case .friendJoinTimedOut:
+            String(localized: "Approval Timed Out")
+        case .friendJoinFailed:
+            String(localized: "Couldn’t Join Live Share")
+        case .friendJoinCanceled:
+            String(localized: "Join Canceled")
         }
     }
 
@@ -237,6 +264,11 @@ enum MenuBarLiveShareConnectionStatus: Equatable, Sendable {
             String(localized: "Preparing a secure room invitation.")
         case let .joining(roomName):
             String(localized: "Connecting securely to \(roomName).")
+        case let .joiningFriend(context):
+            String(
+                localized:
+                    "Connecting securely to \(context.roomName) on \(context.deviceName)."
+            )
         case let .accessWordRequired(roomName, _, _):
             String(
                 localized:
@@ -247,6 +279,72 @@ enum MenuBarLiveShareConnectionStatus: Equatable, Sendable {
                 localized:
                     "The room creator of \(roomName) must allow you before you can join."
             )
+        case let .awaitingFriendApproval(context):
+            String(
+                localized:
+                    "Waiting for \(context.friendName) to allow you into \(context.roomName)."
+            )
+        case let .friendJoinDenied(context, reason):
+            reason.isEmpty
+                ? String(localized: "\(context.friendName) denied your request to join \(context.roomName).")
+                : reason
+        case let .friendJoinTimedOut(context):
+            String(localized: "\(context.friendName) did not respond within five minutes.")
+        case let .friendJoinFailed(context, message):
+            message.isEmpty
+                ? String(localized: "Clip could not join \(context.roomName).")
+                : message
+        case let .friendJoinCanceled(context):
+            String(localized: "You canceled the request to join \(context.roomName).")
+        }
+    }
+
+    var showsProgress: Bool {
+        switch self {
+        case .creating, .joining, .joiningFriend, .awaitingApproval,
+             .awaitingFriendApproval:
+            true
+        default:
+            false
+        }
+    }
+
+    var allowsCancel: Bool {
+        switch self {
+        case .joiningFriend, .awaitingFriendApproval:
+            true
+        default:
+            false
+        }
+    }
+
+    var allowsRetry: Bool {
+        switch self {
+        case .friendJoinDenied, .friendJoinTimedOut, .friendJoinFailed,
+             .friendJoinCanceled:
+            true
+        default:
+            false
+        }
+    }
+
+    var allowsDone: Bool { allowsRetry }
+
+    var isTerminalFriendJoin: Bool { allowsRetry }
+
+    var friendContext: MenuBarFriendJoinPresentationContext? {
+        switch self {
+        case let .joiningFriend(context):
+            context
+        case let .awaitingFriendApproval(context),
+             let .friendJoinTimedOut(context),
+             let .friendJoinCanceled(context):
+            context
+        case let .friendJoinDenied(context, _),
+             let .friendJoinFailed(context, _):
+            context
+        default:
+            nil
         }
     }
 
@@ -264,6 +362,18 @@ enum MenuBarLiveShareConnectionStatus: Equatable, Sendable {
             return false
         }
         return requiresCreatorApproval
+    }
+
+    /// Friend joins have explicit Cancel/Done actions. A generic Back button
+    /// would abandon only the visible pane while leaving the join alive.
+    var allowsBackNavigation: Bool {
+        switch self {
+        case .joiningFriend, .awaitingFriendApproval, .friendJoinDenied,
+             .friendJoinTimedOut, .friendJoinFailed, .friendJoinCanceled:
+            false
+        default:
+            true
+        }
     }
 }
 
@@ -416,6 +526,10 @@ struct MenuBarActions {
     let createLiveShareRoom: () -> Void
     let joinLiveShareInvite: (MenuBarServerRoomJoinRequest) -> Void
     let joinLiveShareFriend: (String) -> Void
+    let cancelLiveShareFriendJoin: () -> Void
+    let retryLiveShareFriendJoin: () -> Void
+    let dismissLiveShareFriendJoin: () -> Void
+    let renameLiveShareFriend: (String) -> Void
     let removeLiveShareFriend: (String) -> Void
     let captureArea: () -> Void
     let lastArea: () -> Void
@@ -438,6 +552,10 @@ struct MenuBarActions {
             MenuBarServerRoomJoinRequest
         ) -> Void = { _ in },
         joinLiveShareFriend: @escaping (String) -> Void = { _ in },
+        cancelLiveShareFriendJoin: @escaping () -> Void = {},
+        retryLiveShareFriendJoin: @escaping () -> Void = {},
+        dismissLiveShareFriendJoin: @escaping () -> Void = {},
+        renameLiveShareFriend: @escaping (String) -> Void = { _ in },
         removeLiveShareFriend: @escaping (String) -> Void = { _ in },
         captureArea: @escaping () -> Void,
         lastArea: @escaping () -> Void,
@@ -457,6 +575,10 @@ struct MenuBarActions {
         self.createLiveShareRoom = createLiveShareRoom
         self.joinLiveShareInvite = joinLiveShareInvite
         self.joinLiveShareFriend = joinLiveShareFriend
+        self.cancelLiveShareFriendJoin = cancelLiveShareFriendJoin
+        self.retryLiveShareFriendJoin = retryLiveShareFriendJoin
+        self.dismissLiveShareFriendJoin = dismissLiveShareFriendJoin
+        self.renameLiveShareFriend = renameLiveShareFriend
         self.removeLiveShareFriend = removeLiveShareFriend
         self.captureArea = captureArea
         self.lastArea = lastArea
@@ -478,6 +600,14 @@ struct MenuBarActions {
 enum MenuBarPopoverRoute: Equatable {
     case main
     case liveShare
+}
+
+enum MenuBarLiveShareRoutePolicy {
+    static func initialRoute(
+        for status: MenuBarLiveShareConnectionStatus
+    ) -> MenuBarPopoverRoute {
+        status == .idle ? .main : .liveShare
+    }
 }
 
 struct MenuBarPopoverView: View {
@@ -552,8 +682,12 @@ struct MenuBarPopoverView: View {
             icon: "dot.radiowaves.left.and.right",
             title: String(localized: "Live Share"),
             subtitle: String(localized: "Create or join a room"),
-            backTitle: String(localized: "Clip"),
-            onBack: { route = .main },
+            backTitle: model.liveShareConnectionStatus.allowsBackNavigation
+                ? String(localized: "Clip")
+                : nil,
+            onBack: model.liveShareConnectionStatus.allowsBackNavigation
+                ? { route = .main }
+                : nil,
             accessibilityIdentifier: "clip.menuBarPopover.liveShare",
             headerTrailing: {
                 version
@@ -760,57 +894,64 @@ struct MenuBarPopoverView: View {
                         Array(model.liveShareFriends.enumerated()),
                         id: \.element.id
                     ) { index, friend in
-                        Button {
-                            if friend.isOnline {
+                        ClipPopoverSplitMenuRow(
+                            isPrimaryEnabled: friend.isOnline,
+                            primaryAccessibilityIdentifier:
+                                "clip.menu.liveShare.friend.\(friend.id)",
+                            menuAccessibilityIdentifier:
+                                "clip.menu.liveShare.friend.\(friend.id).actions",
+                            menuAccessibilityLabel: String(
+                                localized: "Actions for \(friend.displayName)"
+                            ),
+                            menuHelp: String(localized: "Friend Actions"),
+                            primaryAction: {
                                 actions.joinLiveShareFriend(friend.id)
-                            }
-                        } label: {
-                            HStack(spacing: 9) {
-                                Circle()
-                                    .fill(
-                                        friend.isOnline
-                                            ? Color.green
-                                            : Color.secondary.opacity(0.45)
-                                    )
-                                    .frame(width: 8, height: 8)
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text(friend.displayName)
-                                        .font(.subheadline.weight(.medium))
-                                    Text(friend.deviceName)
-                                        .font(.caption2)
-                                        .foregroundStyle(.secondary)
+                            },
+                            primaryLabel: {
+                                HStack(spacing: 9) {
+                                    Circle()
+                                        .fill(
+                                            friend.isOnline
+                                                ? Color.green
+                                                : Color.secondary.opacity(0.45)
+                                        )
+                                        .frame(width: 8, height: 8)
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(friend.displayName)
+                                            .font(.subheadline.weight(.medium))
+                                        Text(friend.deviceName)
+                                            .font(.caption2)
+                                            .foregroundStyle(.secondary)
+                                            .lineLimit(1)
+                                    }
+                                    Spacer(minLength: 8)
+                                    Text(friend.status)
+                                        .font(.caption.weight(.medium))
+                                        .foregroundStyle(
+                                            friend.isOnline
+                                                ? Color.green
+                                                : Color.secondary
+                                        )
                                         .lineLimit(1)
                                 }
-                                Spacer(minLength: 8)
-                                Text(friend.status)
-                                    .font(.caption.weight(.medium))
-                                    .foregroundStyle(
-                                        friend.isOnline
-                                            ? Color.green
-                                            : Color.secondary
-                                    )
+                            },
+                            menuContent: {
+                                Button(String(localized: "Rename Friend…")) {
+                                    actions.renameLiveShareFriend(friend.id)
+                                }
+                                Button(
+                                    String(localized: "Remove Friend"),
+                                    role: .destructive
+                                ) {
+                                    actions.removeLiveShareFriend(friend.id)
+                                }
                             }
-                            .padding(
-                                .horizontal,
-                                ClipPopoverDesign.rowHorizontalPadding
-                            )
-                            .padding(
-                                .vertical,
-                                ClipPopoverDesign.rowVerticalPadding
-                            )
-                            .contentShape(Rectangle())
-                        }
-                        .buttonStyle(.plain)
-                        .modifier(
-                            ClipPopoverHoverEffect(
-                                isInteractive: friend.isOnline
-                            )
                         )
                         .help(friend.issue ?? friend.status)
-                        .accessibilityIdentifier(
-                            "clip.menu.liveShare.friend.\(friend.id)"
-                        )
                         .contextMenu {
+                            Button(String(localized: "Rename Friend…")) {
+                                actions.renameLiveShareFriend(friend.id)
+                            }
                             Button(
                                 String(localized: "Remove Friend"),
                                 role: .destructive
@@ -830,29 +971,87 @@ struct MenuBarPopoverView: View {
 
     private var liveShareConnectionSection: some View {
         ClipPopoverSection(String(localized: "Room")) {
-            HStack(spacing: 12) {
-                ProgressView()
-                    .controlSize(.small)
-                    .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 12) {
+                HStack(spacing: 12) {
+                    if model.liveShareConnectionStatus.showsProgress {
+                        ProgressView()
+                            .controlSize(.small)
+                            .accessibilityHidden(true)
+                    } else {
+                        Image(systemName: connectionStatusSymbol)
+                            .foregroundStyle(connectionStatusColor)
+                            .frame(width: 16)
+                            .accessibilityHidden(true)
+                    }
 
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(model.liveShareConnectionStatus.title)
-                        .font(.subheadline.weight(.semibold))
-                    Text(model.liveShareConnectionStatus.detail)
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(model.liveShareConnectionStatus.title)
+                            .font(.subheadline.weight(.semibold))
+                        Text(model.liveShareConnectionStatus.detail)
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+
+                    Spacer(minLength: 0)
                 }
+                .accessibilityElement(children: .combine)
+                .accessibilityIdentifier(
+                    "clip.menu.liveShare.connectionStatus"
+                )
 
-                Spacer(minLength: 0)
+                if model.liveShareConnectionStatus.allowsCancel {
+                    ClipPopoverButton(
+                        String(localized: "Cancel Request"),
+                        systemImage: "xmark",
+                        accessibilityIdentifier:
+                            "clip.menu.liveShare.cancelFriendJoin",
+                        action: actions.cancelLiveShareFriendJoin
+                    )
+                    .frame(maxWidth: .infinity, alignment: .trailing)
+                } else if model.liveShareConnectionStatus.allowsRetry {
+                    HStack(spacing: 8) {
+                        ClipPopoverButton(
+                            String(localized: "Done"),
+                            accessibilityIdentifier:
+                                "clip.menu.liveShare.dismissFriendJoin",
+                            action: actions.dismissLiveShareFriendJoin
+                        )
+                        Spacer(minLength: 0)
+                        ClipPopoverButton(
+                            String(localized: "Try Again"),
+                            systemImage: "arrow.clockwise",
+                            prominence: .primary,
+                            accessibilityIdentifier:
+                                "clip.menu.liveShare.retryFriendJoin",
+                            action: actions.retryLiveShareFriendJoin
+                        )
+                    }
+                }
             }
             .padding(.horizontal, ClipPopoverDesign.rowHorizontalPadding)
             .padding(.vertical, ClipPopoverDesign.rowVerticalPadding)
-            .accessibilityElement(children: .combine)
-            .accessibilityIdentifier(
-                "clip.menu.liveShare.connectionStatus"
-            )
         }
+    }
+
+    private var connectionStatusSymbol: String {
+        if case .friendJoinDenied = model.liveShareConnectionStatus {
+            return "hand.raised.fill"
+        }
+        if case .friendJoinTimedOut = model.liveShareConnectionStatus {
+            return "clock.badge.exclamationmark"
+        }
+        if case .friendJoinCanceled = model.liveShareConnectionStatus {
+            return "xmark.circle"
+        }
+        return "exclamationmark.triangle.fill"
+    }
+
+    private var connectionStatusColor: Color {
+        if case .friendJoinDenied = model.liveShareConnectionStatus {
+            return .orange
+        }
+        return .secondary
     }
 
     private var liveShareAccessWordSection: some View {

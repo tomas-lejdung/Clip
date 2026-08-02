@@ -313,6 +313,44 @@ struct MeshFriendPresenceControllerTests {
     #expect(expired.verifiedInvite == nil)
   }
 
+  @Test("renaming a friend preserves verified presence and poll backoff")
+  func aliasOnlyReconciliationPreservesPresenceState() async throws {
+    let fixture = try FriendPresenceControllerFixture()
+    let clock = LockedFriendPresenceClock(fixture.now)
+    let transport = MemoryMeshFriendPresenceTransport()
+    let records = MutableFriendPresenceRecords()
+    await records.replace(with: [fixture.friend])
+    try await transport.seed(
+      fixture.remotePresence(revision: 7),
+      at: fixture.remoteEndpoint.rootURL
+    )
+    let controller = MeshFriendPresenceController(
+      signer: fixture.localSigner,
+      loadFriends: { await records.load() },
+      localPresenceServiceEndpoint: fixture.localEndpoint,
+      transport: transport,
+      now: clock.now
+    )
+
+    await controller.synchronizeNow()
+    let before = try #require(await controller.snapshot().friends.first)
+    let callsBeforeRename = await transport.calls().count
+    var renamed = fixture.friend
+    renamed.localAlias = "Jules"
+    await records.replace(with: [renamed])
+
+    // No clock advance means the existing poll/publish schedules are not due.
+    // Replacing the state would perform both operations again.
+    await controller.synchronizeNow()
+
+    let after = try #require(await controller.snapshot().friends.first)
+    #expect(after.displayName == "Jules")
+    #expect(after.verifiedInvite == before.verifiedInvite)
+    #expect(after.lastSeenAt == before.lastSeenAt)
+    #expect(after.retryAfter == before.retryAfter)
+    #expect(await transport.calls().count == callsBeforeRename)
+  }
+
   @Test("pending friends are ignored and reused mailboxes fail closed")
   func trustAndMailboxIsolation() async throws {
     let fixture = try FriendPresenceControllerFixture()

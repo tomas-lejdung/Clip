@@ -161,6 +161,70 @@ enum ServerMeshJoinPresentationPolicy {
     }
 }
 
+enum ServerMeshFriendJoinMenuBarPolicy {
+    static func status(
+        afterRoomEnd connectionStatus: MenuBarLiveShareConnectionStatus
+    ) -> MeshParticipantMenuBarStatus {
+        switch connectionStatus {
+        case .friendJoinDenied, .friendJoinTimedOut, .friendJoinFailed:
+            .failed
+        default:
+            .ready
+        }
+    }
+}
+
+enum ServerMeshFriendJoinTimeoutPolicy {
+    static let approvalTimeout: Duration = .seconds(300)
+}
+
+enum ServerMeshFriendJoinCancellationPolicy {
+    static func canContinue(
+        attemptToken: UUID,
+        activeAttemptToken: UUID?
+    ) -> Bool {
+        activeAttemptToken == attemptToken
+    }
+}
+
+enum ServerMeshAdmissionDenialPresentationPolicy {
+    enum Outcome: Equatable {
+        case friend(
+            MenuBarFriendJoinPresentationContext,
+            reason: String
+        )
+        case generic(message: String)
+    }
+
+    static func outcome(
+        friendContext: MenuBarFriendJoinPresentationContext?,
+        reason: String
+    ) -> Outcome {
+        if let friendContext {
+            return .friend(friendContext, reason: reason)
+        }
+        return .generic(
+            message: reason.isEmpty
+                ? String(localized: "The room denied admission.")
+                : reason
+        )
+    }
+}
+
+enum ServerMeshFriendAccessWordRetryPolicy {
+    static func context(
+        status: MenuBarLiveShareConnectionStatus,
+        activeFriendContext: MenuBarFriendJoinPresentationContext?,
+        request: MenuBarServerRoomJoinRequest
+    ) -> MenuBarFriendJoinPresentationContext? {
+        guard let activeFriendContext,
+              status.accessWordInvite == request.invite else {
+            return nil
+        }
+        return activeFriendContext
+    }
+}
+
 /// Lazily installs the existing local capture owner after the v4 room session
 /// has discovered and validated the service's ICE configuration. The room
 /// session creates one WebRTC factory; that exact factory owns both every P2P
@@ -421,16 +485,21 @@ private final class ServerCoordinatedMeshLocalMediaBridge {
             focusedWindowControl.hide()
         }
 
-        guard
-            let visibleFrame = NSScreen.main?.visibleFrame
-                ?? NSScreen.screens.first?.visibleFrame
-        else {
+        guard let targetScreen = NSScreen.main ?? NSScreen.screens.first else {
             localStatusHUD.hide()
             return
         }
+        let visibleFrame = targetScreen.visibleFrame
         let room = await roomSession?.snapshot()
         let participantCount = room?.verifiedRoom?.members.count ?? 1
         let localStatus = publicationController.localStatusSnapshot
+        guard MeshLocalStatusHUDVisibilityPolicy.shouldPresent(
+            over: NSApp.windows,
+            targetScreen: targetScreen
+        ) else {
+            localStatusHUD.hide()
+            return
+        }
         localStatusHUD.show(
             snapshot: MeshLocalStatusHUDSnapshot(
                 sourceStatuses: localStatus.windowSourceStatuses,
@@ -803,6 +872,9 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
     private var serverMeshRoleToken: UUID?
     private var pendingServerMeshAccessWordRequest:
         MenuBarServerRoomJoinRequest?
+    private var activeFriendJoinContext:
+        MenuBarFriendJoinPresentationContext?
+    private var friendJoinTimeoutTask: Task<Void, Never>?
     /// Friendship and presence outlive individual rooms. Keeping exactly one
     /// repository instance also keeps handshake recovery and the idle friend
     /// list on one authoritative view of disk state.
@@ -939,6 +1011,8 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
     }
 
     private func stop(preservingLiveShareForTermination: Bool) {
+        friendJoinTimeoutTask?.cancel()
+        friendJoinTimeoutTask = nil
         if let meshFriendPresenceController {
             Task { await meshFriendPresenceController.stop() }
         }
@@ -1027,6 +1101,8 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
         serverMeshRoomSession = nil
         serverMeshRoleToken = nil
         pendingServerMeshAccessWordRequest = nil
+        friendJoinTimeoutTask?.cancel()
+        friendJoinTimeoutTask = nil
         await meshFriendPresenceController?.stop()
         if pendingRetake != nil, recordingState.phase == .finishing {
             // The in-flight replacement may still finish into History, but the
@@ -1136,10 +1212,22 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
                 self?.createServerCoordinatedMeshRoom()
             },
             joinLiveShareInvite: { [weak self] request in
-                self?.joinServerCoordinatedMeshRoom(request)
+                self?.continueServerCoordinatedMeshRoomJoin(request)
             },
             joinLiveShareFriend: { [weak self] friendID in
                 self?.joinLiveShareFriend(friendID)
+            },
+            cancelLiveShareFriendJoin: { [weak self] in
+                self?.cancelLiveShareFriendJoin()
+            },
+            retryLiveShareFriendJoin: { [weak self] in
+                self?.retryLiveShareFriendJoin()
+            },
+            dismissLiveShareFriendJoin: { [weak self] in
+                self?.dismissLiveShareFriendJoin()
+            },
+            renameLiveShareFriend: { [weak self] friendID in
+                self?.renameLiveShareFriend(friendID)
             },
             removeLiveShareFriend: { [weak self] friendID in
                 self?.removeLiveShareFriend(friendID)
@@ -1186,6 +1274,9 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
             MenuBarPopoverView(
                 model: menuBarModel,
                 actions: actions,
+                initialRoute: MenuBarLiveShareRoutePolicy.initialRoute(
+                    for: menuBarModel.liveShareConnectionStatus
+                ),
                 maximumHeight: maximumHeight,
                 onContentHeightChange: reportContentHeight
             )
@@ -1490,6 +1581,9 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
         }
         Task { @MainActor [weak self] in
             guard let self else { return }
+            // A retry must refresh the encrypted friend-only mailbox instead
+            // of reusing a previously rendered/stale invitation.
+            await presence.synchronizeNow()
             let snapshot = await presence.snapshot()
             applyMeshFriendPresenceSnapshot(snapshot)
             guard let request = MenuBarFriendPresencePolicy
@@ -1502,7 +1596,56 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
                 NSSound.beep()
                 return
             }
-            joinServerCoordinatedMeshRoom(request)
+            guard let friend = snapshot.friends.first(where: {
+                $0.id == friendID
+            }) else { return }
+            let context = MenuBarFriendJoinPresentationContext(
+                friendID: friend.id,
+                friendName: friend.displayName,
+                deviceName: friend.deviceName,
+                roomName: Self.serverMeshRoomName(request.invite.roomCode)
+            )
+            joinServerCoordinatedMeshRoom(request, friendContext: context)
+        }
+    }
+
+    func renameLiveShareFriend(_ friendID: String) {
+        guard !friendID.isEmpty,
+              let repository = meshFriendshipRepository,
+              let presence = meshFriendPresenceController else {
+            NSSound.beep()
+            return
+        }
+        Task { @MainActor [weak self] in
+            guard let self,
+                  let record = try? await repository.snapshot().friends
+                    .first(where: { $0.id == friendID }) else {
+                NSSound.beep()
+                return
+            }
+            let field = NSTextField(string: record.localAlias ?? record.displayName)
+            field.placeholderString = record.profile.displayName
+            field.frame = NSRect(x: 0, y: 0, width: 300, height: 24)
+            let alert = NSAlert()
+            alert.messageText = String(localized: "Rename Friend")
+            alert.informativeText = String(
+                localized:
+                    "This name is stored only on this Mac. Leave it empty to restore \(record.profile.displayName)."
+            )
+            alert.accessoryView = field
+            alert.addButton(withTitle: String(localized: "Rename"))
+            alert.addButton(withTitle: String(localized: "Cancel"))
+            guard alert.runModal() == .alertFirstButtonReturn else { return }
+            do {
+                try await repository.renameFriend(
+                    identity: record.identity,
+                    to: field.stringValue
+                )
+                await presence.synchronizeNow()
+                applyMeshFriendPresenceSnapshot(await presence.snapshot())
+            } catch {
+                presentError(title: String(localized: "Couldn’t Rename Friend"), error: error)
+            }
         }
     }
 
@@ -1542,9 +1685,27 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
     }
 
     private func joinServerCoordinatedMeshRoom(
+        _ request: MenuBarServerRoomJoinRequest,
+        friendContext: MenuBarFriendJoinPresentationContext? = nil
+    ) {
+        beginServerCoordinatedMeshRoom(
+            joinRequest: request,
+            friendContext: friendContext
+        )
+    }
+
+    private func continueServerCoordinatedMeshRoomJoin(
         _ request: MenuBarServerRoomJoinRequest
     ) {
-        beginServerCoordinatedMeshRoom(joinRequest: request)
+        let friendContext = ServerMeshFriendAccessWordRetryPolicy.context(
+            status: menuBarModel.liveShareConnectionStatus,
+            activeFriendContext: activeFriendJoinContext,
+            request: request
+        )
+        joinServerCoordinatedMeshRoom(
+            request,
+            friendContext: friendContext
+        )
     }
 
     /// Creator and joiner use one production path. The service supplies only
@@ -1552,7 +1713,8 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
     /// identity, admission details, signaling, source metadata and media stay
     /// end-to-end protected by the client-only invite fragment.
     private func beginServerCoordinatedMeshRoom(
-        joinRequest: MenuBarServerRoomJoinRequest?
+        joinRequest: MenuBarServerRoomJoinRequest?,
+        friendContext: MenuBarFriendJoinPresentationContext? = nil
     ) {
         guard !isStartingLiveShare,
               !isPreparingCapture,
@@ -1567,14 +1729,23 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
         }
 
         isStartingLiveShare = true
+        friendJoinTimeoutTask?.cancel()
+        friendJoinTimeoutTask = nil
+        activeFriendJoinContext = friendContext
         pendingServerMeshAccessWordRequest = nil
         let attemptToken = UUID()
         serverMeshAttemptToken = attemptToken
         let initialSettings = dependencies.liveSharePreferences.settings
         if let invite = joinRequest?.invite {
-            menuBarModel.setLiveShareConnectionStatus(
-                .joining(roomName: Self.serverMeshRoomName(invite.roomCode))
-            )
+            if let friendContext {
+                menuBarModel.setLiveShareConnectionStatus(
+                    .joiningFriend(friendContext)
+                )
+            } else {
+                menuBarModel.setLiveShareConnectionStatus(
+                    .joining(roomName: Self.serverMeshRoomName(invite.roomCode))
+                )
+            }
         } else {
             menuBarModel.setLiveShareConnectionStatus(.creating)
         }
@@ -1594,7 +1765,10 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
                 let identity = friendServices.identity
                 let friendshipRepository = friendServices.repository
                 try Task.checkCancellation()
-                guard serverMeshAttemptToken == attemptToken,
+                guard ServerMeshFriendJoinCancellationPolicy.canContinue(
+                    attemptToken: attemptToken,
+                    activeAttemptToken: serverMeshAttemptToken
+                ),
                       !isPreparingForTermination else {
                     throw CancellationError()
                 }
@@ -1772,6 +1946,18 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
                                   let joinRequest else { return }
                             pendingServerMeshAccessWordRequest = joinRequest
                         },
+                        onAdmissionDenied: { [weak self] reason in
+                            self?.friendJoinWasDenied(
+                                reason: reason,
+                                roleToken: roleToken
+                            )
+                        },
+                        onRoomConnectionFailed: { [weak self] message in
+                            self?.friendJoinFailed(
+                                message: message,
+                                roleToken: roleToken
+                            )
+                        },
                         onMenuBarStatusChanged: { [weak self] status in
                             guard let self else { return }
                             updateLiveShareStatusIcon(
@@ -1786,7 +1972,10 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
                 relay.owner = coordinator
 
                 try Task.checkCancellation()
-                guard serverMeshAttemptToken == attemptToken,
+                guard ServerMeshFriendJoinCancellationPolicy.canContinue(
+                    attemptToken: attemptToken,
+                    activeAttemptToken: serverMeshAttemptToken
+                ),
                       serverMeshRoomSession == nil,
                       serverMeshCoordinator == nil,
                       !isPreparingForTermination else {
@@ -1886,11 +2075,21 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
         )
         switch transition {
         case let .awaitingApproval(roomName):
-            menuBarModel.setLiveShareConnectionStatus(
-                .awaitingApproval(roomName: roomName)
-            )
+            if let context = activeFriendJoinContext {
+                menuBarModel.setLiveShareConnectionStatus(
+                    .awaitingFriendApproval(context)
+                )
+                scheduleFriendJoinTimeout(roleToken: roleToken)
+            } else {
+                menuBarModel.setLiveShareConnectionStatus(
+                    .awaitingApproval(roomName: roomName)
+                )
+            }
             installIdlePopover()
         case .showActiveRoom:
+            friendJoinTimeoutTask?.cancel()
+            friendJoinTimeoutTask = nil
+            activeFriendJoinContext = nil
             menuBarModel.setLiveShareConnectionStatus(.idle)
             if let serverMeshCoordinator {
                 installMeshParticipantPopover(
@@ -1902,6 +2101,131 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
         }
     }
 
+    private func scheduleFriendJoinTimeout(roleToken: UUID) {
+        friendJoinTimeoutTask?.cancel()
+        friendJoinTimeoutTask = Task { @MainActor [weak self] in
+            do {
+                try await Task.sleep(
+                    for: ServerMeshFriendJoinTimeoutPolicy.approvalTimeout
+                )
+            } catch {
+                return
+            }
+            guard let self,
+                  serverMeshRoleToken == roleToken,
+                  let context = activeFriendJoinContext else { return }
+            menuBarModel.setLiveShareConnectionStatus(
+                .friendJoinTimedOut(context)
+            )
+            notifyFriendJoinTerminalState()
+            await serverMeshCoordinator?.close()
+        }
+    }
+
+    private func friendJoinWasDenied(reason: String, roleToken: UUID) {
+        guard serverMeshRoleToken == roleToken else { return }
+        switch ServerMeshAdmissionDenialPresentationPolicy.outcome(
+            friendContext: activeFriendJoinContext,
+            reason: reason
+        ) {
+        case let .friend(context, reason):
+            friendJoinTimeoutTask?.cancel()
+            friendJoinTimeoutTask = nil
+            menuBarModel.setLiveShareConnectionStatus(
+                .friendJoinDenied(context, reason: reason)
+            )
+            installIdlePopover()
+            notifyFriendJoinTerminalState()
+        case let .generic(message):
+            presentError(
+                title: String(localized: "Couldn’t Join Live Share"),
+                error: ServerCoordinatedMeshRoomSessionError.admissionDenied(
+                    message
+                )
+            )
+        }
+    }
+
+    private func friendJoinFailed(message: String, roleToken: UUID) {
+        guard serverMeshRoleToken == roleToken,
+              let context = activeFriendJoinContext,
+              !menuBarModel.liveShareConnectionStatus.isTerminalFriendJoin
+        else { return }
+        friendJoinTimeoutTask?.cancel()
+        friendJoinTimeoutTask = nil
+        menuBarModel.setLiveShareConnectionStatus(
+            .friendJoinFailed(context, message: message)
+        )
+        installIdlePopover()
+        notifyFriendJoinTerminalState()
+    }
+
+    private func notifyFriendJoinTerminalState() {
+        updateLiveShareStatusIcon(.failed)
+        guard !popover.isShown else { return }
+        NSApp.requestUserAttention(.informationalRequest)
+    }
+
+    private func cancelLiveShareFriendJoin() {
+        guard let context = activeFriendJoinContext else { return }
+        friendJoinTimeoutTask?.cancel()
+        friendJoinTimeoutTask = nil
+        menuBarModel.setLiveShareConnectionStatus(.friendJoinCanceled(context))
+        // Cancel may arrive while identity/room bootstrapping is still in
+        // flight, before a coordinator has been installed. Invalidate the
+        // attempt first so every post-await guard rejects it, then close the
+        // most advanced resource that exists. A task-local coordinator that
+        // has not yet been published closes itself at the invalidated guard.
+        let startTask = serverMeshStartTask
+        serverMeshAttemptToken = nil
+        serverMeshStartTask = nil
+        isStartingLiveShare = false
+        startTask?.cancel()
+        updateStatusIcon(
+            symbol: "record.circle",
+            description: String(localized: "Clip")
+        )
+        Task {
+            [coordinator = serverMeshCoordinator,
+             roomSession = serverMeshRoomSession]
+            in
+            if let coordinator {
+                await coordinator.close()
+            } else if let roomSession {
+                await roomSession.close()
+            } else {
+                await startTask?.value
+            }
+        }
+    }
+
+    private func retryLiveShareFriendJoin() {
+        guard let context = activeFriendJoinContext else { return }
+        let coordinator = serverMeshCoordinator
+        Task { @MainActor [weak self] in
+            if let coordinator { await coordinator.close() }
+            guard let self,
+                  activeFriendJoinContext?.friendID == context.friendID,
+                  !hasActiveLiveShareRole else { return }
+            joinLiveShareFriend(context.friendID)
+        }
+    }
+
+    private func dismissLiveShareFriendJoin() {
+        guard menuBarModel.liveShareConnectionStatus.isTerminalFriendJoin else {
+            return
+        }
+        friendJoinTimeoutTask?.cancel()
+        friendJoinTimeoutTask = nil
+        activeFriendJoinContext = nil
+        menuBarModel.setLiveShareConnectionStatus(.idle)
+        updateStatusIcon(
+            symbol: "record.circle",
+            description: String(localized: "Clip")
+        )
+        installIdlePopover()
+    }
+
     private func failServerCoordinatedMeshStart(_ error: any Error) {
         isStartingLiveShare = false
         serverMeshStartTask = nil
@@ -1911,17 +2235,38 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
         serverMeshCoordinator = nil
         serverMeshRoleToken = nil
         pendingServerMeshAccessWordRequest = nil
-        menuBarModel.setLiveShareConnectionStatus(.idle)
+        let friendContext = activeFriendJoinContext
+        if let friendContext {
+            menuBarModel.setLiveShareConnectionStatus(
+                .friendJoinFailed(
+                    friendContext,
+                    message: error.localizedDescription
+                )
+            )
+        } else {
+            menuBarModel.setLiveShareConnectionStatus(.idle)
+        }
         installIdlePopover()
-        updateStatusIcon(
-            symbol: "record.circle",
-            description: String(localized: "Clip")
+        let menuBarStatus = ServerMeshFriendJoinMenuBarPolicy.status(
+            afterRoomEnd: menuBarModel.liveShareConnectionStatus
         )
+        if menuBarStatus == .ready {
+            updateStatusIcon(
+                symbol: "record.circle",
+                description: String(localized: "Clip")
+            )
+        } else {
+            updateLiveShareStatusIcon(menuBarStatus)
+        }
         if let session { Task { await session.close() } }
-        presentError(
-            title: String(localized: "Couldn’t Join Live Share"),
-            error: error
-        )
+        if friendContext != nil {
+            notifyFriendJoinTerminalState()
+        } else {
+            presentError(
+                title: String(localized: "Couldn’t Join Live Share"),
+                error: error
+            )
+        }
     }
 
     private func serverMeshParticipantDidEnd(roleToken: UUID) {
@@ -1938,6 +2283,8 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
         serverMeshCoordinator = nil
         serverMeshRoleToken = nil
         isStartingLiveShare = false
+        friendJoinTimeoutTask?.cancel()
+        friendJoinTimeoutTask = nil
         if let accessWordRequest {
             menuBarModel.setLiveShareConnectionStatus(
                 .accessWordRequired(
@@ -1949,14 +2296,22 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
                         accessWordRequest.requiresCreatorApproval
                 )
             )
-        } else {
+        } else if !menuBarModel.liveShareConnectionStatus.isTerminalFriendJoin {
             menuBarModel.setLiveShareConnectionStatus(.idle)
+            activeFriendJoinContext = nil
         }
         installIdlePopover()
-        updateStatusIcon(
-            symbol: "record.circle",
-            description: String(localized: "Clip")
+        let menuBarStatus = ServerMeshFriendJoinMenuBarPolicy.status(
+            afterRoomEnd: menuBarModel.liveShareConnectionStatus
         )
+        if menuBarStatus == .ready {
+            updateStatusIcon(
+                symbol: "record.circle",
+                description: String(localized: "Clip")
+            )
+        } else {
+            updateLiveShareStatusIcon(menuBarStatus)
+        }
         Task { @MainActor [weak self] in
             await self?.refreshMenuBarModel()
         }

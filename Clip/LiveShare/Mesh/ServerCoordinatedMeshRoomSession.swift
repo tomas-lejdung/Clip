@@ -368,6 +368,7 @@ enum ServerCoordinatedMeshRoomSessionEvent: Equatable, Sendable {
     case pairRecovered(participantID: ClipLiveShareNativeV3ParticipantID)
     case roomEnded(reason: String)
     case accessWordRequired
+    case admissionDenied(reason: String)
     case failed(message: String)
     case closed
 }
@@ -1527,9 +1528,15 @@ actor ServerCoordinatedMeshRoomSession {
 
     private func fail(_ error: any Error) async {
         guard !isTerminal else { return }
-        if let roomError = error as? ServerCoordinatedMeshRoomSessionError,
-           roomError == .accessWordRequired {
-            emit(.accessWordRequired)
+        if let roomError = error as? ServerCoordinatedMeshRoomSessionError {
+            switch roomError {
+            case .accessWordRequired:
+                emit(.accessWordRequired)
+            case let .admissionDenied(reason):
+                emit(.admissionDenied(reason: reason))
+            default:
+                emit(.failed(message: error.localizedDescription))
+            }
         } else {
             emit(.failed(message: error.localizedDescription))
         }

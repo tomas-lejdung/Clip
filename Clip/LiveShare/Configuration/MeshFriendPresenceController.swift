@@ -352,8 +352,16 @@ actor MeshFriendPresenceController {
     }
     states = states.filter { recordsByID[$0.key] != nil }
     for record in records {
-      if let existing = states[record.id], existing.record == record {
-        continue
+      if var existing = states[record.id] {
+        if existing.record == record { continue }
+        if existing.record.hasSamePresenceConfiguration(as: record) {
+          // A rename changes presentation only. Preserve verified presence,
+          // polling cadence, failures and backoff rather than making the
+          // friend briefly appear offline.
+          existing.record = record
+          states[record.id] = existing
+          continue
+        }
       }
       states[record.id] = FriendState(record: record)
     }

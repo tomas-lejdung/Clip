@@ -816,6 +816,50 @@ struct NativeViewerCollaborationOverlayTests {
         #expect(controller.panel.contentView == nil)
     }
 
+    @Test("local status HUD stays hidden over a fullscreen native viewer")
+    func localStatusHUDHidesForFullScreenViewer() {
+        let suppressing = MeshLocalStatusHUDVisibilityPolicy.WindowState(
+            isFullScreenNativeViewer: true,
+            isVisible: true,
+            isOnActiveSpace: true,
+            isOnTargetScreen: true
+        )
+        #expect(
+            MeshLocalStatusHUDVisibilityPolicy.shouldPresent(
+                windowStates: []
+            )
+        )
+        #expect(
+            !MeshLocalStatusHUDVisibilityPolicy.shouldPresent(
+                windowStates: [suppressing]
+            )
+        )
+        #expect(
+            MeshLocalStatusHUDVisibilityPolicy.shouldPresent(
+                windowStates: [
+                    .init(
+                        isFullScreenNativeViewer: true,
+                        isVisible: false,
+                        isOnActiveSpace: true,
+                        isOnTargetScreen: true
+                    ),
+                    .init(
+                        isFullScreenNativeViewer: true,
+                        isVisible: true,
+                        isOnActiveSpace: false,
+                        isOnTargetScreen: true
+                    ),
+                    .init(
+                        isFullScreenNativeViewer: true,
+                        isVisible: true,
+                        isOnActiveSpace: true,
+                        isOnTargetScreen: false
+                    ),
+                ]
+            )
+        )
+    }
+
     @Test("mesh overlay geometry stays inside the active screen")
     func meshOverlayGeometry() {
         let focused = MeshParticipantOverlayGeometry.focusedControlFrame(

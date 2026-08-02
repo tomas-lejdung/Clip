@@ -1115,6 +1115,43 @@ struct MeshLocalStatusHUDSnapshot: Equatable {
 }
 
 @MainActor
+enum MeshLocalStatusHUDVisibilityPolicy {
+    struct WindowState: Equatable {
+        let isFullScreenNativeViewer: Bool
+        let isVisible: Bool
+        let isOnActiveSpace: Bool
+        let isOnTargetScreen: Bool
+    }
+
+    static func shouldPresent(
+        over applicationWindows: [NSWindow],
+        targetScreen: NSScreen
+    ) -> Bool {
+        shouldPresent(
+            windowStates: applicationWindows.map { window in
+                WindowState(
+                    isFullScreenNativeViewer:
+                        window.styleMask.contains(.fullScreen)
+                            && window.contentView is NativeViewerContentView,
+                    isVisible: window.isVisible,
+                    isOnActiveSpace: window.isOnActiveSpace,
+                    isOnTargetScreen: window.screen === targetScreen
+                )
+            }
+        )
+    }
+
+    static func shouldPresent(windowStates: [WindowState]) -> Bool {
+        !windowStates.contains { state in
+            state.isFullScreenNativeViewer
+                && state.isVisible
+                && state.isOnActiveSpace
+                && state.isOnTargetScreen
+        }
+    }
+}
+
+@MainActor
 struct MeshLocalStatusHUDActions {
     var setFullscreenEnabled: (Bool) -> Void
     var stopAllMedia: () -> Void

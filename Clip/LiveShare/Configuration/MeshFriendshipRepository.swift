@@ -17,11 +17,60 @@ struct MeshFriendRecord: Codable, Equatable, Identifiable, Sendable {
     var trustState: MeshFriendTrustState
     let createdAt: Date
     var lastConfirmedAt: Date?
+    /// A local-only label. It is deliberately outside the signed profile so
+    /// renaming a friend never changes or impersonates their authenticated
+    /// identity, and it is never published through presence or signaling.
+    var localAlias: String?
+
+    init(
+        profile: ClipLiveShareServerRoomV4FriendProfile,
+        localPublishingLocator: ClipLiveShareServerRoomV4FriendLocator,
+        trustState: MeshFriendTrustState,
+        createdAt: Date,
+        lastConfirmedAt: Date?,
+        localAlias: String? = nil
+    ) {
+        self.profile = profile
+        self.localPublishingLocator = localPublishingLocator
+        self.trustState = trustState
+        self.createdAt = createdAt
+        self.lastConfirmedAt = lastConfirmedAt
+        self.localAlias = localAlias
+    }
 
     var id: String { profile.identity.fingerprint.rawValue }
     var identity: ClipLiveShareIdentityPublicKey { profile.identity }
-    var displayName: String { profile.displayName }
+    var displayName: String { localAlias ?? profile.displayName }
     var deviceName: String { profile.deviceName }
+
+    /// Alias-only edits must not restart encrypted presence polling or erase
+    /// a verified invite/backoff schedule.
+    func hasSamePresenceConfiguration(as other: Self) -> Bool {
+        profile == other.profile
+            && localPublishingLocator == other.localPublishingLocator
+            && trustState == other.trustState
+            && createdAt == other.createdAt
+            && lastConfirmedAt == other.lastConfirmedAt
+    }
+}
+
+enum MeshFriendAliasPolicy {
+    static let maximumCharacterCount = 80
+    static let maximumUTF8ByteCount =
+        ClipLiveShareServerRoomV4Friends.maximumDisplayNameBytes
+
+    static func normalize(_ proposed: String) throws -> String? {
+        let value = proposed.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !value.isEmpty else { return nil }
+        guard value.count <= maximumCharacterCount,
+              value.utf8.count <= maximumUTF8ByteCount,
+              value.unicodeScalars.allSatisfy({
+                  !CharacterSet.controlCharacters.contains($0)
+              }) else {
+            throw MeshFriendshipRepositoryError.invalidAlias
+        }
+        return value
+    }
 }
 
 enum MeshFriendshipHandshakeRole: String, Codable, Equatable, Sendable {
@@ -76,6 +125,7 @@ enum MeshFriendshipRepositoryError: Error, Equatable, Sendable,
     case corruptStore
     case identityChanged
     case invalidHandshake
+    case invalidAlias
     case missingHandshake
     case replayedRequest
     case storageLimitReached
@@ -88,6 +138,8 @@ enum MeshFriendshipRepositoryError: Error, Equatable, Sendable,
             "The saved friends list belongs to another device identity."
         case .invalidHandshake:
             "The friend request handshake is invalid."
+        case .invalidAlias:
+            "Friend names must be 80 characters or fewer and cannot contain control characters."
         case .missingHandshake:
             "The friend request is no longer pending."
         case .replayedRequest:
@@ -565,6 +617,23 @@ actor MeshFriendshipRepository {
         }
     }
 
+    /// Atomically changes only the local presentation alias. Passing an empty
+    /// or whitespace-only value restores the signed profile name.
+    func renameFriend(
+        identity: ClipLiveShareIdentityPublicKey,
+        to proposedAlias: String
+    ) throws {
+        let alias = try MeshFriendAliasPolicy.normalize(proposedAlias)
+        try mutate { state in
+            guard let index = state.friends.firstIndex(where: {
+                $0.identity == identity
+            }) else {
+                throw MeshFriendshipRepositoryError.missingHandshake
+            }
+            state.friends[index].localAlias = alias
+        }
+    }
+
     @discardableResult
     func pruneExpiredRecovery() throws -> Bool {
         let cutoff = now()
@@ -678,7 +747,8 @@ actor MeshFriendshipRepository {
                 createdAt: existing.createdAt,
                 lastConfirmedAt: trustState == .trusted
                     ? timestamp
-                    : existing.lastConfirmedAt
+                    : existing.lastConfirmedAt,
+                localAlias: existing.localAlias
             )
             return
         }

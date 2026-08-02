@@ -267,6 +267,149 @@ struct ServerCoordinatedMeshParticipantCoordinatorTests {
     }
 }
 
+@Suite("Mesh collaboration policy")
+struct MeshRoomCollaborationPolicyReducerTests {
+    private let sourceA = MeshRoomSourceKey(
+        participantID: "participant-a",
+        sourceID: "shared-source"
+    )
+    private let sourceB = MeshRoomSourceKey(
+        participantID: "participant-b",
+        sourceID: "shared-source"
+    )
+
+    @Test("new sources inherit all global tools")
+    func newSourcesInheritGlobalSelection() {
+        var reducer = MeshRoomCollaborationPolicyReducer(
+            globalSelection: .init(
+                pointerEnabled: true,
+                pingEnabled: true
+            )
+        )
+        reducer.reconcileAuthoritativeSources([sourceA, sourceB])
+
+        for source in [sourceA, sourceB] {
+            let policy = reducer.policy(for: source)
+            #expect(policy.isUsingGlobalSettings)
+            #expect(policy.selection.pointerEnabled)
+            #expect(policy.selection.pingEnabled)
+            #expect(!policy.selection.drawingEnabled)
+        }
+    }
+
+    @Test("first source edit detaches a complete global snapshot")
+    func sourceEditDetachesCompleteSelection() {
+        var reducer = MeshRoomCollaborationPolicyReducer(
+            globalSelection: .init(
+                pointerEnabled: true,
+                pingEnabled: true
+            )
+        )
+        reducer.reconcileAuthoritativeSources([sourceA])
+
+        reducer.set(.drawing, enabled: true, for: sourceA)
+        let policy = reducer.policy(for: sourceA)
+
+        #expect(!policy.isUsingGlobalSettings)
+        #expect(policy.selection.pointerEnabled)
+        #expect(!policy.selection.pingEnabled)
+        #expect(policy.selection.drawingEnabled)
+
+        reducer.set(.ping, enabled: true, for: sourceA)
+        let changed = reducer.policy(for: sourceA).selection
+        #expect(changed.pointerEnabled)
+        #expect(changed.pingEnabled)
+        #expect(!changed.drawingEnabled)
+    }
+
+    @Test("global edits clear overrides and target hidden pointers")
+    func globalEditClearsOverridesAndTargetsHiddenPointers() {
+        var reducer = MeshRoomCollaborationPolicyReducer(
+            globalSelection: .init(pointerEnabled: false)
+        )
+        reducer.reconcileAuthoritativeSources([sourceA, sourceB])
+        reducer.set(.pointer, enabled: true, for: sourceA)
+        reducer.set(.pointer, enabled: true, for: sourceB)
+
+        let change = reducer.setGlobal(.ping, enabled: true)
+
+        #expect(change.pointerHiddenSources == [sourceA, sourceB])
+        #expect(reducer.sourceOverrides.isEmpty)
+        #expect(reducer.globalSelection.pingEnabled)
+        #expect(!reducer.globalSelection.drawingEnabled)
+        #expect(reducer.policy(for: sourceA).isUsingGlobalSettings)
+    }
+
+    @Test("reset reattaches one source and hides only its pointer")
+    func resetReattachesOneSource() {
+        var reducer = MeshRoomCollaborationPolicyReducer()
+        reducer.reconcileAuthoritativeSources([sourceA, sourceB])
+        reducer.set(.pointer, enabled: true, for: sourceA)
+        reducer.set(.pointer, enabled: true, for: sourceB)
+
+        let change = reducer.useGlobalSettings(for: sourceA)
+
+        #expect(change.pointerHiddenSources == [sourceA])
+        #expect(reducer.policy(for: sourceA).isUsingGlobalSettings)
+        #expect(!reducer.policy(for: sourceB).isUsingGlobalSettings)
+        #expect(reducer.policy(for: sourceB).selection.pointerEnabled)
+    }
+
+    @Test("source pointer disable targets only that full source key")
+    func sourcePointerDisableIsTargeted() {
+        var reducer = MeshRoomCollaborationPolicyReducer(
+            globalSelection: .init(pointerEnabled: true)
+        )
+        reducer.reconcileAuthoritativeSources([sourceA, sourceB])
+
+        let change = reducer.set(
+            .pointer,
+            enabled: false,
+            for: sourceA
+        )
+
+        #expect(change.pointerHiddenSources == [sourceA])
+        #expect(!reducer.policy(for: sourceA).selection.pointerEnabled)
+        #expect(reducer.policy(for: sourceB).selection.pointerEnabled)
+    }
+
+    @Test("authoritative lifecycle preserves recovery and prunes ended sources")
+    func authoritativeLifecyclePrunesOnlyEndedSources() {
+        var reducer = MeshRoomCollaborationPolicyReducer()
+        reducer.reconcileAuthoritativeSources([sourceA, sourceB])
+        reducer.set(.drawing, enabled: true, for: sourceA)
+        reducer.set(.ping, enabled: true, for: sourceB)
+
+        // A visibility or track-recovery pass retains the same authoritative
+        // source keys, so neither override changes.
+        let transientRemoval = reducer.reconcileAuthoritativeSources([
+            sourceA, sourceB,
+        ])
+        #expect(transientRemoval.isEmpty)
+        #expect(reducer.policy(for: sourceA).selection.drawingEnabled)
+
+        let ended = reducer.reconcileAuthoritativeSources([sourceB])
+        #expect(ended == [sourceA])
+        #expect(reducer.sourceOverrides[sourceA] == nil)
+        #expect(reducer.policy(for: sourceB).selection.pingEnabled)
+
+        // Reusing the same source instance string under a different
+        // participant never revives the ended participant's override.
+        reducer.reconcileAuthoritativeSources([sourceA, sourceB])
+        #expect(reducer.policy(for: sourceA).isUsingGlobalSettings)
+        #expect(!reducer.policy(for: sourceB).isUsingGlobalSettings)
+    }
+
+    @Test("edits for non-authoritative sources are ignored")
+    func nonAuthoritativeSourceEditIsIgnored() {
+        var reducer = MeshRoomCollaborationPolicyReducer()
+        let change = reducer.set(.pointer, enabled: true, for: sourceA)
+
+        #expect(change == .none)
+        #expect(reducer.sourceOverrides.isEmpty)
+    }
+}
+
 @MainActor
 private final class ParticipantCoordinatorLifecycleProbe {
     var startCount = 0
