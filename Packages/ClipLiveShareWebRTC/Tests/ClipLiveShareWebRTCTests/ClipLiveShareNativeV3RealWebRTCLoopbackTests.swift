@@ -1,4 +1,7 @@
+import AudioToolbox
+import ClipCapture
 import ClipLiveShare
+import CoreMedia
 import Foundation
 import Testing
 
@@ -134,6 +137,87 @@ extension NativeMediaResourceTests {
 
       first.factory.close()
       second.factory.close()
+    }
+
+    @Test(
+      "system audio renders non-silent PCM and playout stops with its link",
+      .timeLimit(.minutes(1))
+    )
+    func systemAudioProductionPlayout() async throws {
+      let sender = try NativeV3RealParticipant(byte: 0x11)
+      let listener = try NativeV3RealParticipant(
+        byte: 0x22,
+        remoteAudioPlaybackEnabled: true
+      )
+      let link = try await NativeV3RealLink(first: sender, second: listener)
+
+      do {
+        try await link.start()
+        let ready = await link.waitUntilReady()
+        let readySnapshot = await link.snapshot()
+        #expect(
+          ready,
+          Comment(
+            rawValue: "Audio pair did not become ready: \(readySnapshot)"
+          )
+        )
+        guard ready else {
+          await link.close()
+          sender.factory.close()
+          listener.factory.close()
+          return
+        }
+
+        sender.factory.setSystemAudioEnabled(true)
+        let tone = BorrowedCaptureAudioSample(
+          sampleBuffer: try makeNativeV3PlayoutToneSample()
+        )
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: .seconds(8))
+        var acceptedSamples = 0
+        while clock.now < deadline,
+          listener.factory.playoutDiagnostics.nonSilentFrameCount == 0
+        {
+          if sender.factory.send(tone) {
+            acceptedSamples += 1
+          }
+          try await Task.sleep(for: .milliseconds(10))
+        }
+
+        let audible = listener.factory.playoutDiagnostics
+        #expect(acceptedSamples > 0)
+        #expect(audible.callbackCount > 0)
+        #expect(audible.renderedFrameCount > 0)
+        #expect(audible.nonSilentFrameCount > 0)
+        #expect(audible.errorCount == 0)
+
+        sender.factory.setSystemAudioEnabled(false)
+        #expect(!sender.factory.isSystemAudioEnabled)
+        await link.close()
+        #expect(await link.waitUntilClosed())
+
+        // Allow a callback already owned by CoreAudio to finish, then prove
+        // the closed peer connection does not leave its output pull running.
+        try await Task.sleep(for: .milliseconds(100))
+        let afterClose = listener.factory.playoutDiagnostics
+        try await Task.sleep(for: .milliseconds(150))
+        let afterSettling = listener.factory.playoutDiagnostics
+        #expect(afterSettling.callbackCount == afterClose.callbackCount)
+        #expect(
+          afterSettling.renderedFrameCount == afterClose.renderedFrameCount
+        )
+        #expect(afterSettling.errorCount == afterClose.errorCount)
+
+        sender.factory.close()
+        listener.factory.close()
+        try await Task.sleep(for: .milliseconds(100))
+        #expect(listener.factory.playoutDiagnostics == afterSettling)
+      } catch {
+        await link.close()
+        sender.factory.close()
+        listener.factory.close()
+        throw error
+      }
     }
 
     @Test(
@@ -420,7 +504,10 @@ private struct NativeV3RealParticipant: Sendable {
   let id: ClipLiveShareNativeV3ParticipantID
   let factory: ClipLiveShareNativeV3WebRTCTransportFactory
 
-  init(byte: UInt8) throws {
+  init(
+    byte: UInt8,
+    remoteAudioPlaybackEnabled: Bool = false
+  ) throws {
     id = try .init(
       bytes: Data(
         repeating: byte,
@@ -434,7 +521,8 @@ private struct NativeV3RealParticipant: Sendable {
           resourceLimits: .init(negotiationTimeout: 10),
           videoCodec: .vp8
         ),
-        remoteParticipantAudioPlaybackEnabled: false
+        remoteParticipantAudioPlaybackEnabled:
+          remoteAudioPlaybackEnabled
       )
     )
   }
@@ -732,4 +820,103 @@ private func nativeV3MediaSections(in sdp: String) -> [String: Int] {
     }
   }
   return sections
+}
+
+private enum NativeV3PlayoutToneError: Error {
+  case blockBuffer(OSStatus)
+  case fillBlockBuffer(OSStatus)
+  case format(OSStatus)
+  case sample(OSStatus)
+}
+
+/// A quiet 10 ms stereo tone. It is intentionally audible to the mixer but
+/// effectively unobtrusive if this hardware-backed acceptance test uses the
+/// current Mac's default output device.
+private func makeNativeV3PlayoutToneSample() throws -> CMSampleBuffer {
+  let sampleRate = 48_000
+  let frameCount = sampleRate / 100
+  let channelCount: UInt32 = 2
+  var samples = [Float](
+    repeating: 0,
+    count: frameCount * Int(channelCount)
+  )
+  for frame in 0..<frameCount {
+    let phase = 2 * Double.pi * 440 * Double(frame) / Double(sampleRate)
+    let value = Float(sin(phase)) * 0.01
+    samples[frame * 2] = value
+    samples[frame * 2 + 1] = value
+  }
+
+  let byteCount = samples.count * MemoryLayout<Float>.size
+  var blockBuffer: CMBlockBuffer?
+  let blockStatus = CMBlockBufferCreateWithMemoryBlock(
+    allocator: kCFAllocatorDefault,
+    memoryBlock: nil,
+    blockLength: byteCount,
+    blockAllocator: kCFAllocatorDefault,
+    customBlockSource: nil,
+    offsetToData: 0,
+    dataLength: byteCount,
+    flags: 0,
+    blockBufferOut: &blockBuffer
+  )
+  guard blockStatus == kCMBlockBufferNoErr, let blockBuffer else {
+    throw NativeV3PlayoutToneError.blockBuffer(blockStatus)
+  }
+  let fillStatus = samples.withUnsafeBytes { bytes in
+    CMBlockBufferReplaceDataBytes(
+      with: bytes.baseAddress!,
+      blockBuffer: blockBuffer,
+      offsetIntoDestination: 0,
+      dataLength: byteCount
+    )
+  }
+  guard fillStatus == kCMBlockBufferNoErr else {
+    throw NativeV3PlayoutToneError.fillBlockBuffer(fillStatus)
+  }
+
+  let bytesPerFrame = channelCount * UInt32(MemoryLayout<Float>.size)
+  var description = AudioStreamBasicDescription(
+    mSampleRate: Double(sampleRate),
+    mFormatID: kAudioFormatLinearPCM,
+    mFormatFlags: kAudioFormatFlagIsFloat | kAudioFormatFlagIsPacked,
+    mBytesPerPacket: bytesPerFrame,
+    mFramesPerPacket: 1,
+    mBytesPerFrame: bytesPerFrame,
+    mChannelsPerFrame: channelCount,
+    mBitsPerChannel: 32,
+    mReserved: 0
+  )
+  var formatDescription: CMAudioFormatDescription?
+  let formatStatus = CMAudioFormatDescriptionCreate(
+    allocator: kCFAllocatorDefault,
+    asbd: &description,
+    layoutSize: 0,
+    layout: nil,
+    magicCookieSize: 0,
+    magicCookie: nil,
+    extensions: nil,
+    formatDescriptionOut: &formatDescription
+  )
+  guard formatStatus == noErr, let formatDescription else {
+    throw NativeV3PlayoutToneError.format(formatStatus)
+  }
+
+  var sampleBuffer: CMSampleBuffer?
+  let sampleStatus = CMAudioSampleBufferCreateWithPacketDescriptions(
+    allocator: kCFAllocatorDefault,
+    dataBuffer: blockBuffer,
+    dataReady: true,
+    makeDataReadyCallback: nil,
+    refcon: nil,
+    formatDescription: formatDescription,
+    sampleCount: frameCount,
+    presentationTimeStamp: .zero,
+    packetDescriptions: nil,
+    sampleBufferOut: &sampleBuffer
+  )
+  guard sampleStatus == noErr, let sampleBuffer else {
+    throw NativeV3PlayoutToneError.sample(sampleStatus)
+  }
+  return sampleBuffer
 }

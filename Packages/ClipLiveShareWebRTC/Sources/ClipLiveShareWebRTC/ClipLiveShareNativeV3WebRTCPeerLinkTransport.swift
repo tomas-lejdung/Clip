@@ -23,6 +23,31 @@ public struct ClipLiveShareNativeV3WebRTCConfiguration: Equatable, Sendable {
   public static let clipDefault = Self()
 }
 
+/// Cumulative output-side diagnostics for the participant-scoped WebRTC
+/// audio device. A negotiated remote audio track is not sufficient evidence
+/// that a listener can hear it; these counters prove that WebRTC's playout
+/// mixer was actually pulled and that non-silent PCM reached CoreAudio.
+public struct ClipLiveShareNativeV3WebRTCPlayoutDiagnostics:
+  Equatable, Sendable
+{
+  public let callbackCount: UInt64
+  public let renderedFrameCount: UInt64
+  public let nonSilentFrameCount: UInt64
+  public let errorCount: UInt64
+
+  public init(
+    callbackCount: UInt64,
+    renderedFrameCount: UInt64,
+    nonSilentFrameCount: UInt64,
+    errorCount: UInt64
+  ) {
+    self.callbackCount = callbackCount
+    self.renderedFrameCount = renderedFrameCount
+    self.nonSilentFrameCount = nonSilentFrameCount
+    self.errorCount = errorCount
+  }
+}
+
 public enum ClipLiveShareNativeV3WebRTCPeerLinkError: Error, Equatable, Sendable,
   LocalizedError
 {
@@ -249,6 +274,17 @@ public final class ClipLiveShareNativeV3WebRTCTransportFactory:
   }
 
   public var localParticipantAudioTrackID: String { systemAudioTrackID }
+
+  public var playoutDiagnostics:
+    ClipLiveShareNativeV3WebRTCPlayoutDiagnostics
+  {
+    .init(
+      callbackCount: systemAudioDevice.playoutCallbackCount,
+      renderedFrameCount: systemAudioDevice.renderedPlayoutFrameCount,
+      nonSilentFrameCount: systemAudioDevice.nonSilentPlayoutFrameCount,
+      errorCount: systemAudioDevice.playoutErrorCount
+    )
+  }
 
   /// Actual sender state, not the persisted/UI preference. Acceptance
   /// reporting uses this value so a failed or stopped capture cannot be
