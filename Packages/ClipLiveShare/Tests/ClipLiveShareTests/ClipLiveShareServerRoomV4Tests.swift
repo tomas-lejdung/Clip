@@ -449,6 +449,14 @@ struct ClipLiveShareServerRoomV4Tests {
       .iceCandidate(epoch: epoch, candidate: "", mediaID: nil, mediaLineIndex: nil),
       .iceRestart(epoch: try epoch.next()),
       .renegotiationRequest(epoch: try epoch.next()),
+      .codecRenegotiationRequest(
+        epoch: try epoch.next(),
+        codec: .av1
+      ),
+      .codecRenegotiationRejected(
+        epoch: try epoch.next(),
+        codec: .av1
+      ),
       .close,
     ]
     for payload in payloads {
@@ -462,6 +470,19 @@ struct ClipLiveShareServerRoomV4Tests {
     let replay = try alice.seal(.close).routedFrom(alice.localHandle)
     #expect(try bob.open(replay) == .close)
     #expect(throws: ClipLiveShareProtocolError.self) { try bob.open(replay) }
+  }
+
+  @Test("codec request canonical bytes match the browser implementation")
+  func codecRequestBrowserCanonicalVector() throws {
+    let payload = ClipLiveShareServerRoomV4PairSignalPayload
+      .codecRenegotiationRequest(
+        epoch: try .init(rawValue: 1),
+        codec: .av1
+      )
+    #expect(
+      ClipLiveShareBase64URL.encode(payload.canonicalRepresentation)
+        == "AAAAMmNsaXAtbGl2ZS1zaGFyZS1zZXJ2ZXItcm9vbS12NC9wYWlyLXNpZ25hbC1wYXlsb2FkAAAAAAAAAAQAAAAbY29kZWMtcmVuZWdvdGlhdGlvbi1yZXF1ZXN0AAAAAAAAAAEAAAADYXYx"
+    )
   }
 
   @Test("pair signaling rejects direction, context, ciphertext, and identity tamper")

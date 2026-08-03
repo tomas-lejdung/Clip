@@ -260,14 +260,22 @@ ticket presented in the WebSocket subprotocol. The capability and ticket never
 appear in a URL, query, cookie, or service log, and the existing room hub still
 makes the authoritative reconnect decision.
 
-The browser presents all active sources using Focus, Grid, or Row layout, with
-Fit, Fill, Native size, cursor-follow panning, and browser fullscreen. Follow is
-participant-scoped: one active publisher is selected automatically; several
-publishers expose a selector and retain the current target; a stopped source
-advances within that publisher; and a publisher that stops or leaves advances
-to the next active publisher in authoritative roster order. System audio is one
-track per native publisher, initially muted until a user gesture, with master
-and per-participant mute/volume.
+The browser presents all active sources using Focus or Row layout; Grid is not
+part of web-v1. Native size is the default, with Fit, Fill, drag-to-pan for an
+oversized Native source, a bottom-right viewport minimap, and browser
+fullscreen. The Focus HUD auto-hides after pointer/input inactivity, returns on
+movement, and shows a filmstrip of every active source. The filmstrip
+distinguishes the publisher-focused source from the viewer's manually selected
+source.
+
+Follow is participant-scoped and explicitly supports **Off**. With Follow Off,
+the viewer selects and keeps any source manually. With Follow enabled, the
+viewer selects a publisher and tracks that publisher's focused source; if that
+source stops, Clip advances within the publisher, and if the publisher stops
+or leaves, Clip advances to the next active publisher in authoritative roster
+order. Manually selecting a source turns Follow Off. System audio is one track
+per native publisher, initially muted until a user gesture, with master and
+per-participant mute/volume.
 
 Web-v1 targets current desktop Safari and Chromium. Firefox and mobile browsers
 are not release claims. Web participants have no friendship or collaboration
@@ -543,9 +551,12 @@ Server-room-v4 is the only supported Live Share connection contract:
 - Admission is transactional. A candidate is absent from the room until the
   creator returns a valid encrypted admission record and the service commits a
   newer complete roster.
-- H.264, VP8, VP9, and AV1 are exact codec choices. Every video transceiver
-  offers only the participant's selected codec. Clip never creates a second
-  browser encoding, transcodes, or silently falls back to another codec.
+- A Native-Web video edge offers only the publisher's selected H.264, VP8,
+  VP9, or AV1 codec. It never falls back, transcodes, or starts a second browser
+  encoding. Native-Native edges retain the proven pre-Web SDP preference
+  ladder: AV1 prefers AV1, VP9, then VP8; VP9 prefers VP9 then VP8; H.264 and
+  VP8 are exact. That ladder negotiates one active codec and one encoder; it is
+  not permission to encode several codecs at once.
   Actual per-link RTP statistics identify the negotiated codec and route.
 - If a web runtime cannot decode the selected codec, the participant remains
   in the authoritative roster. The affected source reports **Unsupported
@@ -1689,9 +1700,10 @@ A separate Homebrew tap can be added later if needed.
   - two-, three-, and four-participant topologies containing 1, 3, and 6
     independent authenticated peer links;
   - concurrent native publication and remote reception, four source slots,
-    fullscreen exclusivity, per-participant audio, exact-codec negotiation,
-    explicit unsupported-browser reporting, directional statistics, and
-    slow-peer isolation;
+    fullscreen exclusivity, per-participant audio, the Native compatibility
+    preference ladder, exact selected-codec Web edges, explicit
+    unsupported-browser reporting, directional statistics, and slow-peer
+    isolation;
   - receive-only Web profiles using the same admission, roster, pair identity,
     encrypted signaling, fixed transceivers, and DataChannel contract as Native
     profiles, with no browser-specific native transport path;
@@ -1791,8 +1803,10 @@ A separate Homebrew tap can be added later if needed.
   current desktop Safari and Chromium. It joins the same complete mesh and
   receives every native publisher's sources and audio, but cannot publish,
   administer rooms, create friendships, or use collaboration controls.
-- Exact selected-codec negotiation with one encoder only: no browser-specific
-  fallback, second encode, or transcoding. Unsupported browser decoders show an
+- Native-Web edges require the selected codec exactly, with one encoder only:
+  no browser-specific fallback, second encode, or transcoding. Native-Native
+  edges preserve the pre-Web SDP preference ladder while still negotiating one
+  active codec and using one encoder. Unsupported browser decoders show an
   explicit source error when the codec is observable; an edge that fails before
   that may remain unavailable or black, without changing unrelated mesh edges.
 - Optional independently persisted Live Share system audio per participant,
@@ -1820,7 +1834,8 @@ participant or end as the creator.
 The web-v1 path opens that same invite in a supported desktop browser → joins
 the same authoritative roster → creates one direct pair per remote member →
 receives all compatible exact-codec sources and per-publisher audio → exercises
-Focus/Grid/Row, Follow, Fit/Fill/Native, fullscreen, and mute/volume → leaves or
+Focus/Row, Follow Off and per-publisher Follow, the source filmstrip, HUD
+auto-hide, Fit/Fill/Native, Native pan/minimap, fullscreen, and mute/volume → leaves or
 reloads/reconnects without replacing an unaffected native pair.
 A recording release may remain valid without the networking feature, but a
 release advertising Live Share must pass the Live Share controlled and
@@ -2018,10 +2033,13 @@ The local release uses free Personal Team ID `FJ2BS65H3F`. It is not a Developer
 - Reuse the same roster reconciliation, pair identity, encrypted signaling,
   fixed media slots, and DataChannel contract as Native participants.
 - Receive every compatible native source and per-participant system-audio
-  track with Focus/Grid/Row, Follow, Fit/Fill/Native, fullscreen, and audio
-  controls.
-- Enforce the selected codec exactly with no second encoding, transcoding, or
-  fallback, and report unsupported browser decoding explicitly.
+  track with Focus/Row, Follow Off and per-publisher Follow, filmstrip source
+  selection, HUD auto-hide, Fit/Fill/Native, Native pan/minimap, fullscreen,
+  and audio controls.
+- Enforce the selected codec exactly on Native-Web edges with no second
+  encoding, transcoding, or fallback, and report unsupported browser decoding
+  explicitly. Preserve the pre-Web Native-Native SDP preference ladder and its
+  single-codec, single-encoder behavior.
 - Prove mixed Native/Web mesh churn without replacing or renegotiating an
   unaffected Native-Native pair.
 

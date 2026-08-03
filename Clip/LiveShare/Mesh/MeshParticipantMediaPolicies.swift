@@ -44,6 +44,21 @@ enum MeshParticipantMediaSettingsPolicy {
         }
     }
 
+    static func liveShareVideoCodec(
+        _ codec: WebRTCVideoCodec
+    ) -> LiveShareVideoCodec {
+        switch codec {
+        case .h264:
+            .h264
+        case .vp8:
+            .vp8
+        case .vp9:
+            .vp9
+        case .av1:
+            .av1
+        }
+    }
+
     static func advancedVideoConfiguration(
         _ settings: LiveShareCodecAdvancedSettings,
         codec: LiveShareVideoCodec

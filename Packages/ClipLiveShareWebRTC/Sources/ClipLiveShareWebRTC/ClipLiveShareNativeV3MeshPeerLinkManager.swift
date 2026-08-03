@@ -101,11 +101,17 @@ public struct ClipLiveShareNativeV3PeerLinkConfiguration: Equatable, Sendable {
   /// SDP/ICE and the reliable control channel may be established, but local
   /// audio/video cannot leave until the authoritative roster admits the peer.
   public let outboundMediaInitiallyEnabled: Bool
+  /// Native peers preserve Clip's established codec preference ladder. A
+  /// receive-only Web peer instead receives an exact one-codec contract so
+  /// Clip never creates a fallback encoding.
+  public let videoCodecNegotiationPolicy: WebRTCVideoCodecNegotiationPolicy
 
   init(
     key: ClipLiveShareNativeV3PeerLinkKey,
     localParticipantID: ClipLiveShareNativeV3ParticipantID,
-    outboundMediaInitiallyEnabled: Bool = true
+    outboundMediaInitiallyEnabled: Bool = true,
+    videoCodecNegotiationPolicy: WebRTCVideoCodecNegotiationPolicy =
+      .nativeCompatible
   ) throws {
     guard
       let remoteParticipantID = key.otherParticipant(than: localParticipantID)
@@ -119,6 +125,7 @@ public struct ClipLiveShareNativeV3PeerLinkConfiguration: Equatable, Sendable {
     controlChannel = .reliableOrdered
     mediaLayout = .standard
     self.outboundMediaInitiallyEnabled = outboundMediaInitiallyEnabled
+    self.videoCodecNegotiationPolicy = videoCodecNegotiationPolicy
   }
 }
 
@@ -322,6 +329,8 @@ public protocol ClipLiveShareNativeV3PeerLinkTransport: Sendable {
     videoEncodingMode: LiveShareEncodingMode
   ) async
   func updateVideoCodecPreference(_ codec: WebRTCVideoCodec) async throws
+  func restoreVideoCodecPreference(_ codec: WebRTCVideoCodec) async throws
+  func currentVideoCodecPreference() async -> WebRTCVideoCodec?
   func rollbackLocalOfferIfNeeded() async throws
   func setRemoteParticipantAudioPlaybackEnabled(_ enabled: Bool) async
   func setRemoteParticipantAudioVolume(_ volume: Double) async
@@ -355,6 +364,15 @@ public extension ClipLiveShareNativeV3PeerLinkTransport {
   func updateVideoCodecPreference(_ codec: WebRTCVideoCodec) async throws {
     _ = codec
   }
+
+  /// Restores the previously selected codec after a failed exchange without
+  /// scheduling another exchange. Production transport overrides this because
+  /// it tracks explicit codec negotiation independently from SDP signaling.
+  func restoreVideoCodecPreference(_ codec: WebRTCVideoCodec) async throws {
+    try await updateVideoCodecPreference(codec)
+  }
+
+  func currentVideoCodecPreference() async -> WebRTCVideoCodec? { nil }
 
   func sendEphemeralControlMessage(_ data: Data) async -> Bool {
     do {
@@ -576,6 +594,13 @@ public actor ClipLiveShareNativeV3MeshPeerLinkManager {
   private var links: [ClipLiveShareNativeV3PeerLinkKey: ManagedLink] = [:]
   private var receiverAudioPreferences:
     [ClipLiveShareNativeV3ParticipantID: ReceiverAudioPreference] = [:]
+  private var videoCodecNegotiationPolicies:
+    [ClipLiveShareNativeV3ParticipantID: WebRTCVideoCodecNegotiationPolicy] = [:]
+  /// The last successfully requested pair codec. It is independent from room
+  /// membership and survives a targeted transport recreation, preventing a
+  /// recovered edge from silently returning to the factory's startup codec.
+  private var videoCodecPreferences:
+    [ClipLiveShareNativeV3ParticipantID: WebRTCVideoCodec] = [:]
   private var nextLinkGeneration: UInt64 = 0
   private var isReconciling = false
   private var isClosed = false
@@ -615,6 +640,21 @@ public actor ClipLiveShareNativeV3MeshPeerLinkManager {
       Task { await self?.removeContinuation(id) }
     }
     return stream
+  }
+
+  /// Installs creator-certified per-peer codec policy before roster
+  /// reconciliation constructs a transport. Participant profiles are
+  /// immutable for one room incarnation, so retained links never need to be
+  /// rewritten in place; a recreated link reads the same stored policy.
+  public func setVideoCodecNegotiationPolicies(
+    _ policies: [
+      ClipLiveShareNativeV3ParticipantID: WebRTCVideoCodecNegotiationPolicy
+    ]
+  ) {
+    guard !isClosed else { return }
+    videoCodecNegotiationPolicies = policies.filter {
+      $0.key != localParticipantID
+    }
   }
 
   /// Reconciles the local connections transactionally. New links are fully
@@ -670,11 +710,22 @@ public actor ClipLiveShareNativeV3MeshPeerLinkManager {
           key: key,
           localParticipantID: localParticipantID,
           outboundMediaInitiallyEnabled:
-            !quarantinedParticipantIDs.contains(remoteParticipantID)
+            !quarantinedParticipantIDs.contains(remoteParticipantID),
+          videoCodecNegotiationPolicy:
+            videoCodecNegotiationPolicies[remoteParticipantID]
+              ?? .nativeCompatible
         )
         let transport = try await transportFactory.makeTransport(
           configuration: configuration
         )
+        if let codec = videoCodecPreferences[remoteParticipantID] {
+          do {
+            try await transport.restoreVideoCodecPreference(codec)
+          } catch {
+            await transport.close()
+            throw error
+          }
+        }
         if let preference = receiverAudioPreferences[remoteParticipantID] {
           await transport.setRemoteParticipantAudioPlaybackEnabled(
             preference.playbackEnabled
@@ -742,6 +793,9 @@ public actor ClipLiveShareNativeV3MeshPeerLinkManager {
     receiverAudioPreferences = receiverAudioPreferences.filter {
       desiredParticipantIDs.contains($0.key)
     }
+    videoCodecPreferences = videoCodecPreferences.filter {
+      desiredParticipantIDs.contains($0.key)
+    }
     for key in insertedKeys.sorted() {
       if let link = links[key] {
         emit(.linkAdded(snapshot(for: link)))
@@ -804,6 +858,9 @@ public actor ClipLiveShareNativeV3MeshPeerLinkManager {
     switch targeted.payload {
     case let .sessionDescription(description):
       try await link.transport.applyRemoteDescription(description)
+      if let codec = await link.transport.currentVideoCodecPreference() {
+        videoCodecPreferences[remoteParticipantID] = codec
+      }
     case let .iceCandidate(candidate):
       try await link.transport.addRemoteICECandidate(candidate)
     }
@@ -908,12 +965,34 @@ public actor ClipLiveShareNativeV3MeshPeerLinkManager {
     rollbackTo previousCodec: WebRTCVideoCodec
   ) async throws {
     let link = try activeLink(to: remoteParticipantID)
+    let authoritativePreviousCodec =
+      await link.transport.currentVideoCodecPreference() ?? previousCodec
     do {
       try await link.transport.updateVideoCodecPreference(codec)
+      videoCodecPreferences[remoteParticipantID] = codec
     } catch {
-      try? await link.transport.updateVideoCodecPreference(previousCodec)
+      try? await link.transport.restoreVideoCodecPreference(
+        authoritativePreviousCodec
+      )
       throw error
     }
+  }
+
+  public func restoreVideoCodecPreference(
+    _ codec: WebRTCVideoCodec,
+    for remoteParticipantID: ClipLiveShareNativeV3ParticipantID
+  ) async throws {
+    let link = try activeLink(to: remoteParticipantID)
+    try await link.transport.restoreVideoCodecPreference(codec)
+    videoCodecPreferences[remoteParticipantID] = codec
+  }
+
+  public func currentVideoCodecPreference(
+    for remoteParticipantID: ClipLiveShareNativeV3ParticipantID
+  ) async throws -> WebRTCVideoCodec? {
+    let link = try activeLink(to: remoteParticipantID)
+    return await link.transport.currentVideoCodecPreference()
+      ?? videoCodecPreferences[remoteParticipantID]
   }
 
   public func rollbackLocalOfferIfNeeded(

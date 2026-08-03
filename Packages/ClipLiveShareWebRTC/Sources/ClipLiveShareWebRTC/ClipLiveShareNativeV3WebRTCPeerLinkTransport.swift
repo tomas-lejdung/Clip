@@ -542,6 +542,7 @@ public final class ClipLiveShareNativeV3WebRTCPeerLinkTransport:
   private var outboundMediaEnabled: Bool
   private var senderPolicy: WebRTCSenderPolicy
   private var videoCodec: WebRTCVideoCodec
+  private let videoCodecNegotiationPolicy: WebRTCVideoCodecNegotiationPolicy
   private var controlChannel: RTCDataChannel?
   private var connectionState: WebRTCPeerConnectionState = .new
   private var controlChannelState: WebRTCControlDataChannelState = .connecting
@@ -556,6 +557,10 @@ public final class ClipLiveShareNativeV3WebRTCPeerLinkTransport:
   /// its answer. Coalesce it until signaling returns to stable instead of
   /// creating a competing offer against the same transceiver/MID layout.
   private var hasPendingOfferRequest = false
+  /// Codec changes use an explicit canonical offer/request. Ignore the
+  /// redundant negotiation-needed callback produced by setCodecPreferences
+  /// until that exact exchange reaches stable signaling.
+  private var explicitCodecNegotiationPending = false
   private var didStart = false
   private var isClosed = false
   private var remoteVideoTracks:
@@ -594,6 +599,8 @@ public final class ClipLiveShareNativeV3WebRTCPeerLinkTransport:
       linkConfiguration.outboundMediaInitiallyEnabled
     senderPolicy = webRTCConfiguration.peer.senderPolicy
     videoCodec = webRTCConfiguration.peer.videoCodec
+    videoCodecNegotiationPolicy =
+      linkConfiguration.videoCodecNegotiationPolicy
     resourceLimits = webRTCConfiguration.peer.resourceLimits.normalized
     controlBufferPolicy = .init(
       resourceLimits: webRTCConfiguration.peer.resourceLimits
@@ -657,6 +664,7 @@ public final class ClipLiveShareNativeV3WebRTCPeerLinkTransport:
           }
           try Self.applyVideoCodecPreference(
             videoCodec,
+            policy: videoCodecNegotiationPolicy,
             capabilities: videoCodecCapabilities,
             to: transceiver
           )
@@ -779,6 +787,7 @@ public final class ClipLiveShareNativeV3WebRTCPeerLinkTransport:
       )
       finishNegotiation()
     } catch {
+      onQueue { explicitCodecNegotiationPending = false }
       finishNegotiation()
       throw error
     }
@@ -795,7 +804,12 @@ public final class ClipLiveShareNativeV3WebRTCPeerLinkTransport:
     }
     switch description.kind {
     case .offer:
-      try await applyRemoteOffer(description)
+      do {
+        try await applyRemoteOffer(description)
+      } catch {
+        onQueue { explicitCodecNegotiationPending = false }
+        throw error
+      }
     case .answer:
       try beginNegotiation()
       do {
@@ -808,8 +822,10 @@ public final class ClipLiveShareNativeV3WebRTCPeerLinkTransport:
           RTCSessionDescription(type: .answer, sdp: description.sdp)
         )
         await flushPendingRemoteICECandidates()
+        onQueue { explicitCodecNegotiationPending = false }
         finishNegotiation()
       } catch {
+        onQueue { explicitCodecNegotiationPending = false }
         finishNegotiation()
         throw error
       }
@@ -945,6 +961,23 @@ public final class ClipLiveShareNativeV3WebRTCPeerLinkTransport:
   public func updateVideoCodecPreference(
     _ codec: WebRTCVideoCodec
   ) async throws {
+    try setVideoCodecPreference(codec, expectsExplicitNegotiation: true)
+  }
+
+  public func restoreVideoCodecPreference(
+    _ codec: WebRTCVideoCodec
+  ) async throws {
+    try setVideoCodecPreference(codec, expectsExplicitNegotiation: false)
+  }
+
+  public func currentVideoCodecPreference() async -> WebRTCVideoCodec? {
+    onQueue { isClosed ? nil : videoCodec }
+  }
+
+  private func setVideoCodecPreference(
+    _ codec: WebRTCVideoCodec,
+    expectsExplicitNegotiation: Bool
+  ) throws {
     try onQueue {
       try ensureOpen()
       guard videoCodecCapabilities.contains(where: {
@@ -956,11 +989,13 @@ public final class ClipLiveShareNativeV3WebRTCPeerLinkTransport:
       for transceiver in videoTransceivers {
         try Self.applyVideoCodecPreference(
           codec,
+          policy: videoCodecNegotiationPolicy,
           capabilities: videoCodecCapabilities,
           to: transceiver
         )
       }
       videoCodec = codec
+      explicitCodecNegotiationPending = expectsExplicitNegotiation
     }
   }
 
@@ -971,12 +1006,16 @@ public final class ClipLiveShareNativeV3WebRTCPeerLinkTransport:
     }
     switch state {
     case .stable:
+      onQueue { explicitCodecNegotiationPending = false }
       return
     case .haveLocalOffer, .haveLocalPrAnswer:
       try await setLocalDescription(
         RTCSessionDescription(type: .rollback, sdp: "")
       )
-      onQueue { hasPendingOfferRequest = false }
+      onQueue {
+        hasPendingOfferRequest = false
+        explicitCodecNegotiationPending = false
+      }
     case .haveRemoteOffer, .haveRemotePrAnswer, .closed:
       throw ClipLiveShareNativeV3WebRTCPeerLinkError
         .invalidSessionDescriptionKind
@@ -1118,6 +1157,7 @@ public final class ClipLiveShareNativeV3WebRTCPeerLinkTransport:
         }
         emit(.controlMessageReceived(data))
       case .negotiationNeeded:
+        guard !explicitCodecNegotiationPending else { return }
         emit(.negotiationNeeded)
       case .receiverAdded:
         // Receiver callbacks may arrive before setRemoteDescription's
@@ -1158,6 +1198,23 @@ public final class ClipLiveShareNativeV3WebRTCPeerLinkTransport:
       description.sdp,
       resourceLimits: resourceLimits
     )
+    // Native peers keep Clip's established asymmetric preference ladder. When
+    // the canonical offerer changes codec, align the answerer's transceivers
+    // to that offer before creating the answer. Do not override an answerer
+    // that is itself waiting for its requested codec exchange, and never infer
+    // a fallback codec for an exact Web edge.
+    let shouldAdoptOfferedCodec = onQueue {
+      videoCodecNegotiationPolicy == .nativeCompatible
+        && !explicitCodecNegotiationPending
+    }
+    if shouldAdoptOfferedCodec,
+      let offeredCodec = Self.preferredVideoCodec(in: description.sdp)
+    {
+      try setVideoCodecPreference(
+        offeredCodec,
+        expectsExplicitNegotiation: false
+      )
+    }
     try await setRemoteDescription(
       RTCSessionDescription(type: .offer, sdp: description.sdp)
     )
@@ -1172,6 +1229,7 @@ public final class ClipLiveShareNativeV3WebRTCPeerLinkTransport:
       )
     )
     try await setLocalDescription(configured)
+    onQueue { explicitCodecNegotiationPending = false }
     emit(
       .localNegotiation(
         .sessionDescription(.init(kind: .answer, sdp: configured.sdp))
@@ -1471,6 +1529,7 @@ public final class ClipLiveShareNativeV3WebRTCPeerLinkTransport:
           addedSenders.append(sender)
           try Self.applyVideoCodecPreference(
             videoCodec,
+            policy: videoCodecNegotiationPolicy,
             capabilities: videoCodecCapabilities,
             to: transceiver
           )
@@ -1701,6 +1760,7 @@ public final class ClipLiveShareNativeV3WebRTCPeerLinkTransport:
     isClosed = true
     isNegotiating = false
     hasPendingOfferRequest = false
+    explicitCodecNegotiationPending = false
     pendingRemoteICECandidates.removeAll(keepingCapacity: false)
     delegate.detach()
     connection.delegate = nil
@@ -1769,10 +1829,14 @@ public final class ClipLiveShareNativeV3WebRTCPeerLinkTransport:
 
   private static func applyVideoCodecPreference(
     _ codec: WebRTCVideoCodec,
+    policy: WebRTCVideoCodecNegotiationPolicy,
     capabilities: [RTCRtpCodecCapability],
     to transceiver: RTCRtpTransceiver
   ) throws {
-    let preferences = videoCodecPreferenceNames(for: codec).flatMap { name in
+    let preferences = videoCodecPreferenceNames(
+      for: codec,
+      policy: policy
+    ).flatMap { name in
       capabilities.filter {
         $0.name.caseInsensitiveCompare(name) == .orderedSame
       }
@@ -1789,15 +1853,65 @@ public final class ClipLiveShareNativeV3WebRTCPeerLinkTransport:
     }
   }
 
-  /// The room's selected codec is an exact media contract, not a preference
-  /// ladder. In particular, AV1 must never make a second VP9/VP8 encoding for
-  /// a peer that cannot decode AV1. An incompatible peer edge may fail as a
-  /// whole; the client reports Unsupported Encoding while room membership
-  /// remains available through the encrypted room transport.
+  /// Returns SDP preference order only. A transceiver negotiates one codec
+  /// from this list and therefore creates one encoder, never parallel fallback
+  /// encodings. Web edges remain exact so an unsupported browser gets
+  /// unavailable video rather than transcoding. Native edges preserve the
+  /// pre-Web-viewer ladder verbatim; changing networking must not change Clip's
+  /// established encoder negotiation behavior.
   static func videoCodecPreferenceNames(
-    for codec: WebRTCVideoCodec
+    for codec: WebRTCVideoCodec,
+    policy: WebRTCVideoCodecNegotiationPolicy = .exact
   ) -> [String] {
-    [codec.rtcName]
+    switch policy {
+    case .exact:
+      [codec.rtcName]
+    case .nativeCompatible:
+      switch codec {
+      case .av1:
+        [
+          codec.rtcName,
+          WebRTCVideoCodec.vp9.rtcName,
+          WebRTCVideoCodec.vp8.rtcName,
+        ]
+      case .vp9:
+        [codec.rtcName, WebRTCVideoCodec.vp8.rtcName]
+      case .h264, .vp8:
+        [codec.rtcName]
+      }
+    }
+  }
+
+  /// Reads the first real video codec in the first video m-line. Auxiliary
+  /// RTX/RED/FEC payloads are ignored. Every standard Native-v3 video m-line
+  /// uses the same preference order, so one is sufficient to align the answer.
+  private static func preferredVideoCodec(
+    in sdp: String
+  ) -> WebRTCVideoCodec? {
+    let lines = sdp.replacingOccurrences(of: "\r\n", with: "\n")
+      .components(separatedBy: "\n")
+    var codecsByPayload: [String: WebRTCVideoCodec] = [:]
+    for line in lines where line.hasPrefix("a=rtpmap:") {
+      let parts = line.dropFirst("a=rtpmap:".count)
+        .split(separator: " ", maxSplits: 1)
+      guard parts.count == 2,
+        let name = parts.last?
+          .split(separator: "/", maxSplits: 1)
+          .first
+          .map(String.init),
+        let codec = WebRTCVideoCodec.allCases.first(where: {
+          $0.rtcName.caseInsensitiveCompare(name) == .orderedSame
+        })
+      else { continue }
+      codecsByPayload[String(parts[0])] = codec
+    }
+    guard let videoLine = lines.first(where: { $0.hasPrefix("m=video ") })
+    else { return nil }
+    return videoLine.split(whereSeparator: \.isWhitespace)
+      .dropFirst(3)
+      .lazy
+      .compactMap { codecsByPayload[String($0)] }
+      .first
   }
 
   private static func applyAudioCodecPreference(

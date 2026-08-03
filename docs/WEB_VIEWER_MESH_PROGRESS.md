@@ -18,10 +18,14 @@ administration.
 - [x] Every participant pair uses the same encrypted v4 signaling and direct
   WebRTC connection contract; `NATIVE` and `WEB` affect capabilities and UI,
   not routing.
-- [x] Each publishing participant's selected codec is exact. Clip never creates a second encoding
-  for a browser and never falls back to another codec. Unsupported browsers
-  stay in the authoritative room roster; the affected peer edge may fail or
-  remain black, and shows `Unsupported Encoding` when the codec is observable.
+- [x] Native-Web edges require the publisher's selected codec exactly. Clip
+  never creates a second encoding for a browser and never falls back to another
+  codec. Unsupported browsers stay in the authoritative room roster; the
+  affected peer edge may fail or remain black, and shows
+  `Unsupported Encoding` when the codec is observable.
+- [x] Native-Native edges preserve the pre-Web preference ladder
+  (AV1→VP9→VP8, VP9→VP8, H.264 exact, VP8 exact) while negotiating one
+  active codec and using one encoder.
 - [x] The canonical invite remains
   `https://service/ROOMCODE#v=4&key=...&join=...`; the unmodified Web client
   never places its fragment in a normal service request or log.
@@ -44,9 +48,13 @@ administration.
 - [x] Surface Native/Web identity in participant presentation models.
 - [x] Share cross-language canonical descriptor fixtures.
 
-## 3. Exact codec contract
+## 3. Per-edge codec contract
 
-- [x] Restrict every video transceiver to the user-selected codec only.
+- [x] Restrict every Native-Web video transceiver to the user-selected codec
+  only.
+- [x] Preserve the proven Native-Native SDP preference ladder without enabling
+  simultaneous codecs, per-peer encoders, or Web-driven renegotiation of an
+  unaffected Native pair.
 - [x] Keep roster presence when an exact codec leaves that peer edge without a
   common video format. Show a precise unsupported-codec state when the codec is
   observable, while allowing an early-failed edge to remain unavailable or
@@ -89,14 +97,18 @@ administration.
 
 - [x] Show participant roster, Native/Web badges, creator, and per-link P2P
   state.
-- [x] Render all received windows with focused, grid, and compact-row layouts.
-- [x] Support fit, fill, native-size, cursor-follow panning, and browser
-  fullscreen.
-- [x] Follow a participant: auto-select the sole sharer; require/select a
-  participant when several share; follow their focused source; fail over in
-  stable roster order when they stop or leave; never jump back unexpectedly.
-- [x] Clicking a different participant's source switches Follow to that
-  participant.
+- [x] Render all received windows with Focus and Row layouts; remove Grid.
+- [x] Default to Native size and support Fit, Fill, browser fullscreen,
+  drag-to-pan for an oversized Native source, and a bottom-right viewport
+  minimap.
+- [x] Show every active source in the Focus filmstrip, distinguishing the
+  publisher-focused source from the viewer's manual selection.
+- [x] Auto-hide the Focus HUD after pointer/input inactivity and reveal it again
+  on movement.
+- [x] Support Follow Off/manual selection and per-publisher Follow. Follow the
+  selected publisher's focused source, fail over within that publisher and
+  then in stable roster order, and never jump back unexpectedly.
+- [x] Clicking a source selects it manually and turns Follow Off.
 - [x] Add explicit audio unlock, master mute/volume, and per-participant
   mute/volume.
 - [x] Hide publishing, friendship, collaboration, invite administration, room
@@ -129,11 +141,16 @@ administration.
 - [x] A + B + C + Web forms all six links without changing retained links.
 - [x] Simultaneous publishers, source churn, audio toggles, follow failover,
   browser reload/reconnect, approval, denial, capacity, and room end pass.
-- [x] Unsupported AV1/VP9 browser proves no fallback, no secondary encoding,
-  a codec-specific error when observable, and no disturbance to any other peer
-  edge.
+- [x] Unsupported AV1/VP9 Native-Web edges prove no fallback, no secondary
+  encoding, a codec-specific error when observable, and no disturbance to any
+  other peer edge.
+- [x] Native-Native codec preference tests retain the pre-Web ladder while
+  proving one negotiated codec and one encoder.
 - [ ] Desktop Safari and Chromium acceptance passes; mobile and Firefox remain
-  explicitly unsupported for web-v1.
+  explicitly unsupported for web-v1. This manual gate must cover Native-default
+  rendering, Focus/Row, Follow Off and per-publisher Follow, the source
+  filmstrip, HUD auto-hide, Native drag/minimap, fullscreen, audio, and an
+  unsupported selected codec.
 - [x] The dependency-free viewer shell renders in a controlled desktop browser
   with its assets, controls, and error state intact.
 - [x] Update `spec.md`, server documentation, protocol documentation, and the

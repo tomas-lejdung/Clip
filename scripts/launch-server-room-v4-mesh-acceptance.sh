@@ -12,10 +12,10 @@ usage() {
   cat >&2 <<EOF
 Usage:
   $0 $ACKNOWLEDGEMENT /absolute/path/Clip.app \
-    [--participants 3|4] [--server-root https://rooms.example] \
+    [--participants 2|3|4] [--server-root https://rooms.example] \
     [--menu-bar-popovers]
 
-Launches three isolated signed Clip participants by default, or four when
+Launches three isolated signed Clip participants by default, or two or four when
 requested. The optional menu-bar mode retains isolated participant identities
 but uses Clip's real status-item popovers instead of addressable test windows.
 This launcher does not create rooms, copy invites, approve members, publish
@@ -61,7 +61,9 @@ while [[ $# -gt 0 ]]; do
       ;;
   esac
 done
-if [[ "$PARTICIPANT_COUNT" != "3" && "$PARTICIPANT_COUNT" != "4" ]]; then
+if [[ "$PARTICIPANT_COUNT" != "2" \
+  && "$PARTICIPANT_COUNT" != "3" \
+  && "$PARTICIPANT_COUNT" != "4" ]]; then
   usage
   exit 2
 fi
@@ -136,10 +138,11 @@ RUN_DIRECTORY="$(mktemp -d "${TMPDIR:-/tmp}/clip-mesh-acceptance.XXXXXX")"
 LOGS_DIRECTORY="$RUN_DIRECTORY/logs"
 mkdir -m 700 "$LOGS_DIRECTORY"
 
-LABELS=("participant-a" "participant-b" "participant-c")
-if [[ "$PARTICIPANT_COUNT" == "4" ]]; then
-  LABELS+=("participant-d")
-fi
+case "$PARTICIPANT_COUNT" in
+  2) LABELS=("participant-a" "participant-b") ;;
+  3) LABELS=("participant-a" "participant-b" "participant-c") ;;
+  4) LABELS=("participant-a" "participant-b" "participant-c" "participant-d") ;;
+esac
 
 for label in "${LABELS[@]}"; do
   launch_arguments=(

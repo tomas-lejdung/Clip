@@ -165,6 +165,170 @@ extension NativeMediaResourceTests {
     }
 
     @Test(
+      "connected native pair applies one post-start codec renegotiation",
+      .timeLimit(.minutes(1))
+    )
+    func nativeCodecChangeRenegotiatesOnce() async throws {
+      let first = try NativeV3RealParticipant(byte: 0x12)
+      let second = try NativeV3RealParticipant(byte: 0x24)
+      let link = try await NativeV3RealLink(first: first, second: second)
+
+      do {
+        try await link.start()
+        #expect(await link.waitUntilReady())
+        let initial = await link.snapshot()
+        let initialOfferCount = initial.first.localDescriptions.filter {
+          $0.kind == .offer
+        }.count
+        let initialAnswerCount = initial.second.localDescriptions.filter {
+          $0.kind == .answer
+        }.count
+        let initialOffer = try #require(
+          initial.first.localDescriptions.last { $0.kind == .offer }
+        )
+        let initialAnswer = try #require(
+          initial.second.localDescriptions.last { $0.kind == .answer }
+        )
+        #expect(nativeV3PrimaryVideoCodecs(in: initialOffer.sdp) == ["VP8"])
+        #expect(nativeV3PrimaryVideoCodecs(in: initialAnswer.sdp) == ["VP8"])
+
+        try await link.changeCodec(.av1, from: .first)
+        let renegotiated = await link.waitUntil { snapshot in
+          snapshot.first.localDescriptions.filter { $0.kind == .offer }.count
+            == initialOfferCount + 1
+            && snapshot.second.localDescriptions.filter {
+              $0.kind == .answer
+            }.count == initialAnswerCount + 1
+            && snapshot.isReady
+        }
+        let final = await link.snapshot()
+        #expect(
+          renegotiated,
+          Comment(rawValue: "Codec renegotiation failed: \(final)")
+        )
+        #expect(
+          final.first.localDescriptions.filter { $0.kind == .offer }.count
+            == initialOfferCount + 1
+        )
+        #expect(
+          final.second.localDescriptions.filter { $0.kind == .answer }.count
+            == initialAnswerCount + 1
+        )
+        let changedOffer = try #require(
+          final.first.localDescriptions.last { $0.kind == .offer }
+        )
+        let changedAnswer = try #require(
+          final.second.localDescriptions.last { $0.kind == .answer }
+        )
+        #expect(nativeV3PrimaryVideoCodecs(in: changedOffer.sdp) == ["AV1"])
+        #expect(nativeV3PrimaryVideoCodecs(in: changedAnswer.sdp) == ["AV1"])
+        #expect(final.relayErrors.isEmpty)
+        #expect(final.first.failures.isEmpty)
+        #expect(final.second.failures.isEmpty)
+      } catch {
+        await link.close()
+        first.factory.close()
+        second.factory.close()
+        throw error
+      }
+
+      await link.close()
+      first.factory.close()
+      second.factory.close()
+    }
+
+    @Test(
+      "native answerer codec change is negotiated by one canonical offer",
+      .timeLimit(.minutes(1))
+    )
+    func nativeAnswererCodecChangeRenegotiatesOnce() async throws {
+      let first = try NativeV3RealParticipant(byte: 0x14, videoCodec: .h264)
+      let second = try NativeV3RealParticipant(byte: 0x26, videoCodec: .h264)
+      let link = try await NativeV3RealLink(first: first, second: second)
+
+      do {
+        try await link.start()
+        #expect(await link.waitUntilReady())
+        let initial = await link.snapshot()
+        let initialOfferCount = initial.first.localDescriptions.filter {
+          $0.kind == .offer
+        }.count
+        let initialAnswerCount = initial.second.localDescriptions.filter {
+          $0.kind == .answer
+        }.count
+
+        // The second endpoint is the answerer. Production sends one encrypted
+        // request to the canonical first endpoint, which then creates this
+        // offer without changing pair ownership or rebuilding capture.
+        try await link.changeCodec(.av1, from: .second)
+        #expect(await link.waitUntil { snapshot in
+          snapshot.first.localDescriptions.filter { $0.kind == .offer }.count
+            == initialOfferCount + 1
+            && snapshot.second.localDescriptions.filter {
+              $0.kind == .answer
+            }.count == initialAnswerCount + 1
+            && snapshot.isReady
+        })
+        let final = await link.snapshot()
+        let changedAnswer = try #require(
+          final.second.localDescriptions.last { $0.kind == .answer }
+        )
+        let changedOffer = try #require(
+          final.first.localDescriptions.last { $0.kind == .offer }
+        )
+        #expect(nativeV3PrimaryVideoCodecs(in: changedOffer.sdp) == ["AV1"])
+        #expect(nativeV3PrimaryVideoCodecs(in: changedAnswer.sdp) == ["AV1"])
+        #expect(final.relayErrors.isEmpty)
+        #expect(final.first.failures.isEmpty)
+        #expect(final.second.failures.isEmpty)
+      } catch {
+        await link.close()
+        first.factory.close()
+        second.factory.close()
+        throw error
+      }
+
+      await link.close()
+      first.factory.close()
+      second.factory.close()
+    }
+
+    @Test(
+      "a fresh invalid queued ICE candidate remains a visible failure",
+      .timeLimit(.minutes(1))
+    )
+    func freshInvalidQueuedICECandidateIsNotSwallowed() async throws {
+      let first = try NativeV3RealParticipant(byte: 0x16)
+      let second = try NativeV3RealParticipant(byte: 0x28)
+      let link = try await NativeV3RealLink(first: first, second: second)
+
+      do {
+        try await link.queueRemoteCandidate(
+          .init(
+            candidate:
+              "candidate:1 1 udp 2122260223 127.0.0.1 9 typ host",
+            sdpMid: "not-a-negotiated-mid",
+            sdpMLineIndex: 0
+          ),
+          on: .second
+        )
+        try await link.start()
+        #expect(await link.waitUntil { !$0.second.failures.isEmpty })
+        let snapshot = await link.snapshot()
+        #expect(snapshot.second.failures.count == 1)
+      } catch {
+        await link.close()
+        first.factory.close()
+        second.factory.close()
+        throw error
+      }
+
+      await link.close()
+      first.factory.close()
+      second.factory.close()
+    }
+
+    @Test(
       "system audio renders non-silent PCM and playout stops with its link",
       .timeLimit(.minutes(1))
     )
@@ -808,7 +972,8 @@ private final class NativeV3BrowserReceiveOnlyLink: @unchecked Sendable {
     let key = try ClipLiveShareNativeV3PeerLinkKey(native.id, browserID)
     let configuration = try ClipLiveShareNativeV3PeerLinkConfiguration(
       key: key,
-      localParticipantID: native.id
+      localParticipantID: native.id,
+      videoCodecNegotiationPolicy: .exact
     )
     nativeTransport = try await native.factory.makeTransport(
       configuration: configuration
@@ -1445,7 +1610,8 @@ private struct NativeV3RealParticipant: Sendable {
 
   init(
     byte: UInt8,
-    remoteAudioPlaybackEnabled: Bool = false
+    remoteAudioPlaybackEnabled: Bool = false,
+    videoCodec: WebRTCVideoCodec = .vp8
   ) throws {
     id = try .init(
       bytes: Data(
@@ -1458,7 +1624,7 @@ private struct NativeV3RealParticipant: Sendable {
         peer: .init(
           iceServers: [],
           resourceLimits: .init(negotiationTimeout: 10),
-          videoCodec: .vp8
+          videoCodec: videoCodec
         ),
         remoteParticipantAudioPlaybackEnabled:
           remoteAudioPlaybackEnabled
@@ -1693,6 +1859,37 @@ private final class NativeV3RealLink: @unchecked Sendable {
     }
   }
 
+  func queueRemoteCandidate(
+    _ candidate: WebRTCICECandidate,
+    on side: NativeV3RealLinkSide
+  ) async throws {
+    switch side {
+    case .first:
+      try await firstTransport.addRemoteICECandidate(candidate)
+    case .second:
+      try await secondTransport.addRemoteICECandidate(candidate)
+    }
+  }
+
+  func changeCodec(
+    _ codec: WebRTCVideoCodec,
+    from side: NativeV3RealLinkSide
+  ) async throws {
+    switch side {
+    case .first:
+      try await firstTransport.updateVideoCodecPreference(codec)
+    case .second:
+      try await secondTransport.updateVideoCodecPreference(codec)
+      // Production carries this choice inside an encrypted pair-local codec
+      // request. The canonical offerer applies it before creating the offer.
+      try await firstTransport.updateVideoCodecPreference(codec)
+    }
+    // The lower participant is this fixture's canonical offerer. Production
+    // reaches the same call directly or through one encrypted request when the
+    // answerer initiated the setting change.
+    try await firstTransport.requestNegotiation()
+  }
+
   func snapshot() async -> NativeV3RealLinkSnapshot {
     await relay.snapshot()
   }
@@ -1798,6 +1995,40 @@ private func nativeV3NamedVideoCodecs(in sdp: String) -> Set<String> {
       .first
       .map { String($0).uppercased() }
     if let codec, namedCodecs.contains(codec) {
+      result.insert(codec)
+    }
+  }
+  return result
+}
+
+/// Resolves the first actual media codec in each video m-line. RTX/RED/FEC
+/// payloads are ignored; the result therefore proves which encoder won the
+/// offer/answer ordering instead of merely proving that a codec was mentioned
+/// somewhere in SDP.
+private func nativeV3PrimaryVideoCodecs(in sdp: String) -> Set<String> {
+  let lines = sdp.replacingOccurrences(of: "\r\n", with: "\n")
+    .components(separatedBy: "\n")
+  let namedCodecs: Set<String> = ["AV1", "VP9", "VP8", "H264"]
+  var codecsByPayload: [String: String] = [:]
+  for line in lines where line.hasPrefix("a=rtpmap:") {
+    let parts = line.dropFirst("a=rtpmap:".count)
+      .split(separator: " ", maxSplits: 1)
+    guard parts.count == 2,
+      let codec = parts.last?
+        .split(separator: "/", maxSplits: 1)
+        .first
+        .map({ String($0).uppercased() }),
+      namedCodecs.contains(codec)
+    else { continue }
+    codecsByPayload[String(parts[0])] = codec
+  }
+
+  var result: Set<String> = []
+  for line in lines where line.hasPrefix("m=video ") {
+    let payloads = line.split(whereSeparator: \.isWhitespace).dropFirst(3)
+    if let codec = payloads.lazy.compactMap({
+      codecsByPayload[String($0)]
+    }).first {
       result.insert(codec)
     }
   }

@@ -505,6 +505,8 @@ function pairPayloadCanonical(payload) {
       return encoder.data();
     case "ice-restart": case "renegotiation-request":
       return encoder.appendString(payload.type).appendUInt64(payload.epoch).data();
+    case "codec-renegotiation-request": case "codec-renegotiation-rejected":
+      return encoder.appendString(payload.type).appendUInt64(payload.epoch).appendString(payload.codec).data();
     case "close": return encoder.appendString("close").data();
     default: throw new ClipWebProtocolError("invalid-pair-signal", "A peer signaling message is unsupported.");
   }

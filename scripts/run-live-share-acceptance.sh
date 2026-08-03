@@ -65,7 +65,7 @@ swift test \
 swift test \
   --package-path "$WEBRTC_PACKAGE" \
   --manifest-cache none \
-  --filter ReceiveOnly
+  --filter ClipLiveShareNativeV3RealWebRTCLoopbackTests
 
 echo "Running real localhost 2/3/4-participant server-room acceptance..."
 "$ROOT/scripts/run-server-room-v4-acceptance.sh"

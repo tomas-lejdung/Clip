@@ -107,9 +107,9 @@ sleep/wake behavior, or soak stability.
 | --- | --- | --- |
 | Server-room v4 protocol | Canonical crypto vectors, typed bounds, stable invite/Access Word proof, optional explicit admission, authoritative rosters, replay/tamper rejection and transactional teardown. | Traffic-analysis resistance, production service availability or private-key compromise. |
 | Go service | Authoritative bounded room membership and pair routing, strict ciphertext relay, origin policy, security headers and real localhost WebSockets without private invite material or decrypted content. | Multi-replica routing, production TLS/reverse proxy or remote NAT traversal. |
-| Mesh WebRTC | 1/3/6 authenticated links, independent negotiation and congestion, reserved source/audio tracks, exact selected-codec preference, RTP statistics and decoded stereo Opus quality. | Real ScreenCaptureKit system audio, controlled TURN, physical thermal behavior or four independently signed GUI processes. |
+| Mesh WebRTC | 1/3/6 authenticated links, independent negotiation and congestion, reserved source/audio tracks, exact selected-codec Native-Web edges, the pre-Web Native-Native preference ladder with one active codec/encoder, RTP statistics and decoded stereo Opus quality. | Real ScreenCaptureKit system audio, controlled TURN, physical thermal behavior or four independently signed GUI processes. |
 | Participant UI | Common Native room model, Native/Web profile badges, expanded local sources plus compact remote-source detail, per-participant audio, negotiated-codec diagnostics, ordinary and friend admission, private friend presence, immutable creator identity, window modes, rejoin recovery, stale-notice cleanup and collaboration overlays. | Production Spaces/displays, native window ordering, click consumption or capture exclusion. |
-| Receive-only Web | Canonical fragment parsing/crypto, signed Web profile, same v4 admission/roster/pair wire, empty publication, source/track reconciliation, participant-scoped Follow, layouts, audio controls, unsupported-codec state, secure static hosting and browser reconnect ticket bounds. | Firefox/mobile support, cross-device production ICE/TURN, subjective browser rendering or a browser that lacks the selected exact codec. |
+| Receive-only Web | Canonical fragment parsing/crypto, signed Web profile, same v4 admission/roster/pair wire, empty publication, source/track reconciliation, Focus/Row, Native-default rendering, Follow Off/per-publisher Follow, filmstrip/HUD state, Native pan/minimap, audio controls, unsupported-codec state, secure static hosting and browser reconnect ticket bounds. | Controlled desktop Safari/Chromium visual acceptance, Firefox/mobile support, cross-device production ICE/TURN, subjective browser rendering or a browser that lacks the selected exact codec. |
 | Distribution | Clean-slate v4 source audit, dependency pins, sandbox entitlements and privacy-preserving service structure. | Final signed DMG, published image provenance and notarization. |
 
 The receive-only Web row is the required web-v1 evidence set; it must not be
@@ -133,18 +133,23 @@ ordered DataChannel fixtures. A + B + Web must produce three links without
 changing A-B's transport ID, negotiation epoch, tracks, codec, or media; A + B
 + C + Web must produce six links.
 
-The selected video codec is exact. The gate proves one publisher encoding, no
-browser-specific fallback, transcode, or second encoder, an explicit
-`Unsupported Encoding: <codec>` state when the selected codec is observable,
-and no change to an unrelated pair. Current libwebrtc may reject the whole
-incompatible edge before exposing that codec, so the edge may instead remain
-unavailable or black and does not claim audio or DataChannel availability.
+The selected video codec is exact on every Native-Web edge. The gate proves one
+publisher encoding, no browser-specific fallback, transcode, or second encoder,
+an explicit `Unsupported Encoding: <codec>` state when the selected codec is
+observable, and no change to an unrelated pair. Current libwebrtc may reject
+the whole incompatible edge before exposing that codec, so the edge may instead
+remain unavailable or black and does not claim audio or DataChannel
+availability. Native-Native edges must retain the pre-Web AV1→VP9→VP8 and
+VP9→VP8 preference ladders (H.264 and VP8 exact) while negotiating one active
+codec and using one encoder.
 
 Current desktop Safari and Chromium are the web-v1 browser scope. A controlled
 browser run must receive every compatible Native source and per-publisher audio,
-exercise Focus/Grid/Row, participant-scoped Follow, Fit/Fill/Native, fullscreen,
-master and per-participant audio controls, reload/reconnect, explicit Leave,
-approval, denial, capacity, and room termination. It must also prove that
+exercise Focus/Row, Native as the default, Follow Off/manual selection and
+per-publisher Follow, the source filmstrip, HUD auto-hide, Fit/Fill/Native,
+Native drag/minimap, fullscreen, master and per-participant audio controls,
+reload/reconnect, explicit Leave, approval, denial, capacity, and room
+termination. It must also prove that
 publishing, friendships, collaboration, and room administration are absent for
 the signed Web profile.
 

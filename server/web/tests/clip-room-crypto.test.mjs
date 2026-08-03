@@ -117,6 +117,49 @@ test("pair crypto agrees across browser peers and rejects replay", async () => {
   await assert.rejects(rightChannel.open(routed), /replayed/u);
 });
 
+test("pair crypto authenticates exact codec renegotiation requests", async () => {
+  const left = await createWebIdentity("Left");
+  const right = await createWebIdentity("Right");
+  const invite = {
+    roomId: encodeBase64URL(new Uint8Array(32).fill(0x31)),
+    sessionId: "pair-codec-request",
+  };
+  const leftHandle = encodeBase64URL(new Uint8Array(16).fill(0x32));
+  const rightHandle = encodeBase64URL(new Uint8Array(16).fill(0x33));
+  const leftContext = await derivePairContext(invite, leftHandle, left.descriptor.participantID, rightHandle, right.descriptor.participantID);
+  const rightContext = await derivePairContext(invite, rightHandle, right.descriptor.participantID, leftHandle, left.descriptor.participantID);
+  const leftChannel = await EncryptedPairChannel.create({ context: leftContext, localIdentity: left, remoteDescriptor: right.descriptor });
+  const rightChannel = await EncryptedPairChannel.create({ context: rightContext, localIdentity: right, remoteDescriptor: left.descriptor });
+  const payload = { type: "codec-renegotiation-request", epoch: 1, codec: "av1" };
+  const envelope = await leftChannel.seal(payload);
+  assert.deepEqual(await rightChannel.open({ ...envelope, from: leftHandle }), payload);
+});
+
+test("pair crypto authenticates exact codec rejection responses", async () => {
+  const left = await createWebIdentity("Left");
+  const right = await createWebIdentity("Right");
+  const invite = {
+    roomId: encodeBase64URL(new Uint8Array(32).fill(0x41)),
+    sessionId: "pair-codec-rejection",
+  };
+  const leftHandle = encodeBase64URL(new Uint8Array(16).fill(0x42));
+  const rightHandle = encodeBase64URL(new Uint8Array(16).fill(0x43));
+  const leftContext = await derivePairContext(invite, leftHandle, left.descriptor.participantID, rightHandle, right.descriptor.participantID);
+  const rightContext = await derivePairContext(invite, rightHandle, right.descriptor.participantID, leftHandle, left.descriptor.participantID);
+  const leftChannel = await EncryptedPairChannel.create({ context: leftContext, localIdentity: left, remoteDescriptor: right.descriptor });
+  const rightChannel = await EncryptedPairChannel.create({ context: rightContext, localIdentity: right, remoteDescriptor: left.descriptor });
+  const payload = { type: "codec-renegotiation-rejected", epoch: 1, codec: "av1" };
+  const envelope = await leftChannel.seal(payload);
+  assert.deepEqual(await rightChannel.open({ ...envelope, from: leftHandle }), payload);
+});
+
+test("codec request canonical bytes match the Swift implementation", () => {
+  assert.equal(
+    encodeBase64URL(__test.pairPayloadCanonical({ type: "codec-renegotiation-request", epoch: 1, codec: "av1" })),
+    "AAAAMmNsaXAtbGl2ZS1zaGFyZS1zZXJ2ZXItcm9vbS12NC9wYWlyLXNpZ25hbC1wYXlsb2FkAAAAAAAAAAQAAAAbY29kZWMtcmVuZWdvdGlhdGlvbi1yZXF1ZXN0AAAAAAAAAAEAAAADYXYx",
+  );
+});
+
 test("browser derives the fixed Swift pair identity and offerer", async () => {
   const context = await derivePairContext(
     {

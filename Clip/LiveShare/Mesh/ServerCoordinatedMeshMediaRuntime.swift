@@ -36,7 +36,8 @@ private extension ClipLiveShareServerRoomV4PairSignalPayload {
         switch self {
         case .offer, .answer:
             true
-        case .iceCandidate, .iceRestart, .renegotiationRequest, .close:
+        case .iceCandidate, .iceRestart, .renegotiationRequest,
+             .codecRenegotiationRequest, .codecRenegotiationRejected, .close:
             false
         }
     }
@@ -220,6 +221,13 @@ protocol ServerCoordinatedMeshMediaLinkManaging: Sendable {
         for participantID: ClipLiveShareNativeV3ParticipantID,
         rollbackTo previousCodec: WebRTCVideoCodec
     ) async throws
+    func restoreVideoCodecPreference(
+        _ codec: WebRTCVideoCodec,
+        for participantID: ClipLiveShareNativeV3ParticipantID
+    ) async throws
+    func currentVideoCodecPreference(
+        for participantID: ClipLiveShareNativeV3ParticipantID
+    ) async throws -> WebRTCVideoCodec?
     func rollbackLocalOfferIfNeeded(
         for participantID: ClipLiveShareNativeV3ParticipantID
     ) async throws
@@ -254,7 +262,25 @@ actor ServerCoordinatedMeshMediaLinkAdapter:
     func applyRoster(
         _ roster: ServerCoordinatedMeshVerifiedRoster
     ) async throws -> ClipLiveShareServerMeshReconciliationResult {
-        try await reconciler.applyRoster(
+        // The creator-certified descriptor, not user-agent text, chooses the
+        // media contract before any new transport creates its first offer.
+        // Native edges advertise one-encoder compatibility preferences; Web
+        // viewer edges remain exact and can never trigger fallback encoding.
+        await manager.setVideoCodecNegotiationPolicies(
+            Dictionary(uniqueKeysWithValues: roster.members.compactMap {
+                member in
+                guard member.participantID != roster.localParticipantID else {
+                    return nil
+                }
+                let policy: WebRTCVideoCodecNegotiationPolicy =
+                    member.descriptor.clientKind == .webViewer
+                        && member.descriptor.capabilityProfile == .webViewerV1
+                    ? .exact
+                    : .nativeCompatible
+                return (member.participantID, policy)
+            })
+        )
+        return try await reconciler.applyRoster(
             .init(
                 revision: roster.revision,
                 participantIDs: roster.participantIDs,
@@ -395,6 +421,22 @@ actor ServerCoordinatedMeshMediaLinkAdapter:
             for: participantID,
             rollbackTo: previousCodec
         )
+    }
+
+    func restoreVideoCodecPreference(
+        _ codec: WebRTCVideoCodec,
+        for participantID: ClipLiveShareNativeV3ParticipantID
+    ) async throws {
+        try await manager.restoreVideoCodecPreference(
+            codec,
+            for: participantID
+        )
+    }
+
+    func currentVideoCodecPreference(
+        for participantID: ClipLiveShareNativeV3ParticipantID
+    ) async throws -> WebRTCVideoCodec? {
+        try await manager.currentVideoCodecPreference(for: participantID)
     }
 
     func rollbackLocalOfferIfNeeded(
@@ -588,6 +630,16 @@ actor ServerCoordinatedMeshMediaRuntime {
     private var pendingPairSignals:
         [PendingPairSignalKey: [ServerCoordinatedMeshAuthenticatedPairSignal]] = [:]
     private var drainingPairSignalKeys: Set<PendingPairSignalKey> = []
+    /// A failed SDP exchange invalidates every ICE candidate from that
+    /// generation. Keep dropping candidates for this pair until a fresh offer
+    /// or answer is successfully applied to the replacement transport.
+    private var pairsAwaitingFreshSessionDescription:
+        Set<PendingPairSignalKey> = []
+    /// Web codec rejection rolls signaling back without negotiating a fallback.
+    /// Keep that edge media-disabled until a later supported exact-codec
+    /// exchange completes successfully.
+    private var codecRejectedParticipants:
+        Set<ClipLiveShareNativeV3ParticipantID> = []
     private var lastAppliedPairSignalSequence:
         [ClipLiveShareServerRoomV4PairID: UInt64] = [:]
     private var highestObservedPairSignalSequence:
@@ -1018,11 +1070,48 @@ actor ServerCoordinatedMeshMediaRuntime {
         rollbackTo previousCodec: WebRTCVideoCodec
     ) async throws {
         try requireKnownRemoteParticipant(participantID)
+        let authoritativePreviousCodec =
+            try await links.currentVideoCodecPreference(for: participantID)
+            ?? previousCodec
         try await links.updateVideoCodecPreference(
             codec,
             for: participantID,
-            rollbackTo: previousCodec
+            rollbackTo: authoritativePreviousCodec
         )
+        guard let roster,
+              let pair = roster.pairsByParticipant[participantID],
+              let member = roster.member(for: participantID) else {
+            throw ServerCoordinatedMeshMediaRuntimeError.unknownParticipant
+        }
+        // setCodecPreferences does not reliably raise negotiation-needed in
+        // libwebrtc. Start one explicit canonical exchange instead: the fixed
+        // offerer creates the offer, while an answerer sends one authenticated
+        // request to that offerer. This keeps the change pair-local and avoids
+        // duplicate offers/glare across the complete mesh.
+        do {
+            if pair.context.initialOfferer == roster.localHandle {
+                try await links.requestNegotiation(with: participantID)
+            } else {
+                try await sendPairSignalAction(
+                    pair.context,
+                    .codecRenegotiationRequest(
+                        epoch: pair.epoch,
+                        codec: MeshParticipantMediaSettingsPolicy
+                            .liveShareVideoCodec(codec)
+                    ),
+                    member.handle
+                )
+            }
+        } catch {
+            try? await links.rollbackLocalOfferIfNeeded(
+                for: participantID
+            )
+            try? await links.restoreVideoCodecPreference(
+                authoritativePreviousCodec,
+                for: participantID
+            )
+            throw error
+        }
     }
 
     func rollbackLocalOfferIfNeeded(
@@ -1146,6 +1235,84 @@ actor ServerCoordinatedMeshMediaRuntime {
                 for: member.participantID
             )
             try await links.requestNegotiation(with: member.participantID)
+        case let .codecRenegotiationRequest(_, codec):
+            guard pair.context.initialOfferer == roster.localHandle,
+                  member.descriptor.clientKind == .nativeApp,
+                  member.descriptor.capabilityProfile == .nativeV1 else {
+                throw ServerCoordinatedMeshMediaRuntimeError.invalidPairSignal
+            }
+            let requestedCodec = MeshParticipantMediaSettingsPolicy.videoCodec(
+                codec
+            )
+            let authoritativePreviousCodec =
+                try await links.currentVideoCodecPreference(
+                    for: member.participantID
+                ) ?? requestedCodec
+            // A codec request is distinct from generic pair recovery: apply
+            // the encrypted participant choice to the canonical offerer before
+            // it creates the one offer. Both Native endpoints then answer with
+            // the same negotiated codec without rebuilding capture or adding
+            // another encoder.
+            try? await links.rollbackLocalOfferIfNeeded(
+                for: member.participantID
+            )
+            do {
+                try await links.updateVideoCodecPreference(
+                    requestedCodec,
+                    for: member.participantID,
+                    rollbackTo: authoritativePreviousCodec
+                )
+                try await links.requestNegotiation(with: member.participantID)
+            } catch {
+                try? await links.rollbackLocalOfferIfNeeded(
+                    for: member.participantID
+                )
+                try? await links.restoreVideoCodecPreference(
+                    authoritativePreviousCodec,
+                    for: member.participantID
+                )
+                throw error
+            }
+        case let .codecRenegotiationRejected(_, codec):
+            guard member.descriptor.clientKind == .webViewer,
+                  member.descriptor.capabilityProfile == .webViewerV1 else {
+                throw ServerCoordinatedMeshMediaRuntimeError.invalidPairSignal
+            }
+            let rejectedCodec = MeshParticipantMediaSettingsPolicy.videoCodec(
+                codec
+            )
+            let currentCodec = try await links.currentVideoCodecPreference(
+                for: member.participantID
+            ) ?? rejectedCodec
+            try await links.rollbackLocalOfferIfNeeded(
+                for: member.participantID
+            )
+            try await links.setOutboundMediaEnabled(
+                false,
+                for: member.participantID
+            )
+            codecRejectedParticipants.insert(member.participantID)
+            // A second user selection can supersede the rejected offer before
+            // its authenticated response arrives. Roll that old offer back,
+            // keep media disabled, and immediately negotiate the newer exact
+            // codec rather than failing/recreating the otherwise healthy edge.
+            if currentCodec != rejectedCodec {
+                if pair.context.initialOfferer == roster.localHandle {
+                    try await links.requestNegotiation(
+                        with: member.participantID
+                    )
+                } else {
+                    try await sendPairSignalAction(
+                        pair.context,
+                        .codecRenegotiationRequest(
+                            epoch: pair.epoch,
+                            codec: MeshParticipantMediaSettingsPolicy
+                                .liveShareVideoCodec(currentCodec)
+                        ),
+                        member.handle
+                    )
+                }
+            }
         case .close:
             try await links.disconnect(member.participantID)
         }
@@ -1245,6 +1412,12 @@ actor ServerCoordinatedMeshMediaRuntime {
                     lastAppliedPairSignalSequence[key.pairID] = lastSequence
                     continue
                 }
+                if pairsAwaitingFreshSessionDescription.contains(key),
+                   !signal.payload.isSessionDescription {
+                    lastSequence = signal.sequence
+                    lastAppliedPairSignalSequence[key.pairID] = lastSequence
+                    continue
+                }
                 do {
                     guard let currentRoster = self.roster,
                           let currentBinding = try verifiedPairBinding(
@@ -1263,19 +1436,51 @@ actor ServerCoordinatedMeshMediaRuntime {
                         pair: binding.pair,
                         roster: currentRoster
                     )
+                    if signal.payload.isSessionDescription,
+                       codecRejectedParticipants.contains(
+                        binding.member.participantID
+                       ) {
+                        try await links.setOutboundMediaEnabled(
+                            true,
+                            for: binding.member.participantID
+                        )
+                        codecRejectedParticipants.remove(
+                            binding.member.participantID
+                        )
+                    }
+                    if signal.payload.isSessionDescription {
+                        pairsAwaitingFreshSessionDescription.remove(key)
+                    }
                     lastSequence = signal.sequence
                     lastAppliedPairSignalSequence[key.pairID] = lastSequence
                 } catch {
-                    // Consume only the signal that failed. A later offer or
-                    // candidate may belong to the replacement exchange and
-                    // must not be silently discarded with this batch.
+                    // Consume the signal that failed. Once SDP fails, every
+                    // candidate already queued behind it belongs to the
+                    // discarded description generation; retain only a later
+                    // session description, which establishes the next one.
                     lastAppliedPairSignalSequence[key.pairID] = signal.sequence
                     let remaining = signals.filter {
                         $0.sequence > signal.sequence
                     }
-                    if !remaining.isEmpty {
-                        pendingPairSignals[key] = remaining
-                            + (pendingPairSignals[key] ?? [])
+                    let retained: [ServerCoordinatedMeshAuthenticatedPairSignal]
+                    if signal.payload.isSessionDescription {
+                        pairsAwaitingFreshSessionDescription.insert(key)
+                        var foundReplacementDescription = false
+                        retained = (remaining + (pendingPairSignals[key] ?? []))
+                            .filter { candidate in
+                                if candidate.payload.isSessionDescription {
+                                    foundReplacementDescription = true
+                                    return true
+                                }
+                                return foundReplacementDescription
+                            }
+                    } else {
+                        retained = remaining + (pendingPairSignals[key] ?? [])
+                    }
+                    if !retained.isEmpty {
+                        pendingPairSignals[key] = retained
+                    } else {
+                        pendingPairSignals[key] = nil
                     }
                     let message: String
                     if signal.payload.isSessionDescription {
@@ -1351,6 +1556,8 @@ actor ServerCoordinatedMeshMediaRuntime {
         pairRecoveryTasks.removeAll(keepingCapacity: false)
         pairRecoveryTokens.removeAll(keepingCapacity: false)
         pendingPairSignals.removeAll(keepingCapacity: false)
+        pairsAwaitingFreshSessionDescription.removeAll(keepingCapacity: false)
+        codecRejectedParticipants.removeAll(keepingCapacity: false)
         lastAppliedPairSignalSequence.removeAll(keepingCapacity: false)
         highestObservedPairSignalSequence.removeAll(keepingCapacity: false)
         await links.close()
@@ -2054,6 +2261,9 @@ actor ServerCoordinatedMeshMediaRuntime {
         statistics = statistics.filter {
             participantIDs.contains($0.key)
         }
+        codecRejectedParticipants = codecRejectedParticipants.filter {
+            participantIDs.contains($0)
+        }
         synchronizedSourceRevisionByPeer =
             synchronizedSourceRevisionByPeer.filter {
                 participantIDs.contains($0.key)
@@ -2123,6 +2333,7 @@ actor ServerCoordinatedMeshMediaRuntime {
     private func resetRemoteParticipantIncarnation(
         _ participantID: ClipLiveShareNativeV3ParticipantID
     ) {
+        codecRejectedParticipants.remove(participantID)
         sourceSnapshots[participantID] = nil
         markPairUnavailable(participantID)
         sourceCursors = sourceCursors.filter {

@@ -65,11 +65,11 @@ declare `nativeApp/nativeV1` unless a future release adds Native application
 attestation. Admission policy and the four-person room boundary therefore
 remain part of the trust model.
 
-## Exact codec rule
+## Codec boundary
 
-Each publishing participant's selected video codec is the only codec offered
-for that participant's video transceivers. Clip never performs a second encode
-for a browser and never silently falls back to VP9, VP8, or H.264.
+On every Native-Web edge, the publishing participant's selected video codec is
+the only codec offered for its video transceivers. Clip never performs a second
+encode for a browser and never silently falls back to VP9, VP8, or H.264.
 
 If the browser cannot decode the selected codec:
 
@@ -88,7 +88,18 @@ information is available while every unrelated mesh edge continues unchanged.
 Adding a separate codec preflight or split media/control transport would alter
 the proven native mesh and is deliberately outside this pass.
 
-Native-to-native behavior uses this same exact-codec rule.
+Native-to-native edges deliberately retain the proven pre-Web SDP preference
+ladder:
+
+- AV1 prefers AV1, then VP9, then VP8;
+- VP9 prefers VP9, then VP8;
+- H.264 offers H.264 only;
+- VP8 offers VP8 only.
+
+This is a compatibility preference during negotiation, not multi-codec
+publishing. A Native publication still uses one negotiated codec and one
+encoder; Clip does not generate simultaneous per-peer encodings. Adding a Web
+participant must not replace or renegotiate an unaffected Native-Native edge.
 
 ## Invite and privacy
 
@@ -135,24 +146,29 @@ the socket; the native authorization path is unchanged.
 
 ## Media presentation
 
-All active sources remain selectable. The initial web UI supports Focus, Grid,
-and Row layouts plus Fit, Fill, Native size, cursor-follow panning, and browser
-fullscreen.
+All active sources remain selectable. Web-v1 supports Focus and Row layouts;
+Grid is intentionally removed. Native size is the default, with Fit, Fill,
+browser fullscreen, drag-to-pan when a Native source exceeds the viewport, and
+a bottom-right minimap showing the visible region.
 
-Follow targets a participant rather than a transient window:
+The Focus HUD auto-hides after pointer/input inactivity and reappears on
+movement. Its filmstrip shows every active source. Green identifies the source
+focused by its publisher; blue identifies a source selected manually by this
+viewer.
 
-1. With no active publisher, show a waiting state.
-2. With one active publisher, follow them automatically.
-3. With several active publishers, retain the current target and show a
-   participant selector.
-4. Within the target participant, follow their focused source, otherwise their
-   first active source in stable source order.
-5. If that source stops, select the next source from the same participant.
-6. If that participant stops or leaves, select the next active publisher in
+Follow targets a participant rather than a transient window and includes an
+explicit Off state:
+
+1. With Follow Off, keep the viewer's manually selected source.
+2. With Follow enabled, retain the selected publisher and expose a publisher
+   selector whenever more than one participant is sharing.
+3. Within that publisher, follow their focused source, otherwise their first
+   active source in stable source order.
+4. If that source stops, select the next source from the same participant.
+5. If that participant stops or leaves, select the next active publisher in
    authoritative roster order.
-7. Do not jump back if an earlier publisher resumes later.
-8. Clicking another participant's source changes the Follow target to that
-   participant.
+6. Do not jump back if an earlier publisher resumes later.
+7. Clicking a source in the filmstrip selects it manually and turns Follow Off.
 
 System audio remains one track per publishing participant. The browser starts
 muted until an explicit user gesture unlocks playback, then provides a master
@@ -180,9 +196,16 @@ The following native implementation is frozen by this feature:
 - A + B + Web produces exactly three ready links; adding/removing Web leaves
   A-B's transport ID, negotiation epoch, tracks, codec, and media uninterrupted.
 - A + B + C + Web produces exactly six ready links.
-- Unsupported selected codec proves one encoder, no fallback, a codec-specific
-  browser error when the codec is observable, and no disturbance to another
-  pair. A peer connection that fails before exposing the codec may remain
-  unavailable or black.
+- Unsupported selected codec on a Native-Web edge proves one encoder, no
+  fallback, a codec-specific browser error when the codec is observable, and
+  no disturbance to another pair. A peer connection that fails before exposing
+  the codec may remain unavailable or black.
+- Native-Native negotiation retains the AV1→VP9→VP8 and VP9→VP8 preference
+  ladders (with H.264 and VP8 exact) while using one active codec and one
+  encoder.
+- Controlled desktop Safari and Chromium acceptance covers Native-default
+  rendering, Focus/Row, Follow Off and per-publisher Follow, filmstrip source
+  selection, HUD auto-hide, Native drag/minimap, fullscreen, and audio. This
+  remains a manual release gate until it has been run on both browsers.
 - All existing native 2-, 3-, and 4-participant acceptance remains green.
 - A repository diff gate rejects changes to frozen native capture/media paths.

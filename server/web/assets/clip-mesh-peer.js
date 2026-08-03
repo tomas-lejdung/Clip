@@ -136,6 +136,30 @@ export class ClipWebMeshPeer extends EventTarget {
     await this.signal({ type: "renegotiation-request", epoch: PAIR_EPOCH });
   }
 
+  applyExactVideoCodec(codec) {
+    const normalizedCodec = String(codec).toLowerCase();
+    const capabilities = globalThis.RTCRtpReceiver?.getCapabilities?.("video")?.codecs ?? [];
+    const exactPreferences = capabilities.filter(
+      (entry) => entry.mimeType?.split("/")[1]?.toLowerCase() === normalizedCodec,
+    );
+    if (exactPreferences.length === 0) {
+      // A Web edge is deliberately exact-only. Do not substitute another
+      // codec or create a second encoder: the next offer/answer rejects video
+      // and the viewer explains that the selected encoding is unsupported.
+      this.mediaStore.setPeerState(this.remoteParticipantID, "connected", {
+        unsupportedEncoding: true,
+        codec: normalizedCodec.toUpperCase(),
+      });
+      return false;
+    }
+    for (const transceiver of this.connection.getTransceivers()) {
+      const kind = transceiver.receiver?.track?.kind ?? transceiver.sender?.track?.kind;
+      if (kind === "video") transceiver.setCodecPreferences(exactPreferences);
+    }
+    this.mediaStore.clearUnsupportedEncoding?.(this.remoteParticipantID);
+    return true;
+  }
+
   async receiveSignal(payload) {
     if (this.closed) return;
     validatePairPayload(payload);
@@ -146,8 +170,9 @@ export class ClipWebMeshPeer extends EventTarget {
         this.recoveryRequested = false;
         this.remoteTrackIDsByMID = parseRemoteTrackBindings(payload.sdp);
         const offeredCodec = firstOfferedVideoCodec(payload.sdp);
-        if (offeredCodec && !browserSupportsCodec(offeredCodec)) {
-          this.mediaStore.setPeerState(this.remoteParticipantID, "connected", { unsupportedEncoding: true, codec: offeredCodec });
+        const signalCodec = exactCodecSignalValue(offeredCodec);
+        if (signalCodec && !browserSupportsCodec(signalCodec)) {
+          await this.rejectOfferedCodec(signalCodec);
           return;
         }
         try {
@@ -155,7 +180,8 @@ export class ClipWebMeshPeer extends EventTarget {
           this.mediaStore.clearUnsupportedEncoding?.(this.remoteParticipantID);
           this.reconcileRemoteReceivers();
         } catch (error) {
-          this.mediaStore.setPeerState(this.remoteParticipantID, "connected", { unsupportedEncoding: true, codec: offeredCodec, message: String(error) });
+          if (signalCodec) await this.rejectOfferedCodec(signalCodec, error);
+          else this.mediaStore.setPeerState(this.remoteParticipantID, "connected", { unsupportedEncoding: true, codec: offeredCodec, message: String(error) });
           return;
         }
         for (const transceiver of this.connection.getTransceivers()) {
@@ -210,6 +236,25 @@ export class ClipWebMeshPeer extends EventTarget {
       case "renegotiation-request":
         if (this.isOfferer) await this.restartICE();
         break;
+      case "codec-renegotiation-request":
+        if (!this.isOfferer || this.remoteIsReceiveOnlyWebViewer) {
+          throw new Error("Unexpected codec request from deterministic answerer");
+        }
+        if (this.connection.signalingState !== "stable") {
+          throw new Error("Cannot change codec while pair signaling is unstable");
+        }
+        if (!this.applyExactVideoCodec(payload.codec)) {
+          await this.signal({
+            type: "codec-renegotiation-rejected",
+            epoch: this.epoch,
+            codec: payload.codec,
+          });
+          break;
+        }
+        await this.makeOffer(false);
+        break;
+      case "codec-renegotiation-rejected":
+        throw new Error("A receive-only Web viewer cannot publish video codec changes");
       case "close": this.close(false); break;
       default: throw new Error("Unsupported pair signal");
     }
@@ -220,6 +265,21 @@ export class ClipWebMeshPeer extends EventTarget {
     if (videoLines.length > 0 && videoLines.every((line) => /^m=video 0\s/u.test(line))) {
       this.mediaStore.setPeerState(this.remoteParticipantID, "connected", { unsupportedEncoding: true, codec });
     }
+  }
+
+  async rejectOfferedCodec(codec, error = null) {
+    const normalizedCodec = exactCodecSignalValue(codec);
+    if (!normalizedCodec) throw new Error("The peer offered an unknown video codec");
+    this.mediaStore.setPeerState(this.remoteParticipantID, "connected", {
+      unsupportedEncoding: true,
+      codec: normalizedCodec.toUpperCase(),
+      ...(error ? { message: String(error) } : {}),
+    });
+    await this.signal({
+      type: "codec-renegotiation-rejected",
+      epoch: this.epoch,
+      codec: normalizedCodec,
+    });
   }
 
   reconcileRemoteReceivers() {
@@ -439,6 +499,11 @@ export function browserSupportsCodec(codec) {
   return capabilities.some((entry) => entry.mimeType?.split("/")[1]?.toUpperCase() === codec.toUpperCase());
 }
 
+function exactCodecSignalValue(codec) {
+  const normalized = String(codec ?? "").toLowerCase();
+  return ["h264", "vp8", "vp9", "av1"].includes(normalized) ? normalized : null;
+}
+
 export function validatePairPayload(payload) {
   if (!payload || typeof payload !== "object" || Array.isArray(payload) || typeof payload.type !== "string") {
     throw new Error("Invalid pair signal payload");
@@ -465,6 +530,12 @@ export function validatePairPayload(payload) {
     case "ice-restart": case "renegotiation-request":
       exact(["type", "epoch"]);
       if (payload.epoch !== PAIR_EPOCH) throw new Error("Invalid pair epoch");
+      break;
+    case "codec-renegotiation-request": case "codec-renegotiation-rejected":
+      exact(["type", "epoch", "codec"]);
+      if (payload.epoch !== PAIR_EPOCH || !["h264", "vp8", "vp9", "av1"].includes(payload.codec)) {
+        throw new Error("Invalid pair codec request");
+      }
       break;
     case "close":
       exact(["type"]);

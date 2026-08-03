@@ -206,20 +206,36 @@ public enum ClipLiveShareServerRoomV4PairSignalPayload: Equatable, Hashable,
   )
   case iceRestart(epoch: ClipLiveShareServerRoomV4PairEpoch)
   case renegotiationRequest(epoch: ClipLiveShareServerRoomV4PairEpoch)
+  /// Encrypted pair-local request for the canonical offerer to put one exact
+  /// participant-selected codec first before creating its next offer. This is
+  /// deliberately separate from generic ICE/transport recovery negotiation.
+  case codecRenegotiationRequest(
+    epoch: ClipLiveShareServerRoomV4PairEpoch,
+    codec: LiveShareVideoCodec
+  )
+  /// The exact codec requested for this Native-Web edge is unsupported by the
+  /// browser. The deterministic offerer rolls back instead of leaving an
+  /// unanswered offer in flight; no fallback codec is negotiated.
+  case codecRenegotiationRejected(
+    epoch: ClipLiveShareServerRoomV4PairEpoch,
+    codec: LiveShareVideoCodec
+  )
   case close
 
   public var epoch: ClipLiveShareServerRoomV4PairEpoch? {
     switch self {
     case .offer(let epoch, _), .answer(let epoch, _),
       .iceCandidate(let epoch, _, _, _), .iceRestart(let epoch),
-      .renegotiationRequest(let epoch):
+      .renegotiationRequest(let epoch),
+      .codecRenegotiationRequest(let epoch, _),
+      .codecRenegotiationRejected(let epoch, _):
       epoch
     case .close:
       nil
     }
   }
 
-  fileprivate var canonicalRepresentation: Data {
+  var canonicalRepresentation: Data {
     var encoder = ClipLiveShareServerRoomV4CanonicalEncoder(
       domain: "clip-live-share-server-room-v4/pair-signal-payload"
     )
@@ -246,6 +262,14 @@ public enum ClipLiveShareServerRoomV4PairSignalPayload: Equatable, Hashable,
     case .renegotiationRequest(let epoch):
       encoder.append("renegotiation-request")
       encoder.append(epoch.rawValue)
+    case .codecRenegotiationRequest(let epoch, let codec):
+      encoder.append("codec-renegotiation-request")
+      encoder.append(epoch.rawValue)
+      encoder.append(codec.rawValue)
+    case .codecRenegotiationRejected(let epoch, let codec):
+      encoder.append("codec-renegotiation-rejected")
+      encoder.append(epoch.rawValue)
+      encoder.append(codec.rawValue)
     case .close:
       encoder.append("close")
     }
@@ -261,6 +285,7 @@ extension ClipLiveShareServerRoomV4PairSignalPayload: Codable {
     case candidate
     case mediaID = "mediaId"
     case mediaLineIndex
+    case codec
   }
 
   public init(from decoder: any Decoder) throws {
@@ -300,6 +325,22 @@ extension ClipLiveShareServerRoomV4PairSignalPayload: Codable {
       self = .renegotiationRequest(
         epoch: try container.decode(ClipLiveShareServerRoomV4PairEpoch.self, forKey: .epoch)
       )
+    case "codec-renegotiation-request":
+      self = .codecRenegotiationRequest(
+        epoch: try container.decode(
+          ClipLiveShareServerRoomV4PairEpoch.self,
+          forKey: .epoch
+        ),
+        codec: try container.decode(LiveShareVideoCodec.self, forKey: .codec)
+      )
+    case "codec-renegotiation-rejected":
+      self = .codecRenegotiationRejected(
+        epoch: try container.decode(
+          ClipLiveShareServerRoomV4PairEpoch.self,
+          forKey: .epoch
+        ),
+        codec: try container.decode(LiveShareVideoCodec.self, forKey: .codec)
+      )
     case "close":
       self = .close
     default:
@@ -337,6 +378,14 @@ extension ClipLiveShareServerRoomV4PairSignalPayload: Codable {
     case .renegotiationRequest(let epoch):
       try container.encode("renegotiation-request", forKey: .type)
       try container.encode(epoch, forKey: .epoch)
+    case .codecRenegotiationRequest(let epoch, let codec):
+      try container.encode("codec-renegotiation-request", forKey: .type)
+      try container.encode(epoch, forKey: .epoch)
+      try container.encode(codec, forKey: .codec)
+    case .codecRenegotiationRejected(let epoch, let codec):
+      try container.encode("codec-renegotiation-rejected", forKey: .type)
+      try container.encode(epoch, forKey: .epoch)
+      try container.encode(codec, forKey: .codec)
     case .close:
       try container.encode("close", forKey: .type)
     }
@@ -356,6 +405,9 @@ extension ClipLiveShareServerRoomV4PairSignalPayload: Codable {
       )
     case "ice-restart", "renegotiation-request":
       let keys: Set<String> = ["type", "epoch"]
+      return (keys, keys)
+    case "codec-renegotiation-request", "codec-renegotiation-rejected":
+      let keys: Set<String> = ["type", "epoch", "codec"]
       return (keys, keys)
     case "close":
       let keys: Set<String> = ["type"]

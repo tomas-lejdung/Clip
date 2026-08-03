@@ -51,6 +51,21 @@ export function reconcileFollowState({
   };
 }
 
+export function reconcileManualSelection({
+  participantOrder,
+  sourcesByParticipant,
+  selectedSourceKey,
+}) {
+  const active = participantOrder.flatMap((participantID) =>
+    [...(sourcesByParticipant.get(participantID) ?? [])]
+      .filter((source) => source.active)
+      .sort((left, right) => left.order - right.order || left.key.localeCompare(right.key)),
+  );
+  if (active.length === 0) return { selectedSourceKey: null };
+  const selected = active.find((source) => source.key === selectedSourceKey);
+  return { selectedSourceKey: selected?.key ?? active[0].key };
+}
+
 export function createAnimationFrameCoalescer(callback, scheduleFrame = requestAnimationFrame, cancelFrame = cancelAnimationFrame) {
   let frame = null;
   const schedule = () => {
@@ -213,8 +228,15 @@ export function validateSourceCursor(message, expected) {
   });
 }
 
-export function nativePanGeometry({ sourceWidth, sourceHeight, viewportWidth, viewportHeight, cursor = null }) {
-  if (![sourceWidth, sourceHeight, viewportWidth, viewportHeight].every((value) => Number.isFinite(value) && value > 0)) return null;
+export function nativePanGeometry({
+  sourceWidth,
+  sourceHeight,
+  viewportWidth,
+  viewportHeight,
+  cursor = null,
+  devicePixelRatio = 1,
+}) {
+  if (![sourceWidth, sourceHeight, viewportWidth, viewportHeight, devicePixelRatio].every((value) => Number.isFinite(value) && value > 0)) return null;
   const x = Number.isFinite(cursor?.x) && cursor.x >= 0 && cursor.x <= 1 ? cursor.x : 0.5;
   const y = Number.isFinite(cursor?.y) && cursor.y >= 0 && cursor.y <= 1 ? cursor.y : 0.5;
   const clampAxis = (preferred, content, viewport) => content <= viewport
@@ -223,9 +245,71 @@ export function nativePanGeometry({ sourceWidth, sourceHeight, viewportWidth, vi
   return Object.freeze({
     width: sourceWidth,
     height: sourceHeight,
-    left: clampAxis(viewportWidth / 2 - x * sourceWidth, sourceWidth, viewportWidth),
-    top: clampAxis(viewportHeight / 2 - y * sourceHeight, sourceHeight, viewportHeight),
+    left: snapToDevicePixel(clampAxis(viewportWidth / 2 - x * sourceWidth, sourceWidth, viewportWidth), devicePixelRatio),
+    top: snapToDevicePixel(clampAxis(viewportHeight / 2 - y * sourceHeight, sourceHeight, viewportHeight), devicePixelRatio),
   });
+}
+
+export function nativeManualPanGeometry({
+  sourceWidth,
+  sourceHeight,
+  viewportWidth,
+  viewportHeight,
+  left = 0,
+  top = 0,
+  devicePixelRatio = 1,
+}) {
+  if (![sourceWidth, sourceHeight, viewportWidth, viewportHeight, devicePixelRatio].every((value) => Number.isFinite(value) && value > 0)) {
+    return null;
+  }
+  const clampAxis = (position, content, viewport) => content <= viewport
+    ? (viewport - content) / 2
+    : Math.max(viewport - content, Math.min(0, position));
+  return Object.freeze({
+    width: sourceWidth,
+    height: sourceHeight,
+    left: snapToDevicePixel(clampAxis(left, sourceWidth, viewportWidth), devicePixelRatio),
+    top: snapToDevicePixel(clampAxis(top, sourceHeight, viewportHeight), devicePixelRatio),
+  });
+}
+
+export function nativeMinimapGeometry({
+  sourceWidth,
+  sourceHeight,
+  viewportWidth,
+  viewportHeight,
+  left,
+  top,
+  maximumWidth = 120,
+  maximumHeight = 90,
+  devicePixelRatio = 1,
+}) {
+  const values = [
+    sourceWidth, sourceHeight, viewportWidth, viewportHeight,
+    maximumWidth, maximumHeight, devicePixelRatio,
+  ];
+  if (!values.every((value) => Number.isFinite(value) && value > 0) || !Number.isFinite(left) || !Number.isFinite(top)) return null;
+  if (sourceWidth <= viewportWidth && sourceHeight <= viewportHeight) return null;
+
+  const scale = Math.min(maximumWidth / sourceWidth, maximumHeight / sourceHeight);
+  const width = snapToDevicePixel(sourceWidth * scale, devicePixelRatio);
+  const height = snapToDevicePixel(sourceHeight * scale, devicePixelRatio);
+  const effectiveScaleX = width / sourceWidth;
+  const effectiveScaleY = height / sourceHeight;
+  const viewportWidthInMap = snapToDevicePixel(Math.min(viewportWidth, sourceWidth) * effectiveScaleX, devicePixelRatio);
+  const viewportHeightInMap = snapToDevicePixel(Math.min(viewportHeight, sourceHeight) * effectiveScaleY, devicePixelRatio);
+  const viewport = Object.freeze({
+    left: Math.min(width - viewportWidthInMap, snapToDevicePixel(Math.max(0, -left) * effectiveScaleX, devicePixelRatio)),
+    top: Math.min(height - viewportHeightInMap, snapToDevicePixel(Math.max(0, -top) * effectiveScaleY, devicePixelRatio)),
+    width: viewportWidthInMap,
+    height: viewportHeightInMap,
+  });
+  return Object.freeze({ width, height, viewport });
+}
+
+export function snapToDevicePixel(value, devicePixelRatio = 1) {
+  if (!Number.isFinite(value) || !Number.isFinite(devicePixelRatio) || devicePixelRatio <= 0) return value;
+  return Math.round(value * devicePixelRatio) / devicePixelRatio;
 }
 
 export function participantConnectionState(member, peerState = null) {

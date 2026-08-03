@@ -27,4 +27,18 @@ struct WebRTCExactCodecPreferenceTests {
     #expect(vp9 == ["VP9"])
     #expect(!vp9.contains("VP8"))
   }
+
+  @Test("native peers preserve the pre-Web one-encoder codec ladder")
+  func nativeCompatibilityPreferenceOrder() {
+    let names = { (codec: WebRTCVideoCodec) in
+      ClipLiveShareNativeV3WebRTCPeerLinkTransport.videoCodecPreferenceNames(
+        for: codec,
+        policy: .nativeCompatible
+      )
+    }
+    #expect(names(.av1) == ["AV1", "VP9", "VP8"])
+    #expect(names(.vp9) == ["VP9", "VP8"])
+    #expect(names(.vp8) == ["VP8"])
+    #expect(names(.h264) == ["H264"])
+  }
 }

@@ -9,8 +9,12 @@ const {
   createAnimationFrameCoalescer,
   emptyWebSourceSnapshot,
   nativePanGeometry,
+  nativeManualPanGeometry,
+  nativeMinimapGeometry,
   participantConnectionState,
+  reconcileManualSelection,
   reconcileFollowState,
+  snapToDevicePixel,
   unsupportedEncodingPresentation,
   validateSourceCursor,
   validateSourceSnapshot,
@@ -108,7 +112,7 @@ test("follow uses focused source without letting a new source steal an explicit 
   assert.equal(chooseFollowSource(entries, "A:first").key, "A:first");
 });
 
-test("automatic follow tracks native focus changes while an explicit source click stays pinned", () => {
+test("participant Follow tracks native focus while an explicit source click enters pinned manual mode", () => {
   const media = new ClipWebMediaStore("room");
   media.participantOrder = ["A"];
   const first = sources("A", [{ name: "first", focused: true }, { name: "second" }]);
@@ -125,8 +129,134 @@ test("automatic follow tracks native focus changes while an explicit source clic
 
   media.selectSource("A:first");
   media.reconcileFollow();
+  assert.equal(media.followMode, "manual");
   assert.equal(media.selectedSourceKey, "A:first");
   assert.equal(media.selectedSource().key, "A:first");
+});
+
+test("viewer defaults to Native Focus and accepts only Focus or Row layouts", () => {
+  const media = new ClipWebMediaStore("room");
+  assert.equal(media.scaleMode, "native");
+  assert.equal(media.layout, "focus");
+  media.setLayout("grid");
+  assert.equal(media.layout, "focus");
+  media.setLayout("row");
+  assert.equal(media.layout, "row");
+  media.setLayout("focus");
+  assert.equal(media.layout, "focus");
+});
+
+test("Focus falls back when its selected track ends before the source snapshot changes", () => {
+  const media = new ClipWebMediaStore("room");
+  media.participants = new Map([["A", {}], ["B", {}]]);
+  media.participantOrder = ["A", "B"];
+  const first = {
+    ...sources("A", [{ name: "first", focused: true }])[0],
+    mediaTrackID: "track-first",
+  };
+  const second = {
+    ...sources("B", [{ name: "second", focused: true }])[0],
+    mediaTrackID: "track-second",
+  };
+  media.sourcesByParticipant.set("A", { revision: 1, sources: [first] });
+  media.sourcesByParticipant.set("B", { revision: 1, sources: [second] });
+  media.followParticipant("A");
+
+  const firstTrack = Object.assign(new EventTarget(), { id: "browser-first" });
+  const secondTrack = Object.assign(new EventTarget(), { id: "browser-second" });
+  media.setVideoTrack("A", firstTrack, first.mediaTrackID);
+  media.setVideoTrack("B", secondTrack, second.mediaTrackID);
+  assert.equal(media.renderableSelectedSource()?.key, first.key);
+
+  firstTrack.dispatchEvent(new Event("ended"));
+  assert.equal(media.selectedSource()?.key, first.key);
+  assert.equal(media.renderableSelectedSource()?.key, second.key);
+  assert.deepEqual(media.renderableSources().map((source) => source.key), [second.key]);
+});
+
+test("Follow Off pins manual selection and replaces only a disappeared source", () => {
+  const media = new ClipWebMediaStore("room");
+  media.participants = new Map([["A", {}], ["B", {}]]);
+  media.participantOrder = ["A", "B"];
+  media.sourcesByParticipant.set("A", { revision: 1, sources: sources("A", [
+    { name: "first", focused: true },
+    { name: "second" },
+  ]) });
+  media.sourcesByParticipant.set("B", { revision: 1, sources: sources("B", [
+    { name: "third", focused: true },
+  ]) });
+  media.reconcileFollow();
+  assert.equal(media.followMode, "participant");
+  assert.equal(media.followParticipantID, "A");
+  assert.equal(media.selectedSource().key, "A:first");
+
+  media.followParticipant(null);
+  assert.equal(media.selectedSource().key, "A:first");
+  media.selectSource("A:second");
+  assert.equal(media.followMode, "manual");
+  assert.equal(media.selectedSource().key, "A:second");
+
+  media.sourcesByParticipant.set("A", { revision: 2, sources: sources("A", [
+    { name: "first" },
+    { name: "second" },
+  ]) });
+  media.reconcileFollow();
+  assert.equal(media.followMode, "manual");
+  assert.equal(media.selectedSource().key, "A:second");
+
+  media.sourcesByParticipant.set("A", { revision: 3, sources: [] });
+  media.reconcileFollow();
+  assert.equal(media.followMode, "manual");
+  assert.equal(media.selectedSource().key, "B:third");
+
+  media.sourcesByParticipant.set("A", { revision: 4, sources: sources("A", [{ name: "returned" }]) });
+  media.selectSource("A:returned");
+  media.removeParticipant("A", false);
+  assert.equal(media.followMode, "manual");
+  assert.equal(media.selectedSource().key, "B:third");
+});
+
+test("following a participant tracks native focus and fails over in roster order", () => {
+  const media = new ClipWebMediaStore("room");
+  media.participants = new Map([["A", {}], ["B", {}]]);
+  media.participantOrder = ["A", "B"];
+  media.sourcesByParticipant.set("A", { revision: 1, sources: sources("A", [
+    { name: "first", focused: true }, { name: "second" },
+  ]) });
+  media.sourcesByParticipant.set("B", { revision: 1, sources: sources("B", [{ name: "third", focused: true }]) });
+  media.followParticipant("B");
+  assert.equal(media.selectedSource().key, "B:third");
+  media.followParticipant(null);
+  assert.equal(media.followMode, "manual");
+  assert.equal(media.selectedSource().key, "B:third");
+
+  media.followParticipant("A");
+  assert.equal(media.selectedSource().key, "A:first");
+
+  media.sourcesByParticipant.set("A", { revision: 2, sources: sources("A", [
+    { name: "first" }, { name: "second", focused: true },
+  ]) });
+  media.reconcileFollow();
+  assert.equal(media.followMode, "participant");
+  assert.equal(media.selectedSource().key, "A:second");
+
+  media.sourcesByParticipant.set("A", { revision: 3, sources: [] });
+  media.reconcileFollow();
+  assert.equal(media.followParticipantID, "B");
+  assert.equal(media.selectedSource().key, "B:third");
+});
+
+test("manual reconciliation is deterministic and independent from a Follow target", () => {
+  const map = new Map([
+    ["B", sources("B", [{ name: "later" }])],
+    ["A", sources("A", [{ name: "second" }, { name: "first" }])],
+  ]);
+  assert.deepEqual(reconcileManualSelection({
+    participantOrder: ["A", "B"], sourcesByParticipant: map, selectedSourceKey: "missing",
+  }), { selectedSourceKey: "A:second" });
+  assert.deepEqual(reconcileManualSelection({
+    participantOrder: ["A", "B"], sourcesByParticipant: map, selectedSourceKey: "B:later",
+  }), { selectedSourceKey: "B:later" });
 });
 
 test("full room retains twelve native source slots in roster order and fails Follow over deterministically", () => {
@@ -329,6 +459,80 @@ test("source cursor is closed, source-bound, monotonic, and drives native pan", 
   assert.throws(() => media.applySourceCursor(owner, wrongStream), /published stream/u);
   media.setScaleMode("native");
   assert.equal(media.scaleMode, "native");
+});
+
+test("manual Native pan clamps and aligns the fixed source surface to backing pixels", () => {
+  assert.equal(snapToDevicePixel(-123.26, 2), -123.5);
+  assert.deepEqual(nativeManualPanGeometry({
+    sourceWidth: 1_000,
+    sourceHeight: 800,
+    viewportWidth: 400,
+    viewportHeight: 300,
+    left: -123.26,
+    top: -900,
+    devicePixelRatio: 2,
+  }), {
+    width: 1_000,
+    height: 800,
+    left: -123.5,
+    top: -500,
+  });
+  assert.deepEqual(nativeManualPanGeometry({
+    sourceWidth: 200,
+    sourceHeight: 100,
+    viewportWidth: 401,
+    viewportHeight: 301,
+    left: -80,
+    top: -80,
+    devicePixelRatio: 2,
+  }), {
+    width: 200,
+    height: 100,
+    left: 100.5,
+    top: 100.5,
+  });
+});
+
+test("manual Native pan state is source-specific and removed with its source", () => {
+  const media = new ClipWebMediaStore("room");
+  media.participantOrder = ["A"];
+  media.sourcesByParticipant.set("A", { revision: 1, sources: sources("A", [
+    { name: "first" }, { name: "second" },
+  ]) });
+  assert.deepEqual(media.nativePanForSource({ key: "A:first" }), { left: 0, top: 0 });
+  assert.equal(media.setNativePanForSource("A:first", { left: -120.5, top: -40 }), true);
+  assert.equal(media.setNativePanForSource("missing", { left: 1, top: 1 }), false);
+  assert.deepEqual(media.nativePanForSource({ key: "A:first" }), { left: -120.5, top: -40 });
+  assert.deepEqual(media.nativePanForSource({ key: "A:second" }), { left: 0, top: 0 });
+
+  media.clearRemoteMedia("A", false);
+  assert.deepEqual(media.nativePanForSource({ key: "A:first" }), { left: 0, top: 0 });
+});
+
+test("Native minimap describes the exact visible source viewport", () => {
+  assert.deepEqual(nativeMinimapGeometry({
+    sourceWidth: 1_000,
+    sourceHeight: 800,
+    viewportWidth: 400,
+    viewportHeight: 300,
+    left: -123.5,
+    top: -500,
+    maximumWidth: 120,
+    maximumHeight: 90,
+    devicePixelRatio: 2,
+  }), {
+    width: 112.5,
+    height: 90,
+    viewport: { left: 14, top: 56, width: 45, height: 34 },
+  });
+  assert.equal(nativeMinimapGeometry({
+    sourceWidth: 200,
+    sourceHeight: 100,
+    viewportWidth: 400,
+    viewportHeight: 300,
+    left: 100,
+    top: 100,
+  }), null);
 });
 
 test("SDP MID maps native mediaTrackID when a browser rewrites MediaStreamTrack.id", () => {
@@ -847,6 +1051,237 @@ test("answerer requests one same-epoch renegotiation when its edge fails", async
   }
 });
 
+test("canonical Web offerer applies an exact requested codec before one fresh offer", async () => {
+  const priorConnection = globalThis.RTCPeerConnection;
+  const priorReceiver = globalThis.RTCRtpReceiver;
+  const preferences = [];
+  class FakePeerConnection {
+    constructor() {
+      this.signalingState = "stable";
+      this.connectionState = "connected";
+      this.localDescription = null;
+      this.video = {
+        receiver: { track: { kind: "video" } },
+        sender: { track: null },
+        setCodecPreferences(value) { preferences.push(value); },
+      };
+    }
+    addEventListener() {}
+    getTransceivers() { return [this.video]; }
+    async createOffer() { return { type: "offer", sdp: "v=0\r\n" }; }
+    async setLocalDescription(value) { this.localDescription = value; }
+    close() {}
+  }
+  globalThis.RTCPeerConnection = FakePeerConnection;
+  globalThis.RTCRtpReceiver = { getCapabilities: () => ({ codecs: [
+    { mimeType: "video/VP8", clockRate: 90000 },
+    { mimeType: "video/AV1", clockRate: 90000 },
+  ] }) };
+  const sent = [];
+  const states = [];
+  const peer = new ClipWebMeshPeer({
+    context: { localHandle: "A", remoteHandle: "B", initialOfferer: "A" },
+    remoteMember: { descriptor: { participantID: "native", clientKind: "nativeApp", capabilityProfile: "nativeV1" } },
+    pairChannel: { inboundSequence: 0, outboundSequence: 0, async seal(payload) { return { payload }; } },
+    iceServers: [],
+    mediaStore: { setPeerState(...args) { states.push(args); }, clearUnsupportedEncoding() {}, clearRemoteMedia() {} },
+    sendSignal: async (envelope) => sent.push(envelope.payload), localParticipantID: "web", sessionId: "room",
+  });
+  try {
+    await peer.receiveSignal({ type: "codec-renegotiation-request", epoch: 1, codec: "av1" });
+    assert.deepEqual(preferences, [[{ mimeType: "video/AV1", clockRate: 90000 }]]);
+    assert.deepEqual(sent, [{ type: "offer", epoch: 1, sdp: "v=0\r\n" }]);
+    assert.equal(states.length, 0);
+  } finally {
+    peer.close(false);
+    globalThis.RTCPeerConnection = priorConnection;
+    globalThis.RTCRtpReceiver = priorReceiver;
+  }
+});
+
+test("canonical Web offerer reports an unsupported requested codec without choosing a fallback", async () => {
+  const priorConnection = globalThis.RTCPeerConnection;
+  const priorReceiver = globalThis.RTCRtpReceiver;
+  let preferenceCalls = 0;
+  class FakePeerConnection {
+    constructor() {
+      this.signalingState = "stable";
+      this.connectionState = "connected";
+      this.localDescription = null;
+      this.video = {
+        receiver: { track: { kind: "video" } }, sender: { track: null },
+        setCodecPreferences() { preferenceCalls += 1; },
+      };
+    }
+    addEventListener() {}
+    getTransceivers() { return [this.video]; }
+    async createOffer() { return { type: "offer", sdp: "v=0\r\n" }; }
+    async setLocalDescription(value) { this.localDescription = value; }
+    close() {}
+  }
+  globalThis.RTCPeerConnection = FakePeerConnection;
+  globalThis.RTCRtpReceiver = { getCapabilities: () => ({ codecs: [{ mimeType: "video/VP8" }] }) };
+  const sent = [];
+  const states = [];
+  const peer = new ClipWebMeshPeer({
+    context: { localHandle: "A", remoteHandle: "B", initialOfferer: "A" },
+    remoteMember: { descriptor: { participantID: "native", clientKind: "nativeApp", capabilityProfile: "nativeV1" } },
+    pairChannel: { inboundSequence: 0, outboundSequence: 0, async seal(payload) { return { payload }; } },
+    iceServers: [],
+    mediaStore: { setPeerState(...args) { states.push(args); }, clearRemoteMedia() {} },
+    sendSignal: async (envelope) => sent.push(envelope.payload), localParticipantID: "web", sessionId: "room",
+  });
+  try {
+    await peer.receiveSignal({ type: "codec-renegotiation-request", epoch: 1, codec: "av1" });
+    assert.equal(preferenceCalls, 0);
+    assert.equal(states.at(-1)[2].unsupportedEncoding, true);
+    assert.equal(states.at(-1)[2].codec, "AV1");
+    assert.deepEqual(sent, [{ type: "codec-renegotiation-rejected", epoch: 1, codec: "av1" }]);
+  } finally {
+    peer.close(false);
+    globalThis.RTCPeerConnection = priorConnection;
+    globalThis.RTCRtpReceiver = priorReceiver;
+  }
+});
+
+test("Web answerer recovers supported to unsupported to supported without fallback", async () => {
+  const priorConnection = globalThis.RTCPeerConnection;
+  const priorReceiver = globalThis.RTCRtpReceiver;
+  class FakePeerConnection {
+    constructor() {
+      this.signalingState = "stable";
+      this.connectionState = "connected";
+      this.localDescription = null;
+      this.remoteDescription = null;
+      this.remoteDescriptions = [];
+    }
+    addEventListener() {}
+    getTransceivers() { return []; }
+    async setRemoteDescription(value) {
+      this.remoteDescription = value;
+      this.remoteDescriptions.push(value);
+    }
+    async createAnswer() {
+      return {
+        type: "answer",
+        sdp: "v=0\r\nm=video 9 UDP/TLS/RTP/SAVPF 96\r\na=rtpmap:96 VP8/90000\r\n",
+      };
+    }
+    async setLocalDescription(value) { this.localDescription = value; }
+    close() {}
+  }
+  globalThis.RTCPeerConnection = FakePeerConnection;
+  globalThis.RTCRtpReceiver = {
+    getCapabilities: () => ({ codecs: [{ mimeType: "video/VP8", clockRate: 90000 }] }),
+  };
+  const sent = [];
+  const states = [];
+  const peer = new ClipWebMeshPeer({
+    context: { localHandle: "B", remoteHandle: "A", initialOfferer: "A" },
+    remoteMember: { descriptor: { participantID: "native", clientKind: "nativeApp", capabilityProfile: "nativeV1" } },
+    pairChannel: { inboundSequence: 0, outboundSequence: 0, async seal(payload) { return { payload }; } },
+    iceServers: [],
+    mediaStore: {
+      setPeerState(...args) { states.push(args); },
+      clearUnsupportedEncoding() {},
+      clearRemoteMedia() {},
+    },
+    sendSignal: async (envelope) => sent.push(envelope.payload),
+    localParticipantID: "web",
+    sessionId: "room",
+  });
+  const offer = (codec, payload = 96) => ({
+    type: "offer",
+    epoch: 1,
+    sdp: `v=0\r\nm=video 9 UDP/TLS/RTP/SAVPF ${payload}\r\na=rtpmap:${payload} ${codec}/90000\r\n`,
+  });
+  try {
+    await peer.receiveSignal(offer("VP8", 96));
+    await peer.receiveSignal(offer("AV1", 97));
+    await peer.receiveSignal(offer("VP8", 98));
+
+    assert.deepEqual(sent.map((entry) => entry.type), [
+      "answer",
+      "codec-renegotiation-rejected",
+      "answer",
+    ]);
+    assert.deepEqual(sent[1], {
+      type: "codec-renegotiation-rejected",
+      epoch: 1,
+      codec: "av1",
+    });
+    assert.equal(peer.connection.remoteDescriptions.length, 2);
+    assert.ok(peer.connection.remoteDescriptions.every((entry) => !entry.sdp.includes("AV1")));
+    assert.equal(states.some((entry) => entry[2]?.unsupportedEncoding === true), true);
+  } finally {
+    peer.close(false);
+    globalThis.RTCPeerConnection = priorConnection;
+    globalThis.RTCRtpReceiver = priorReceiver;
+  }
+});
+
+test("Web answerer rejects a known codec when applying its offer fails, then recovers", async () => {
+  const priorConnection = globalThis.RTCPeerConnection;
+  const priorReceiver = globalThis.RTCRtpReceiver;
+  class FakePeerConnection {
+    constructor() {
+      this.signalingState = "stable";
+      this.connectionState = "connected";
+      this.localDescription = null;
+      this.failNextRemoteDescription = true;
+      this.applied = [];
+    }
+    addEventListener() {}
+    getTransceivers() { return []; }
+    async setRemoteDescription(value) {
+      if (this.failNextRemoteDescription) {
+        this.failNextRemoteDescription = false;
+        throw new Error("browser rejected the SDP");
+      }
+      this.remoteDescription = value;
+      this.applied.push(value);
+    }
+    async createAnswer() {
+      return { type: "answer", sdp: "v=0\r\nm=video 9 UDP/TLS/RTP/SAVPF 96\r\na=rtpmap:96 VP8/90000\r\n" };
+    }
+    async setLocalDescription(value) { this.localDescription = value; }
+    close() {}
+  }
+  globalThis.RTCPeerConnection = FakePeerConnection;
+  globalThis.RTCRtpReceiver = {
+    getCapabilities: () => ({ codecs: [{ mimeType: "video/VP8", clockRate: 90000 }] }),
+  };
+  const sent = [];
+  const peer = new ClipWebMeshPeer({
+    context: { localHandle: "B", remoteHandle: "A", initialOfferer: "A" },
+    remoteMember: { descriptor: { participantID: "native", clientKind: "nativeApp", capabilityProfile: "nativeV1" } },
+    pairChannel: { inboundSequence: 0, outboundSequence: 0, async seal(payload) { return { payload }; } },
+    iceServers: [],
+    mediaStore: { setPeerState() {}, clearUnsupportedEncoding() {}, clearRemoteMedia() {} },
+    sendSignal: async (envelope) => sent.push(envelope.payload),
+    localParticipantID: "web",
+    sessionId: "room",
+  });
+  const vp8Offer = {
+    type: "offer",
+    epoch: 1,
+    sdp: "v=0\r\nm=video 9 UDP/TLS/RTP/SAVPF 96\r\na=rtpmap:96 VP8/90000\r\n",
+  };
+  try {
+    await peer.receiveSignal(vp8Offer);
+    await peer.receiveSignal(vp8Offer);
+    assert.deepEqual(sent.map((entry) => entry.type), [
+      "codec-renegotiation-rejected",
+      "answer",
+    ]);
+    assert.equal(peer.connection.applied.length, 1);
+  } finally {
+    peer.close(false);
+    globalThis.RTCPeerConnection = priorConnection;
+    globalThis.RTCRtpReceiver = priorReceiver;
+  }
+});
+
 test("deterministic pair roles reject offers and answers from the wrong side", async () => {
   const prior = globalThis.RTCPeerConnection;
   class FakePeerConnection {
@@ -932,10 +1367,16 @@ test("closed peers ignore late callbacks and signaling send failures mark an edg
 test("decrypted pair payloads enforce native closed shapes and bounds", () => {
   assert.equal(validatePairPayload({ type: "offer", epoch: 1, sdp: "v=0" }).type, "offer");
   assert.equal(validatePairPayload({ type: "ice-candidate", epoch: 1, candidate: "", mediaId: null, mediaLineIndex: null }).type, "ice-candidate");
+  assert.equal(validatePairPayload({ type: "codec-renegotiation-request", epoch: 1, codec: "av1" }).codec, "av1");
+  assert.equal(validatePairPayload({ type: "codec-renegotiation-rejected", epoch: 1, codec: "av1" }).codec, "av1");
   assert.throws(() => validatePairPayload({ type: "offer", epoch: 2, sdp: "v=0" }), /SDP/u);
   assert.throws(() => validatePairPayload({ type: "answer", epoch: 1, sdp: "", extra: true }), /shape/u);
   assert.throws(() => validatePairPayload({ type: "ice-candidate", epoch: 1, candidate: "x".repeat(4097) }), /candidate/u);
   assert.throws(() => validatePairPayload({ type: "close", epoch: 1 }), /shape/u);
+  assert.throws(() => validatePairPayload({ type: "codec-renegotiation-request", epoch: 1 }), /shape/u);
+  assert.throws(() => validatePairPayload({ type: "codec-renegotiation-request", epoch: 1, codec: "AV1" }), /codec/u);
+  assert.throws(() => validatePairPayload({ type: "codec-renegotiation-request", epoch: 1, codec: "av1", fallback: "vp8" }), /shape/u);
+  assert.throws(() => validatePairPayload({ type: "codec-renegotiation-rejected", epoch: 1, codec: "av1", fallback: "vp8" }), /shape/u);
 });
 
 test("one authenticated peer cannot queue unbounded ICE candidates", async () => {

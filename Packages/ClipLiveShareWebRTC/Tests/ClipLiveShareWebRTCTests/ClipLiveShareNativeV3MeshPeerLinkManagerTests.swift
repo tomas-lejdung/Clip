@@ -864,6 +864,109 @@ struct ClipLiveShareNativeV3MeshPeerLinkManagerTests {
     #expect(await third.senderPolicyUpdates().isEmpty)
     await manager.close()
   }
+
+  @Test("creator-certified Web peers keep exact codec policy per link")
+  func profileAwareCodecPolicyIsRetainedByRecreatedLinks() async throws {
+    let local = try meshParticipant(0x10)
+    let nativePeer = try meshParticipant(0x20)
+    let webPeer = try meshParticipant(0x30)
+    let factory = MeshFakeTransportFactory()
+    let manager = ClipLiveShareNativeV3MeshPeerLinkManager(
+      localParticipantID: local,
+      transportFactory: factory
+    )
+
+    await manager.setVideoCodecNegotiationPolicies([
+      nativePeer: .nativeCompatible,
+      webPeer: .exact,
+    ])
+    try await manager.reconcileParticipants([local, nativePeer, webPeer])
+
+    #expect(
+      await factory.transport(for: nativePeer)?.configuration
+        .videoCodecNegotiationPolicy == .nativeCompatible
+    )
+    let originalWeb = try #require(await factory.transport(for: webPeer))
+    #expect(originalWeb.configuration.videoCodecNegotiationPolicy == .exact)
+
+    try await manager.updateVideoCodecPreference(
+      .h264,
+      for: webPeer,
+      rollbackTo: .av1
+    )
+
+    try await manager.disconnectParticipant(webPeer)
+    try await manager.reconcileParticipants([local, nativePeer, webPeer])
+    let replacementWeb = try #require(
+      await factory.latestTransport(for: webPeer)
+    )
+    #expect(replacementWeb !== originalWeb)
+    #expect(replacementWeb.configuration.videoCodecNegotiationPolicy == .exact)
+    #expect(await replacementWeb.restoredVideoCodecs() == [.h264])
+    #expect(await replacementWeb.currentVideoCodecPreference() == .h264)
+    await manager.close()
+  }
+
+  @Test("failed codec preference restores through the non-negotiating seam")
+  func failedCodecPreferenceUsesRestoreSeam() async throws {
+    let local = try meshParticipant(0x10)
+    let remote = try meshParticipant(0x20)
+    let factory = MeshFakeTransportFactory()
+    let manager = ClipLiveShareNativeV3MeshPeerLinkManager(
+      localParticipantID: local,
+      transportFactory: factory
+    )
+    try await manager.reconcileParticipants([local, remote])
+    let transport = try #require(await factory.transport(for: remote))
+    await transport.failNextCodecUpdate()
+
+    var failed = false
+    do {
+      try await manager.updateVideoCodecPreference(
+        .vp9,
+        for: remote,
+        rollbackTo: .av1
+      )
+    } catch {
+      failed = true
+    }
+
+    #expect(failed)
+    #expect(await transport.videoCodecUpdates() == [.vp9])
+    #expect(await transport.restoredVideoCodecs() == [.av1])
+    await manager.close()
+  }
+
+  @Test("offered codec survives answerer transport recreation")
+  func offeredCodecSurvivesAnswererRecreation() async throws {
+    let local = try meshParticipant(0x20)
+    let remote = try meshParticipant(0x10)
+    let factory = MeshFakeTransportFactory()
+    let manager = ClipLiveShareNativeV3MeshPeerLinkManager(
+      localParticipantID: local,
+      transportFactory: factory
+    )
+    try await manager.reconcileParticipants([local, remote])
+    let original = try #require(await factory.transport(for: remote))
+    await original.setCurrentVideoCodec(.h264)
+    let key = try ClipLiveShareNativeV3PeerLinkKey(local, remote)
+    try await manager.applyRemoteNegotiation(
+      .init(
+        peerLinkKey: key,
+        targetParticipantID: local,
+        payload: .sessionDescription(.init(kind: .offer, sdp: "offer"))
+      ),
+      from: remote
+    )
+
+    try await manager.disconnectParticipant(remote)
+    try await manager.reconcileParticipants([local, remote])
+    let replacement = try #require(await factory.latestTransport(for: remote))
+    #expect(replacement !== original)
+    #expect(await replacement.restoredVideoCodecs() == [.h264])
+    #expect(await replacement.currentVideoCodecPreference() == .h264)
+    await manager.close()
+  }
 }
 
 @Suite("Server-coordinated independent pair reconciliation")
@@ -1211,6 +1314,7 @@ struct ClipLiveShareServerMeshPeerReconcilerTests {
 
 private enum MeshFakeError: Error {
   case creationFailed
+  case codecUpdateFailed
   case restartFailed
   case statisticsFailed
 }
@@ -1296,12 +1400,16 @@ private actor MeshFakeTransport:
   private var negotiationRequests = 0
   private var restarts = 0
   private var shouldFailNextRestart = false
+  private var shouldFailNextCodecUpdate = false
+  private var currentVideoCodec: WebRTCVideoCodec = .av1
   private var shouldFailNextStatistics = false
   private var descriptions: [WebRTCSessionDescription] = []
   private var candidates: [WebRTCICECandidate] = []
   private var controlMessages: [Data] = []
   private var outboundStates: [Bool]
   private var senderPolicies: [MeshSenderPolicyUpdate] = []
+  private var recordedVideoCodecUpdates: [WebRTCVideoCodec] = []
+  private var recordedRestoredVideoCodecs: [WebRTCVideoCodec] = []
   private var receiverAudioOperationLog: [String] = []
   private var playbackEnabledValues: [Bool] = []
   private var volumeValues: [Double] = []
@@ -1399,6 +1507,24 @@ private actor MeshFakeTransport:
     )
   }
 
+  func updateVideoCodecPreference(_ codec: WebRTCVideoCodec) throws {
+    recordedVideoCodecUpdates.append(codec)
+    if shouldFailNextCodecUpdate {
+      shouldFailNextCodecUpdate = false
+      throw MeshFakeError.codecUpdateFailed
+    }
+    currentVideoCodec = codec
+  }
+
+  func restoreVideoCodecPreference(_ codec: WebRTCVideoCodec) async throws {
+    recordedRestoredVideoCodecs.append(codec)
+    currentVideoCodec = codec
+  }
+
+  func currentVideoCodecPreference() async -> WebRTCVideoCodec? {
+    currentVideoCodec
+  }
+
   func restartICE() throws {
     restarts += 1
     if shouldFailNextRestart {
@@ -1444,6 +1570,14 @@ private actor MeshFakeTransport:
     shouldFailNextRestart = true
   }
 
+  func failNextCodecUpdate() {
+    shouldFailNextCodecUpdate = true
+  }
+
+  func setCurrentVideoCodec(_ codec: WebRTCVideoCodec) {
+    currentVideoCodec = codec
+  }
+
   func failNextStatistics() {
     shouldFailNextStatistics = true
   }
@@ -1482,6 +1616,12 @@ private actor MeshFakeTransport:
   func outboundMediaStates() -> [Bool] { outboundStates }
   func senderPolicyUpdates() -> [MeshSenderPolicyUpdate] {
     senderPolicies
+  }
+  func videoCodecUpdates() -> [WebRTCVideoCodec] {
+    recordedVideoCodecUpdates
+  }
+  func restoredVideoCodecs() -> [WebRTCVideoCodec] {
+    recordedRestoredVideoCodecs
   }
   func statisticsCallCount() -> Int { statisticsCalls }
   func statisticsWaiterCount() -> Int { statisticsWaiters.count }

@@ -2,7 +2,7 @@
 
 This file tracks implementation against [spec.md](spec.md). The specification is the product source of truth; this board records execution state and verification evidence.
 
-Last updated: 2026-07-31
+Last updated: 2026-08-03
 
 ## Status model
 
@@ -109,6 +109,32 @@ path.
 
 The authoritative current board and evidence boundary are in
 [`docs/native-participant-mesh-progress.md`](docs/native-participant-mesh-progress.md).
+
+Current receive-only Web participant checkpoint:
+
+- [x] Join the authoritative server-room-v4 roster as a signed Web profile and
+  create the same direct encrypted peer edge to every room member, without a
+  browser-specific Native signaling or transport path.
+- [x] Keep Native capture, source-aware 1x/Retina resolution, quality, cursor,
+  system audio, and retained Native-Native pair continuity unchanged.
+- [x] Require the selected codec exactly on Native-Web edges, with no fallback,
+  transcoding, or second browser encode. Preserve the pre-Web Native-Native SDP
+  ladder (AV1→VP9→VP8, VP9→VP8, H.264/VP8 exact) with one active codec and
+  one encoder.
+- [x] Restore the Web product behavior: Native is default; Focus and Row are
+  the only layouts; Follow supports Off/manual and per-publisher selection; the
+  Focus HUD auto-hides and contains the active-source filmstrip; oversized
+  Native sources support drag-to-pan and a bottom-right minimap.
+- [x] Keep Web receive-only: it may receive every Native source and one audio
+  track per publisher, but cannot publish, administer the room, use friends, or
+  send/render collaboration.
+- [ ] External gate: controlled desktop Safari and Chromium acceptance for the
+  complete visual/input/audio/reconnect flow. Automated browser-shell and
+  protocol coverage does not close this manual browser gate.
+
+The detailed implementation checklist and its remaining manual acceptance
+boundary are in
+[`docs/WEB_VIEWER_MESH_PROGRESS.md`](docs/WEB_VIEWER_MESH_PROGRESS.md).
 
 Current Live Share Settings evidence completed on 2026-07-20:
 

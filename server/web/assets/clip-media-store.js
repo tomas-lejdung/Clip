@@ -1,5 +1,6 @@
 import {
   chooseFollowSource,
+  reconcileManualSelection,
   reconcileFollowState,
   validateSourceSnapshot,
   validateSourceCursor,
@@ -16,10 +17,12 @@ export class ClipWebMediaStore extends EventTarget {
     this.audioTracks = new Map();
     this.peerStates = new Map();
     this.sourceCursors = new Map();
+    this.nativePanBySource = new Map();
+    this.followEnabled = true;
     this.followParticipantID = null;
     this.selectedSourceKey = null;
     this.layout = "focus";
-    this.scaleMode = "fit";
+    this.scaleMode = "native";
   }
 
   setParticipants(members, creatorHandle, localHandle) {
@@ -43,6 +46,7 @@ export class ClipWebMediaStore extends EventTarget {
     this.audioTracks.delete(participantID);
     this.peerStates.delete(participantID);
     for (const [key, cursor] of this.sourceCursors) if (cursor.ownerParticipantID === participantID) this.sourceCursors.delete(key);
+    for (const key of this.nativePanBySource.keys()) if (key.startsWith(`${participantID}:`)) this.nativePanBySource.delete(key);
     for (const [trackID, track] of this.videoTracks) {
       if (track.participantID === participantID) this.videoTracks.delete(trackID);
     }
@@ -57,6 +61,7 @@ export class ClipWebMediaStore extends EventTarget {
       if (track.participantID === participantID) this.videoTracks.delete(trackID);
     }
     for (const [key, cursor] of this.sourceCursors) if (cursor.ownerParticipantID === participantID) this.sourceCursors.delete(key);
+    for (const key of this.nativePanBySource.keys()) if (key.startsWith(`${participantID}:`)) this.nativePanBySource.delete(key);
     this.reconcileFollow();
     if (notify) this.changed("tracks");
   }
@@ -93,6 +98,9 @@ export class ClipWebMediaStore extends EventTarget {
     const publishedKeys = new Set(snapshot.sources.map((source) => source.key));
     for (const [key, cursor] of this.sourceCursors) {
       if (cursor.ownerParticipantID === participantID && !publishedKeys.has(key)) this.sourceCursors.delete(key);
+    }
+    for (const key of this.nativePanBySource.keys()) {
+      if (key.startsWith(`${participantID}:`) && !publishedKeys.has(key)) this.nativePanBySource.delete(key);
     }
     this.reconcileFollow();
     this.changed("sources");
@@ -139,7 +147,7 @@ export class ClipWebMediaStore extends EventTarget {
   }
 
   setLayout(layout) {
-    if (!["focus", "grid", "row"].includes(layout)) return;
+    if (!["focus", "row"].includes(layout) || layout === this.layout) return;
     this.layout = layout;
     this.changed("layout");
   }
@@ -154,8 +162,31 @@ export class ClipWebMediaStore extends EventTarget {
     return source ? this.sourceCursors.get(source.key)?.position ?? null : null;
   }
 
+  nativePanForSource(source) {
+    return source ? this.nativePanBySource.get(source.key) ?? Object.freeze({ left: 0, top: 0 }) : null;
+  }
+
+  setNativePanForSource(sourceKey, { left, top }) {
+    if (![left, top].every(Number.isFinite) || !this.allSources().some((source) => source.active && source.key === sourceKey)) return false;
+    this.nativePanBySource.set(sourceKey, Object.freeze({ left, top }));
+    return true;
+  }
+
+  clearNativePanForSource(sourceKey) {
+    this.nativePanBySource.delete(sourceKey);
+  }
+
   followParticipant(participantID) {
-    if (participantID !== null && !this.participants.has(participantID)) return;
+    if (participantID === null) {
+      const currentSourceKey = this.selectedSource()?.key ?? this.selectedSourceKey;
+      this.followEnabled = false;
+      this.selectedSourceKey = currentSourceKey;
+      this.reconcileFollow();
+      this.changed("follow");
+      return;
+    }
+    if (!this.participants.has(participantID)) return;
+    this.followEnabled = true;
     this.followParticipantID = participantID;
     this.selectedSourceKey = null;
     this.reconcileFollow();
@@ -164,14 +195,24 @@ export class ClipWebMediaStore extends EventTarget {
 
   selectSource(sourceKey) {
     const source = this.allSources().find((entry) => entry.key === sourceKey);
-    if (!source) return;
-    this.followParticipantID = source.ownerParticipantID;
+    if (!source?.active) return;
+    this.followEnabled = false;
     this.selectedSourceKey = source.key;
     this.changed("follow");
   }
 
   reconcileFollow() {
     const sourceMap = new Map([...this.sourcesByParticipant].map(([participantID, snapshot]) => [participantID, snapshot.sources]));
+    if (!this.followEnabled) {
+      const next = reconcileManualSelection({
+        participantOrder: this.participantOrder,
+        sourcesByParticipant: sourceMap,
+        selectedSourceKey: this.selectedSourceKey,
+      });
+      this.selectedSourceKey = next.selectedSourceKey;
+      if (this.followParticipantID && !this.participants.has(this.followParticipantID)) this.followParticipantID = null;
+      return;
+    }
     const next = reconcileFollowState({
       participantOrder: this.participantOrder,
       sourcesByParticipant: sourceMap,
@@ -179,17 +220,38 @@ export class ClipWebMediaStore extends EventTarget {
       selectedSourceKey: this.selectedSourceKey,
     });
     this.followParticipantID = next.followParticipantID;
-    this.selectedSourceKey = next.selectedSourceKey;
+    // Following a participant always follows that participant's native focus.
+    // A viewer-selected source is meaningful only in explicit manual mode.
+    this.selectedSourceKey = null;
   }
 
   allSources() {
     return this.participantOrder.flatMap((participantID) => this.sourcesByParticipant.get(participantID)?.sources ?? []);
   }
 
-  selectedSource() {
-    const sources = this.followParticipantID ? this.sourcesByParticipant.get(this.followParticipantID)?.sources ?? [] : [];
-    return chooseFollowSource(sources, this.selectedSourceKey);
+  renderableSources() {
+    return this.allSources().filter((source) => source.active && this.trackForSource(source));
   }
+
+  /// Resolves the requested Follow/manual source against tracks that actually
+  /// exist in the browser. A MediaStreamTrack can end before the publisher's
+  /// next source snapshot arrives; during that gap, keep showing another live
+  /// source instead of leaving Focus on a black surface.
+  renderableSelectedSource() {
+    const sources = this.renderableSources();
+    const selectedKey = this.selectedSource()?.key;
+    return sources.find((source) => source.key === selectedKey) ?? sources[0] ?? null;
+  }
+
+  selectedSource() {
+    if (!this.followEnabled) {
+      return this.allSources().find((source) => source.active && source.key === this.selectedSourceKey) ?? null;
+    }
+    const sources = this.followParticipantID ? this.sourcesByParticipant.get(this.followParticipantID)?.sources ?? [] : [];
+    return chooseFollowSource(sources);
+  }
+
+  get followMode() { return this.followEnabled ? "participant" : "manual"; }
 
   trackForSource(source) {
     return source ? this.videoTracks.get(source.mediaTrackID)?.track ?? null : null;

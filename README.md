@@ -23,11 +23,14 @@ Each participant can send up to four application windows or one fullscreen
 display.
 It uses native Swift/AppKit/SwiftUI and ScreenCaptureKit, with a pinned native
 WebRTC framework. AV1 is the default, with Native color and a 20 Mbps quality
-ceiling. The live codec picker selects a
-preference: H.264 and VP8 are exact choices, VP9 may fall back to VP8, and AV1
-may fall back to VP9 and then VP8. Each participant pair negotiates
-independently, so the actual directional RTP codec shown in Statistics is
-authoritative. H.264
+ceiling. On Native-Native edges the live codec picker retains the proven
+preference ladder: H.264 and VP8 are exact choices, VP9 may negotiate VP8, and
+AV1 may negotiate VP9 and then VP8. Each edge selects one active codec and one
+encoder, so the actual directional RTP codec shown in Statistics is
+authoritative. Native-Web edges instead require the selected codec exactly;
+Clip does not create a browser fallback, transcode, or second encode, and an
+unsupported browser may show unavailable/black video or an explicit
+Unsupported Encoding state. H.264
 uses hardware encoding and caps oversized capture geometry; software VP8, VP9
 profile 0, and AV1 retain native capture geometry. AV1 can consume substantially
 more CPU. Admission and membership use the clean-slate server-room v4 protocol;

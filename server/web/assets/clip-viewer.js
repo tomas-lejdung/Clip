@@ -1,9 +1,18 @@
 import { ClipWebRoomSession } from "./clip-room-session.js";
-import { createAnimationFrameCoalescer, nativePanGeometry, participantConnectionState, unsupportedEncodingPresentation } from "./clip-viewer-state.js";
+import {
+  createAnimationFrameCoalescer,
+  nativeManualPanGeometry,
+  nativeMinimapGeometry,
+  nativePanGeometry,
+  participantConnectionState,
+  snapToDevicePixel,
+  unsupportedEncodingPresentation,
+} from "./clip-viewer-state.js";
 
 const elements = Object.fromEntries([
   "room-label", "participant-count", "audio-unlock", "participants-button", "fullscreen-button", "leave-button",
-  "stage", "focus-view", "focus-video", "grid-view", "row-view", "empty-state", "state-title", "state-message",
+  "stage", "focus-view", "focus-surface", "focus-video", "row-view", "source-filmstrip",
+  "native-minimap", "native-minimap-image", "native-minimap-viewport", "empty-state", "state-title", "state-message",
   "access-form", "access-word", "unsupported", "follow-select", "source-summary", "master-mute", "master-volume",
   "participants-panel", "participants-close", "participants-list", "unsupported-title", "unsupported-message",
 ].map((id) => [id.replaceAll("-", "_"), document.getElementById(id)]));
@@ -13,12 +22,23 @@ let audioUnlocked = false;
 let masterMuted = true;
 const participantAudio = new Map();
 const videoElements = new Map();
-const scheduleLayoutRender = createAnimationFrameCoalescer(() => {
-  if (session && !session.closed && session.state === "connected") renderLayout();
+const thumbnailElements = new Map();
+const HUD_IDLE_MILLISECONDS = 3_000;
+const MANUAL_FOLLOW_VALUE = "manual";
+let hudTimeout = null;
+let minimapTimer = null;
+let panGesture = null;
+let revealHUD = () => {};
+let hadRenderableMedia = false;
+const scheduleMotionRender = createAnimationFrameCoalescer(() => {
+  if (session && !session.closed && session.state === "connected") renderMotionPresentation();
 });
+const handleViewportChange = () => scheduleMotionRender();
+const stageResizeObserver = new ResizeObserver(handleViewportChange);
 
 void start();
-new ResizeObserver(scheduleLayoutRender).observe(elements.stage);
+stageResizeObserver.observe(elements.stage);
+window.addEventListener("resize", handleViewportChange);
 
 async function start() {
   try {
@@ -28,7 +48,7 @@ async function start() {
     session.addEventListener("roster", render);
     session.media.addEventListener("change", (event) => {
       if (session.closed) return;
-      if (event.detail?.reason === "cursor") scheduleLayoutRender();
+      if (event.detail?.reason === "cursor") scheduleMotionRender();
       else render();
     });
     bindControls();
@@ -50,14 +70,20 @@ function bindControls() {
   document.querySelectorAll("[data-scale]").forEach((button) => button.addEventListener("click", () => {
     session.media.setScaleMode(button.dataset.scale);
   }));
-  elements.follow_select.addEventListener("change", () => session.media.followParticipant(elements.follow_select.value || null));
+  elements.follow_select.addEventListener("change", () => {
+    const value = elements.follow_select.value;
+    session.media.followParticipant(value === MANUAL_FOLLOW_VALUE ? null : value);
+  });
   elements.participants_button.addEventListener("click", () => { elements.participants_panel.hidden = false; });
   elements.participants_close.addEventListener("click", () => { elements.participants_panel.hidden = true; });
   elements.fullscreen_button.addEventListener("click", async () => {
     if (document.fullscreenElement) await document.exitFullscreen();
     else await document.documentElement.requestFullscreen();
   });
-  document.addEventListener("fullscreenchange", () => { elements.fullscreen_button.textContent = document.fullscreenElement ? "Exit Fullscreen" : "Fullscreen"; });
+  document.addEventListener("fullscreenchange", () => {
+    elements.fullscreen_button.textContent = document.fullscreenElement ? "Exit Fullscreen" : "Fullscreen";
+    scheduleMotionRender();
+  });
   elements.leave_button.addEventListener("click", () => session.close());
   elements.audio_unlock.addEventListener("click", () => {
     audioUnlocked = true; masterMuted = false; syncAudio();
@@ -68,6 +94,9 @@ function bindControls() {
     event.preventDefault();
     void session.retryAdmission(elements.access_word.value).catch((error) => showState("Couldn’t Join", String(error?.message ?? error), true));
   });
+  bindHUDVisibility();
+  bindFocusPanning();
+  bindRowPanning();
   // A refresh deliberately keeps the tab-scoped identity and reconnect
   // credential. The WebSocket closes naturally and the next page consumes a
   // one-time reconnect ticket; only the explicit Leave action removes state.
@@ -90,19 +119,20 @@ function renderRoomState({ state, message }) {
 }
 
 function showState(title, message, accessWord = false) {
-  scheduleLayoutRender.cancel();
+  scheduleMotionRender.cancel();
   elements.empty_state.hidden = false;
   elements.state_title.textContent = title;
   elements.state_message.textContent = message || "";
   elements.access_form.hidden = !accessWord;
   elements.focus_view.hidden = true;
-  elements.grid_view.hidden = true;
   elements.row_view.hidden = true;
+  elements.source_filmstrip.hidden = true;
+  elements.native_minimap.hidden = true;
 }
 
 function render() {
   if (!session || session.closed || session.state !== "connected") return;
-  scheduleLayoutRender.cancel();
+  scheduleMotionRender.cancel();
   renderParticipants();
   renderFollowSelector();
   renderLayout();
@@ -144,8 +174,10 @@ function makeParticipantAudioControl(participantID) {
 }
 
 function renderFollowSelector() {
-  const selected = session.media.followParticipantID ?? "";
-  const options = [new Option("Automatic", "")];
+  const selected = session.media.followEnabled
+    ? session.media.followParticipantID ?? MANUAL_FOLLOW_VALUE
+    : MANUAL_FOLLOW_VALUE;
+  const options = [new Option("Off · Manual", MANUAL_FOLLOW_VALUE)];
   for (const participantID of session.media.participantOrder) {
     const member = session.media.participants.get(participantID);
     const count = session.media.sourcesByParticipant.get(participantID)?.sources.filter((source) => source.active).length ?? 0;
@@ -157,7 +189,10 @@ function renderFollowSelector() {
 
 function renderLayout() {
   const media = session.media;
-  const sources = media.allSources().filter((source) => source.active && media.trackForSource(source));
+  const sources = media.renderableSources();
+  const hasRenderableMedia = sources.length > 0;
+  if (hasRenderableMedia && !hadRenderableMedia) revealHUD();
+  hadRenderableMedia = hasRenderableMedia;
   document.querySelectorAll("[data-layout]").forEach((button) => button.classList.toggle("active", button.dataset.layout === media.layout));
   document.querySelectorAll("[data-scale]").forEach((button) => button.classList.toggle("active", button.dataset.scale === media.scaleMode));
   elements.empty_state.hidden = sources.length > 0;
@@ -166,63 +201,298 @@ function renderLayout() {
     elements.state_message.textContent = "Connected participants are not sharing video yet.";
   }
   elements.focus_view.hidden = media.layout !== "focus" || sources.length === 0;
-  elements.grid_view.hidden = media.layout !== "grid" || sources.length === 0;
   elements.row_view.hidden = media.layout !== "row" || sources.length === 0;
-  if (media.layout === "focus") renderFocus(media.selectedSource());
-  if (media.layout === "grid") renderCollection(elements.grid_view, sources);
-  if (media.layout === "row") renderCollection(elements.row_view, sources);
+  if (media.layout === "focus") {
+    renderFocus(media.renderableSelectedSource());
+    renderFilmstrip(sources);
+  } else {
+    elements.source_filmstrip.hidden = true;
+    elements.native_minimap.hidden = true;
+    elements.source_summary.textContent = `${sources.length} shared ${sources.length === 1 ? "window" : "windows"}`;
+    elements.row_view.classList.toggle("manual-pan", !media.followEnabled);
+    renderRow(sources);
+  }
+}
+
+function renderMotionPresentation() {
+  if (!session || session.closed || session.state !== "connected") return;
+  if (session.media.layout === "focus") applyFocusPresentation(session.media.renderableSelectedSource());
+  else if (session.media.followEnabled) followRowSource(session.media.renderableSelectedSource());
 }
 
 function renderFocus(source) {
   const track = session.media.trackForSource(source);
   setVideoTrack(elements.focus_video, track);
-  applyVideoPresentation(elements.focus_video, elements.focus_view, source);
+  applyFocusPresentation(source);
   elements.source_summary.textContent = source ? sourceLabel(source) : "Waiting for a shared window";
 }
 
-function renderCollection(container, sources) {
+function renderRow(sources) {
   const keys = new Set(sources.map((source) => source.key));
+  const manualSelectionKey = session.media.followEnabled ? null : session.media.selectedSource()?.key ?? null;
   for (const [key, card] of videoElements) {
     if (!keys.has(key)) { card.remove(); videoElements.delete(key); }
   }
   for (const source of sources) {
     let card = videoElements.get(source.key);
     if (!card) {
-      card = document.createElement("button"); card.type = "button"; card.className = "media-card";
+      card = document.createElement("article"); card.className = "media-card";
       const video = document.createElement("video"); video.autoplay = true; video.playsInline = true; video.muted = true;
       const label = document.createElement("span"); label.className = "media-label";
       card.append(video, label);
-      card.addEventListener("click", () => { session.media.selectSource(source.key); session.media.setLayout("focus"); });
+      card.tabIndex = 0;
+      card.addEventListener("click", () => selectSourceManually(card.dataset.sourceKey));
+      card.addEventListener("dblclick", () => { selectSourceManually(card.dataset.sourceKey); session.media.setLayout("focus"); });
+      card.addEventListener("keydown", (event) => {
+        if (event.key !== "Enter" && event.key !== " ") return;
+        event.preventDefault(); selectSourceManually(card.dataset.sourceKey); session.media.setLayout("focus");
+      });
       videoElements.set(source.key, card);
     }
+    card.dataset.sourceKey = source.key;
     card.querySelector(".media-label").textContent = sourceLabel(source);
+    card.classList.toggle("publisher-focused", source.focused);
+    card.classList.toggle("viewer-selected", source.key === manualSelectionKey);
     setVideoTrack(card.querySelector("video"), session.media.trackForSource(source));
-    applyVideoPresentation(card.querySelector("video"), card, source);
+    applyRowPresentation(card, source);
   }
-  container.replaceChildren(...sources.map((source) => videoElements.get(source.key)));
+  elements.row_view.replaceChildren(...sources.map((source) => videoElements.get(source.key)));
+  if (session.media.followEnabled) followRowSource(session.media.renderableSelectedSource());
 }
 
-function applyVideoPresentation(video, viewport, source) {
+function followRowSource(source) {
+  const card = source ? videoElements.get(source.key) : null;
+  if (!source || !card) return;
+  const cursor = session.media.cursorForSource(source) ?? { x: .5, y: .5 };
+  const viewportWidth = elements.row_view.clientWidth;
+  const viewportHeight = elements.row_view.clientHeight;
+  const pointX = card.offsetLeft + cursor.x * source.sourcePointWidth;
+  const pointY = card.offsetTop + cursor.y * source.sourcePointHeight;
+  const targetLeft = source.sourcePointWidth > viewportWidth
+    ? pointX - viewportWidth / 2
+    : card.offsetLeft - (viewportWidth - source.sourcePointWidth) / 2;
+  const targetTop = source.sourcePointHeight > viewportHeight
+    ? pointY - viewportHeight / 2
+    : card.offsetTop - (viewportHeight - source.sourcePointHeight) / 2;
+  elements.row_view.scrollLeft = Math.max(0, Math.min(elements.row_view.scrollWidth - viewportWidth, targetLeft));
+  elements.row_view.scrollTop = Math.max(0, Math.min(elements.row_view.scrollHeight - viewportHeight, targetTop));
+}
+
+function applyFocusPresentation(source) {
   const mode = session.media.scaleMode;
-  video.style.position = "absolute";
-  if (!source || mode !== "native") {
-    Object.assign(video.style, { left: "0px", top: "0px", width: "100%", height: "100%", maxWidth: "none", maxHeight: "none", objectFit: mode === "fill" ? "cover" : "contain" });
+  const viewport = elements.focus_view;
+  const surface = elements.focus_surface;
+  if (!source) {
+    elements.native_minimap.hidden = true;
     return;
   }
   const bounds = viewport.getBoundingClientRect();
-  const geometry = nativePanGeometry({
-    sourceWidth: source.sourcePointWidth,
-    sourceHeight: source.sourcePointHeight,
-    viewportWidth: bounds.width,
-    viewportHeight: bounds.height,
-    cursor: session.media.cursorForSource(source),
-  });
+  const sourceWidth = source.sourcePointWidth;
+  const sourceHeight = source.sourcePointHeight;
+  if (![bounds.width, bounds.height, sourceWidth, sourceHeight].every((value) => Number.isFinite(value) && value > 0)) return;
+  surface.style.width = `${sourceWidth}px`;
+  surface.style.height = `${sourceHeight}px`;
+
+  if (mode !== "native") {
+    const scale = mode === "fill"
+      ? Math.max(bounds.width / sourceWidth, bounds.height / sourceHeight)
+      : Math.min(bounds.width / sourceWidth, bounds.height / sourceHeight);
+    const left = snapToDevicePixel((bounds.width - sourceWidth * scale) / 2, window.devicePixelRatio);
+    const top = snapToDevicePixel((bounds.height - sourceHeight * scale) / 2, window.devicePixelRatio);
+    surface.style.transform = `translate3d(${left}px, ${top}px, 0) scale(${scale})`;
+    viewport.classList.remove("can-pan", "panning");
+    elements.native_minimap.hidden = true;
+    return;
+  }
+
+  const followsCursor = session.media.followEnabled;
+  const geometry = followsCursor
+    ? nativePanGeometry({ sourceWidth, sourceHeight, viewportWidth: bounds.width, viewportHeight: bounds.height, cursor: session.media.cursorForSource(source), devicePixelRatio: window.devicePixelRatio })
+    : manualPanGeometry(source, bounds);
   if (!geometry) return;
-  Object.assign(video.style, {
-    left: `${geometry.left}px`, top: `${geometry.top}px`,
-    width: `${geometry.width}px`, height: `${geometry.height}px`,
-    maxWidth: "none", maxHeight: "none", objectFit: "fill",
+  const left = geometry.left;
+  const top = geometry.top;
+  surface.style.transform = `translate3d(${left}px, ${top}px, 0)`;
+  const canPan = sourceWidth > bounds.width || sourceHeight > bounds.height;
+  viewport.classList.toggle("can-pan", canPan && !followsCursor);
+  if (followsCursor) elements.native_minimap.hidden = true;
+  else renderNativeMinimap({ left, top, width: sourceWidth, height: sourceHeight }, bounds);
+}
+
+function applyRowPresentation(card, source) {
+  const video = card.querySelector("video");
+  card.style.width = `${source.sourcePointWidth}px`;
+  card.style.height = `${source.sourcePointHeight}px`;
+  video.style.width = `${source.sourcePointWidth}px`;
+  video.style.height = `${source.sourcePointHeight}px`;
+}
+
+function renderFilmstrip(sources) {
+  const visibleKeys = new Set(sources.map((source) => source.key));
+  for (const [key, thumbnail] of thumbnailElements) {
+    if (!visibleKeys.has(key)) { thumbnail.remove(); thumbnailElements.delete(key); }
+  }
+  const selectedKey = session.media.followEnabled ? null : session.media.selectedSource()?.key ?? null;
+  for (const source of sources) {
+    let thumbnail = thumbnailElements.get(source.key);
+    if (!thumbnail) {
+      thumbnail = document.createElement("button");
+      thumbnail.type = "button";
+      thumbnail.className = "source-thumbnail";
+      const video = document.createElement("video");
+      video.autoplay = true; video.playsInline = true; video.muted = true;
+      const label = document.createElement("span"); label.className = "source-thumbnail-label";
+      const focus = document.createElement("span"); focus.className = "source-thumbnail-focus"; focus.setAttribute("aria-hidden", "true");
+      thumbnail.append(video, label, focus);
+      thumbnail.addEventListener("click", () => selectSourceManually(thumbnail.dataset.sourceKey));
+      thumbnailElements.set(source.key, thumbnail);
+    }
+    thumbnail.dataset.sourceKey = source.key;
+    thumbnail.setAttribute("aria-label", `View ${sourceLabel(source)}`);
+    thumbnail.querySelector(".source-thumbnail-label").textContent = sourceLabel(source);
+    thumbnail.classList.toggle("publisher-focused", source.focused);
+    thumbnail.classList.toggle("viewer-selected", source.key === selectedKey);
+    setVideoTrack(thumbnail.querySelector("video"), session.media.trackForSource(source));
+  }
+  elements.source_filmstrip.replaceChildren(...sources.map((source) => thumbnailElements.get(source.key)));
+  elements.source_filmstrip.hidden = sources.length < 2;
+}
+
+function selectSourceManually(sourceKey) {
+  if (!sourceKey) return;
+  session.media.selectSource(sourceKey);
+}
+
+function manualPanGeometry(source, viewport) {
+  const width = source.sourcePointWidth;
+  const height = source.sourcePointHeight;
+  const initial = session.media.nativePanForSource(source);
+  const geometry = nativeManualPanGeometry({
+    sourceWidth: width, sourceHeight: height,
+    viewportWidth: viewport.width, viewportHeight: viewport.height,
+    left: initial.left, top: initial.top, devicePixelRatio: window.devicePixelRatio,
   });
+  if (!geometry) return null;
+  session.media.setNativePanForSource(source.key, { left: geometry.left, top: geometry.top });
+  return geometry;
+}
+
+function renderNativeMinimap(geometry, viewport) {
+  const map = nativeMinimapGeometry({
+    sourceWidth: geometry.width, sourceHeight: geometry.height,
+    viewportWidth: viewport.width, viewportHeight: viewport.height,
+    left: geometry.left, top: geometry.top,
+    maximumWidth: 140, maximumHeight: 96, devicePixelRatio: window.devicePixelRatio,
+  });
+  elements.native_minimap.hidden = map === null;
+  if (!map) return;
+
+  const canvas = elements.native_minimap_image;
+  const mapWidth = map.width;
+  const mapHeight = map.height;
+  const pixelRatio = Number.isFinite(window.devicePixelRatio) && window.devicePixelRatio > 0 ? window.devicePixelRatio : 1;
+  const backingWidth = Math.max(1, Math.round(mapWidth * pixelRatio));
+  const backingHeight = Math.max(1, Math.round(mapHeight * pixelRatio));
+  if (canvas.width !== backingWidth || canvas.height !== backingHeight) {
+    canvas.width = backingWidth; canvas.height = backingHeight;
+  }
+  canvas.style.width = `${mapWidth}px`; canvas.style.height = `${mapHeight}px`;
+  if (elements.focus_video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
+    canvas.getContext("2d")?.drawImage(elements.focus_video, 0, 0, backingWidth, backingHeight);
+  }
+
+  Object.assign(elements.native_minimap_viewport.style, {
+    left: `${map.viewport.left}px`, top: `${map.viewport.top}px`,
+    width: `${map.viewport.width}px`, height: `${map.viewport.height}px`,
+  });
+}
+
+function bindHUDVisibility() {
+  revealHUD = () => {
+    document.body.classList.remove("hud-hidden");
+    clearTimeout(hudTimeout);
+    hudTimeout = setTimeout(() => {
+      if (!elements.participants_panel.hidden) return;
+      if (!elements.focus_video.srcObject && elements.row_view.hidden) return;
+      document.body.classList.add("hud-hidden");
+    }, HUD_IDLE_MILLISECONDS);
+  };
+  for (const eventName of ["pointermove", "pointerdown", "keydown"]) document.addEventListener(eventName, revealHUD, { passive: true });
+  window.addEventListener("pagehide", () => {
+    clearTimeout(hudTimeout); clearInterval(minimapTimer); scheduleMotionRender.cancel();
+    stageResizeObserver.disconnect(); window.removeEventListener("resize", handleViewportChange);
+  }, { once: true });
+  revealHUD();
+}
+
+function bindFocusPanning() {
+  elements.focus_view.addEventListener("pointerdown", (event) => {
+    const source = session?.media.selectedSource();
+    if (event.button !== 0 || !source || session.media.layout !== "focus" || session.media.scaleMode !== "native" || session.media.followEnabled) return;
+    const viewport = elements.focus_view.getBoundingClientRect();
+    if (source.sourcePointWidth <= viewport.width && source.sourcePointHeight <= viewport.height) return;
+    const pan = manualPanGeometry(source, viewport);
+    panGesture = { pointerID: event.pointerId, sourceKey: source.key, startX: event.clientX, startY: event.clientY, left: pan.left, top: pan.top };
+    elements.focus_view.setPointerCapture(event.pointerId);
+    elements.focus_view.classList.add("panning");
+    event.preventDefault();
+  });
+  elements.focus_view.addEventListener("pointermove", (event) => {
+    if (!panGesture || panGesture.pointerID !== event.pointerId) return;
+    const source = session.media.selectedSource();
+    if (!source || source.key !== panGesture.sourceKey) return;
+    const viewport = elements.focus_view.getBoundingClientRect();
+    const geometry = nativeManualPanGeometry({
+      sourceWidth: source.sourcePointWidth, sourceHeight: source.sourcePointHeight,
+      viewportWidth: viewport.width, viewportHeight: viewport.height,
+      left: panGesture.left + event.clientX - panGesture.startX,
+      top: panGesture.top + event.clientY - panGesture.startY,
+      devicePixelRatio: window.devicePixelRatio,
+    });
+    if (!geometry) return;
+    session.media.setNativePanForSource(source.key, { left: geometry.left, top: geometry.top });
+    scheduleMotionRender();
+  });
+  const finish = (event) => {
+    if (!panGesture || panGesture.pointerID !== event.pointerId) return;
+    panGesture = null; elements.focus_view.classList.remove("panning");
+  };
+  elements.focus_view.addEventListener("pointerup", finish);
+  elements.focus_view.addEventListener("pointercancel", finish);
+  minimapTimer = setInterval(() => {
+    if (!elements.native_minimap.hidden && session?.state === "connected") scheduleMotionRender();
+  }, 200);
+}
+
+function bindRowPanning() {
+  let drag = null;
+  elements.row_view.addEventListener("pointerdown", (event) => {
+    if (event.button !== 0 || session.media.followEnabled) return;
+    drag = { pointerID: event.pointerId, x: event.clientX, y: event.clientY, left: elements.row_view.scrollLeft, top: elements.row_view.scrollTop, moved: false };
+    elements.row_view.setPointerCapture(event.pointerId);
+  });
+  elements.row_view.addEventListener("pointermove", (event) => {
+    if (!drag || drag.pointerID !== event.pointerId) return;
+    const dx = event.clientX - drag.x; const dy = event.clientY - drag.y;
+    if (Math.abs(dx) + Math.abs(dy) > 5) drag.moved = true;
+    if (!drag.moved) return;
+    elements.row_view.classList.add("dragging");
+    elements.row_view.scrollLeft = drag.left - dx;
+    elements.row_view.scrollTop = drag.top - dy;
+    event.preventDefault();
+  });
+  const finish = (event) => {
+    if (!drag || drag.pointerID !== event.pointerId) return;
+    if (drag.moved) elements.row_view.dataset.suppressClick = "true";
+    drag = null; elements.row_view.classList.remove("dragging");
+  };
+  elements.row_view.addEventListener("pointerup", finish);
+  elements.row_view.addEventListener("pointercancel", finish);
+  elements.row_view.addEventListener("click", (event) => {
+    if (elements.row_view.dataset.suppressClick !== "true") return;
+    delete elements.row_view.dataset.suppressClick;
+    event.preventDefault(); event.stopPropagation();
+  }, true);
 }
 
 function sourceLabel(source) {

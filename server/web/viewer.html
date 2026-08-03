@@ -9,7 +9,7 @@
   </head>
   <body>
     <main id="app">
-      <header class="topbar">
+      <header class="topbar hud">
         <div class="brand">
           <span class="brand-mark" aria-hidden="true">●</span>
           <div><strong>Clip Live Share</strong><span id="room-label">Secure room</span></div>
@@ -23,9 +23,14 @@
       </header>
 
       <section id="stage" class="stage" aria-live="polite">
-        <div id="focus-view" class="focus-view"><video id="focus-video" autoplay playsinline muted></video></div>
-        <div id="grid-view" class="media-grid" hidden></div>
+        <div id="focus-view" class="focus-view">
+          <div id="focus-surface" class="focus-surface"><video id="focus-video" autoplay playsinline muted></video></div>
+        </div>
         <div id="row-view" class="media-row" hidden></div>
+        <div id="native-minimap" class="native-minimap" hidden aria-hidden="true">
+          <canvas id="native-minimap-image"></canvas>
+          <div id="native-minimap-viewport"></div>
+        </div>
         <div id="empty-state" class="empty-state">
           <div class="pulse-mark">●</div>
           <h1 id="state-title">Joining Live Share…</h1>
@@ -38,18 +43,19 @@
         <div id="unsupported" class="unsupported" hidden><strong id="unsupported-title">Unsupported Encoding</strong><span id="unsupported-message">This browser cannot decode a participant’s selected video codec. Room membership and compatible participant links continue normally.</span></div>
       </section>
 
-      <nav class="controlbar" aria-label="Viewer controls">
+      <div id="source-filmstrip" class="source-filmstrip hud" hidden aria-label="Shared windows"></div>
+
+      <nav class="controlbar hud" aria-label="Viewer controls">
         <div class="segmented" aria-label="Layout">
           <button type="button" data-layout="focus" class="active">Focus</button>
-          <button type="button" data-layout="grid">Grid</button>
           <button type="button" data-layout="row">Row</button>
         </div>
         <div class="segmented" aria-label="Scale">
-          <button type="button" data-scale="fit" class="active">Fit</button>
+          <button type="button" data-scale="native" class="active">Native</button>
+          <button type="button" data-scale="fit">Fit</button>
           <button type="button" data-scale="fill">Fill</button>
-          <button type="button" data-scale="native">Native</button>
         </div>
-        <label class="select-label">Follow <select id="follow-select"><option value="">Automatic</option></select></label>
+        <label class="select-label">Follow <select id="follow-select"><option value="manual">Off · Manual</option></select></label>
         <div id="source-summary" class="source-summary">Waiting for a shared window</div>
         <button id="master-mute" type="button" class="icon-button">Muted</button>
         <input id="master-volume" type="range" min="0" max="1" step="0.01" value="0.8" aria-label="Master volume" />

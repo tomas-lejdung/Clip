@@ -22,6 +22,18 @@ public enum WebRTCVideoCodec: String, CaseIterable, Codable, Equatable, Sendable
     }
 }
 
+/// SDP codec advertisement policy for one participant edge.
+///
+/// This changes negotiation only. A peer connection still selects exactly one
+/// codec for each RTP stream, so the Native compatibility ladder does not
+/// create a second encoder. Web edges deliberately advertise only the selected
+/// codec: an incompatible browser gets unavailable video instead of
+/// transcoding.
+public enum WebRTCVideoCodecNegotiationPolicy: Equatable, Sendable {
+    case nativeCompatible
+    case exact
+}
+
 /// Clip's codec-specific controls for its native VideoToolbox H.264 encoder.
 public struct WebRTCH264AdvancedConfiguration: Equatable, Sendable {
     public var maximumQuantizer: Int?

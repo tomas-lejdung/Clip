@@ -105,6 +105,232 @@ struct ServerCoordinatedMeshMediaRuntimeTests {
         await session.runtime.close()
     }
 
+    @Test("offerer codec change initiates exactly one canonical negotiation")
+    func offererCodecChangeNegotiatesOnce() async throws {
+        let fixture = try ServerMeshRuntimeFixture()
+        let signalProbe = ServerMeshPairSignalProbe()
+        let session = fixture.makeRuntime(
+            sendPairSignal: { context, payload, remoteHandle in
+                await signalProbe.record(
+                    context: context,
+                    payload: payload,
+                    remoteHandle: remoteHandle
+                )
+            }
+        )
+        try await session.runtime.start(
+            roster: fixture.roster(revision: 1, memberCount: 2)
+        )
+        let peer = fixture.nodes[1].participantID
+        let transport = try #require(
+            await session.factory.transport(for: peer)
+        )
+
+        try await session.runtime.updateVideoCodecPreference(
+            .vp8,
+            for: peer,
+            rollbackTo: .av1
+        )
+
+        #expect(await transport.videoCodecUpdates() == [.vp8])
+        #expect(await transport.negotiationRequestCount() == 1)
+        #expect(await signalProbe.values().isEmpty)
+        await session.runtime.close()
+    }
+
+    @Test("answerer codec change requests exactly one canonical offer")
+    func answererCodecChangeRequestsCanonicalOfferOnce() async throws {
+        let fixture = try ServerMeshRuntimeFixture()
+        let signalProbe = ServerMeshPairSignalProbe()
+        let localIndex = 1
+        let session = fixture.makeRuntime(
+            localIndex: localIndex,
+            sendPairSignal: { context, payload, remoteHandle in
+                await signalProbe.record(
+                    context: context,
+                    payload: payload,
+                    remoteHandle: remoteHandle
+                )
+            }
+        )
+        let roster = try fixture.roster(
+            revision: 1,
+            memberCount: 2,
+            localIndex: localIndex
+        )
+        try await session.runtime.start(roster: roster)
+        let peer = fixture.nodes[0].participantID
+        let pair = try #require(roster.pairsByParticipant[peer])
+        let transport = try #require(
+            await session.factory.transport(for: peer)
+        )
+
+        try await session.runtime.updateVideoCodecPreference(
+            .vp8,
+            for: peer,
+            rollbackTo: .av1
+        )
+
+        #expect(await transport.videoCodecUpdates() == [.vp8])
+        #expect(await transport.negotiationRequestCount() == 0)
+        #expect(await signalProbe.values().count == 1)
+        #expect(
+            await signalProbe.values().first?.payload
+                == .codecRenegotiationRequest(
+                    epoch: pair.epoch,
+                    codec: .vp8
+                )
+        )
+        await session.runtime.close()
+    }
+
+    @Test("codec request applies the requested codec before canonical offer")
+    func codecRequestPreparesCanonicalOfferer() async throws {
+        let fixture = try ServerMeshRuntimeFixture()
+        let session = fixture.makeRuntime()
+        let roster = try fixture.roster(revision: 1, memberCount: 2)
+        try await session.runtime.start(roster: roster)
+        let peer = fixture.nodes[1].participantID
+        let pair = try #require(roster.pairsByParticipant[peer])
+        let transport = try #require(
+            await session.factory.transport(for: peer)
+        )
+
+        try await session.runtime.receiveAuthenticatedPairSignal(.init(
+            pairID: pair.pairID,
+            senderHandle: fixture.nodes[1].handle,
+            sequence: 1,
+            payload: .codecRenegotiationRequest(
+                epoch: pair.epoch,
+                codec: .h264
+            )
+        ))
+
+        #expect(await transport.videoCodecUpdates() == [.h264])
+        #expect(await transport.negotiationRequestCount() == 1)
+        await session.runtime.close()
+    }
+
+    @Test("failed canonical codec offer restores its actual pair preference")
+    func failedCanonicalCodecOfferRestoresActualPreference() async throws {
+        let fixture = try ServerMeshRuntimeFixture()
+        let session = fixture.makeRuntime()
+        let roster = try fixture.roster(revision: 1, memberCount: 2)
+        try await session.runtime.start(roster: roster)
+        let peer = fixture.nodes[1].participantID
+        let pair = try #require(roster.pairsByParticipant[peer])
+        let transport = try #require(
+            await session.factory.transport(for: peer)
+        )
+        await transport.failNextNegotiationRequests(1)
+
+        try await session.runtime.receiveAuthenticatedPairSignal(.init(
+            pairID: pair.pairID,
+            senderHandle: fixture.nodes[1].handle,
+            sequence: 1,
+            payload: .codecRenegotiationRequest(
+                epoch: pair.epoch,
+                codec: .h264
+            )
+        ))
+        try await serverMeshEventually {
+            await transport.restoredVideoCodecs() == [.av1]
+        }
+
+        #expect(await transport.videoCodecUpdates() == [.h264])
+        #expect(await transport.currentVideoCodecPreference() == .av1)
+        #expect(await transport.negotiationRequestCount() == 1)
+        #expect(await transport.rollbackCount() == 2)
+        await session.runtime.close()
+    }
+
+    @Test("failed codec request restores preference without another exchange")
+    func failedCodecRequestRestoresWithoutNegotiationLatch() async throws {
+        let fixture = try ServerMeshRuntimeFixture()
+        let localIndex = 1
+        let session = fixture.makeRuntime(
+            localIndex: localIndex,
+            sendPairSignal: { _, _, _ in
+                throw ServerMeshRuntimeTestError.controlSendFailed
+            }
+        )
+        try await session.runtime.start(
+            roster: fixture.roster(
+                revision: 1,
+                memberCount: 2,
+                localIndex: localIndex
+            )
+        )
+        let peer = fixture.nodes[0].participantID
+        let transport = try #require(
+            await session.factory.transport(for: peer)
+        )
+
+        var failed = false
+        do {
+            try await session.runtime.updateVideoCodecPreference(
+                .vp8,
+                for: peer,
+                rollbackTo: .av1
+            )
+        } catch {
+            failed = true
+        }
+
+        #expect(failed)
+        #expect(await transport.videoCodecUpdates() == [.vp8])
+        #expect(await transport.restoredVideoCodecs() == [.av1])
+        #expect(await transport.rollbackCount() == 1)
+        #expect(await transport.negotiationRequestCount() == 0)
+        await session.runtime.close()
+    }
+
+    @Test("Web codec rejection rolls back, disables fallback, and re-enables after a supported answer")
+    func webCodecRejectionRecoversOnSupportedAnswer() async throws {
+        let fixture = try ServerMeshRuntimeFixture()
+        let session = fixture.makeRuntime()
+        let roster = try fixture.roster(
+            revision: 1,
+            memberCount: 2,
+            webParticipantIndexes: [1]
+        )
+        try await session.runtime.start(roster: roster)
+        let webID = fixture.nodes[1].participantID
+        let pair = try #require(roster.pairsByParticipant[webID])
+        let transport = try #require(
+            await session.factory.transport(for: webID)
+        )
+
+        try await session.runtime.receiveAuthenticatedPairSignal(.init(
+            pairID: pair.pairID,
+            senderHandle: fixture.nodes[1].handle,
+            sequence: 1,
+            payload: .codecRenegotiationRejected(
+                epoch: pair.epoch,
+                codec: .av1
+            )
+        ))
+        #expect(await transport.rollbackCount() == 1)
+        #expect(await transport.outboundMediaEnabledValues() == [false])
+
+        try await session.runtime.updateVideoCodecPreference(
+            .vp8,
+            for: webID,
+            rollbackTo: .av1
+        )
+        try await session.runtime.receiveAuthenticatedPairSignal(.init(
+            pairID: pair.pairID,
+            senderHandle: fixture.nodes[1].handle,
+            sequence: 2,
+            payload: .answer(epoch: pair.epoch, sdp: "supported-vp8")
+        ))
+
+        #expect(await transport.videoCodecUpdates() == [.vp8])
+        #expect(await transport.negotiationRequestCount() == 1)
+        #expect(await transport.outboundMediaEnabledValues() == [false, true])
+        await session.runtime.close()
+    }
+
     @Test("an answerer-only failure requests one pair-local recovery offer")
     func answererOnlyFailureRequestsCanonicalOfferer() async throws {
         let fixture = try ServerMeshRuntimeFixture()
@@ -242,8 +468,8 @@ struct ServerCoordinatedMeshMediaRuntimeTests {
         await session.runtime.close()
     }
 
-    @Test("a rejected SDP recreates only that pair and preserves queued signals")
-    func rejectedSDPRecreatesPairAndPreservesQueuedSignals() async throws {
+    @Test("a rejected SDP drops stale ICE and preserves the replacement generation")
+    func rejectedSDPDropsStaleICEAndPreservesReplacement() async throws {
         let fixture = try ServerMeshRuntimeFixture()
         let session = fixture.makeRuntime()
         let roster = try fixture.roster(revision: 1, memberCount: 3)
@@ -265,8 +491,30 @@ struct ServerCoordinatedMeshMediaRuntimeTests {
         let replacement = ServerCoordinatedMeshAuthenticatedPairSignal(
             pairID: pair.pairID,
             senderHandle: fixture.nodes[1].handle,
-            sequence: 2,
+            sequence: 3,
             payload: .offer(epoch: pair.epoch, sdp: "replacement")
+        )
+        let staleCandidate = ServerCoordinatedMeshAuthenticatedPairSignal(
+            pairID: pair.pairID,
+            senderHandle: fixture.nodes[1].handle,
+            sequence: 2,
+            payload: .iceCandidate(
+                epoch: pair.epoch,
+                candidate: "candidate:stale",
+                mediaID: "0",
+                mediaLineIndex: 0
+            )
+        )
+        let replacementCandidate = ServerCoordinatedMeshAuthenticatedPairSignal(
+            pairID: pair.pairID,
+            senderHandle: fixture.nodes[1].handle,
+            sequence: 4,
+            payload: .iceCandidate(
+                epoch: pair.epoch,
+                candidate: "candidate:fresh",
+                mediaID: "0",
+                mediaLineIndex: 0
+            )
         )
         let unrelated = ServerCoordinatedMeshAuthenticatedPairSignal(
             pairID: unrelatedPair.pairID,
@@ -276,7 +524,11 @@ struct ServerCoordinatedMeshMediaRuntimeTests {
         )
 
         try await session.runtime.receiveAuthenticatedPairSignal(rejected)
+        try await session.runtime.receiveAuthenticatedPairSignal(staleCandidate)
         try await session.runtime.receiveAuthenticatedPairSignal(replacement)
+        try await session.runtime.receiveAuthenticatedPairSignal(
+            replacementCandidate
+        )
         try await session.runtime.receiveAuthenticatedPairSignal(unrelated)
         try await session.runtime.start(roster: roster)
 
@@ -289,9 +541,12 @@ struct ServerCoordinatedMeshMediaRuntimeTests {
             else { return false }
             let replacementDescriptions = await transport
                 .remoteDescriptions().map(\.sdp)
+            let replacementCandidates = await transport.remoteCandidates()
+                .map(\.candidate)
             let unrelatedDescriptions = await unrelatedTransport
                 .remoteDescriptions().map(\.sdp)
             return replacementDescriptions == ["replacement"]
+                && replacementCandidates == ["candidate:fresh"]
                 && unrelatedDescriptions == ["unrelated"]
         }
         #expect(await session.factory.makeCount() == 3)
@@ -542,6 +797,13 @@ struct ServerCoordinatedMeshMediaRuntimeTests {
         )
         let nativeTransport = try #require(
             await session.factory.transport(for: nativeID)
+        )
+        #expect(
+            webTransport.configuration.videoCodecNegotiationPolicy == .exact
+        )
+        #expect(
+            nativeTransport.configuration.videoCodecNegotiationPolicy
+                == .nativeCompatible
         )
 
         let emptyWebSnapshot = try ClipLiveShareNativeV3SourceSnapshot(
@@ -1326,8 +1588,15 @@ private actor ServerMeshRuntimeTransport:
     private var remainingControlSendFailures = 0
     private var remainingRemoteDescriptionFailures: Int
     private var restarts = 0
+    private var negotiationRequests = 0
+    private var remainingNegotiationRequestFailures = 0
+    private var codecUpdates: [WebRTCVideoCodec] = []
+    private var restoredCodecs: [WebRTCVideoCodec] = []
+    private var rollbacks = 0
+    private var currentCodec: WebRTCVideoCodec = .av1
     private var remoteVideoStreamRequests = 0
     private var audioPlaybackEnabledValues: [Bool] = []
+    private var outboundMediaEnabled: [Bool] = []
 
     init(
         configuration: ClipLiveShareNativeV3PeerLinkConfiguration,
@@ -1348,7 +1617,13 @@ private actor ServerMeshRuntimeTransport:
     }
 
     func start() {}
-    func requestNegotiation() {}
+    func requestNegotiation() throws {
+        negotiationRequests += 1
+        if remainingNegotiationRequestFailures > 0 {
+            remainingNegotiationRequestFailures -= 1
+            throw ServerMeshRuntimeTestError.controlSendFailed
+        }
+    }
     func applyRemoteDescription(
         _ description: WebRTCSessionDescription
     ) throws {
@@ -1378,11 +1653,25 @@ private actor ServerMeshRuntimeTransport:
         remoteVideoStreamRequests += 1
         return nil
     }
-    func setOutboundMediaEnabled(_: Bool) {}
+    func setOutboundMediaEnabled(_ enabled: Bool) {
+        outboundMediaEnabled.append(enabled)
+    }
     func setRemoteParticipantAudioPlaybackEnabled(_ enabled: Bool) {
         audioPlaybackEnabledValues.append(enabled)
     }
     func setRemoteParticipantAudioVolume(_: Double) {}
+    func updateVideoCodecPreference(_ codec: WebRTCVideoCodec) {
+        codecUpdates.append(codec)
+        currentCodec = codec
+    }
+    func restoreVideoCodecPreference(_ codec: WebRTCVideoCodec) async throws {
+        restoredCodecs.append(codec)
+        currentCodec = codec
+    }
+    func currentVideoCodecPreference() async -> WebRTCVideoCodec? {
+        currentCodec
+    }
+    func rollbackLocalOfferIfNeeded() { rollbacks += 1 }
     func restartICE() { restarts += 1 }
     func statistics() -> ClipLiveShareNativeV3PeerLinkTransportStatistics {
         .init(capturedAt: Date(timeIntervalSince1970: 0))
@@ -1396,12 +1685,21 @@ private actor ServerMeshRuntimeTransport:
         continuation?.yield(event)
     }
     func remoteDescriptions() -> [WebRTCSessionDescription] { descriptions }
+    func remoteCandidates() -> [WebRTCICECandidate] { candidates }
     func controlMessages() -> [Data] { controls }
     func ephemeralControlMessages() -> [Data] { ephemeralControls }
     func failNextControlMessages(_ count: Int) {
         remainingControlSendFailures = max(0, count)
     }
+    func failNextNegotiationRequests(_ count: Int) {
+        remainingNegotiationRequestFailures = max(0, count)
+    }
     func restartCount() -> Int { restarts }
+    func negotiationRequestCount() -> Int { negotiationRequests }
+    func videoCodecUpdates() -> [WebRTCVideoCodec] { codecUpdates }
+    func restoredVideoCodecs() -> [WebRTCVideoCodec] { restoredCodecs }
+    func rollbackCount() -> Int { rollbacks }
+    func outboundMediaEnabledValues() -> [Bool] { outboundMediaEnabled }
     func remoteVideoStreamRequestCount() -> Int {
         remoteVideoStreamRequests
     }
