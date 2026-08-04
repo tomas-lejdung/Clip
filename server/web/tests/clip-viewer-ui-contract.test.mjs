@@ -9,6 +9,25 @@ const [html, script, stylesheet] = await Promise.all([
   readFile(new URL("assets/clip-viewer.css", root), "utf8"),
 ]);
 
+function elementWithID(tagName, identifier) {
+  const match = html.match(new RegExp(`<${tagName}\\b(?=[^>]*\\bid="${identifier}")[^>]*>[\\s\\S]*?<\\/${tagName}>`, "u"));
+  assert.ok(match, `expected a <${tagName}> with id="${identifier}"`);
+  return match[0];
+}
+
+function visibleText(markup) {
+  return markup.replace(/<[^>]+>/gu, " ").replace(/\s+/gu, " ").trim();
+}
+
+function accessibleIconButton(identifier) {
+  const button = elementWithID("button", identifier);
+  assert.match(button, /class="[^"]*\bicon-button\b[^"]*"/u, `${identifier} should use the compact icon-button treatment`);
+  assert.match(button, /aria-label="[^"]+"/u, `${identifier} should have an accessible label`);
+  assert.match(button, /data-tooltip="[^"]+"/u, `${identifier} should expose a tooltip`);
+  assert.match(button, /<svg\b[^>]*aria-hidden="true"/u, `${identifier} should render an aria-hidden SVG icon`);
+  return button;
+}
+
 test("viewer defaults to sharp Native Focus and exposes only Focus or Row", () => {
   assert.match(html, /data-layout="focus" class="active"/u);
   assert.match(html, /data-layout="row"/u);
@@ -52,16 +71,54 @@ test("HUD and window navigation preserve the old interaction cues", () => {
   assert.doesNotMatch(script, /reason === "cursor"\) scheduleLayoutRender\(\)/u);
 });
 
-test("Web diagnostics are reachable from the bottom HUD and hold HUD visibility while open", () => {
+test("Web diagnostics are reachable from the top HUD, not the bottom controlbar", () => {
   for (const identifier of [
     "diagnostics-button", "diagnostics-panel", "diagnostics-copy",
     "diagnostics-summary", "diagnostics-list",
   ]) assert.match(html, new RegExp(`id="${identifier}"`, "u"));
-  assert.match(html, /id="diagnostics-button"[^>]*>Diagnostics</u);
+  const topActions = elementWithID("div", "top-actions");
+  const controlbar = elementWithID("nav", "controlbar");
+  assert.match(topActions, /id="diagnostics-button"/u);
+  assert.doesNotMatch(controlbar, /id="diagnostics-button"/u);
+  assert.equal(visibleText(accessibleIconButton("diagnostics-button")), "");
   assert.match(script, /new ClipWebDiagnosticsSampler\(\)/u);
   assert.match(script, /!elements\.participants_panel\.hidden \|\| !elements\.diagnostics_panel\.hidden/u);
   assert.match(script, /navigator\.clipboard\.writeText\(formatWebDiagnostics\(latestDiagnostics\)\)/u);
   assert.match(stylesheet, /\.diagnostics-panel/u);
+  assert.doesNotMatch(html, /Statistics come from this browser\. Values that its WebRTC implementation does not expose are shown as unavailable\./u);
+});
+
+test("compact HUD controls use icons with accessible labels and tooltips", () => {
+  const participants = accessibleIconButton("participants-button");
+  const fullscreen = accessibleIconButton("fullscreen-button");
+  const masterMute = accessibleIconButton("master-mute");
+
+  assert.equal(visibleText(participants), "0");
+  assert.match(participants, /<span\b(?=[^>]*id="participant-count")(?=[^>]*class="[^"]*\bbadge\b[^"]*")[^>]*>0<\/span>/u);
+  assert.doesNotMatch(visibleText(participants), /\bPeople\b/u);
+  assert.equal(visibleText(fullscreen), "");
+  assert.equal(visibleText(masterMute), "");
+
+  assert.match(masterMute, /aria-pressed="true"/u);
+  assert.match(script, /elements\.master_mute\.setAttribute\("aria-pressed",\s*String\(masterMuted\)\)/u);
+  assert.match(script, /setControlIcon\(elements\.master_mute,\s*masterMuted\s*\?\s*"volume-muted"\s*:\s*"volume"\)/u);
+  assert.match(script, /setControlLabel\(elements\.master_mute,\s*masterMuted\s*\?/u);
+  assert.doesNotMatch(script, /elements\.master_mute\.textContent\s*=/u);
+
+  assert.doesNotMatch(script, /elements\.fullscreen_button\.textContent\s*=/u);
+  assert.match(script, /setControlIcon\(elements\.fullscreen_button,\s*fullscreen\s*\?\s*"fullscreen-exit"\s*:\s*"fullscreen"\)/u);
+  assert.match(script, /setControlLabel\(elements\.fullscreen_button,\s*fullscreen\s*\?/u);
+});
+
+test("participant count updates the badge and participant control description", () => {
+  assert.match(script, /elements\.participant_count\.textContent = String\(members\.length\)/u);
+  assert.match(script, /syncParticipantsControl\(members\.length\)/u);
+  assert.match(script, /function syncParticipantsControl\(count[\s\S]*setControlLabel\(elements\.participants_button,[\s\S]*summary\)/u);
+});
+
+test("audio permission and destructive room actions retain explicit text labels", () => {
+  assert.match(elementWithID("button", "audio-unlock"), />Enable Audio<\/button>$/u);
+  assert.match(elementWithID("button", "leave-button"), />Leave<\/button>$/u);
 });
 
 test("top-left HUD is a compact accessible room status without redundant branding", () => {

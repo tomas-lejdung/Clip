@@ -8,6 +8,36 @@
     <link rel="stylesheet" href="/assets/clip-viewer.css" />
   </head>
   <body>
+    <svg class="icon-sprite" aria-hidden="true">
+      <symbol id="icon-people" viewBox="0 0 24 24">
+        <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" />
+        <circle cx="9" cy="7" r="4" />
+        <path d="M22 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75" />
+      </symbol>
+      <symbol id="icon-activity" viewBox="0 0 24 24">
+        <path d="M3 12h4l3-8 4 16 3-8h4" />
+      </symbol>
+      <symbol id="icon-volume" viewBox="0 0 24 24">
+        <path d="M11 5 6 9H2v6h4l5 4V5Z" />
+        <path d="M15.5 8.5a5 5 0 0 1 0 7M18.5 5.5a9 9 0 0 1 0 13" />
+      </symbol>
+      <symbol id="icon-volume-muted" viewBox="0 0 24 24">
+        <path d="M11 5 6 9H2v6h4l5 4V5ZM16 9l5 5M21 9l-5 5" />
+      </symbol>
+      <symbol id="icon-fullscreen" viewBox="0 0 24 24">
+        <path d="M8 3H3v5M16 3h5v5M8 21H3v-5M16 21h5v-5" />
+      </symbol>
+      <symbol id="icon-fullscreen-exit" viewBox="0 0 24 24">
+        <path d="M3 8h5V3M21 8h-5V3M3 16h5v5M21 16h-5v5" />
+      </symbol>
+      <symbol id="icon-close" viewBox="0 0 24 24">
+        <path d="m6 6 12 12M18 6 6 18" />
+      </symbol>
+      <symbol id="icon-copy" viewBox="0 0 24 24">
+        <rect x="9" y="9" width="11" height="11" rx="2" />
+        <path d="M15 9V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v7a2 2 0 0 0 2 2h3" />
+      </symbol>
+    </svg>
     <main id="app">
       <header class="topbar hud">
         <div id="room-heading" class="room-heading" data-state="joining" aria-labelledby="room-status room-label">
@@ -19,8 +49,16 @@
         </div>
         <div id="top-actions" class="top-actions">
           <button id="audio-unlock" class="primary compact" type="button">Enable Audio</button>
-          <button id="participants-button" class="icon-button" type="button" aria-label="Show participants" title="Participants">People <span id="participant-count">0</span></button>
-          <button id="fullscreen-button" class="icon-button" type="button" aria-label="Enter fullscreen" title="Fullscreen">Fullscreen</button>
+          <button id="participants-button" class="icon-button icon-only" type="button" aria-label="Show participants, 0 participants" aria-controls="participants-panel" aria-expanded="false" data-tooltip="Participants">
+            <svg class="control-icon" aria-hidden="true" focusable="false"><use href="#icon-people"></use></svg>
+            <span id="participant-count" class="participant-count-badge" aria-hidden="true">0</span>
+          </button>
+          <button id="diagnostics-button" class="icon-button icon-only" type="button" aria-label="Show diagnostics" aria-controls="diagnostics-panel" aria-expanded="false" data-tooltip="Diagnostics">
+            <svg class="control-icon" aria-hidden="true" focusable="false"><use href="#icon-activity"></use></svg>
+          </button>
+          <button id="fullscreen-button" class="icon-button icon-only" type="button" aria-label="Enter fullscreen" data-tooltip="Enter fullscreen">
+            <svg class="control-icon" aria-hidden="true" focusable="false"><use href="#icon-fullscreen"></use></svg>
+          </button>
           <button id="leave-button" class="danger compact" type="button">Leave</button>
         </div>
       </header>
@@ -63,13 +101,19 @@
         </div>
         <label class="select-label">Follow <select id="follow-select"><option value="manual">Off · Manual</option></select></label>
         <div id="source-summary" class="source-summary">Waiting for a shared window</div>
-        <button id="diagnostics-button" type="button" class="icon-button" aria-label="Show diagnostics" title="Diagnostics">Diagnostics</button>
-        <button id="master-mute" type="button" class="icon-button">Muted</button>
+        <button id="master-mute" type="button" class="icon-button icon-only" aria-label="Unmute audio" aria-pressed="true" data-tooltip="Unmute audio">
+          <svg class="control-icon" aria-hidden="true" focusable="false"><use href="#icon-volume-muted"></use></svg>
+        </button>
         <input id="master-volume" type="range" min="0" max="1" step="0.01" value="0.8" aria-label="Master volume" />
       </nav>
 
       <aside id="participants-panel" class="side-panel" hidden>
-        <div class="panel-heading"><div><strong>Participants</strong><span>Direct peer-to-peer mesh</span></div><button id="participants-close" class="icon-button" aria-label="Close participants">Close</button></div>
+        <div class="panel-heading">
+          <div><strong>Participants</strong><span>Direct peer-to-peer mesh</span></div>
+          <button id="participants-close" class="icon-button icon-only" type="button" aria-label="Close participants" data-tooltip="Close participants">
+            <svg class="control-icon" aria-hidden="true" focusable="false"><use href="#icon-close"></use></svg>
+          </button>
+        </div>
         <div id="participants-list"></div>
       </aside>
 
@@ -77,13 +121,16 @@
         <div class="panel-heading">
           <div><strong>Diagnostics</strong><span>Live browser and peer statistics</span></div>
           <div class="panel-actions">
-            <button id="diagnostics-copy" class="icon-button" type="button">Copy</button>
-            <button id="diagnostics-close" class="icon-button" type="button" aria-label="Close diagnostics">Close</button>
+            <button id="diagnostics-copy" class="icon-button icon-only" type="button" aria-label="Copy diagnostics" data-tooltip="Copy diagnostics">
+              <svg class="control-icon" aria-hidden="true" focusable="false"><use href="#icon-copy"></use></svg>
+            </button>
+            <button id="diagnostics-close" class="icon-button icon-only" type="button" aria-label="Close diagnostics" data-tooltip="Close diagnostics">
+              <svg class="control-icon" aria-hidden="true" focusable="false"><use href="#icon-close"></use></svg>
+            </button>
           </div>
         </div>
         <div id="diagnostics-summary" class="diagnostics-summary"></div>
         <div id="diagnostics-list" class="diagnostics-list"></div>
-        <p class="diagnostics-note">Statistics come from this browser. Values that its WebRTC implementation does not expose are shown as unavailable.</p>
       </aside>
     </main>
     <script type="module" src="/assets/clip-viewer.js"></script>

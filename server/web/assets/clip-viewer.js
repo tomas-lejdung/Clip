@@ -43,6 +43,26 @@ const scheduleMotionRender = createAnimationFrameCoalescer(() => {
 });
 const handleViewportChange = () => scheduleMotionRender();
 const stageResizeObserver = new ResizeObserver(handleViewportChange);
+const SVG_NAMESPACE = "http://www.w3.org/2000/svg";
+
+function setControlIcon(button, iconName) {
+  let icon = button.querySelector("svg.control-icon");
+  let use = icon?.querySelector("use");
+  if (!use) {
+    icon = document.createElementNS(SVG_NAMESPACE, "svg");
+    icon.setAttribute("class", "control-icon");
+    icon.setAttribute("aria-hidden", "true");
+    use = document.createElementNS(SVG_NAMESPACE, "use");
+    icon.append(use);
+    button.replaceChildren(icon);
+  }
+  use.setAttribute("href", `#icon-${iconName}`);
+}
+
+function setControlLabel(button, label, tooltip = label) {
+  button.setAttribute("aria-label", label);
+  button.dataset.tooltip = tooltip;
+}
 
 void start();
 stageResizeObserver.observe(elements.stage);
@@ -84,10 +104,14 @@ function bindControls() {
     session.media.followParticipant(value === MANUAL_FOLLOW_VALUE ? null : value);
   });
   elements.participants_button.addEventListener("click", () => {
-    closeDiagnostics(); elements.participants_panel.hidden = false; revealHUD();
+    if (elements.participants_panel.hidden) openParticipants();
+    else closeParticipants();
   });
-  elements.participants_close.addEventListener("click", () => { elements.participants_panel.hidden = true; revealHUD(); });
-  elements.diagnostics_button.addEventListener("click", openDiagnostics);
+  elements.participants_close.addEventListener("click", closeParticipants);
+  elements.diagnostics_button.addEventListener("click", () => {
+    if (elements.diagnostics_panel.hidden) openDiagnostics();
+    else closeDiagnostics();
+  });
   elements.diagnostics_close.addEventListener("click", closeDiagnostics);
   elements.diagnostics_copy.addEventListener("click", () => void copyDiagnostics());
   elements.fullscreen_button.addEventListener("click", async () => {
@@ -95,9 +119,12 @@ function bindControls() {
     else await document.documentElement.requestFullscreen();
   });
   document.addEventListener("fullscreenchange", () => {
-    elements.fullscreen_button.textContent = document.fullscreenElement ? "Exit Fullscreen" : "Fullscreen";
+    syncFullscreenControl();
     scheduleMotionRender();
   });
+  syncParticipantsControl();
+  syncDiagnosticsControl();
+  syncFullscreenControl();
   elements.leave_button.addEventListener("click", () => session.close());
   elements.rejoin_button.addEventListener("click", () => window.location.reload());
   elements.audio_unlock.addEventListener("click", () => {
@@ -178,6 +205,7 @@ function render() {
 function renderParticipants() {
   const members = [...session.media.participants.values()];
   elements.participant_count.textContent = String(members.length);
+  syncParticipantsControl(members.length);
   elements.participants_list.replaceChildren(...members.map((member) => {
     const participantID = member.descriptor.participantID;
     const state = participantConnectionState(member, session.media.peerStates.get(participantID));
@@ -198,12 +226,15 @@ function renderParticipants() {
 
 function makeParticipantAudioControl(participantID) {
   const control = document.createElement("div"); control.className = "audio-control";
-  const button = document.createElement("button"); button.className = "icon-button"; button.type = "button";
+  const button = document.createElement("button"); button.className = "icon-button icon-only"; button.type = "button";
   const state = participantAudio.get(participantID) ?? { muted: false, volume: .8 };
-  button.textContent = state.muted ? "Muted" : "Audio";
+  const displayName = session.media.participants.get(participantID)?.descriptor.displayName ?? "participant";
+  setControlIcon(button, state.muted ? "volume-muted" : "volume");
+  setControlLabel(button, state.muted ? `Unmute ${displayName}` : `Mute ${displayName}`);
+  button.setAttribute("aria-pressed", String(state.muted));
   button.addEventListener("click", () => { state.muted = !state.muted; participantAudio.set(participantID, state); syncAudio(); renderParticipants(); });
   const range = document.createElement("input"); range.type = "range"; range.min = "0"; range.max = "1"; range.step = ".01"; range.value = String(state.volume);
-  range.setAttribute("aria-label", "Participant volume");
+  range.setAttribute("aria-label", `${displayName} volume`);
   range.addEventListener("input", () => { state.volume = Number(range.value); participantAudio.set(participantID, state); syncAudio(); });
   control.append(button, range); return control;
 }
@@ -562,7 +593,12 @@ function renderAudio() {
 
 function syncAudio() {
   elements.audio_unlock.hidden = audioUnlocked;
-  elements.master_mute.textContent = masterMuted ? "Muted" : "Audio On";
+  setControlIcon(elements.master_mute, masterMuted ? "volume-muted" : "volume");
+  setControlLabel(elements.master_mute, masterMuted ? "Unmute all audio" : "Mute all audio");
+  elements.master_mute.setAttribute("aria-pressed", String(masterMuted));
+  const hasSharedAudio = (session?.media.audioTracks.size ?? 0) > 0;
+  elements.master_mute.disabled = !hasSharedAudio;
+  elements.master_volume.disabled = !hasSharedAudio;
   const master = Number(elements.master_volume.value);
   document.querySelectorAll("audio[data-participant]").forEach((audio) => {
     const state = participantAudio.get(audio.dataset.participant) ?? { muted: false, volume: .8 };
@@ -580,9 +616,47 @@ function renderUnsupported() {
   elements.unsupported_message.textContent = presentation.message;
 }
 
+function syncParticipantsControl(count = Number(elements.participant_count.textContent) || 0) {
+  const expanded = !elements.participants_panel.hidden;
+  const summary = `${count} ${count === 1 ? "participant" : "participants"}`;
+  setControlLabel(elements.participants_button, `${expanded ? "Close" : "Show"} ${summary}`, summary);
+  elements.participants_button.setAttribute("aria-controls", "participants-panel");
+  elements.participants_button.setAttribute("aria-expanded", String(expanded));
+  elements.participants_button.classList.toggle("active", expanded);
+}
+
+function openParticipants() {
+  closeDiagnostics();
+  elements.participants_panel.hidden = false;
+  syncParticipantsControl();
+  revealHUD();
+}
+
+function closeParticipants() {
+  elements.participants_panel.hidden = true;
+  syncParticipantsControl();
+  revealHUD();
+}
+
+function syncFullscreenControl() {
+  const fullscreen = Boolean(document.fullscreenElement);
+  setControlIcon(elements.fullscreen_button, fullscreen ? "fullscreen-exit" : "fullscreen");
+  setControlLabel(elements.fullscreen_button, fullscreen ? "Exit fullscreen" : "Enter fullscreen");
+}
+
+function syncDiagnosticsControl() {
+  const expanded = !elements.diagnostics_panel.hidden;
+  setControlLabel(elements.diagnostics_button, expanded ? "Close diagnostics" : "Open diagnostics", "Diagnostics");
+  elements.diagnostics_button.setAttribute("aria-controls", "diagnostics-panel");
+  elements.diagnostics_button.setAttribute("aria-expanded", String(expanded));
+  elements.diagnostics_button.classList.toggle("active", expanded);
+}
+
 function openDiagnostics() {
   elements.participants_panel.hidden = true;
+  syncParticipantsControl();
   elements.diagnostics_panel.hidden = false;
+  syncDiagnosticsControl();
   revealHUD();
   clearInterval(diagnosticsTimer);
   void refreshDiagnostics();
@@ -591,6 +665,7 @@ function openDiagnostics() {
 
 function closeDiagnostics() {
   elements.diagnostics_panel.hidden = true;
+  syncDiagnosticsControl();
   clearInterval(diagnosticsTimer);
   diagnosticsTimer = null;
   diagnosticsGeneration += 1;
@@ -708,12 +783,13 @@ function diagnosticValue(value, unit) {
 async function copyDiagnostics() {
   if (!latestDiagnostics) await refreshDiagnostics();
   if (!latestDiagnostics) return;
-  const original = elements.diagnostics_copy.textContent;
+  const originalLabel = elements.diagnostics_copy.getAttribute("aria-label") || "Copy diagnostics";
+  const originalTooltip = elements.diagnostics_copy.dataset.tooltip || "Copy diagnostics";
   try {
     await navigator.clipboard.writeText(formatWebDiagnostics(latestDiagnostics));
-    elements.diagnostics_copy.textContent = "Copied";
+    setControlLabel(elements.diagnostics_copy, "Diagnostics copied", "Copied");
   } catch {
-    elements.diagnostics_copy.textContent = "Copy Failed";
+    setControlLabel(elements.diagnostics_copy, "Could not copy diagnostics", "Copy failed");
   }
-  setTimeout(() => { elements.diagnostics_copy.textContent = original; }, 1_500);
+  setTimeout(() => { setControlLabel(elements.diagnostics_copy, originalLabel, originalTooltip); }, 1_500);
 }
