@@ -848,9 +848,9 @@ struct ClipLiveShareNativeV3MeshPeerLinkManagerTests {
     )
 
     let expected = MeshSenderPolicyUpdate(
-      policiesBySlot: [:],
+      policiesBySlot: policies,
       fallback: fallback,
-      videoEncodingMode: nil
+      videoEncodingMode: .quality
     )
     #expect(await first.senderPolicyUpdates() == [expected])
     #expect(await second.senderPolicyUpdates() == [expected])
@@ -900,22 +900,23 @@ struct ClipLiveShareNativeV3MeshPeerLinkManagerTests {
       resolutionScale: 1,
       bitratePriority: 3
     )
+    let policies = [
+      0: WebRTCSenderPolicy(
+        maximumBitrateBps: 1_000_000,
+        maximumFramesPerSecond: 15,
+        resolutionScale: 2
+      )
+    ]
     await manager.updateSenderPolicies(
-      [
-        0: WebRTCSenderPolicy(
-          maximumBitrateBps: 1_000_000,
-          maximumFramesPerSecond: 15,
-          resolutionScale: 2
-        )
-      ],
+      policies,
       fallback: fallback,
       videoEncodingMode: .quality
     )
 
     let expected = MeshSenderPolicyUpdate(
-      policiesBySlot: [:],
+      policiesBySlot: policies,
       fallback: fallback,
-      videoEncodingMode: nil
+      videoEncodingMode: .quality
     )
     #expect(await nativeTransport.senderPolicyUpdates() == [expected])
     #expect(await webTransport.senderPolicyUpdates() == [expected])

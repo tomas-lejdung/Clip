@@ -216,6 +216,102 @@ struct ServerCoordinatedMeshMediaRuntimeTests {
         await session.runtime.close()
     }
 
+    @Test("ready Web offerer is synchronized to the persisted Native codec")
+    func initialWebOffererCodecIsSynchronizedOnce() async throws {
+        let fixture = try ServerMeshRuntimeFixture()
+        let signalProbe = ServerMeshPairSignalProbe()
+        // Participant 0 is lexicographically lower and therefore the Web
+        // offerer. The Native answerer starts with its persisted AV1 setting,
+        // while the browser's bootstrap SDP would otherwise choose VP8.
+        let localIndex = 1
+        let roster = try fixture.roster(
+            revision: 1,
+            memberCount: 2,
+            localIndex: localIndex,
+            webParticipantIndexes: [0]
+        )
+        let session = fixture.makeRuntime(
+            localIndex: localIndex,
+            sendPairSignal: { context, payload, remoteHandle in
+                await signalProbe.record(
+                    context: context,
+                    payload: payload,
+                    remoteHandle: remoteHandle
+                )
+            }
+        )
+        try await session.runtime.start(roster: roster)
+        let webParticipantID = fixture.nodes[0].participantID
+        let pair = try #require(
+            roster.pairsByParticipant[webParticipantID]
+        )
+        let transport = try #require(
+            await session.factory.transport(for: webParticipantID)
+        )
+
+        await transport.emit(.connectionStateChanged(.connected))
+        await transport.emit(.controlChannelStateChanged(.open))
+
+        try await serverMeshEventually {
+            await signalProbe.values().count == 1
+        }
+        #expect(await transport.videoCodecUpdates() == [.av1])
+        #expect(await transport.negotiationRequestCount() == 0)
+        #expect(
+            await signalProbe.values().first?.payload
+                == .codecRenegotiationRequest(
+                    epoch: pair.epoch,
+                    codec: .av1
+                )
+        )
+
+        // A later ready transition on the same pair must not renegotiate the
+        // selected codec again or create a signaling loop.
+        await transport.emit(.controlChannelStateChanged(.connecting))
+        await transport.emit(.controlChannelStateChanged(.open))
+        try await Task.sleep(for: .milliseconds(50))
+        #expect(await signalProbe.values().count == 1)
+        #expect(await transport.videoCodecUpdates() == [.av1])
+        await session.runtime.close()
+    }
+
+    @Test("Native offerer keeps its exact first Web codec offer")
+    func nativeOffererDoesNotRenegotiateInitialWebCodec() async throws {
+        let fixture = try ServerMeshRuntimeFixture()
+        let signalProbe = ServerMeshPairSignalProbe()
+        let roster = try fixture.roster(
+            revision: 1,
+            memberCount: 2,
+            webParticipantIndexes: [1]
+        )
+        let session = fixture.makeRuntime(
+            sendPairSignal: { context, payload, remoteHandle in
+                await signalProbe.record(
+                    context: context,
+                    payload: payload,
+                    remoteHandle: remoteHandle
+                )
+            }
+        )
+        try await session.runtime.start(roster: roster)
+        let webParticipantID = fixture.nodes[1].participantID
+        let transport = try #require(
+            await session.factory.transport(for: webParticipantID)
+        )
+
+        await transport.emit(.connectionStateChanged(.connected))
+        await transport.emit(.controlChannelStateChanged(.open))
+        try await serverMeshEventually {
+            try await session.runtime.snapshot().links.links.first?.isReady
+                == true
+        }
+        try await Task.sleep(for: .milliseconds(50))
+
+        #expect(await transport.videoCodecUpdates().isEmpty)
+        #expect(await signalProbe.values().isEmpty)
+        await session.runtime.close()
+    }
+
     @Test("codec request applies the requested codec before canonical offer")
     func codecRequestPreparesCanonicalOfferer() async throws {
         let fixture = try ServerMeshRuntimeFixture()

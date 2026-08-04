@@ -106,3 +106,30 @@ test("diagnostics remain honest when browser peer stats are unavailable", async 
   assert.equal(snapshot.peers[0].error, "stats disabled");
   assert.match(formatWebDiagnostics(snapshot), /Incoming media: None reported/u);
 });
+
+test("unused preallocated receiver slots are hidden while real audio and advertised video remain", async () => {
+  const report = statsReport({ timestamp: 1_000, bytesReceived: 100_000, framesDecoded: 30 });
+  report.set("placeholder-codec", { id: "placeholder-codec", type: "codec", mimeType: "video/VP8" });
+  report.set("placeholder-video", {
+    id: "placeholder-video", type: "inbound-rtp", kind: "video", mid: "1", codecId: "placeholder-codec",
+    timestamp: 1_000, bytesReceived: 8_000, packetsReceived: 8, packetsLost: 0, framesDecoded: 1,
+    framesPerSecond: 0, frameWidth: 16, frameHeight: 16,
+  });
+  report.set("audio-codec", { id: "audio-codec", type: "codec", mimeType: "audio/opus" });
+  report.set("audio", {
+    id: "audio", type: "inbound-rtp", kind: "audio", mid: "4", codecId: "audio-codec",
+    timestamp: 1_000, bytesReceived: 12_000, packetsReceived: 20, packetsLost: 0,
+  });
+  const session = sessionWithReports([report]);
+  const placeholder = { id: "placeholder-browser-track", getSettings: () => ({ width: 16, height: 16 }) };
+  session.media.videoTracks.set("unused-native-slot", { participantID: "remote-id", track: placeholder });
+  session.media.audioTracks.set("remote-id", { id: "audio-browser-track" });
+  session.peers.get("remote").remoteTrackIDsByMID.set("1", "unused-native-slot");
+
+  const snapshot = await new ClipWebDiagnosticsSampler().sample(session);
+  assert.deepEqual(snapshot.peers[0].tracks.map((track) => [track.kind, track.label, track.codec]), [
+    ["video", "Scratch", "VP8"],
+    ["audio", "System Audio", "OPUS"],
+  ]);
+  assert.equal(snapshot.peers[0].tracks.some((track) => track.mediaTrackID === "unused-native-slot"), false);
+});

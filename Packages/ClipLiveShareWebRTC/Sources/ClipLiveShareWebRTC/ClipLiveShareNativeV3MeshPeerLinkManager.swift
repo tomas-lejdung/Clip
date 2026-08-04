@@ -954,9 +954,14 @@ public actor ClipLiveShareNativeV3MeshPeerLinkManager {
     fallback: WebRTCSenderPolicy,
     videoEncodingMode: LiveShareEncodingMode
   ) async {
-    _ = policiesBySlot
-    _ = videoEncodingMode
-    await updateSenderPolicy(fallback)
+    for key in links.keys.sorted() {
+      guard let link = links[key] else { continue }
+      await link.transport.updateSenderPolicies(
+        policiesBySlot,
+        fallback: fallback,
+        videoEncodingMode: videoEncodingMode
+      )
+    }
   }
 
   public func updateVideoCodecPreference(

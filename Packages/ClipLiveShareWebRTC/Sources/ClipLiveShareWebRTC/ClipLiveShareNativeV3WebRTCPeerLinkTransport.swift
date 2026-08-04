@@ -2,6 +2,7 @@ import ClipCapture
 import ClipLiveShare
 import ClipLiveShareWebRTCAudioBridge
 import Foundation
+import OSLog
 @preconcurrency import WebRTC
 
 public struct ClipLiveShareNativeV3WebRTCConfiguration: Equatable, Sendable {
@@ -167,6 +168,16 @@ private final class ClipLiveShareNativeV3LocalVideoSlot: @unchecked Sendable {
   }
 }
 
+private final class ClipLiveShareNativeV3WeakPeerTransport:
+  @unchecked Sendable
+{
+  weak var value: ClipLiveShareNativeV3WebRTCPeerLinkTransport?
+
+  init(_ value: ClipLiveShareNativeV3WebRTCPeerLinkTransport) {
+    self.value = value
+  }
+}
+
 /// Shared local media engine and concrete transport factory for one native-v3
 /// participant. Four stable video tracks and one stable audio track are reused
 /// by every pair connection; each captured frame is therefore submitted to
@@ -189,6 +200,7 @@ public final class ClipLiveShareNativeV3WebRTCTransportFactory:
   private let systemAudioTrack: RTCAudioTrack
   private let systemAudioTrackID: String
   private let systemAudioStreamID: String
+  private var peerTransports: [ClipLiveShareNativeV3WeakPeerTransport] = []
   private var systemAudioEnabled = false
   private var activeSenderPolicy: WebRTCSenderPolicy
   private var activeVideoCodec: WebRTCVideoCodec
@@ -307,7 +319,7 @@ public final class ClipLiveShareNativeV3WebRTCTransportFactory:
         activeVideoEncodingMode
       currentConfiguration.peer.advancedVideoConfigurations =
         activeAdvancedVideoConfigurations
-      return try ClipLiveShareNativeV3WebRTCPeerLinkTransport(
+      let transport = try ClipLiveShareNativeV3WebRTCPeerLinkTransport(
         linkConfiguration: linkConfiguration,
         webRTCConfiguration: currentConfiguration,
         peerFactory: peerFactory,
@@ -315,8 +327,14 @@ public final class ClipLiveShareNativeV3WebRTCTransportFactory:
         audioCodecCapabilities: audioCodecCapabilities,
         localVideoSlots: slots,
         localParticipantAudioTrack: systemAudioTrack,
-        localParticipantAudioStreamID: systemAudioStreamID
+        localParticipantAudioStreamID: systemAudioStreamID,
+        activeLocalVideoSourceCount: slots.count(where: {
+          $0.metadata != nil
+        })
       )
+      peerTransports.removeAll { $0.value == nil }
+      peerTransports.append(.init(transport))
+      return transport
     }
   }
 
@@ -348,10 +366,17 @@ public final class ClipLiveShareNativeV3WebRTCTransportFactory:
   }
 
   public func updateVideoEncodingMode(_ mode: LiveShareEncodingMode) {
-    lock.withLock {
-      guard !isClosed else { return }
+    let transports = lock.withLock {
+      guard !isClosed else {
+        return [ClipLiveShareNativeV3WebRTCPeerLinkTransport]()
+      }
       activeVideoEncodingMode = mode
       h264EncoderFactory.updateMode(WebRTCH264EncodingMode(mode))
+      peerTransports.removeAll { $0.value == nil }
+      return peerTransports.compactMap(\.value)
+    }
+    for transport in transports {
+      transport.updateLocalVideoEncodingMode(mode)
     }
   }
 
@@ -406,7 +431,7 @@ public final class ClipLiveShareNativeV3WebRTCTransportFactory:
     metadata: ClipLiveShareStreamDescriptor,
     captureGeometry: WebRTCVideoCaptureGeometry
   ) throws {
-    try lock.withLock {
+    let update = try lock.withLock {
       guard !isClosed else {
         throw ClipLiveShareNativeV3WebRTCPeerLinkError.factoryClosed
       }
@@ -427,6 +452,15 @@ public final class ClipLiveShareNativeV3WebRTCTransportFactory:
       target.metadata = metadata
       target.captureGeometry = captureGeometry
       target.track.isEnabled = true
+      peerTransports.removeAll { $0.value == nil }
+      return (
+        peerTransports.compactMap(\.value),
+        slots.count(where: { $0.metadata != nil })
+      )
+    }
+    let (transports, count) = update
+    for transport in transports {
+      transport.updateActiveLocalVideoSourceCount(count)
     }
   }
 
@@ -462,13 +496,24 @@ public final class ClipLiveShareNativeV3WebRTCTransportFactory:
   }
 
   public func deactivateSlot(_ slot: Int) {
-    lock.withLock {
-      guard !isClosed, slots.indices.contains(slot) else { return }
+    let update = lock.withLock { () -> (
+      [ClipLiveShareNativeV3WebRTCPeerLinkTransport], Int
+    )? in
+      guard !isClosed, slots.indices.contains(slot) else { return nil }
       let target = slots[slot]
       target.metadata = nil
       target.captureGeometry = nil
       target.track.isEnabled = false
       target.frameSource.clearLatestFrame()
+      peerTransports.removeAll { $0.value == nil }
+      return (
+        peerTransports.compactMap(\.value),
+        slots.count(where: { $0.metadata != nil })
+      )
+    }
+    guard let (transports, count) = update else { return }
+    for transport in transports {
+      transport.updateActiveLocalVideoSourceCount(count)
     }
   }
 
@@ -513,6 +558,10 @@ public final class ClipLiveShareNativeV3WebRTCPeerLinkTransport:
   ClipLiveShareNativeV3PeerLinkTransport,
   @unchecked Sendable
 {
+  private static let bandwidthLogger = Logger(
+    subsystem: "ClipLiveShareWebRTC",
+    category: "Peer bandwidth"
+  )
   private enum ReceivedTrack {
     case video(ClipLiveShareMediaTrackID)
     case participantAudio(String)
@@ -541,6 +590,11 @@ public final class ClipLiveShareNativeV3WebRTCPeerLinkTransport:
   private var audioTransceiver: RTCRtpTransceiver?
   private var outboundMediaEnabled: Bool
   private var senderPolicy: WebRTCSenderPolicy
+  private var videoEncodingMode: LiveShareEncodingMode
+  private var activeLocalVideoSourceCount: Int
+  private var bandwidthApplicationState =
+    NativeV3PeerBandwidthApplicationState()
+  private var bandwidthSeedPending: Bool
   private var videoCodec: WebRTCVideoCodec
   private let videoCodecNegotiationPolicy: WebRTCVideoCodecNegotiationPolicy
   private var controlChannel: RTCDataChannel?
@@ -584,7 +638,8 @@ public final class ClipLiveShareNativeV3WebRTCPeerLinkTransport:
     audioCodecCapabilities: [RTCRtpCodecCapability],
     localVideoSlots: [ClipLiveShareNativeV3LocalVideoSlot],
     localParticipantAudioTrack: RTCAudioTrack,
-    localParticipantAudioStreamID: String
+    localParticipantAudioStreamID: String,
+    activeLocalVideoSourceCount: Int
   ) throws {
     self.linkConfiguration = linkConfiguration
     self.webRTCConfiguration = webRTCConfiguration
@@ -598,6 +653,10 @@ public final class ClipLiveShareNativeV3WebRTCPeerLinkTransport:
     outboundMediaEnabled =
       linkConfiguration.outboundMediaInitiallyEnabled
     senderPolicy = webRTCConfiguration.peer.senderPolicy
+    videoEncodingMode = webRTCConfiguration.peer.videoEncodingMode
+    self.activeLocalVideoSourceCount = activeLocalVideoSourceCount
+    bandwidthSeedPending = activeLocalVideoSourceCount > 0
+      && webRTCConfiguration.peer.videoEncodingMode == .quality
     videoCodec = webRTCConfiguration.peer.videoCodec
     videoCodecNegotiationPolicy =
       linkConfiguration.videoCodecNegotiationPolicy
@@ -931,30 +990,74 @@ public final class ClipLiveShareNativeV3WebRTCPeerLinkTransport:
       if let audioTransceiver {
         Self.setSender(audioTransceiver.sender, active: enabled)
       }
+      if enabled {
+        applyPeerBandwidthPolicy()
+      }
     }
   }
 
   public func updateSenderPolicy(_ policy: WebRTCSenderPolicy) async {
     onQueue {
       guard !isClosed else { return }
+      let previousEnvelope = peerBandwidthEnvelope()
       senderPolicy = policy
       for transceiver in videoTransceivers {
         Self.applySenderPolicy(policy, to: transceiver.sender)
       }
+      let nextEnvelope = peerBandwidthEnvelope()
+      if videoEncodingMode == .quality,
+        (nextEnvelope?.maximumBitrateBps ?? 0)
+          > (previousEnvelope?.maximumBitrateBps ?? 0)
+      {
+        bandwidthSeedPending = true
+      }
+      applyPeerBandwidthPolicy()
     }
   }
 
-  /// Compatibility seam retained for the server-coordinated room runtime.
-  /// Slot-specific allocation and peer-level bandwidth seeding are not part
-  /// of the networking change, so every sender keeps the complete fallback
-  /// policy exactly as it did before v4.
+  fileprivate func updateLocalVideoEncodingMode(
+    _ mode: LiveShareEncodingMode
+  ) {
+    onQueue {
+      guard !isClosed else { return }
+      if mode == .quality, videoEncodingMode != .quality,
+        activeLocalVideoSourceCount > 0
+      {
+        bandwidthSeedPending = true
+      }
+      videoEncodingMode = mode
+      if mode != .quality { bandwidthSeedPending = false }
+      applyPeerBandwidthPolicy()
+    }
+  }
+
+  fileprivate func updateActiveLocalVideoSourceCount(_ count: Int) {
+    onQueue {
+      guard !isClosed else { return }
+      let previousCount = activeLocalVideoSourceCount
+      activeLocalVideoSourceCount = max(0, count)
+      if activeLocalVideoSourceCount == 0 {
+        bandwidthSeedPending = false
+        clearPeerBandwidthPolicyAfterLastVideo()
+        return
+      }
+      if previousCount == 0, videoEncodingMode == .quality {
+        bandwidthSeedPending = true
+      }
+      applyPeerBandwidthPolicy()
+    }
+  }
+
+  /// The server-coordinated room currently applies one complete fallback
+  /// policy to every active slot. Retain that contract while also carrying the
+  /// encoding mode into the peer-wide bandwidth seed state.
   public func updateSenderPolicies(
     _ policiesBySlot: [Int: WebRTCSenderPolicy],
     fallback: WebRTCSenderPolicy,
     videoEncodingMode: LiveShareEncodingMode
   ) async {
     _ = policiesBySlot
-    _ = videoEncodingMode
+    updateLocalVideoEncodingMode(videoEncodingMode)
     await updateSenderPolicy(fallback)
   }
 
@@ -1137,6 +1240,9 @@ public final class ClipLiveShareNativeV3WebRTCPeerLinkTransport:
       case let .connectionStateChanged(state):
         guard connectionState != state else { return }
         connectionState = state
+        if state == .connected {
+          applyPeerBandwidthPolicy()
+        }
         emit(.connectionStateChanged(state))
       case let .dataChannelOpened(channel):
         acceptDataChannel(channel)
@@ -1930,6 +2036,88 @@ public final class ClipLiveShareNativeV3WebRTCPeerLinkTransport:
     } catch {
       throw ClipLiveShareNativeV3WebRTCPeerLinkError
         .codecPreferenceFailed(error.localizedDescription)
+    }
+  }
+
+  /// Per-sender maxima do not initialize libwebrtc's peer-wide bandwidth
+  /// estimator. Without this one-time seed a new edge begins near WebRTC's
+  /// ~300 kbps default even when the user selected a 20 Mbps quality budget.
+  /// Seed every Native and Web edge from the same policy, once the connection
+  /// is usable and the first local source is active. Later updates preserve
+  /// the learned estimate unless the user explicitly raises the quality
+  /// budget or returns to Quality mode.
+  private func peerBandwidthEnvelope() -> NativeV3PeerBandwidthEnvelope? {
+    guard activeLocalVideoSourceCount > 0 else { return nil }
+    return NativeV3PeerBandwidthEnvelope.make(
+      activeVideoPolicies: Array(
+        repeating: senderPolicy,
+        count: activeLocalVideoSourceCount
+      ),
+      preferredInitialVideoBitrateBps: .max,
+      auxiliaryBitrateBps: WebRTCOpusMusicSDP.maximumAverageBitrateBps
+    )
+  }
+
+  private func applyPeerBandwidthPolicy() {
+    let conditions = NativeV3PeerBandwidthConditions(
+      isConnected: connectionState == .connected,
+      outboundMediaEnabled: outboundMediaEnabled,
+      activeVideoSourceCount: activeLocalVideoSourceCount,
+      videoEncodingMode: videoEncodingMode
+    )
+    guard !isClosed, conditions.canApply,
+      let envelope = peerBandwidthEnvelope()
+    else { return }
+
+    let shouldSeed = conditions.shouldSeed(
+      seedPending: bandwidthSeedPending,
+      hasSeededCurrentEstimate:
+        bandwidthApplicationState.hasSeededCurrentEstimate
+    )
+    guard let transition = bandwidthApplicationState.transition(
+      to: envelope,
+      seedCurrentEstimate: shouldSeed
+    ) else { return }
+
+    let update = transition.update
+    let accepted = connection.setBweMinBitrateBps(
+      update.minimumBitrateBps.map(NSNumber.init),
+      currentBitrateBps: update.currentBitrateBps.map(NSNumber.init),
+      maxBitrateBps: update.maximumBitrateBps.map(NSNumber.init)
+    )
+    if accepted {
+      bandwidthApplicationState.commit(transition)
+      if update.currentBitrateBps != nil { bandwidthSeedPending = false }
+    } else {
+      Self.bandwidthLogger.error(
+        """
+        WebRTC rejected peer bandwidth update \
+        (min: \(update.minimumBitrateBps ?? -1, privacy: .public), \
+        current: \(update.currentBitrateBps ?? -1, privacy: .public), \
+        max: \(update.maximumBitrateBps ?? -1, privacy: .public)).
+        """
+      )
+    }
+  }
+
+  private func clearPeerBandwidthPolicyAfterLastVideo() {
+    guard !isClosed, connectionState == .connected else {
+      bandwidthApplicationState.reset()
+      return
+    }
+    let accepted = connection.setBweMinBitrateBps(
+      NSNumber(value: 0),
+      currentBitrateBps: nil,
+      maxBitrateBps: NSNumber(
+        value: WebRTCOpusMusicSDP.maximumAverageBitrateBps
+      )
+    )
+    if accepted {
+      bandwidthApplicationState.reset()
+    } else {
+      Self.bandwidthLogger.error(
+        "WebRTC rejected the source-free bandwidth reset."
+      )
     }
   }
 

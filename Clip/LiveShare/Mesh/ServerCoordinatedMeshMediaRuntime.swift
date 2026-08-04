@@ -640,6 +640,20 @@ actor ServerCoordinatedMeshMediaRuntime {
     /// exchange completes successfully.
     private var codecRejectedParticipants:
         Set<ClipLiveShareNativeV3ParticipantID> = []
+    /// A receive-only browser can be the deterministic offerer for a pair. It
+    /// cannot know this Native participant's persisted codec before the first
+    /// authenticated exchange, so its bootstrap offer uses the browser's SDP
+    /// default (usually VP8). Once that exact edge is ready, request our
+    /// already-selected codec once. Native-offerer edges already put the
+    /// selected codec in their first offer and require no extra exchange.
+    ///
+    /// The member handle, rather than only the stable participant identity,
+    /// scopes this latch. Leaving and rejoining creates a new pair/handle and
+    /// must synchronize the codec again without requiring the user to toggle
+    /// the setting.
+    private var initialWebCodecSynchronizedHandles:
+        [ClipLiveShareNativeV3ParticipantID:
+            ClipLiveShareServerRoomV4MemberHandle] = [:]
     private var lastAppliedPairSignalSequence:
         [ClipLiveShareServerRoomV4PairID: UInt64] = [:]
     private var highestObservedPairSignalSequence:
@@ -1558,6 +1572,7 @@ actor ServerCoordinatedMeshMediaRuntime {
         pendingPairSignals.removeAll(keepingCapacity: false)
         pairsAwaitingFreshSessionDescription.removeAll(keepingCapacity: false)
         codecRejectedParticipants.removeAll(keepingCapacity: false)
+        initialWebCodecSynchronizedHandles.removeAll(keepingCapacity: false)
         lastAppliedPairSignalSequence.removeAll(keepingCapacity: false)
         highestObservedPairSignalSequence.removeAll(keepingCapacity: false)
         await links.close()
@@ -1693,6 +1708,9 @@ actor ServerCoordinatedMeshMediaRuntime {
                     emit(.pairRecovered(
                         participantID: link.remoteParticipantID
                     ))
+                    try await synchronizeInitialWebCodecIfNeeded(
+                        for: link.remoteParticipantID
+                    )
                     await synchronizeLocalSourcesIfNeeded(to: link)
                 } else if (link.connectionState == .disconnected
                             || link.connectionState == .failed),
@@ -1703,6 +1721,7 @@ actor ServerCoordinatedMeshMediaRuntime {
                     schedulePairRecovery(for: link.remoteParticipantID)
                 }
             case let .linkRemoved(_, participantID):
+                initialWebCodecSynchronizedHandles[participantID] = nil
                 markPairUnavailable(participantID)
             case .reconnectScheduled:
                 break
@@ -1723,6 +1742,39 @@ actor ServerCoordinatedMeshMediaRuntime {
                 participantID: participantID,
                 message: error.localizedDescription
             ))
+        }
+    }
+
+    /// Browser offerers have no authenticated codec setting until the Native
+    /// participant is reachable. Re-apply the transport's authoritative
+    /// preference and ask that browser to originate one exact-codec offer.
+    /// This changes only pair signaling: capture geometry, frame sources,
+    /// sender quality and Native-Native negotiation remain untouched.
+    private func synchronizeInitialWebCodecIfNeeded(
+        for participantID: ClipLiveShareNativeV3ParticipantID
+    ) async throws {
+        guard let roster,
+              let member = roster.member(for: participantID),
+              member.descriptor.clientKind == .webViewer,
+              member.descriptor.capabilityProfile == .webViewerV1,
+              let pair = roster.pairsByParticipant[participantID],
+              pair.context.initialOfferer != roster.localHandle,
+              initialWebCodecSynchronizedHandles[participantID]
+                != member.handle,
+              let codec = try await links.currentVideoCodecPreference(
+                for: participantID
+              ) else { return }
+
+        initialWebCodecSynchronizedHandles[participantID] = member.handle
+        do {
+            try await updateVideoCodecPreference(
+                codec,
+                for: participantID,
+                rollbackTo: codec
+            )
+        } catch {
+            initialWebCodecSynchronizedHandles[participantID] = nil
+            throw error
         }
     }
 

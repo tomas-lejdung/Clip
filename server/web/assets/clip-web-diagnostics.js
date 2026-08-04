@@ -56,7 +56,8 @@ export class ClipWebDiagnosticsSampler {
     const tracks = [...stats.values()]
       .filter((entry) => entry.type === "inbound-rtp" && entry.isRemote !== true && mediaKind(entry))
       .filter((entry) => hasReceivedMedia(entry))
-      .map((entry) => this.inboundTrack(session, member, peer, entry, stats));
+      .map((entry) => this.inboundTrack(session, member, peer, entry, stats))
+      .filter(Boolean);
     addObservableTrackFallbacks(session, member, tracks);
 
     return Object.freeze({
@@ -72,6 +73,17 @@ export class ClipWebDiagnosticsSampler {
 
   inboundTrack(session, member, peer, entry, stats) {
     const kind = mediaKind(entry);
+    const advertisedTrackID = peer.remoteTrackIDsByMID?.get(entry.mid) ?? entry.trackIdentifier ?? null;
+    const source = session.media.allSources().find((candidate) =>
+      candidate.active &&
+      candidate.ownerParticipantID === member.descriptor.participantID &&
+      advertisedTrackID && candidate.mediaTrackID === advertisedTrackID,
+    );
+    // Native peers preallocate several recvonly transceivers. Browsers expose
+    // placeholder receiver tracks (and sometimes inbound-rtp entries) for
+    // those unused slots. The authenticated source snapshot is authoritative:
+    // only an active advertised source is a real incoming video track.
+    if (kind === "video" && !source) return null;
     const codec = stats.get(entry.codecId);
     const counterKey = `${member.descriptor.participantID}:${entry.id}`;
     const prior = this.previousInbound.get(counterKey) ?? null;
@@ -89,11 +101,6 @@ export class ClipWebDiagnosticsSampler {
       bytesReceived: finiteNumber(entry.bytesReceived) ? entry.bytesReceived : 0,
       framesDecoded: finiteNumber(entry.framesDecoded) ? entry.framesDecoded : 0,
     });
-    const advertisedTrackID = peer.remoteTrackIDsByMID?.get(entry.mid) ?? entry.trackIdentifier ?? null;
-    const source = session.media.allSources().find((candidate) =>
-      candidate.ownerParticipantID === member.descriptor.participantID &&
-      advertisedTrackID && candidate.mediaTrackID === advertisedTrackID,
-    );
     return {
       id: entry.id,
       mediaTrackID: advertisedTrackID,
@@ -166,7 +173,10 @@ function addObservableTrackFallbacks(session, member, tracks) {
   for (const [trackID, entry] of session.media.videoTracks) {
     if (entry.participantID !== participantID || observedVideoIDs.has(trackID)) continue;
     const settings = entry.track.getSettings?.() ?? {};
-    const source = session.media.allSources().find((candidate) => candidate.ownerParticipantID === participantID && candidate.mediaTrackID === trackID);
+    const source = session.media.allSources().find((candidate) =>
+      candidate.active && candidate.ownerParticipantID === participantID && candidate.mediaTrackID === trackID,
+    );
+    if (!source) continue;
     tracks.push({
       id: trackID,
       mediaTrackID: trackID,
