@@ -31,7 +31,8 @@ Clip should be:
 - Designed around sharing rather than video production.
 - Simple enough that users rarely need to open a settings window.
 - Local-first recording with no account or upload service; Live Share is a
-  separate explicit mode that requires the configured signaling service.
+  separate explicit mode that requires the configured room coordination
+  service.
 - Able to produce compact files while preserving readable interface text.
 
 ---
@@ -49,17 +50,20 @@ By default:
 - A Clip icon appears in the macOS menu bar.
 - Launch at login is Off but may be enabled in Settings.
 - Clip follows the current macOS light or dark appearance.
-- Version 1.0 is English-only and uses a String Catalog so later localization remains straightforward.
+- Clip is English-first and uses a String Catalog so later localization remains straightforward.
 
 Clicking the menu-bar icon opens the main Clip popover.
 
-Clip also provides a distinct native **Live Share** workflow. Up to four Clip
-participants can join one room, share their own macOS windows or one entire
-display, and receive every other participant's shared sources at the same
-time. Every admitted pair uses a direct encrypted WebRTC connection. Clip's
-in-repository Go service is only an opaque rendezvous and bounded encrypted
-signaling relay; it never receives media, plaintext Access Words, participant
-names, trust decisions, SDP, ICE, source metadata, or authoritative room state.
+Clip also provides an optional **Live Share** workflow. Up to four Native Clip
+and receive-only Web participants can join one room. Native participants may
+share their own macOS windows or one entire display and receive every other
+Native participant's sources; Web participants receive compatible Native
+sources but never publish. Every admitted pair uses a direct encrypted WebRTC
+connection. Clip's in-repository Go service owns the authoritative bounded
+opaque roster, socket presence, reconnect grace, and encrypted pair-signal
+routing. It never receives media, plaintext Access Words, participant names or
+identities, trust decisions, plaintext SDP/ICE, source metadata, or
+collaboration content.
 
 ---
 
@@ -524,6 +528,36 @@ favors its latest frame to prevent latency growth; one slow participant cannot
 backpressure another participant's sender. Sustained overload is visible in
 directional diagnostics rather than accumulating an unbounded queue.
 
+Each published source owns one ScreenCaptureKit session and one stream of raw
+frames feeding one shared `RTCVideoTrack`. The track is attached to a separate
+`RTCRtpSender` on every remote peer connection, so standard libwebrtc owns one
+encoder and congestion controller for each source/remote-peer edge. Adding a
+viewer does not create another ScreenCaptureKit session, disk recording, or
+AVAssetWriter pipeline, but it does add an encoder/sender and another copy of
+the outgoing network traffic. The common expected workload is two Native
+participants sharing together. Four participants is the current tested
+resource boundary rather than an inherent WebRTC protocol limit.
+
+## Directional diagnostics
+
+Diagnostics reflect actual peer-edge behavior rather than a room-wide assumed
+codec or encoder:
+
+- **Connections** lists every remote participant's connection state, P2P/TURN
+  route, RTT, packet loss, ICE state, and control-channel state.
+- **Your Publishing** groups each active local source by recipient because
+  every peer edge has its own encoder, congestion controller, target rate,
+  queue, and negotiated codec. Where the runtime exposes them, rows include
+  codec, dimensions, FPS, bitrate, drops, QP, encode time, target bitrate, and
+  send-queue pressure.
+- Incoming media is grouped by Native publisher and includes only actual
+  active tracks. A receive-only Web participant never creates an empty
+  publishing or incoming-media section merely because it belongs to the
+  roster.
+- The codec in directional RTP statistics is authoritative. A configured
+  codec label must not be presented as if it proves what a particular edge
+  negotiated.
+
 ## Server-room-v4 protocol and privacy
 
 Server-room-v4 is the only supported Live Share connection contract:
@@ -552,11 +586,13 @@ Server-room-v4 is the only supported Live Share connection contract:
   creator returns a valid encrypted admission record and the service commits a
   newer complete roster.
 - A Native-Web video edge offers only the publisher's selected H.264, VP8,
-  VP9, or AV1 codec. It never falls back, transcodes, or starts a second browser
-  encoding. Native-Native edges retain the proven pre-Web SDP preference
-  ladder: AV1 prefers AV1, VP9, then VP8; VP9 prefers VP9 then VP8; H.264 and
-  VP8 are exact. That ladder negotiates one active codec and one encoder; it is
-  not permission to encode several codecs at once.
+  VP9, or AV1 codec. It never falls back, transcodes, or starts a simultaneous
+  second-codec encoding for that edge. Native-Native edges retain the proven
+  pre-Web SDP preference ladder: AV1 prefers AV1, VP9, then VP8; VP9 prefers
+  VP9 then VP8; H.264 and VP8 are exact. That ladder negotiates one active
+  codec for the edge; each remote peer edge still owns its own standard
+  libwebrtc encoder and RTP sender. It is not permission to encode several
+  codecs on one edge at once.
   Actual per-link RTP statistics identify the negotiated codec and route.
 - If a web runtime cannot decode the selected codec, the participant remains
   in the authoritative roster. The affected source reports **Unsupported
@@ -564,7 +600,7 @@ Server-room-v4 is the only supported Live Share connection contract:
   otherwise that peer's video may remain unavailable or black. Current
   libwebrtc may reject that incompatible peer connection as a whole, so web-v1
   does not promise audio or a DataChannel on that one edge. Other mesh edges
-  and the publisher's single encoder remain unchanged.
+  and the publisher's encoders for other peer edges remain unchanged.
 - SDP, ICE, decrypted messages, source count, collaboration cadence, strokes,
   queued control data, and native media pressure have explicit hard bounds.
 - Validated STUN/TURN configuration supports remote traversal. TURN carries
@@ -1436,11 +1472,23 @@ Clip should target:
 # Privacy
 
 Clip's recording workflow is local-first. Recording, Preview, History, and
-exports do not upload media. Live Share is the sole explicit networking mode:
-when the user starts a room, selected transient screen frames, optional system
-audio, and control metadata leave the Mac over encrypted WebRTC. The configured
-service sees room/routing metadata and bounded end-to-end-encrypted signaling
-envelopes, not plaintext admission, SDP, ICE, stream/control data, or media.
+exports do not upload media. Live Share is the only feature that transmits
+captured media: when the user starts a room, selected transient screen frames,
+optional system audio, and control metadata leave the Mac over encrypted
+WebRTC. Sparkle may separately contact the configured update feed to check for
+new application releases. The room service sees room/routing metadata and
+bounded end-to-end-encrypted signaling envelopes, not plaintext admission,
+SDP, ICE, stream/control data, or media.
+It can observe IP addresses, timing, room size, opaque identifiers, ciphertext
+sizes, and traffic shape, and it can deny service. TURN may relay encrypted
+WebRTC packets but gains no room authority or media plaintext.
+
+The room-service origin supplies the receive-only Web viewer JavaScript. A
+malicious or compromised origin could serve modified code that reads the invite
+fragment, so fragment secrecy from that Web origin is not a product claim.
+Native-to-Native use has the stronger separation because the service does not
+supply either Native client. Users may self-host the service and viewer to
+control that origin.
 
 The recording workflow includes:
 
@@ -1467,7 +1515,6 @@ Any future telemetry must be optional and transparent.
 - Xcode 26.6, build 17F113.
 - macOS 15.0 or later deployment target.
 - Apple Silicon (`arm64`).
-- Version 1.3.1 (build 6).
 
 ## User interface
 
@@ -1605,7 +1652,7 @@ package state is not accepted as release provenance.
 
 - Source editing can be done in Codex, Cursor, VS Code, Zed, or another editor.
 - Xcode 26.6 and Apple command-line tools provide the macOS 26.5 SDK, Swift 6.3.3, local signing, building, and DMG creation.
-- Go 1.25 provides the local opaque-rendezvous acceptance lane; Docker Buildx
+- Go 1.25 provides the local server-room-v4 acceptance lane; Docker Buildx
   is required only to publish the service image.
 - The project should support command-line builds.
 
@@ -1803,10 +1850,12 @@ A separate Homebrew tap can be added later if needed.
   current desktop Safari and Chromium. It joins the same complete mesh and
   receives every native publisher's sources and audio, but cannot publish,
   administer rooms, create friendships, or use collaboration controls.
-- Native-Web edges require the selected codec exactly, with one encoder only:
-  no browser-specific fallback, second encode, or transcoding. Native-Native
-  edges preserve the pre-Web SDP preference ladder while still negotiating one
-  active codec and using one encoder. Unsupported browser decoders show an
+- Native-Web edges require the selected codec exactly, with one active codec
+  per edge: no browser-specific fallback, simultaneous second-codec encode, or
+  transcoding. Native-Native edges preserve the pre-Web SDP preference ladder
+  while still negotiating one active codec per edge. Every source uses one
+  capture/raw-track pipeline but a separate libwebrtc encoder/RTP sender for
+  each remote peer. Unsupported browser decoders show an
   explicit source error when the codec is observable; an edge that fails before
   that may remain unavailable or black, without changing unrelated mesh edges.
 - Optional independently persisted Live Share system audio per participant,
@@ -1915,9 +1964,9 @@ clip
 
 ## Version
 
-```text
-1.3.1 (build 6)
-```
+The current marketing version and build number are release metadata defined by
+the Xcode project and release notes, not by this long-lived product
+specification.
 
 ## Bundle identifier
 
@@ -2036,10 +2085,11 @@ The local release uses free Personal Team ID `FJ2BS65H3F`. It is not a Developer
   track with Focus/Row, Follow Off and per-publisher Follow, filmstrip source
   selection, HUD auto-hide, Fit/Fill/Native, Native pan/minimap, fullscreen,
   and audio controls.
-- Enforce the selected codec exactly on Native-Web edges with no second
-  encoding, transcoding, or fallback, and report unsupported browser decoding
-  explicitly. Preserve the pre-Web Native-Native SDP preference ladder and its
-  single-codec, single-encoder behavior.
+- Enforce the selected codec exactly on Native-Web edges with no simultaneous
+  second-codec encoding, transcoding, or fallback, and report unsupported
+  browser decoding explicitly. Preserve the pre-Web Native-Native SDP
+  preference ladder and one active codec per peer edge; each remote edge still
+  owns an independent encoder/RTP sender.
 - Prove mixed Native/Web mesh churn without replacing or renegotiating an
   unaffected Native-Native pair.
 

@@ -1,97 +1,278 @@
 # Clip technical architecture
 
-This document records the implementation shape behind [spec.md](spec.md). The product specification remains the source of truth for behavior; this file explains ownership, dependencies, and verification boundaries.
+This document describes the implementation boundaries behind [spec.md](spec.md).
+The product specification remains the source of truth for behavior. Detailed
+Live Share protocol decisions live in
+[server-coordinated-mesh-design.md](docs/server-coordinated-mesh-design.md).
 
 ## Platform baseline
 
-- Native Swift 6 language mode with complete concurrency checking
-- Apple Silicon, macOS 15+
-- SwiftUI for menu-bar, onboarding, settings, Preview, recording status, and History
-- AppKit for status-item/window coordination and multi-display capture overlays
-- ScreenCaptureKit for display pixels, cursor, system audio, and microphone delivery
-- AVFoundation/VideoToolbox for hardware H.264/HEVC master recording, H.264/AAC exports, playback, inspection, and synthetic media tests
-- App Sandbox and Hardened Runtime; no Accessibility entitlement or third-party runtime
-- Apple Development-signed local `Clip.dmg` using free Personal Team `FJ2BS65H3F`; ad-hoc fallback for permission-free CI; no App Store, Developer ID, or notarization pipeline
+- Native Swift 6 with complete concurrency checking
+- Apple Silicon and macOS 15+
+- SwiftUI for menu-bar, Settings, Preview, History, and Live Share surfaces
+- AppKit for status items, native windows, capture overlays, and display/Space
+  coordination
+- ScreenCaptureKit for display/window pixels, cursor, system audio, and
+  microphone delivery
+- AVFoundation and VideoToolbox for recording, export, playback, inspection,
+  and deterministic media fixtures
+- Pinned WebRTC M150 for Live Share ICE, DTLS-SRTP, SCTP DataChannels, Opus,
+  congestion control, and video codecs
+- Pinned Sparkle 2 for signed application updates
+- App Sandbox and Hardened Runtime; Clip never requests Accessibility access
+
+Clip has no helper daemon or bundled FFmpeg-style media executable. WebRTC and
+Sparkle are audited third-party runtimes embedded in the app bundle. The Go
+Live Share service is deployed separately and is never launched by `Clip.app`.
 
 ## Repository boundaries
 
-`Packages/ClipCore` is the platform-independent product domain. It owns validated settings, capture geometry, filenames, history metadata/retention, and the recording state machine. It has no AppKit or ScreenCaptureKit dependency.
+### Native packages
 
-`Packages/ClipMedia` owns native media mechanics: ScreenCaptureKit discovery/capture, sample retiming, direct VideoToolbox H.264/HEVC hardware encoding, AVAssetWriter passthrough MP4 muxing/AAC encoding, AVAssetReader/Writer H.264 export, media inspection, and deterministic synthetic media tests.
+`Packages/ClipCore` owns platform-independent product state: validated
+preferences, capture geometry, filenames, history/retention metadata, and the
+recording state machine. It has no AppKit or ScreenCaptureKit dependency.
 
-`Clip` is the macOS application target. It adapts AppKit/SwiftUI events to ClipCore commands and ClipMedia services. `ApplicationCoordinator` is the main-actor composition root; filesystem/history and export work live in actors so UI state never owns raw file mutation.
+`Packages/ClipCapture` owns the reusable ScreenCaptureKit boundary: discovery,
+source geometry and scale, source-aware 1×/Retina resolution selection, video
+sessions, and system-audio sessions. Recording and Live Share use this shared
+capture contract.
 
-`ClipTests`, `ClipUITests`, and `ClipTestHelper` cover application adapters, deterministic UI states, and the future owner-approved real-Mac capture checks.
+`Packages/ClipMedia` owns local recording and export mechanics: sample
+retiming, direct VideoToolbox H.264/HEVC compression, AVAssetWriter MP4 muxing
+and AAC encoding, AVAssetReader/Writer export, media inspection, and synthetic
+media fixtures.
 
-## Recording and sharing flow
+`Packages/ClipLiveShare` owns protocol-neutral Live Share models plus the v4
+room contract: settings, canonical invites, admission proofs, encrypted member
+descriptors, authoritative roster reconciliation, pair identities, source
+manifests, friendship/presence, and collaboration messages. It does not own a
+concrete WebRTC implementation.
+
+`Packages/ClipLiveShareWebRTC` adapts the Live Share model to the pinned native
+WebRTC framework. It owns pair transports, SDP/ICE, DataChannels, fixed media
+slots, codec policy, video/audio bridges, sender diagnostics, and remote video
+rendering.
+
+### Application and service
+
+`Clip/` is the macOS application target. `ApplicationCoordinator` is the
+main-actor composition root. Recording coordination, Preview/History windows,
+menu-bar presentation, native Live Share windows, collaboration overlays, and
+the server-coordinated room session are application adapters around the five
+packages above.
+
+`server/` is an independent Go module. It owns the bounded in-memory opaque
+room roster, socket presence, reconnect grace, encrypted pair-signal routing,
+friend-presence ciphertext storage, validated ICE configuration, and the
+embedded receive-only Web viewer. It never receives media or plaintext room
+secrets, identities, SDP/ICE, source metadata, or collaboration content.
+
+`server/web/` is the same-origin browser client. It joins the v4 roster and
+creates the same direct pair connection to every participant, but its declared
+Web-v1 capability is receive-only: it does not publish media, administer a
+room, create friendships, or participate in collaboration.
+
+`ClipTests`, `ClipUITests`, package tests, Go tests, Web tests, and the tools
+under `Tools/` cover the layers independently and in composition. The guarded
+real-Mac lanes use `ClipTestHelper` and the signed app identity for actual
+ScreenCaptureKit, pointer, audio, drag, clipboard, and GUI verification.
+
+## Local recording architecture
+
+Recording is local and does not involve the Live Share service or WebRTC.
 
 ```mermaid
 flowchart LR
-    A["Menu bar or global shortcut"] --> B["Capture overlay"]
+    A["Menu bar or shortcut"] --> B["Capture overlay"]
     B --> C["Validated one-display target"]
-    C --> D["Silent countdown"]
-    D --> E["ScreenCaptureKit session"]
-    E --> F["Native-size BGRA pixel buffer"]
-    F --> G["Direct hardware H.264 or HEVC"]
-    G --> H["AVAssetWriter MP4 mux"]
-    H --> I["Native-size MP4 managed master"]
-    I --> J["Atomic history metadata"]
-    J --> K["Preview: play, trim, rename"]
-    K --> L["Controlled H.264/AAC export cache"]
-    L --> M["Drag promised file"]
-    L --> N["Copy file URL"]
-    L --> O["Atomic Save As"]
+    C --> D["ScreenCaptureKit"]
+    D --> E["Native-size BGRA frames"]
+    E --> F["VideoToolbox H.264 or HEVC"]
+    F --> G["AVAssetWriter MP4 mux"]
+    G --> H["Managed local master"]
+    H --> I["Preview and History"]
+    I --> J["H.264/AAC export cache"]
+    J --> K["Drag, Copy, or Save As"]
 ```
 
-The recording state machine starts elapsed time only after the first accepted video frame. Pause windows are retained as half-open source-time intervals, so samples queued during a pause are dropped even if their callback arrives after resume. Completed pause durations are subtracted from every later video and audio timestamp.
+Capture geometry is aligned once to the source display's physical-pixel grid.
+ScreenCaptureKit, the compression session, History metadata, and MP4 metadata
+reuse those exact even dimensions. A complete buffer with unexpected geometry
+is rejected rather than silently rescaled.
 
-Every ScreenRecorder session carries a UUID. Callbacks are accepted only while the matching generation is starting or recording, and the app rechecks the corresponding `RecordingID` before deferred recovery. Start, finish, and cancel are serialized so an old stream cannot mutate a new session.
+The recording state machine starts elapsed time on the first accepted video
+frame. Pause ranges are represented in source time, so delayed callbacks from
+a paused interval are rejected even after resume. Every session has a UUID;
+stale callbacks cannot mutate a replacement recording.
 
-## Media contracts
+ScreenCaptureKit BGRA buffers pass directly into a VideoToolbox compression
+session. Clip prefers hardware H.264 High and uses exact-size hardware HEVC
+when H.264 cannot represent an oversized native mode. AVAssetWriter receives
+the compressed samples through a passthrough input and muxes them with AAC; raw
+frames are never persisted.
 
-Area and application geometry is aligned once to the display's physical-pixel grid. The aligned source rectangle and its even pixel dimensions are then reused by ScreenCaptureKit, the encoder, History, and MP4 metadata. Every complete incoming pixel buffer must match those dimensions exactly; a mismatch is terminal rather than an invitation to silently rescale.
+Preview edits are non-destructive. Crisp, Compact, and Smallest exports use the
+source's native even dimensions and captured cadence. An eligible unchanged
+Crisp export reuses a compatible H.264 master byte-for-byte. Other operations
+use one controlled AVAssetReader/Writer generation and atomically publish only
+the complete destination.
 
-Capture submits each transient ScreenCaptureKit BGRA pixel buffer directly to a VideoToolbox hardware compression session. The live policy prefers H.264 High profile and falls back to HEVC Main profile only when hardware H.264 rejects the exact native dimensions, such as this Mac's 5120-pixel-wide display. Both paths preserve the exact geometry and use real-time encoding at the current Crisp quality setting (default `98`, normalized to `0.98`), quality-over-speed priority, no average bitrate or hard data-rate limit, no frame reordering, and a two-second GOP. Software encoding is never used for live capture. AVAssetWriter's video input is passthrough: it receives the already-compressed sample and only muxes it with AAC into the Rec.709 MP4. Raw frames are never persisted; only the latest pixel buffer is retained transiently so one short two-to-three-interval scheduling gap can be bridged with a held frame without moving any original timestamp.
+## Live Share architecture
 
-Video encoder/muxer pressure is absorbed by a small bounded queue. A sustained stall or VideoToolbox frame drop is surfaced as a recording failure, so the master cannot acquire silent timing holes. System and microphone audio may be separate tracks in the managed master so a disappearing source does not require destructive editing.
+Live Share is a clean-slate server-room-v4 complete mesh. Native and Web
+participants use the same admission, roster, encrypted pair signaling, and
+WebRTC pair machinery. Product capabilities differ by the creator-certified
+profile, not by a separate transport.
 
-The sharing exporter uses AVAssetReader and AVAssetWriter rather than opaque export presets. Crisp, Compact, and Smallest are independent quality rungs whose Settings values are normalized from 1–100 for VideoToolbox; Reset restores `98`, `90`, and `70`. Every rung produces H.264, preserves the source's exact encoded geometry and durable capture cadence, and uses the same 128 kbps AAC export policy. Hardware-supported H.264 receives the normalized quality directly. Apple's oversized software H.264 encoder rejects that property, so those exact-size exports map the same setting to a resolution/FPS-scaled soft average bitrate; no path sets a hard data-rate limit or target size. Offline encodes use `RealTime = false`, prioritize quality, and permit frame reordering. An eligible full-duration Crisp operation byte-copies a compatible H.264 master recorded at the requested Crisp quality; an HEVC master and every other incompatible Crisp request transcode to H.264, while Compact and Smallest always take the offline quality path. Multiple input audio tracks are mixed into one AAC output track, and trim/audio changes happen in that same generation. A complete temporary sibling is atomically published, so concurrent or failed exports cannot expose a partial destination.
+```mermaid
+flowchart TB
+    S["Room service\nopaque roster + encrypted routing"]
+    A["Native A"]
+    B["Native B"]
+    W["Web W · receive-only"]
 
-The durable capture setting—not a rounded nominal observation—is the 30/60 FPS ceiling. This keeps a 28.29 FPS variable-rate master from being converted to 28 FPS and preserves exact eligible sample timing for every preset.
+    A -. "encrypted admission/signaling" .-> S
+    B -. "encrypted admission/signaling" .-> S
+    W -. "encrypted admission/signaling" .-> S
 
-The source master is never edited by trim controls or Remove audio. Cache identity includes recording ID, trim, preset, the selected quality value, filename, and the per-recording audio preference, so exports from different quality settings and audible/silent exports cannot collide. A drag exposes both the MPEG-4 representation and the resulting `public.file-url`, with the edited filename as its suggested name; both representations resolve through one lazy single-flight export. This matches Finder as well as browser upload targets without encoding or registering the share twice. Save As stages a complete copy inside Clip's managed cache, then writes or atomically replaces only the exact URL authorized by `NSSavePanel`; it never creates an unauthorized temporary sibling in an external folder.
+    A <== "direct encrypted WebRTC" ==> B
+    A <== "direct encrypted WebRTC" ==> W
+    B <== "direct encrypted WebRTC" ==> W
+```
+
+For `n` participants, the room contains `n × (n - 1) / 2` peer links: one for
+two participants, three for three, and six for the current maximum of four.
+Two-person sharing is the expected common case. Four is a tested CPU, thermal,
+upstream-bandwidth, and churn boundary—not a WebRTC protocol limit.
+
+The creator controls admission and has the terminal **End Room for Everyone**
+action. Ordinary participants leave independently. Creator departure ends the
+room; v4 deliberately has no election, successor, quorum, or locked-room
+phase. Joining, leaving, or reconnecting reconciles the affected pairs without
+replacing unrelated established links.
+
+### Capture and encoding fan-out
+
+Each local shared source has one ScreenCaptureKit session and one stream of raw
+frames. The raw frames feed one shared `RTCVideoTrack`, which is attached to a
+separate `RTCRtpSender` on every remote peer connection. Standard libwebrtc
+therefore owns a separate encoder and congestion controller for each
+source/remote-peer edge.
+
+```mermaid
+flowchart LR
+    C["One ScreenCaptureKit source"] --> R["One raw RTCVideoTrack"]
+    R --> EB["Encoder + RTP sender for B"]
+    R --> EC["Encoder + RTP sender for C"]
+    R --> EW["Encoder + RTP sender for Web W"]
+```
+
+This does **not** create another screen capture or disk recording for each
+viewer. It does mean CPU work and publisher upload grow with peers, while each
+edge can adapt independently to its route. A selected codec is negotiated once
+per edge; Clip never starts simultaneous browser-fallback codecs, transcodes,
+or creates a second codec encode for that same edge. Native-Web edges require
+the selected codec exactly. Native-Native edges may choose one codec from the
+documented compatibility preference ladder.
+
+One slow peer cannot backpressure another: each sender favors its latest frame
+and owns independent congestion, QP, send-queue, and route statistics. Sender
+diagnostics are consequently grouped by local source and recipient rather than
+presenting one room-wide encoder value.
+
+### Audio and collaboration
+
+Each Native publisher can send at most one stable 48 kHz stereo Opus track.
+Window sharing selects audio at owning-application scope; fullscreen uses
+system audio while excluding Clip and optionally selected applications. Every
+receiver has independent mute and volume state for each remote publisher.
+
+Pointer, ping, and temporary vector ink travel over authenticated pair
+DataChannels. They are source-scoped normalized events rendered locally, not
+remote input injection and not pixels burned into the video.
+
+### Trust boundaries
+
+The canonical invite keeps its authorizing material in a URL fragment. The
+official clients do not place those secrets in HTTP paths, queries, headers,
+ordinary WebSocket messages, or server logs. Admission, descriptors, pair
+signaling, source/control messages, and media are authenticated or encrypted
+at their appropriate layer.
+
+The service can see IP addresses, timing, room size, opaque identifiers,
+ciphertext sizes, and traffic shape, and it can deny service. It cannot decrypt
+official-client pair signaling or media. TURN can relay encrypted WebRTC
+packets but receives no room authority.
+
+The Web origin is a separate trust boundary: it supplies the Web viewer
+JavaScript, so a malicious or compromised origin could serve code that reads
+the invite fragment. Self-hosting lets the user control that origin. A declared
+Web/Native capability is creator-certified protocol state, not attestation that
+an arbitrary client binary is genuine.
 
 ## Storage ownership
 
-Preferences are versioned JSON under Application Support. History is a versioned, atomically written JSON index plus MP4 masters and explicit ownership markers. Only marked Clip-managed files may be removed by retention, Delete, or reconciliation.
+Preferences and History metadata are versioned, atomically replaced JSON under
+Application Support. Managed masters carry explicit ownership markers; only
+Clip-owned files are eligible for retention or reconciliation removal.
 
-Clipboard, promised-drag, and intermediate exports live under Caches and intentionally outlive the immediate operation so another application can consume them. Copy and drag hold a bounded publication lease from export completion through pasteboard/item-provider publication and durable registration, so an overlapping purge or stale-cleanup pass cannot remove the file in that handoff window. A per-file publication marker is written only after Copy or drag publishes a cache file. History inventories those marked files, links them to a live source by recording ID, and allows independent reveal or deletion; deleting the source leaves the export as a visible dangling item until explicit purge or the ownership-aware seven-day cleanup. Unpublished Save As intermediates never appear in that inventory. Save As outputs are external user files and are never owned or removed by Clip.
-
-When Keep Original is Off, the successful export is installed atomically at the same managed path and its intrinsic duration, dimensions, frame rate, byte count, encoded quality, and full trim are rebased together. Managed-master quality is stored separately from the original capture snapshot, so later Crisp reuse checks stay accurate without changing Retake settings. When Do Not Retain is selected, history metadata is removed after a successful share; physical cleanup is coordinated with any open Preview/file consumer and crash leftovers are handled by ownership-aware launch reconciliation.
+Clipboard, promised-drag, and intermediate exports live under Caches and are
+leased through publication so cleanup cannot remove them during handoff. Save
+As writes only the URL authorized by `NSSavePanel`; external outputs are never
+owned or removed by Clip.
 
 ## Permission model
 
-Reading current permission state is separate from requesting access. Screen Recording is requested only through onboarding or a user-initiated capture. Microphone/system audio remain Off by default and are requested only after the user enables the corresponding setting. Denial does not request Accessibility and does not affect local History/Preview use.
+Reading permission state is separate from requesting access. Screen Recording
+is requested only through onboarding or a user-started capture. Microphone and
+system audio default to Off and are requested after the user enables them.
+Local recording, Preview, History, and export do not require a server or
+network permission.
 
-Tests cannot grant macOS privacy access. The owner performs the one-time approvals; subsequent real-Mac acceptance can be unattended. Local permission-backed builds use one certificate-based designated requirement so rebuilds retain their privacy identity; ad-hoc CI builds remain build-specific and may cause macOS to ask again.
+Tests cannot grant macOS privacy access. Permission-backed builds use a stable
+certificate-based designated requirement so macOS recognizes rebuilds as the
+same app. Ad-hoc CI builds have build-specific identities.
 
 ## Concurrency and failure invariants
 
-- UI/window/status state is `@MainActor` isolated.
-- History and export coordination are actors.
-- ScreenCaptureKit callbacks, the VideoToolbox output queue, and AVAssetWriter inputs are protected by explicit locks and session identity.
+- UI, window, status-item, and room presentation state is `@MainActor`.
+- History, export, room-session, and network coordination have explicit actor
+  or serialized ownership.
+- ScreenCaptureKit, VideoToolbox, AVAssetWriter, and WebRTC callbacks are
+  accepted only for their active session/pair generation.
+- A pair failure cannot roll back or recreate an unrelated peer link.
+- A slow receiver cannot create an unbounded capture or send queue.
 - No user destination is removed before its complete replacement exists.
 - No zero-frame recording becomes a History item.
-- A failed capture either discards empty output or attempts to finalize playable material according to the state-machine command.
-- A valid finalized MP4 remains discoverable even if later history or Preview presentation fails.
-- Stale callbacks, repeated export requests, and delayed paused samples are safe and deterministic.
+- Leaving removes exactly the departing participant's pair, source,
+  presentation, audio, collaboration, and diagnostics state.
+- Creator termination removes the complete room without electing a successor.
 
 ## Verification layers
 
-`./scripts/typecheck.sh` is the permission-free gate. It runs both Swift-package suites, including direct VideoToolbox H.264 generation/decoding and objective screen-content SSIM/edge/cadence checks, then strict-typechecks and links every app source as an arm64 executable.
+`./scripts/typecheck.sh` runs deterministic Swift package tests, project and
+localization audits, strict Swift 6 app/test compilation, and an arm64 link.
 
-`./scripts/test.sh` adds application XCTest; `--ui` adds UI smoke tests. These require the Xcode project driver but do not require privacy prompts when using injected launch modes.
+`./scripts/test.sh` adds hosted Xcode application tests. Production startup is
+suppressed in the test host, so this lane cannot create a menu-bar item or
+request privacy access. UI automation is separate and requires explicit
+visible-pointer acknowledgement.
 
-The real-Mac suite uses `ClipTestHelper` as deterministic capture content and a local receiver for promised-file drag/pasteboard validation. Only this layer needs owner-granted Screen Recording/System Audio/Microphone access. External services are not contacted.
+`./scripts/run-live-share-acceptance.sh` builds the Go service and exercises
+real loopback HTTP/WebSocket routing, encrypted v4 admission and signaling,
+2/3/4-member rosters, 1/3/6-link topology, native and receive-only Web profiles,
+codec policy, source/audio manifests, collaboration, reconnect, leave, and
+creator termination.
 
-`./scripts/package-dmg.sh` creates either the default ad-hoc artifact or, when `CLIP_CODE_SIGN_IDENTITY` is configured, the stable Apple Development-signed Release DMG. `./scripts/verify-dmg.sh` mounts it and validates bundle identity, version, exact signer certificate, stable designated requirement, plist, entitlements, app payload, and Applications shortcut.
+Package-level real libwebrtc tests cover pair setup, media, codec transitions,
+and diagnostics. Browser tests cover the Web viewer shell and protocol. Signed
+multi-process GUI, Safari/Chromium, physical audio/display, Internet/TURN, and
+soak exercises remain controlled release gates; deterministic tests do not
+substitute for those environments.
+
+`./scripts/verify-release.sh` combines the permission-free correctness gates
+with clean dependency resolution, Release packaging, signature/entitlement
+inspection, read-only DMG verification, and checksum generation. See
+[ACCEPTANCE.md](docs/ACCEPTANCE.md) and [RELEASING.md](docs/RELEASING.md) for the
+evidence and deployment boundaries.

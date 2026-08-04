@@ -67,8 +67,16 @@ server-coordinated mesh transport remain out of scope for this pass.
 - [x] Add alias persistence, identity-integrity, and presence-continuity tests.
 - [x] Run the focused Swift package and Xcode suites.
 - [x] Build and verify a stable-signed repository app.
-- [ ] Run real two-instance collaboration/fullscreen acceptance.
-- [ ] Run real three-instance regression acceptance.
+- [x] Run real two-instance collaboration/fullscreen acceptance.
+- [x] Run real three-instance regression acceptance.
+
+Manual acceptance on 2026-08-02 used stable-signed repository builds. The
+two-instance pass exercised Pointer, Ping, Draw, per-window overrides,
+fullscreen reveal/hide and exit, Native cursor-follow panning, friend approval,
+and friend rename. The three-participant pass confirmed collaboration delivery
+to host and viewers, per-source window controls, source occlusion masking, and
+cleanup as participants and shared windows left. These dated runs are product
+evidence; the deterministic tests above remain the repeatable regression gate.
 
 ## Manual visual refinements
 

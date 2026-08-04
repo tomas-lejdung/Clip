@@ -7,6 +7,8 @@ native-v3 experiment. The normative architecture is documented in
 ## Fixed product contract
 
 - The service owns an opaque authoritative roster with at most four members.
+  Four is the tested resource boundary, while two-person co-sharing is the
+  primary expected use case.
 - Every unordered participant pair owns exactly one direct WebRTC connection.
 - Two, three, and four participants therefore have exactly one, three, and six
   pair connections respectively.
@@ -26,6 +28,10 @@ native-v3 experiment. The normative architecture is documented in
 - Capture, encoding, sender policy, source-aware 1x/Retina resolution, cursor,
   audio, viewer, and quality behavior must remain identical to the approved
   pre-mesh implementation.
+- Each source has one ScreenCaptureKit capture pipeline and shared raw
+  `RTCVideoTrack`. Every remote pair has its own RTP sender and encoder, so
+  capture is not duplicated but upload and encoding work scale with recipients.
+  No edge creates a parallel fallback or second-codec representation.
 - No legacy wire compatibility is required.
 
 ## Implemented
@@ -58,7 +64,10 @@ native-v3 experiment. The normative architecture is documented in
 - Authoritative source recovery and stale-capture-notice clearing after a
   publication succeeds or a participant incarnation changes.
 - Actual negotiated codec, route, RTT, loss, bytes, available bitrate, encode,
-  and receive-buffer values in directional diagnostics.
+  and receive-buffer values in directional diagnostics. Sender diagnostics
+  are grouped by source and recipient so each independent RTP sender/encoder
+  path can be inspected. Receive-only Web members do not produce empty
+  publishing sections.
 - Compact **Shared With You** navigation for remote sources while **Your
   Share** remains expanded, plus AV1, Native Display, and Max (20 Mbps) as the
   initial sender defaults.
@@ -108,10 +117,12 @@ The signed three-process GUI run on 2026-07-31 additionally proves:
   complete, including pair-local backpressure and stale-sequence recovery.
 - Capture and media policy parity with the approved pre-mesh baseline is
   complete, including the source-aware 1x/Retina resolution policy.
-- The full deterministic Swift/Go/project/localization gate is complete:
-  `./scripts/test.sh` passes; Core 81, Media 74, Capture 40, LiveShare 86, and
-  WebRTC 76 pass; 394 hosted app tests pass with the one deliberately opt-in
-  visual snapshot skipped; and the app links for arm64 under strict Swift 6.
+- The full deterministic Swift/Go/project/localization gate is complete on the
+  documented mesh checkpoint: `./scripts/test.sh` passes, the app links for
+  arm64 under strict Swift 6, and the deliberately opt-in visual snapshot lane
+  remains excluded. Exact test totals are recorded from the final merge commit
+  rather than copied into this status document, because the suites continue to
+  grow.
 - The isolated stable-signed three-process acceptance on the real local service
   is complete for invite reuse, one real window publication per participant, all-pairs
   reception, ordinary leave/rejoin, friend presence/approval, diagnostics, and

@@ -2,9 +2,10 @@
 
 This process coordinates Clip's encrypted server-room-v4 WebRTC mesh and serves
 the repository-owned receive-only web client. It owns a bounded opaque room
-roster and routes encrypted pair signaling; video, audio, source metadata,
-cursor/annotation state, participant names, SDP, and ICE candidates remain
-end-to-end encrypted and travel only over direct peer links.
+roster and routes authenticated ciphertext containing participant descriptors
+and pair signaling such as SDP and ICE candidates; it cannot read their
+plaintext. Video, audio, source metadata, and cursor/annotation state travel
+only over encrypted peer links and are never routed through the room service.
 
 A room contains at most four participants across Native and Web profiles. The
 resulting topology is always a complete P2P mesh: two participants have one

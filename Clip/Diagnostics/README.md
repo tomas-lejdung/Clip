@@ -91,10 +91,14 @@ The current clean-slate v4 gate is:
 
 It covers the authoritative Go room service, fragment-secret invite and
 admission protocol, opaque encrypted pair signaling, WebRTC pair reconciliation,
-and app-hosted three-participant flow. The composed app test establishes all
-three A-B, A-C, and B-C links, replicates every participant's source to the
-other two, preserves retained pairs across signaling reconnect and an ordinary
-member leave, and treats creator departure as terminal for the room.
+browser invite/crypto/session/media behavior, mixed Native/Web profiles, and
+the app-hosted three-participant flow. The composed app test establishes all
+three A-B, A-C, and B-C links, replicates every Native participant's source to
+the other Native participants, preserves retained pairs across signaling
+reconnect and an ordinary member leave, and treats creator departure as
+terminal for the room. Presentation coverage also verifies sender diagnostics
+per source and recipient while receive-only Web participants do not create
+empty publishing sections.
 
 This architecture has no leader election, quorum, authority-chain catch-up, or
 locked-room phase. The service owns the bounded opaque roster; the creator owns
@@ -127,10 +131,11 @@ omit it when automation needs the separately addressable participant windows.
 The full evidence contract is documented under **Signed multi-process GUI
 gate** in `docs/ACCEPTANCE.md`.
 
-`--server-root` is optional. It points only these isolated participants at a
-branch-local v4 coordinator while the public server is still on an older
-protocol. It never changes the installed app's endpoint or ordinary Clip
-settings.
+`--server-root` is optional. It points only these isolated participants at the
+specified compatible HTTPS service, or at an exact loopback HTTP service for
+local development. This can be a branch-local coordinator, a staging service,
+or a self-hosted acceptance deployment. It never changes the installed app's
+endpoint or ordinary Clip settings.
 
 Normal launches cannot enter this mode. All four private flags are required:
 

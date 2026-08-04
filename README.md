@@ -1,344 +1,163 @@
 # Clip
 
-Clip is a native Apple-Silicon macOS menu-bar recorder for short screen clips. Its core recording workflow is:
+Clip is a native macOS menu-bar app for recording and sharing clear screen
+clips with very little setup.
 
-> Select an area or application, record, trim, then drag or copy an MP4.
+Choose an area, application, or display; record; trim; then drag or copy the
+MP4 into the place where you need it. Recordings stay on your Mac unless you
+explicitly start Live Share.
 
-Recordings remain local: Clip has no account, cloud upload, analytics, or AI
-processing. Live Share is a separate, explicit native collaboration mode:
-every admitted Clip participant can publish up to four sources while receiving
-every other participant over a complete peer-to-peer WebRTC mesh. Clip's
-in-repo Go service owns the bounded opaque room roster and encrypted pair
-routing; it never receives the client-only invite fragment, participant
-identities or names, decrypted SDP/ICE, source metadata, or media. Live Share
-never writes media to History. See
-[spec.md](spec.md) for the product contract,
-[ARCHITECTURE.md](ARCHITECTURE.md) for recording boundaries, and
-[docs/native-participant-mesh-progress.md](docs/native-participant-mesh-progress.md)
-for the current topology and evidence boundary, and
-[docs/server-coordinated-mesh-design.md](docs/server-coordinated-mesh-design.md)
-for the clean-slate v4 room design.
+## What Clip does
 
-Each participant can send up to four application windows or one fullscreen
-display.
-It uses native Swift/AppKit/SwiftUI and ScreenCaptureKit, with a pinned native
-WebRTC framework. AV1 is the default, with Native color and a 20 Mbps quality
-ceiling. On Native-Native edges the live codec picker retains the proven
-preference ladder: H.264 and VP8 are exact choices, VP9 may negotiate VP8, and
-AV1 may negotiate VP9 and then VP8. Each edge selects one active codec and one
-encoder, so the actual directional RTP codec shown in Statistics is
-authoritative. Native-Web edges instead require the selected codec exactly;
-Clip does not create a browser fallback, transcode, or second encode, and an
-unsupported browser may show unavailable/black video or an explicit
-Unsupported Encoding state. H.264
-uses hardware encoding and caps oversized capture geometry; software VP8, VP9
-profile 0, and AV1 retain native capture geometry. AV1 can consume substantially
-more CPU. Admission and membership use the clean-slate server-room v4 protocol;
-targeted SDP/ICE, source state, friendship, diagnostics, and collaboration use
-signed end-to-end encrypted pair messages. Established pairs use one reliable
-ordered DataChannel. A configured
-TURN relay may carry encrypted WebRTC traffic when a direct route is not
-possible, but it gains no room authority.
+- Records an area, an application, one display, or fullscreen.
+- Captures the cursor, optional click highlights, microphone, and system audio.
+- Pauses and resumes without leaving a timing gap in the result.
+- Opens a Preview for playback, trimming, renaming, and removing audio.
+- Exports native-resolution Crisp, Compact, or Smallest MP4 files.
+- Shares through drag, Copy, or Save As.
+- Keeps a local, automatically cleaned recording history.
+- Runs from the menu bar and can hide its Dock icon.
+- Supports optional, encrypted Live Share sessions.
 
-The pointer-free Live Share lane builds the opaque room service and exercises
-v4 admission, membership, stable private invites, same-invite leave/rejoin,
-two/three/four-participant mesh topology, collaboration, WebRTC, and
-presentation state without opening the installed app or controlling the
-pointer. There is no election or leadership transfer: creator departure ends
-the room for everyone. Real ScreenCaptureKit sharing,
-remote Internet/TURN traversal, four signed GUI processes, soak, and physical
-audio remain separate controlled gates. See the [mesh progress
-board](docs/native-participant-mesh-progress.md). Live Share system audio
-defaults to Off and persists independently from recording settings. Window
-sharing captures audio at application scope for the owning apps; Fullscreen
-captures system audio while excluding Clip and any user-selected applications.
-Each participant sends at most one stable 48 kHz stereo Opus track, and every
-receiver has independent mute and volume controls per remote participant.
-There is no microphone sharing. Thirty FPS is the supported default, 15 FPS is
-selectable, and 60 FPS is an optional capability rather than a release
-requirement.
+The complete product behavior is documented in [spec.md](spec.md).
 
-Click Highlights can be enabled from the menu-bar quick controls or Recording
-Settings. The option uses ScreenCaptureKit's native recorded click indicator,
-defaults to Off, remains independent of cursor visibility, and requires no
-Accessibility permission.
+## Local by default
 
-## Requirements
+Recording, Preview, History, trimming, and export work without an account,
+server, or network connection. Clip has no cloud-upload service, analytics, or
+AI processing. The files it manages live in the app's local Application
+Support and Caches containers; files created with Save As belong to you and are
+never removed by Clip.
 
-- Apple Silicon Mac
-- macOS 15 or later
-- Xcode 26.6 with the macOS SDK and Swift 6.3.3 command-line tools
-- No paid Apple Developer membership is required; permission-free builds need
-  no Team ID, while a free Personal Team can provide stable signing for real
-  permission-backed testing
-- Go 1.25 or newer is required only for the in-repository native rendezvous
-  acceptance lane; Docker Buildx is optional for publishing the self-hosted
-  service image
+Screen Recording permission is required to capture the screen. Microphone and
+system-audio permissions are requested only if you enable those features. Clip
+does not request Accessibility permission.
 
-If a newly updated Xcode reports that first-launch components are missing, initialize it once from an administrator account:
+## Live Share
+
+Live Share is optional. It lets Native Clip participants publish windows or a
+fullscreen display while receiving the other Native participants' sources. A
+desktop Safari or Chromium browser can join the same room as a receive-only
+viewer.
+
+A room supports up to four participants in a complete peer-to-peer WebRTC
+mesh. Two people sharing together is the primary use case. Four is the current
+tested resource boundary, not a fundamental WebRTC limit: every additional
+peer adds another direct connection, encoder/RTP sender per published source,
+decoder, and copy of the outgoing network traffic.
+
+For three participants A, B, and C, the direct links are A-B, A-C, and B-C.
+The service does not forward media between them. TURN may relay a connection
+when a direct route is unavailable, but the relayed WebRTC traffic remains
+encrypted.
+
+### What the room service can see
+
+The room service maintains a bounded opaque roster and routes encrypted
+admission and pair-signaling envelopes. With the official Native clients, it
+does not receive participant names or identities, invite-fragment secrets,
+plaintext SDP/ICE, source titles, collaboration events, or media. It can see
+ordinary operational metadata such as IP addresses, timing, room size, opaque
+routing identifiers, and ciphertext sizes, and it can always deny service.
+
+Invite secrets live in the URL fragment and are not included in normal HTTP or
+WebSocket requests. Pair signaling and control messages are authenticated and
+end-to-end encrypted. Media uses WebRTC's encrypted transports.
+
+There is one important Web caveat: the room-service origin supplies the Web
+viewer JavaScript. A malicious or compromised origin could serve modified code
+that reads the invite fragment. Native-to-Native sharing has the stronger
+separation because the server does not supply either Native client. You can
+self-host the service and Web viewer if you want to control that origin.
+
+The creator controls admission and ends the room for everyone. An ordinary
+participant can leave independently. There is deliberately no creator
+election: creator departure ends the room instead of entering an ambiguous
+locked state.
+
+See [the mesh design](docs/server-coordinated-mesh-design.md), [Web viewer
+design](docs/web-viewer-mesh-design.md), and [server documentation](server/README.md)
+for protocol, deployment, and security details.
+
+## Install
+
+Clip targets Apple Silicon and macOS 15 or later.
+
+1. Download `Clip.dmg` from [GitHub Releases](https://github.com/tomas-lejdung/Clip/releases).
+2. Drag Clip into Applications.
+3. Open Clip from Applications; it appears in the menu bar.
+4. Start a capture and approve **Screen & System Audio Recording** when macOS
+   asks.
+
+Local Personal Team builds are Apple Development signed. Public builds are not
+currently Developer ID notarized, so macOS may require **Open Anyway** after a
+download.
+
+## Build from source
+
+Requirements:
+
+- Xcode 26.6 with Swift 6.3.3
+- Apple Silicon Mac running macOS 15 or later
+- Go 1.25 when developing or self-hosting the Live Share service
 
 ```bash
-sudo xcodebuild -runFirstLaunch
-```
-
-## Build and test
-
-The repository keeps generated build output under `.build/`.
-
-```bash
-# Package tests, strict Swift 6 app type-check, and a real arm64 link
+# Strict Swift/package verification
 ./scripts/typecheck.sh
 
-# Clean Xcode Debug or Release build
-./scripts/build.sh Debug
-./scripts/build.sh Release
-
-# Package tests plus app unit tests
+# Package and app tests
 ./scripts/test.sh
 
-# Optional UI tests; XCTest moves the visible pointer and types into app windows
-./scripts/test.sh --ui --allow-pointer-control
+# Build the macOS app
+./scripts/build.sh Debug
 
-# Permission-free synthetic media and drag/clipboard acceptance
-./scripts/run-deterministic-acceptance.sh
-
-# Permission-free objective master/Crisp/Compact fidelity gate
-./scripts/run-quality-acceptance.sh
-
-# In-repo clean-slate v4 room and direct-mesh acceptance
-./scripts/run-live-share-acceptance.sh
-
-# Opt-in Release benchmark for Preview readiness and Compact export
-./scripts/benchmark-performance.sh
-
-# Complete permission-free release gate, including a verified Release DMG
-./scripts/verify-release.sh
-
-# Explicit real ScreenCaptureKit lane; may show a macOS permission prompt
-./scripts/run-real-capture-acceptance.sh --allow-permission-prompts-and-pointer-control
-
-# No-pointer real record/Preview/Copy/decode quality lane; permission must exist
-./scripts/run-unattended-quality-acceptance.sh --allow-controlled-self-capture
-
-# Preserve one validated 6-second checkerboard/beep MP4 for manual review
-./scripts/run-unattended-capture-smoke.sh --allow-controlled-self-capture \
-  --duration 6 --fps 30 --require-quality-targets \
-  --preserve-output "$PWD/.build/clip-checkerboard-beep-demo.mp4"
-
-# Explicit real microphone/system-audio lane; also drives the visible pointer
-./scripts/run-real-audio-acceptance.sh --allow-permission-prompts-and-pointer-control
+# Build and verify a local DMG
+./scripts/package-dmg.sh
+./scripts/verify-dmg.sh .build/Clip.dmg
 ```
 
-`typecheck.sh` is the permission-free verification gate. It runs deterministic ClipCore and ClipMedia tests, including direct VideoToolbox H.264/AAC media generation, objective small-text/one-pixel SSIM and edge checks, trimming, cadence, and audio mixing, then compiles and links every app source with complete Swift 6 concurrency checking. It also compiles both conditional real-capture and real-audio UI paths without launching them.
+The complete Live Share acceptance lane is:
 
-`verify-release.sh` is the single unattended release-candidate command. It
-combines the strict source gate, package and app unit tests, deterministic media
-acceptance, in-repository server-room v4 mesh acceptance, Release
-packaging, read-only DMG mounting/inspection, signature and entitlement checks,
-and a SHA-256 checksum. It never starts XCTest UI
-automation; the pointer-driving lanes remain separate and explicitly opt-in.
+```bash
+./scripts/run-live-share-acceptance.sh
+```
 
-`benchmark-performance.sh` generates the exact 30-second, 1,440 × 900, 30 FPS
-reference fixture and records Release timings in
-`.build/performance/latest.json`. It stays separate from correctness gates to
-avoid load-sensitive failures. See [docs/PERFORMANCE.md](docs/PERFORMANCE.md)
-for the measurement boundary, reuse safeguards, and latest development-Mac
-evidence.
+Some real ScreenCaptureKit and UI tests need existing macOS privacy grants and
+explicitly move the visible pointer. They are never started by the ordinary
+test command. See [ACCEPTANCE.md](docs/ACCEPTANCE.md) before running them.
 
-App-hosted unit tests suppress Clip's normal production startup before creating
-the coordinator, so they cannot create a menu-bar item, show onboarding,
-register system integrations, read production state, or request permissions.
+## Self-host Live Share
 
-The real-capture wrapper selects exactly one opt-in UI test and fails unless it
-executes once with `1 passed, 0 failed, 0 skipped`. A normal
-`test.sh --ui --allow-pointer-control` run
-keeps that permission-gated case skipped.
-
-The real capture lane is visibly interactive: it opens the local checkerboard
-fixture and drag receiver, launches Clip, and drives the real macOS pointer to
-draw Capture Area, trim, drag, and Copy. It validates the selected region's
-exact backing-pixel dimensions and decoded fixture colors in the managed master
-and shared exports. The real-audio lane separately exercises microphone-only,
-system-audio-only, and combined recording. Both wrappers require their explicit
-permission-and-pointer acknowledgement; the fixture contains synthetic content
-only, and seeing it during a run is expected.
-
-## Run the Live Share rendezvous service
-
-The bounded opaque native rendezvous service lives in the top-level
-[`server`](server) folder. It does not serve a viewer and does not understand
-admission, membership, sources, collaboration, or media. For local development:
+The Go room service and embedded receive-only Web viewer live in [`server/`](server).
+For local development:
 
 ```bash
 cd server
 go run ./cmd/clip-live-share-server
 ```
 
-The default address is `http://localhost:8080`. Set that address in Clip's Live
-Share Settings, then use **Test Connection**. The server keeps opaque v4 rooms
-in memory, exposes `/healthz` and `/version`, and serves room bounds plus
-STUN/TURN configuration at `/.well-known/clip-native-rendezvous`.
-See [the v4 room-server contract](server/README.md) and [mesh design](docs/server-coordinated-mesh-design.md)
-for the exact HTTP, WebSocket, privacy, and lifecycle surface.
+The default address is `http://localhost:8080`. Internet deployments require
+HTTPS/WSS through a TLS reverse proxy. The service stores room state in memory;
+restarting it ends active room membership. Docker configuration, limits,
+origin policy, STUN/TURN settings, and publication commands are in
+[server/README.md](server/README.md).
 
-For a self-hosted deployment, terminate TLS at a reverse proxy and expose the
-service through HTTPS/WSS. A restart clears the in-memory rooms and therefore
-ends their membership sessions; create a new room afterward. Build the non-root
-container locally with:
+You can also ignore Live Share entirely: no server is involved in Clip's normal
+recording workflow.
 
-```bash
-cd server
-docker build --build-arg VERSION=development -t clip-live-share-server .
-docker run --rm -p 8080:8080 clip-live-share-server
-```
+## Documentation
 
-`server/scripts/publish-docker.sh VERSION` publishes `linux/amd64` and
-`linux/arm64` images through Docker Buildx. Full configuration, including
-origin policy, leases, resource ceilings, and STUN/TURN capabilities, is in
-[`server/README.md`](server/README.md).
+- [Product specification](spec.md)
+- [Technical architecture](ARCHITECTURE.md)
+- [Acceptance and evidence boundaries](docs/ACCEPTANCE.md)
+- [Current implementation status](PROGRESS.md)
+- [Live Share mesh design](docs/server-coordinated-mesh-design.md)
+- [Receive-only Web viewer design](docs/web-viewer-mesh-design.md)
+- [Performance methodology](docs/PERFORMANCE.md)
+- [Release process](docs/RELEASING.md)
+- [Third-party notices](Clip/Resources/ThirdPartyNotices.txt)
 
-## Create the local DMG
+## License and distribution
 
-```bash
-./scripts/package-dmg.sh
-./scripts/verify-dmg.sh .build/Clip.dmg
-```
-
-The result is `.build/Clip.dmg`, containing `Clip.app` and an Applications shortcut. The bundle identifier is permanently `com.tomaslejdung.clip`, with Hardened Runtime and App Sandbox enabled. By default the app is ad-hoc signed, which is appropriate for permission-free CI but gives every rebuild a different macOS privacy identity. Because ad-hoc code has no certificate-backed Team ID, only those diagnostic builds receive the Hardened Runtime library-validation exception needed to load the embedded WebRTC and Sparkle frameworks. Stable-signed builds retain full library validation.
-
-Before permission-backed testing, use one stable certificate for every build,
-test, manual-build, and package command. Set its unique 40-character SHA-1 as
-printed by `security find-identity` (the hash avoids ambiguity when Keychain
-contains duplicate certificate names):
-
-```bash
-security find-identity -v -p codesigning
-export CLIP_CODE_SIGN_IDENTITY='BA37BFFD2BD1C29A995682647428847DBC6A83B3'
-./scripts/verify-release.sh
-```
-
-An Apple Development identity from a free Personal Team is sufficient for this
-single-Mac workflow; Developer ID and notarization are not required. Keep the
-same exported value when running the real acceptance lanes and future builds.
-`package-dmg.sh` records the app's designated requirement beside the image as
-`.build/Clip.dmg.designated-requirement`; `verify-dmg.sh` checks that record and
-requires either the default ad-hoc signature or the exact configured signer.
-When `verify-release.sh` runs without a configured identity, it writes the
-ad-hoc diagnostic image as `.build/Clip-permission-free.dmg` so it cannot
-replace an existing stable-signed `.build/Clip.dmg`.
-
-The default and Personal Team workflows are intentionally not Developer ID
-signed or notarized. If macOS attaches quarantine after the DMG is downloaded,
-messaged, or AirDropped, open Privacy & Security and use **Open Anyway** once.
-
-The low-level manual build remains a compile diagnostic, but updater-enabled
-release packages must use the Xcode build so Sparkle's framework and installer
-services are embedded and signed correctly.
-
-## Publish an update
-
-Clip uses Sparkle 2 for native updates. Versioned DMGs live in GitHub Releases,
-while the signed appcast is served from this repository's `docs/appcast.xml`
-through GitHub Pages. Release preparation is local and fail-closed: it verifies
-the version, build number, code signature, embedded updater configuration,
-immutable asset URL, EdDSA signature, exact committed source version, and a
-fresh isolated resolution of the pinned Sparkle dependency without publishing
-anything.
-
-```bash
-./scripts/prepare-github-release.sh \
-  --tag v1.3.6 \
-  --release-notes docs/releases/1.3.6.md \
-  --keychain-account ed25519
-```
-
-See [docs/RELEASING.md](docs/RELEASING.md) for the one-time GitHub Pages setup,
-key handling, version rules, ordered GitHub Release commands, final update test,
-and rollback procedure. Release staging also requires clean-build provenance
-and verifies the archive signature against the public key embedded in Clip.
-The first Sparkle-enabled build must be installed manually; later releases can
-update it in place.
-
-## Install and permissions
-
-1. Open `Clip.dmg`.
-2. Drag Clip to Applications.
-3. Open Clip; it appears in the menu bar and has no Dock icon by default.
-4. Start Capture Area, Capture App, Last Area, or Fullscreen.
-5. Approve Screen & System Audio Recording when macOS asks.
-6. Enable microphone or system audio in Settings only if wanted; those optional permissions are requested on demand.
-
-Screen Recording approval cannot be granted by a test or install script. An
-ad-hoc build has a build-specific code identity, so macOS may ask again after
-every rebuild even while System Settings still shows an enabled row named
-Clip. Fully relaunch after granting access. Stable signing as described above
-makes subsequent builds recognizable as the same app. Changing certificates
-requires approval again. Clip never requests Accessibility access.
-
-Capture Area keeps its border visible while recording but removes the selection
-dimming; Clip excludes that border from the recorded pixels. Capture App lets
-you click an application and records all of its visible windows on the clicked
-display, not merely one window.
-
-## Local data
-
-Managed masters and the versioned history index live below the app's Application Support container. Temporary drag, clipboard, and export files live in the app's Caches container. The History window's Exports tab lists files actually published by Copy or drag and lets you reveal or delete them; deleting a source recording leaves its exports available there until you purge them or the seven-day cache cleanup expires them. **Save As** files and unpublished Save As intermediates are not listed; the external files are independent and are never deleted by Clip history cleanup.
-
-Save As uses the standard macOS Save panel. Selecting Downloads or another
-sandbox-protected destination gives Clip access to that exact file through the
-macOS Powerbox; no broad folder permission is required.
-
-Settings exposes the resolved history directory, current default microphone, retention policy, and relevant Privacy & Security pages.
-
-Export Settings also provides a validated default filename format using
-`YYYY`, `MM`, `DD`, `HH`, `mm`, and `ss` tokens with a live example. Its three
-independent video-quality controls accept whole numbers from 1 through 100;
-Reset Quality Defaults restores Crisp `98`, Compact `90`, and Smallest `70`.
-
-## Automated acceptance design
-
-The deterministic test path does not need privacy grants or external hardware. It uses injected state, filesystem and pasteboard boundaries plus generated video/audio fixtures. After the owner grants macOS privacy permissions once, the real-Mac suite can run unattended against a deterministic helper window and a local drag/paste receiver. A second display and deterministic audio loopback are simulated when unavailable.
-
-Sending content to Slack, GitHub, Linear, Discord, Messages, or Mail is not part of the automated suite. Finder and the local receiver validate the same promised-file drag and pasteboard file-URL contracts without contacting another service.
-
-## Export quality
-
-Export dimensions are derived from the actual recording and always preserve
-its aspect ratio. Masters are encoded directly from ScreenCaptureKit pixel
-buffers by VideoToolbox at the current Crisp quality setting, default `98`
-(`0.98` internally). Clip prefers exact-size hardware H.264 and uses
-exact-size hardware HEVC for a managed master only when H.264 cannot represent
-an oversized native display mode; Copy, drag, and Save As outputs remain H.264.
-AVAssetWriter only muxes the already compressed video with AAC into MP4.
-Capture rectangles are physical-pixel aligned and every
-frame must match the configured dimensions, so no hidden capture-to-master
-resize can blur text. One transient prior frame can bridge a single short
-ScreenCaptureKit scheduling miss; original timestamps remain unchanged and
-static/sparse variable-frame-rate timing is not expanded.
-
-**Crisp**, **Compact**, and **Smallest** are a quality ladder with independent
-Settings defaults of `98`, `90`, and `70`. All three preserve the master's
-native even dimensions and durable captured cadence, use H.264 High-profile
-Rec.709 video and the same 128 kbps AAC policy. Hardware H.264 uses the selected
-VideoToolbox quality directly. Exact oversized exports retain native dimensions
-through Apple's software H.264 encoder, which requires a quality-derived soft
-average bitrate; no path sets a hard data-rate limit or target file size.
-Offline exports prioritize quality and permit frame reordering. The settings
-are intentionally independent; Clip does not enforce their ordering.
-
-An eligible unchanged Crisp export byte-reuses the source master. Crisp
-transcodes when trim, changed quality, audio mixing, or audio removal makes
-reuse incompatible; Compact and Smallest are always offline quality-based
-exports. Preview shows “Quality based — size varies” before every export and
-the actual size afterward. Remove audio is applied in the same export
-generation and never changes the managed master.
-
-## Icon assets
-
-The checked-in app icon is generated from native vector geometry encoded in the regeneration script:
-
-```bash
-./scripts/generate-icons.sh
-```
-
-Regeneration requires ImageMagick; building Clip does not.
+Clip is a personally maintained direct-download application. It is not an App
+Store release. Copyright © 2026 Tomas Lejdung.

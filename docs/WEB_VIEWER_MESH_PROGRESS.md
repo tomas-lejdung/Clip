@@ -18,14 +18,19 @@ administration.
 - [x] Every participant pair uses the same encrypted v4 signaling and direct
   WebRTC connection contract; `NATIVE` and `WEB` affect capabilities and UI,
   not routing.
-- [x] Native-Web edges require the publisher's selected codec exactly. Clip
-  never creates a second encoding for a browser and never falls back to another
-  codec. Unsupported browsers stay in the authoritative room roster; the
-  affected peer edge may fail or remain black, and shows
+- [x] Keep four as the tested room and resource boundary; two-person
+  co-sharing remains the primary expected use case.
+- [x] Native-Web edges require the publisher's selected codec exactly. That
+  edge never creates a parallel browser-specific representation and never
+  falls back to another codec. Unsupported browsers stay in the authoritative
+  room roster; the affected peer edge may fail or remain black, and shows
   `Unsupported Encoding` when the codec is observable.
 - [x] Native-Native edges preserve the pre-Web preference ladder
   (AV1→VP9→VP8, VP9→VP8, H.264 exact, VP8 exact) while negotiating one
-  active codec and using one encoder.
+  active codec and using one RTP sender/encoder per peer edge.
+- [x] Preserve one ScreenCaptureKit capture and shared raw `RTCVideoTrack` per
+  source. Every remote edge encodes that track independently; no edge creates
+  a parallel fallback or second-codec representation.
 - [x] The canonical invite remains
   `https://service/ROOMCODE#v=4&key=...&join=...`; the unmodified Web client
   never places its fragment in a normal service request or log.
@@ -53,15 +58,15 @@ administration.
 - [x] Restrict every Native-Web video transceiver to the user-selected codec
   only.
 - [x] Preserve the proven Native-Native SDP preference ladder without enabling
-  simultaneous codecs, per-peer encoders, or Web-driven renegotiation of an
-  unaffected Native pair.
+  simultaneous codecs, parallel second-codec encodes on an edge, or Web-driven
+  renegotiation of an unaffected Native pair.
 - [x] Keep roster presence when an exact codec leaves that peer edge without a
   common video format. Show a precise unsupported-codec state when the codec is
   observable, while allowing an early-failed edge to remain unavailable or
   black. Do not redesign or split the proven native peer transport merely to
   retain audio.
-- [x] Prove the unsupported-codec path never falls back or starts a second
-  encoder.
+- [x] Prove the unsupported-codec path never falls back or starts a parallel
+  second-codec representation on that edge.
 - [x] Verify retained native links do not renegotiate when a web member joins.
 
 ## 4. Browser room security and session
@@ -118,6 +123,8 @@ administration.
   edge while audio retains a small jitter reservoir.
 - [x] Provide browser-side diagnostics for P2P/TURN route, RTT, codec, decoded
   dimensions, FPS, measured receive rate, packet loss, and connection state.
+- [x] Keep Native sender diagnostics grouped by source and recipient, and omit
+  empty publishing-diagnostics sections for receive-only Web participants.
 - [x] Keep the top-left HUD compact (connection status plus room code), and
   replace all viewer controls with a reliable Join Again terminal state after
   explicit Leave.
@@ -151,11 +158,11 @@ administration.
 - [x] A + B + C + Web forms all six links without changing retained links.
 - [x] Simultaneous publishers, source churn, audio toggles, follow failover,
   browser reload/reconnect, approval, denial, capacity, and room end pass.
-- [x] Unsupported AV1/VP9 Native-Web edges prove no fallback, no secondary
-  encoding, a codec-specific error when observable, and no disturbance to any
-  other peer edge.
+- [x] Unsupported AV1/VP9 Native-Web edges prove no fallback, no parallel
+  second-codec representation on that edge, a codec-specific error when
+  observable, and no disturbance to any other peer edge.
 - [x] Native-Native codec preference tests retain the pre-Web ladder while
-  proving one negotiated codec and one encoder.
+  proving one negotiated codec and one RTP sender/encoder per edge.
 - [x] Native and Web edges receive the same complete sender policy. Browser
   SDP has one selected codec and no RID/simulcast layer; no Web-specific
   bitrate division, scaling, fallback, or secondary representation exists.

@@ -10,6 +10,8 @@ remain on direct WebRTC peer connections.
 ## Product contract
 
 - A room supports at most four participants across Native and Web profiles.
+  Four is the tested product and resource boundary, not a fundamental WebRTC
+  limit; the primary expected use case is two people sharing together.
 - Every unordered participant pair owns exactly one direct WebRTC connection.
 - For participants A, B, and C, the only media topology is A-B, A-C, and B-C.
 - Adding or removing one participant never renegotiates an unaffected pair.
@@ -219,21 +221,43 @@ same normal pair manager; W implements that pair contract with the platform
 `RTCPeerConnection` API. Web-Web edges remain authenticated data-only edges.
 
 Every Native-Web video transceiver offers only the publishing participant's
-selected codec. There is no browser-specific second encode, transcoding, or
-codec fallback. If a Web runtime cannot decode it, the incompatible peer
-remains in the authoritative roster and the UI reports
+selected codec. There is no parallel browser-specific representation,
+transcoding, or codec fallback on that peer edge. If a Web runtime cannot
+decode it, the incompatible peer remains in the authoritative roster and the
+UI reports
 `Unsupported Encoding: <codec>` when the codec is observable. An edge that
 fails before exposing the codec may instead remain unavailable or black.
 Current libwebrtc may reject that complete peer edge rather than only its video
 m-lines, so web-v1 does not promise audio or DataChannel availability on that
-one incompatible edge. Every unrelated pair and the publisher's single encoder
-remain unchanged.
+one incompatible edge. Every unrelated pair and its independent sender/encoder
+path remain unchanged.
 
 Native-Native edges keep the pre-Web SDP preference ladder: AV1 prefers AV1,
 VP9, then VP8; VP9 prefers VP9 then VP8; H.264 and VP8 are exact. The ladder
-still selects one active codec and one encoder; it never authorizes parallel
-per-peer encodings. A Web join or leave must not renegotiate an unaffected
-Native-Native edge.
+still selects one active codec for each edge. Each edge owns one RTP sender and
+encoder; the ladder never authorizes simultaneous fallback codecs or a second
+codec encode on that same edge. A Web join or leave must not renegotiate an
+unaffected Native-Native edge.
+
+## Capture, encoding, and scaling model
+
+Each published source owns one ScreenCaptureKit capture pipeline and one shared
+raw `RTCVideoTrack`. Clip attaches that raw track to the independent peer
+transport for every remote participant. Standard libwebrtc then gives each
+edge its own `RTCRtpSender`, encoder, congestion controller, packetization, and
+encryption state.
+
+Adding a viewer therefore does not start another ScreenCaptureKit session,
+duplicate disk recording, or involve `AVAssetWriter`. It does add one encoder
+and one outbound copy of the compressed stream for each source that participant
+receives. Upload bandwidth and encoding work consequently scale with the
+number of remote recipients. The four-person room cap is the boundary exercised
+by the mesh tests; two-person co-sharing is the normal product workload.
+
+This implementation is not a compressed-frame fan-out. A future design could
+encode once and replicate the same compressed frames, but it would trade away
+libwebrtc's independent per-peer congestion adaptation and require a custom
+encoded-frame/RTP layer. That optimization is outside this clean-slate mesh.
 
 ## Disconnect behavior
 
@@ -281,10 +305,11 @@ browser-specific Native transport or signaling path.
   ID, negotiation revision, tracks, codec, or media continuity.
 - A + B + C + Web forms exactly six links. Native/Web presentation badges and
   Web capability restrictions derive only from the signed profile.
-- Unsupported selected codec on a Native-Web edge proves no fallback, second
-  encoder, or transcoding; the Web UI reports the codec and unrelated pairs
-  remain live. Native-Native edges retain the pre-Web compatibility preference
-  ladder with one active codec and one encoder.
+- Unsupported selected codec on a Native-Web edge proves no fallback,
+  transcoding, or parallel second-codec encode on that edge; the Web UI reports
+  the codec and unrelated pairs remain live. Native-Native edges retain the
+  pre-Web compatibility preference ladder, with one active codec and one
+  RTP sender/encoder per edge.
 - One pair's injected signaling, ICE, transport, or backpressure failure does
   not change any other pair.
 - Simultaneous full-roster delivery in different orders converges to the same

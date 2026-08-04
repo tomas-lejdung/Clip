@@ -37,7 +37,8 @@ visible to the rendezvous service and cannot change routing.
 The web viewer:
 
 - joins by the canonical reusable v4 invite;
-- counts toward the existing four-participant room limit;
+- counts toward the existing four-participant tested room limit; two-person
+  co-sharing remains the primary expected workload;
 - owns one direct pair with every other room member, including another web
   viewer;
 - receives up to four video sources and one system-audio track from every
@@ -69,7 +70,7 @@ remain part of the trust model.
 
 On every Native-Web edge, the publishing participant's selected video codec is
 the only codec offered for its video transceivers. Clip never performs a second
-encode for a browser and never silently falls back to VP9, VP8, or H.264.
+codec encode on that edge and never silently falls back to VP9, VP8, or H.264.
 
 If the browser cannot decode the selected codec:
 
@@ -97,9 +98,19 @@ ladder:
 - VP8 offers VP8 only.
 
 This is a compatibility preference during negotiation, not multi-codec
-publishing. A Native publication still uses one negotiated codec and one
-encoder; Clip does not generate simultaneous per-peer encodings. Adding a Web
-participant must not replace or renegotiate an unaffected Native-Native edge.
+publishing. Each peer edge selects one negotiated codec and owns one
+`RTCRtpSender` and encoder; Clip does not generate a simultaneous fallback or
+second-codec representation on that edge. Adding a Web participant must not
+replace or renegotiate an unaffected Native-Native edge.
+
+Each Native source is captured once and supplies one shared raw
+`RTCVideoTrack`. That raw track is attached to every receiving peer connection,
+where standard libwebrtc runs an independent encoder, congestion controller,
+packetizer, and encryption context. A Web participant therefore does not cause
+another ScreenCaptureKit capture or disk recording, but it does add per-source
+encoding work and outbound bandwidth at each Native publisher. Four
+participants is the verified resource boundary for web-v1; it is not a
+fundamental WebRTC limit.
 
 ## Invite and privacy
 
@@ -220,13 +231,14 @@ The following native implementation is frozen by this feature:
 - A + B + Web produces exactly three ready links; adding/removing Web leaves
   A-B's transport ID, negotiation epoch, tracks, codec, and media uninterrupted.
 - A + B + C + Web produces exactly six ready links.
-- Unsupported selected codec on a Native-Web edge proves one encoder, no
-  fallback, a codec-specific browser error when the codec is observable, and
-  no disturbance to another pair. A peer connection that fails before exposing
-  the codec may remain unavailable or black.
+- Unsupported selected codec on a Native-Web edge proves one encoder and one
+  active codec on that edge, no fallback or parallel second-codec encode, a
+  codec-specific browser error when the codec is observable, and no disturbance
+  to another pair. A peer connection that fails before exposing the codec may
+  remain unavailable or black.
 - Native-Native negotiation retains the AV1→VP9→VP8 and VP9→VP8 preference
   ladders (with H.264 and VP8 exact) while using one active codec and one
-  encoder.
+  RTP sender/encoder per edge.
 - Controlled desktop Safari and Chromium acceptance covers Native-default
   rendering, Focus/Row, Follow Off and per-publisher Follow, filmstrip source
   selection, HUD auto-hide, Native drag/minimap, fullscreen, and audio. This
