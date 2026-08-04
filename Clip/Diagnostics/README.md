@@ -80,3 +80,71 @@ present. They also reject conflicting diagnostic modes.
 These diagnostics are distinct from the Swift package tests, `ClipTests`, and
 `ClipUITests`. Those suites remain in their conventional test targets because
 they do not need Clip's production Screen Recording identity.
+
+## Server-coordinated mesh acceptance
+
+The current clean-slate v4 gate is:
+
+```sh
+./scripts/run-live-share-acceptance.sh
+```
+
+It covers the authoritative Go room service, fragment-secret invite and
+admission protocol, opaque encrypted pair signaling, WebRTC pair reconciliation,
+browser invite/crypto/session/media behavior, mixed Native/Web profiles, and
+the app-hosted three-participant flow. The composed app test establishes all
+three A-B, A-C, and B-C links, replicates every Native participant's source to
+the other Native participants, preserves retained pairs across signaling
+reconnect and an ordinary member leave, and treats creator departure as
+terminal for the room. Presentation coverage also verifies sender diagnostics
+per source and recipient while receive-only Web participants do not create
+empty publishing sections.
+
+This architecture has no leader election, quorum, authority-chain catch-up, or
+locked-room phase. The service owns the bounded opaque roster; the creator owns
+admission while present; and each unordered participant pair owns one direct
+WebRTC connection. The server never receives the invite fragment, private
+identity key, decrypted SDP or ICE, source metadata, collaboration content, or
+media.
+
+The signed multi-process gate uses distinct local application state for each
+instance while retaining Clip's one stable signed identity and existing Screen
+Recording grant:
+
+```sh
+./scripts/launch-server-room-v4-mesh-acceptance.sh \
+  --allow-server-room-v4-mesh-multi-instance \
+  /absolute/path/to/Clip.app \
+  --participants 3 \
+  --server-root http://127.0.0.1:18080 \
+  --menu-bar-popovers
+```
+
+The launcher verifies Clip's bundle, Team ID, and stable certificate; refuses
+an already-running Clip process; creates a fresh run identifier; and launches
+each participant with a fail-closed `--mesh-acceptance` mode plus unique
+participant state. It does not manufacture a room, approve admission, publish
+media, or expose private evidence. The owner exercises production Create Room,
+Join Invite, source, audio, ordinary-leave, and creator-exit controls manually.
+Use `--menu-bar-popovers` for manual testing of the real status-item interaction;
+omit it when automation needs the separately addressable participant windows.
+The full evidence contract is documented under **Signed multi-process GUI
+gate** in `docs/ACCEPTANCE.md`.
+
+`--server-root` is optional. It points only these isolated participants at the
+specified compatible HTTPS service, or at an exact loopback HTTP service for
+local development. This can be a branch-local coordinator, a staging service,
+or a self-hosted acceptance deployment. It never changes the installed app's
+endpoint or ordinary Clip settings.
+
+Normal launches cannot enter this mode. All four private flags are required:
+
+- `--ui-testing`
+- `--mesh-acceptance`
+- `--acknowledge-mesh-acceptance`
+- optional `--mesh-acceptance-menu-bar-popover`
+- one `--mesh-acceptance-run=<id>` and one
+  `--mesh-acceptance-participant=<id>`
+
+The retired native-v3 reporter, validator, launcher, launch flags, paths, and
+compatibility aliases have been removed.

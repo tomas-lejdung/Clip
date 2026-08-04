@@ -140,7 +140,6 @@ struct AppDependencies {
     let settings: AppSettingsModel
     let liveSharePreferences: LiveSharePreferencesModel
     let liveShareIdentity: NativeDeviceIdentityRepository
-    let nativeFriends: NativeFriendModel
     let permissions: any PermissionServicing
     let audio: any AudioServicing
     let pasteboard: any PasteboardServicing
@@ -188,9 +187,8 @@ struct AppDependencies {
         let liveSharePreferences = try LiveSharePreferencesModel(
             applicationSupportDirectory: directories.applicationSupport
         )
-        let liveShareIdentity = NativeDeviceIdentityRepository()
-        let nativeFriends = NativeFriendModel(
-            repository: try NativeFriendRepository(
+        let liveShareIdentity = NativeDeviceIdentityRepository(
+            storage: try launchConfiguration.makeNativeDeviceIdentityStorage(
                 applicationSupportDirectory: directories.applicationSupport
             )
         )
@@ -221,7 +219,6 @@ struct AppDependencies {
             settings: settings,
             liveSharePreferences: liveSharePreferences,
             liveShareIdentity: liveShareIdentity,
-            nativeFriends: nativeFriends,
             permissions: permissions,
             audio: audio,
             pasteboard: pasteboard,

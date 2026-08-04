@@ -1,10 +1,23 @@
 import ClipCore
+import ClipLiveShare
 import Foundation
 
 enum AppLaunchMode: Equatable, Sendable {
     case standard
     case uiTesting
     case realCaptureAcceptance
+    case meshAcceptance
+}
+
+struct MeshAcceptanceParticipant: Equatable, Sendable {
+    let runIdentifier: String
+    let participantIdentifier: String
+}
+
+enum MeshAcceptanceRequest: Equatable, Sendable {
+    case none
+    case participant(MeshAcceptanceParticipant)
+    case invalid
 }
 
 /// Production views that can be launched with deterministic, inert state for UI-source
@@ -19,15 +32,6 @@ enum DeterministicUIScenario: String, CaseIterable, Equatable, Sendable {
     case preview
     case history
     case historyExports = "history-exports"
-    case liveShareReady = "live-share-ready"
-    case liveShareLive = "live-share-live"
-    case liveShareLiveBottom = "live-share-live-bottom"
-    case liveShareAudioExclusions = "live-share-audio-exclusions"
-    case liveShareReconnecting = "live-share-reconnecting"
-    case liveShareFailed = "live-share-failed"
-    case liveShareOverlays = "live-share-overlays"
-    case nativeViewerWaiting = "native-viewer-waiting"
-    case nativeViewerLive = "native-viewer-live"
     case settings
     case settingsRecording = "settings-recording"
     case settingsLiveShare = "settings-live-share"
@@ -78,6 +82,17 @@ struct RealCaptureAcceptanceOverrides: Equatable, Sendable {
 struct AppLaunchConfiguration: Equatable, Sendable {
     static let uiTestingArgument = "--ui-testing"
     static let realCaptureAcceptanceArgument = "--real-capture-acceptance"
+    static let meshAcceptanceArgument = "--mesh-acceptance"
+    static let meshAcceptanceAcknowledgementArgument =
+        "--acknowledge-mesh-acceptance"
+    static let meshAcceptanceMenuBarPopoverArgument =
+        "--mesh-acceptance-menu-bar-popover"
+    static let meshAcceptanceParticipantArgumentPrefix =
+        "--mesh-acceptance-participant="
+    static let meshAcceptanceRunArgumentPrefix =
+        "--mesh-acceptance-run="
+    static let meshAcceptanceServerRootArgumentPrefix =
+        "--mesh-acceptance-server-root="
     static let realMicrophoneAcceptanceArgument = "--real-capture-audio=microphone"
     static let realSystemAudioAcceptanceArgument = "--real-capture-audio=system"
     static let realCombinedAudioAcceptanceArgument = "--real-capture-audio=both"
@@ -98,6 +113,9 @@ struct AppLaunchConfiguration: Equatable, Sendable {
     let realCaptureAudioConfiguration: AudioConfiguration?
     let realCaptureOverrides: RealCaptureAcceptanceOverrides
     let uiScenarioRequest: DeterministicUIScenarioRequest
+    let meshAcceptanceRequest: MeshAcceptanceRequest
+    let meshAcceptanceUsesMenuBarPopover: Bool
+    let meshAcceptanceServerEndpoint: ClipLiveShareRendezvousEndpoint?
 
     static func current(
         processInfo: ProcessInfo = .processInfo,
@@ -124,18 +142,39 @@ struct AppLaunchConfiguration: Equatable, Sendable {
                 defaultsSuiteName: nil,
                 realCaptureAudioConfiguration: nil,
                 realCaptureOverrides: .none,
-                uiScenarioRequest: .none
+                uiScenarioRequest: .none,
+                meshAcceptanceRequest: .none,
+                meshAcceptanceUsesMenuBarPopover: false,
+                meshAcceptanceServerEndpoint: nil
             )
         }
 
         let isRealCaptureAcceptance = arguments.contains(realCaptureAcceptanceArgument)
-        let uiScenarioRequest = resolveUIScenarioRequest(
+        let meshAcceptanceRequest = resolveMeshAcceptanceRequest(
             arguments: arguments,
             isRealCaptureAcceptance: isRealCaptureAcceptance
         )
-        let mode: AppLaunchMode = isRealCaptureAcceptance
-            ? .realCaptureAcceptance
-            : .uiTesting
+        let meshAcceptanceServerEndpoint =
+            resolveMeshAcceptanceServerEndpoint(
+                arguments: arguments,
+                meshAcceptanceRequest: meshAcceptanceRequest
+            )
+        let meshAcceptanceUsesMenuBarPopover =
+            arguments.filter({ $0 == meshAcceptanceMenuBarPopoverArgument }).count == 1
+                && meshAcceptanceRequest != .invalid
+        let uiScenarioRequest = resolveUIScenarioRequest(
+            arguments: arguments,
+            isRealCaptureAcceptance: isRealCaptureAcceptance,
+            meshAcceptanceRequest: meshAcceptanceRequest
+        )
+        let mode: AppLaunchMode
+        if isRealCaptureAcceptance {
+            mode = .realCaptureAcceptance
+        } else if case .participant = meshAcceptanceRequest {
+            mode = .meshAcceptance
+        } else {
+            mode = .uiTesting
+        }
         let realCaptureAudioConfiguration: AudioConfiguration?
         if isRealCaptureAcceptance,
            arguments.contains(realCombinedAudioAcceptanceArgument),
@@ -170,12 +209,42 @@ struct AppLaunchConfiguration: Equatable, Sendable {
             defaultsSuiteName: "\(ApplicationDirectories.bundleIdentifier).ui-testing.\(isolationIdentifier)",
             realCaptureAudioConfiguration: realCaptureAudioConfiguration,
             realCaptureOverrides: realCaptureOverrides,
-            uiScenarioRequest: uiScenarioRequest
+            uiScenarioRequest: uiScenarioRequest,
+            meshAcceptanceRequest: meshAcceptanceRequest,
+            meshAcceptanceUsesMenuBarPopover: meshAcceptanceUsesMenuBarPopover,
+            meshAcceptanceServerEndpoint: meshAcceptanceServerEndpoint
         )
+    }
+
+    private static func resolveMeshAcceptanceServerEndpoint(
+        arguments: [String],
+        meshAcceptanceRequest: MeshAcceptanceRequest
+    ) -> ClipLiveShareRendezvousEndpoint? {
+        guard case .participant = meshAcceptanceRequest else { return nil }
+        let values = arguments.compactMap { argument -> String? in
+            guard argument.hasPrefix(meshAcceptanceServerRootArgumentPrefix) else {
+                return nil
+            }
+            return String(argument.dropFirst(meshAcceptanceServerRootArgumentPrefix.count))
+        }
+        guard values.count == 1 else { return nil }
+        return try? ClipLiveShareRendezvousEndpoint(userInput: values[0])
     }
 
     static func isolationIdentifier(for arguments: [String]) -> String {
         guard arguments.contains(uiTestingArgument) else { return "ui-testing" }
+        let meshRequest = resolveMeshAcceptanceRequest(
+            arguments: arguments,
+            isRealCaptureAcceptance: arguments.contains(realCaptureAcceptanceArgument)
+        )
+        switch meshRequest {
+        case let .participant(participant):
+            return "mesh-acceptance-\(participant.runIdentifier)-\(participant.participantIdentifier)"
+        case .invalid:
+            return "mesh-acceptance-invalid"
+        case .none:
+            break
+        }
         guard !arguments.contains(realCaptureAcceptanceArgument) else {
             if let identifier = realCaptureStateIdentifier(in: arguments) {
                 return "real-capture-\(identifier)"
@@ -185,7 +254,8 @@ struct AppLaunchConfiguration: Equatable, Sendable {
 
         switch resolveUIScenarioRequest(
             arguments: arguments,
-            isRealCaptureAcceptance: false
+            isRealCaptureAcceptance: false,
+            meshAcceptanceRequest: .none
         ) {
         case .none:
             return "ui-testing"
@@ -198,9 +268,13 @@ struct AppLaunchConfiguration: Equatable, Sendable {
 
     private static func resolveUIScenarioRequest(
         arguments: [String],
-        isRealCaptureAcceptance: Bool
+        isRealCaptureAcceptance: Bool,
+        meshAcceptanceRequest: MeshAcceptanceRequest
     ) -> DeterministicUIScenarioRequest {
-        guard !isRealCaptureAcceptance else { return .none }
+        guard !isRealCaptureAcceptance,
+              meshAcceptanceRequest == .none else {
+            return .none
+        }
         let scenarioArguments = arguments.filter {
             $0 == "--ui-scenario" || $0.hasPrefix(DeterministicUIScenario.argumentPrefix)
         }
@@ -217,6 +291,104 @@ struct AppLaunchConfiguration: Equatable, Sendable {
             return .invalid
         }
         return .scenario(scenario)
+    }
+
+    private static func resolveMeshAcceptanceRequest(
+        arguments: [String],
+        isRealCaptureAcceptance: Bool
+    ) -> MeshAcceptanceRequest {
+        let modeArguments = arguments.filter {
+            $0 == meshAcceptanceArgument
+        }
+        let acknowledgementArguments = arguments.filter {
+            $0 == meshAcceptanceAcknowledgementArgument
+        }
+        let menuBarPopoverArguments = arguments.filter {
+            $0 == meshAcceptanceMenuBarPopoverArgument
+        }
+        let participantArguments = arguments.filter {
+            $0 == "--mesh-acceptance-participant"
+                || $0.hasPrefix(meshAcceptanceParticipantArgumentPrefix)
+        }
+        let runArguments = arguments.filter {
+            $0 == "--mesh-acceptance-run"
+                || $0.hasPrefix(meshAcceptanceRunArgumentPrefix)
+        }
+        let includesAnyMeshArgument = !modeArguments.isEmpty
+            || !acknowledgementArguments.isEmpty
+            || !menuBarPopoverArguments.isEmpty
+            || !participantArguments.isEmpty
+            || !runArguments.isEmpty
+        guard includesAnyMeshArgument else { return .none }
+        guard !isRealCaptureAcceptance,
+              arguments.filter({ $0 == uiTestingArgument }).count == 1,
+              modeArguments.count == 1,
+              acknowledgementArguments.count == 1,
+              menuBarPopoverArguments.count <= 1,
+              participantArguments.count == 1,
+              runArguments.count == 1,
+              participantArguments[0].hasPrefix(
+                meshAcceptanceParticipantArgumentPrefix
+              ),
+              runArguments[0].hasPrefix(meshAcceptanceRunArgumentPrefix) else {
+            return .invalid
+        }
+
+        let participantIdentifier = String(
+            participantArguments[0].dropFirst(
+                meshAcceptanceParticipantArgumentPrefix.count
+            )
+        )
+        let runIdentifier = String(
+            runArguments[0].dropFirst(
+                meshAcceptanceRunArgumentPrefix.count
+            )
+        )
+        guard isValidMeshAcceptanceParticipantIdentifier(
+            participantIdentifier
+        ), isValidMeshAcceptanceRunIdentifier(runIdentifier) else {
+            return .invalid
+        }
+        return .participant(
+            MeshAcceptanceParticipant(
+                runIdentifier: runIdentifier,
+                participantIdentifier: participantIdentifier
+            )
+        )
+    }
+
+    private static func isValidMeshAcceptanceRunIdentifier(
+        _ runIdentifier: String
+    ) -> Bool {
+        let allowedRunCharacters = CharacterSet(
+            charactersIn:
+                "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-"
+        )
+        return
+            (16...128).contains(runIdentifier.count)
+            && runIdentifier.unicodeScalars.allSatisfy(
+                allowedRunCharacters.contains
+            )
+    }
+
+    private static func isValidMeshAcceptanceParticipantIdentifier(
+        _ identifier: String
+    ) -> Bool {
+        let asciiLetters = CharacterSet(
+            charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
+        )
+        let asciiNumbers = CharacterSet(charactersIn: "0123456789")
+        let allowed = asciiLetters
+            .union(asciiNumbers)
+            .union(CharacterSet(charactersIn: "-"))
+        guard (1...32).contains(identifier.count),
+              let first = identifier.unicodeScalars.first,
+              let last = identifier.unicodeScalars.last,
+              asciiLetters.contains(first),
+              asciiLetters.union(asciiNumbers).contains(last) else {
+            return false
+        }
+        return identifier.unicodeScalars.allSatisfy(allowed.contains)
     }
 
     private static func resolveRealCaptureOverrides(
@@ -299,7 +471,9 @@ struct AppLaunchConfiguration: Equatable, Sendable {
     }
 
     var isUITesting: Bool { mode != .standard }
-    var completesOnboarding: Bool { mode == .realCaptureAcceptance }
+    var completesOnboarding: Bool {
+        mode == .realCaptureAcceptance || mode == .meshAcceptance
+    }
     var uiScenario: DeterministicUIScenario? {
         guard case let .scenario(scenario) = uiScenarioRequest else { return nil }
         return scenario
@@ -315,7 +489,19 @@ struct AppLaunchConfiguration: Equatable, Sendable {
     var allowsSystemIntegrations: Bool { mode == .standard }
 
     var resetsIsolatedStateOnLaunch: Bool {
-        !realCaptureOverrides.preservesIsolatedState
+        switch mode {
+        case .meshAcceptance:
+            false
+        case .standard, .uiTesting, .realCaptureAcceptance:
+            !realCaptureOverrides.preservesIsolatedState
+        }
+    }
+
+    var meshAcceptanceParticipantIdentifier: String? {
+        guard case let .participant(participant) = meshAcceptanceRequest else {
+            return nil
+        }
+        return participant.participantIdentifier
     }
 
     func makeUserDefaults() throws -> UserDefaults {
@@ -355,11 +541,14 @@ struct AppLaunchConfiguration: Equatable, Sendable {
 
 enum AppLaunchConfigurationError: LocalizedError, Equatable {
     case unavailableDefaultsSuite(String)
+    case invalidMeshAcceptanceRequest
 
     var errorDescription: String? {
         switch self {
         case let .unavailableDefaultsSuite(suiteName):
             "Clip could not create its isolated UI-test defaults suite \(suiteName)."
+        case .invalidMeshAcceptanceRequest:
+            "Clip rejected an invalid mesh acceptance launch request."
         }
     }
 }

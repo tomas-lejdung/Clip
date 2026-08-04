@@ -2,131 +2,135 @@ package protocol
 
 import (
 	"bytes"
-	"crypto/elliptic"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
-	"regexp"
-	"strings"
 )
 
 const (
-	Identifier                      = "clip-live-share"
-	Version                         = 1
-	MaximumMessageBytes             = 262_144
-	MaximumInnerMessageBytes        = 196_400
-	MaximumPendingViewersPerRoom    = 8
-	MaximumConnectedViewersInClip   = 8
-	MaximumICECandidatesPerPeer     = 256
-	InitialAnswerTimeoutSeconds     = 15
-	OwnerTokenBytes                 = 32
-	RouteIDBytes                    = 16
-	AESGCMNonceBytes                = 12
-	AESGCMTagBytes                  = 16
-	P256X963PublicKeyBytes          = 65
-	MaximumCiphertextBytes          = MaximumInnerMessageBytes + AESGCMTagBytes
-	MaximumProtocolErrorCodeBytes   = 64
-	MaximumProtocolErrorTextBytes   = 256
-	MaximumRoomNameBytes            = 64
-	MinimumRoomNameBytes            = 3
-	NativeRendezvousAPIVersion      = 1
-	NativeMessageVersion            = 2
-	NativeRendezvousIDBytes         = 32
-	MaximumNativeDescriptorBytes    = 16_384
-	MaximumNativeOpaquePayloadBytes = 196_000
+	Identifier                                  = "clip-native-room"
+	MaximumMessageBytes                         = 262_144
+	MaximumPendingCandidates                    = 8
+	OwnerTokenBytes                             = 32
+	MaximumProtocolErrorCodeBytes               = 64
+	MaximumProtocolErrorTextBytes               = 256
+	NativeRoomAPIVersion                        = 4
+	NativeRoomMessageVersion                    = 4
+	NativeRoomIDBytes                           = 32
+	NativeMemberHandleBytes                     = 16
+	NativeReconnectCapabilityBytes              = 32
+	NativePairIDBytes                           = 32
+	MaximumNativeRoomMembers                    = 4
+	MaximumNativeDescriptorBytes                = 16_384
+	MaximumNativeOpaquePayloadBytes             = 196_000
+	NativeFriendPresenceRoutingIDBytes          = 32
+	MinimumNativeFriendPresencePayloadBytes     = 29
+	MaximumNativeFriendPresencePayloadBytes     = 16_384
+	MaximumNativeFriendPresenceLifetimeSeconds  = 5 * 60
+	MaximumNativeFriendPresenceClockSkewSeconds = 30
 )
 
-var roomNamePattern = regexp.MustCompile(`^[A-Z0-9](?:[A-Z0-9-]{1,62})[A-Z0-9]$`)
-
 var (
-	ErrInvalidRoomName           = errors.New("invalid room name")
-	ErrInvalidOwnerToken         = errors.New("invalid owner token")
-	ErrInvalidRouteID            = errors.New("invalid route identifier")
-	ErrInvalidViewerKey          = errors.New("invalid viewer key")
-	ErrInvalidMessage            = errors.New("invalid protocol message")
-	ErrInvalidNativeRendezvousID = errors.New("invalid native rendezvous identifier")
-	ErrInvalidNativeDescriptor   = errors.New("invalid native session descriptor")
+	ErrInvalidOwnerToken           = errors.New("invalid owner token")
+	ErrInvalidMessage              = errors.New("invalid protocol message")
+	ErrInvalidNativeRoomID         = errors.New("invalid native room identifier")
+	ErrInvalidNativeDescriptor     = errors.New("invalid native descriptor")
+	ErrInvalidNativeFriendPresence = errors.New("invalid native friend presence")
 )
 
 type MessageType string
 
 const (
-	MessageViewerHello           MessageType = "viewer-hello"
-	MessageRouteOpened           MessageType = "route-opened"
-	MessageRelay                 MessageType = "relay"
-	MessageRouteClosed           MessageType = "route-closed"
-	MessageCloseRoute            MessageType = "close-route"
-	MessageHostUnavailable       MessageType = "host-unavailable"
-	MessageError                 MessageType = "error"
-	MessageNativeRouteOpened     MessageType = "native-route-opened"
-	MessageNativeRelay           MessageType = "native-relay"
-	MessageNativeRouteClosed     MessageType = "native-route-closed"
-	MessageNativeCloseRoute      MessageType = "native-close-route"
-	MessageNativeHostUnavailable MessageType = "native-host-unavailable"
-	MessageNativeError           MessageType = "native-error"
+	MessageCandidateOpened MessageType = "candidate-opened"
+	MessageJoinKnock       MessageType = "join-knock"
+	MessageAdmitCandidate  MessageType = "admit-candidate"
+	MessageDenyCandidate   MessageType = "deny-candidate"
+	MessageMemberAdmitted  MessageType = "member-admitted"
+	MessageRosterSnapshot  MessageType = "roster-snapshot"
+	MessagePairSignal      MessageType = "pair-signal"
+	MessageLeaveRoom       MessageType = "leave-room"
+	MessageRemoveMember    MessageType = "remove-member"
+	MessageRoomEnded       MessageType = "room-ended"
+	MessageProtocolError   MessageType = "protocol-error"
 )
 
-// Message is the bounded, metadata-only outer signaling envelope. Ciphertext
-// is deliberately opaque to the service.
+// Message is the bounded native-room-v4 outer routing envelope. Payload,
+// descriptors, admission records, and pair signals are opaque ciphertext.
 type Message struct {
-	Type       MessageType `json:"type"`
-	Version    int         `json:"version,omitempty"`
-	RouteID    string      `json:"routeId,omitempty"`
-	ViewerKey  string      `json:"viewerKey,omitempty"`
-	Sequence   uint64      `json:"sequence,omitempty"`
-	Nonce      string      `json:"nonce,omitempty"`
-	Ciphertext string      `json:"ciphertext,omitempty"`
-	Payload    string      `json:"payload,omitempty"`
-	Reason     string      `json:"reason,omitempty"`
-	Code       string      `json:"code,omitempty"`
-	Text       string      `json:"message,omitempty"`
+	Type                MessageType     `json:"type"`
+	Version             int             `json:"version"`
+	Sequence            uint64          `json:"sequence,omitempty"`
+	Payload             string          `json:"payload,omitempty"`
+	Reason              string          `json:"reason,omitempty"`
+	Code                string          `json:"code,omitempty"`
+	Text                string          `json:"message,omitempty"`
+	CandidateHandle     string          `json:"candidateHandle,omitempty"`
+	MemberHandle        string          `json:"memberHandle,omitempty"`
+	ReconnectCapability string          `json:"reconnectCapability,omitempty"`
+	RoomDescriptor      string          `json:"roomDescriptor,omitempty"`
+	From                string          `json:"from,omitempty"`
+	To                  string          `json:"to,omitempty"`
+	PairID              string          `json:"pairId,omitempty"`
+	Roster              *RosterSnapshot `json:"roster,omitempty"`
 }
 
-type OwnerRequest struct {
-	OwnerToken string `json:"ownerToken"`
-}
-
-type RoomResponse struct {
-	Room                 string `json:"room"`
-	LeaseDurationSeconds int64  `json:"leaseDurationSeconds"`
-}
-
-type NativeRendezvousRequest struct {
-	OwnerToken string `json:"ownerToken"`
-}
-
-type NativeSessionRequest struct {
-	// Descriptor is a canonical base64url encoding of a signed descriptor.
-	// The service bounds and stores it without parsing its contents.
+type RosterMember struct {
+	Handle     string `json:"handle"`
 	Descriptor string `json:"descriptor"`
+	Connected  bool   `json:"connected"`
 }
 
-type NativeRendezvousResponse struct {
-	RendezvousID         string `json:"rendezvousId"`
+type RosterSnapshot struct {
+	Revision      uint64         `json:"revision"`
+	CreatorHandle string         `json:"creatorHandle"`
+	Members       []RosterMember `json:"members"`
+}
+
+type NativeRoomRequest struct {
+	OwnerToken    string `json:"ownerToken"`
+	CreatorHandle string `json:"creatorHandle"`
+	Descriptor    string `json:"descriptor"`
+}
+
+type NativeRoomResponse struct {
+	RoomID               string `json:"roomId"`
+	CreatorHandle        string `json:"creatorHandle"`
 	LeaseDurationSeconds int64  `json:"leaseDurationSeconds"`
 }
 
-type NativeRendezvousStatus struct {
-	RendezvousID string `json:"rendezvousId"`
-	State        string `json:"state"`
+type NativeRoomStatus struct {
+	RoomID         string `json:"roomId"`
+	State          string `json:"state"`
+	RosterRevision uint64 `json:"rosterRevision"`
+	MemberCount    int    `json:"memberCount"`
 }
 
-type NativeRendezvousCapabilities struct {
-	Protocol                    string `json:"protocol"`
-	APIVersion                  int    `json:"apiVersion"`
-	MessageVersion              int    `json:"messageVersion"`
-	ServerVersion               string `json:"serverVersion"`
-	RendezvousPathTemplate      string `json:"rendezvousPathTemplate"`
-	HostWebSocketPathTemplate   string `json:"hostWebSocketPathTemplate"`
-	ViewerWebSocketPathTemplate string `json:"viewerWebSocketPathTemplate"`
-	MaximumMessageBytes         int    `json:"maximumMessageBytes"`
-	MaximumDescriptorBytes      int    `json:"maximumDescriptorBytes"`
-	MaximumOpaquePayloadBytes   int    `json:"maximumOpaquePayloadBytes"`
-	MaximumPendingRoutes        int    `json:"maximumPendingRoutes"`
-	MaximumRendezvous           int    `json:"maximumRendezvous"`
+// NativeFriendPresence is intentionally opaque. The server may enforce only
+// routing, monotonic revision, size, and expiry bounds; identity, names, the
+// canonical room invite, and the per-friend decryption key remain client-only.
+type NativeFriendPresence struct {
+	Revision              uint64 `json:"revision"`
+	ExpiresAtMilliseconds int64  `json:"expiresAtMilliseconds"`
+	Payload               string `json:"payload"`
+}
+
+type NativeRoomCapabilities struct {
+	Protocol                  string      `json:"protocol"`
+	APIVersion                int         `json:"apiVersion"`
+	MessageVersion            int         `json:"messageVersion"`
+	ServerVersion             string      `json:"serverVersion"`
+	RoomPathTemplate          string      `json:"roomPathTemplate"`
+	RoomWebSocketPathTemplate string      `json:"roomWebSocketPathTemplate"`
+	MaximumMessageBytes       int         `json:"maximumMessageBytes"`
+	MaximumDescriptorBytes    int         `json:"maximumDescriptorBytes"`
+	MaximumOpaquePayloadBytes int         `json:"maximumOpaquePayloadBytes"`
+	MaximumPendingCandidates  int         `json:"maximumPendingCandidates"`
+	MaximumRoomMembers        int         `json:"maximumRoomMembers"`
+	MaximumRooms              int         `json:"maximumRooms"`
+	ICEServers                []ICEServer `json:"iceServers"`
 }
 
 type ErrorResponse struct {
@@ -139,34 +143,10 @@ type ICEServer struct {
 	Credential string   `json:"credential,omitempty"`
 }
 
-type Limits struct {
-	MaximumMessageBytes          int `json:"maximumMessageBytes"`
-	MaximumPendingViewersPerRoom int `json:"maximumPendingViewersPerRoom"`
-}
-
-type Capabilities struct {
-	Protocol                    string      `json:"protocol"`
-	Versions                    []int       `json:"versions"`
-	ServerVersion               string      `json:"serverVersion"`
-	ViewerPathTemplate          string      `json:"viewerPathTemplate"`
-	HostWebSocketPathTemplate   string      `json:"hostWebSocketPathTemplate"`
-	ViewerWebSocketPathTemplate string      `json:"viewerWebSocketPathTemplate"`
-	ICEServers                  []ICEServer `json:"iceServers"`
-	Limits                      Limits      `json:"limits"`
-}
-
 type VersionResponse struct {
 	Protocol        string `json:"protocol"`
 	ProtocolVersion int    `json:"protocolVersion"`
 	ServerVersion   string `json:"serverVersion"`
-}
-
-func NormalizeRoomName(value string) (string, error) {
-	name := strings.ToUpper(strings.TrimSpace(value))
-	if len(name) < MinimumRoomNameBytes || len(name) > MaximumRoomNameBytes || !roomNamePattern.MatchString(name) {
-		return "", ErrInvalidRoomName
-	}
-	return name, nil
 }
 
 func DecodeOwnerToken(value string) ([OwnerTokenBytes]byte, error) {
@@ -187,9 +167,30 @@ func HashOwnerToken(value string) ([sha256.Size]byte, error) {
 	return sha256.Sum256(token[:]), nil
 }
 
-func ValidateNativeRendezvousID(value string) error {
-	if _, err := decodeCanonicalBase64URL(value, NativeRendezvousIDBytes); err != nil {
-		return ErrInvalidNativeRendezvousID
+func ValidateNativeRoomID(value string) error {
+	if _, err := decodeCanonicalBase64URL(value, NativeRoomIDBytes); err != nil {
+		return ErrInvalidNativeRoomID
+	}
+	return nil
+}
+
+func ValidateNativeFriendPresenceRoutingID(value string) error {
+	if _, err := decodeCanonicalBase64URL(value, NativeFriendPresenceRoutingIDBytes); err != nil {
+		return ErrInvalidNativeFriendPresence
+	}
+	return nil
+}
+
+func ValidateNativeFriendPresence(value NativeFriendPresence) error {
+	if value.Revision == 0 || value.ExpiresAtMilliseconds <= 0 {
+		return ErrInvalidNativeFriendPresence
+	}
+	if _, err := decodeCanonicalBase64URLRange(
+		value.Payload,
+		MinimumNativeFriendPresencePayloadBytes,
+		MaximumNativeFriendPresencePayloadBytes,
+	); err != nil {
+		return ErrInvalidNativeFriendPresence
 	}
 	return nil
 }
@@ -201,107 +202,130 @@ func ValidateNativeDescriptor(value string) error {
 	return nil
 }
 
-func ValidateRouteID(value string) error {
-	if _, err := decodeCanonicalBase64URL(value, RouteIDBytes); err != nil {
-		return ErrInvalidRouteID
+func ValidateNativeMemberHandle(value string) error {
+	if _, err := decodeCanonicalBase64URL(value, NativeMemberHandleBytes); err != nil {
+		return fmt.Errorf("%w: invalid member handle", ErrInvalidMessage)
 	}
 	return nil
 }
 
-func ValidateViewerKey(value string) error {
-	decoded, err := decodeCanonicalBase64URL(value, P256X963PublicKeyBytes)
-	if err != nil || len(decoded) != P256X963PublicKeyBytes || decoded[0] != 4 {
-		return ErrInvalidViewerKey
-	}
-	x, y := elliptic.Unmarshal(elliptic.P256(), decoded)
-	if x == nil || y == nil {
-		return ErrInvalidViewerKey
+func ValidateNativeReconnectCapability(value string) error {
+	if _, err := decodeCanonicalBase64URL(value, NativeReconnectCapabilityBytes); err != nil {
+		return ErrInvalidOwnerToken
 	}
 	return nil
 }
 
-func ValidateViewerHello(message Message) error {
-	if message.Type != MessageViewerHello || message.Version != Version {
-		return fmt.Errorf("%w: unsupported viewer hello", ErrInvalidMessage)
+func HashNativeReconnectCapability(value string) ([sha256.Size]byte, error) {
+	decoded, err := decodeCanonicalBase64URL(value, NativeReconnectCapabilityBytes)
+	if err != nil {
+		return [sha256.Size]byte{}, ErrInvalidOwnerToken
 	}
-	if message.RouteID != "" || message.Sequence != 0 || message.Nonce != "" || message.Ciphertext != "" || message.Payload != "" {
-		return fmt.Errorf("%w: unexpected viewer hello fields", ErrInvalidMessage)
-	}
-	return ValidateViewerKey(message.ViewerKey)
+	return sha256.Sum256(decoded), nil
 }
 
-func ValidateRelay(message Message, requireRouteID bool) error {
-	if message.Type != MessageRelay || message.Sequence == 0 {
-		return fmt.Errorf("%w: malformed relay", ErrInvalidMessage)
+func ValidateNativePairID(value string) error {
+	if _, err := decodeCanonicalBase64URL(value, NativePairIDBytes); err != nil {
+		return fmt.Errorf("%w: invalid pair identifier", ErrInvalidMessage)
 	}
-	if requireRouteID {
-		if err := ValidateRouteID(message.RouteID); err != nil {
-			return err
+	return nil
+}
+
+// NativePairID is the sole pair identifier for two room handles. Canonical
+// base64url strings make this algorithm byte-identical in Go, Swift, and web
+// clients without exposing any secret room material.
+func NativePairID(roomID, leftHandle, rightHandle string) (string, error) {
+	if ValidateNativeRoomID(roomID) != nil ||
+		ValidateNativeMemberHandle(leftHandle) != nil ||
+		ValidateNativeMemberHandle(rightHandle) != nil ||
+		leftHandle == rightHandle {
+		return "", fmt.Errorf("%w: invalid pair members", ErrInvalidMessage)
+	}
+	if rightHandle < leftHandle {
+		leftHandle, rightHandle = rightHandle, leftHandle
+	}
+	digest := sha256.Sum256([]byte(
+		"clip-native-room-v4-pair\x00" + roomID + "\x00" +
+			leftHandle + "\x00" + rightHandle,
+	))
+	return base64.RawURLEncoding.EncodeToString(digest[:]), nil
+}
+
+func ValidateRosterSnapshot(snapshot RosterSnapshot) error {
+	if snapshot.Revision == 0 || ValidateNativeMemberHandle(snapshot.CreatorHandle) != nil ||
+		len(snapshot.Members) == 0 || len(snapshot.Members) > MaximumNativeRoomMembers {
+		return fmt.Errorf("%w: invalid roster header", ErrInvalidMessage)
+	}
+	seen := make(map[string]struct{}, len(snapshot.Members))
+	creatorFound := false
+	for _, member := range snapshot.Members {
+		if ValidateNativeMemberHandle(member.Handle) != nil || ValidateNativeDescriptor(member.Descriptor) != nil {
+			return fmt.Errorf("%w: invalid roster member", ErrInvalidMessage)
 		}
-	} else if message.RouteID != "" {
-		return fmt.Errorf("%w: viewer route must be implicit", ErrInvalidMessage)
-	}
-	if _, err := decodeCanonicalBase64URL(message.Nonce, AESGCMNonceBytes); err != nil {
-		return fmt.Errorf("%w: invalid nonce", ErrInvalidMessage)
-	}
-	ciphertext, err := decodeCanonicalBase64URLRange(message.Ciphertext, AESGCMTagBytes, MaximumCiphertextBytes)
-	if err != nil || len(ciphertext) < AESGCMTagBytes {
-		return fmt.Errorf("%w: invalid ciphertext", ErrInvalidMessage)
-	}
-	if message.Version != 0 || message.ViewerKey != "" || message.Payload != "" || message.Reason != "" || message.Code != "" || message.Text != "" {
-		return fmt.Errorf("%w: unexpected relay fields", ErrInvalidMessage)
-	}
-	return nil
-}
-
-func ValidateCloseRoute(message Message) error {
-	if message.Type != MessageCloseRoute {
-		return fmt.Errorf("%w: expected close-route", ErrInvalidMessage)
-	}
-	if err := ValidateRouteID(message.RouteID); err != nil {
-		return err
-	}
-	if message.Version != 0 || message.ViewerKey != "" || message.Sequence != 0 || message.Nonce != "" || message.Ciphertext != "" || message.Payload != "" || message.Code != "" || message.Text != "" {
-		return fmt.Errorf("%w: unexpected close-route fields", ErrInvalidMessage)
-	}
-	return nil
-}
-
-func ValidateNativeRelay(message Message, requireRouteID bool) error {
-	if message.Type != MessageNativeRelay || message.Version != NativeMessageVersion || message.Sequence == 0 {
-		return fmt.Errorf("%w: malformed native relay", ErrInvalidMessage)
-	}
-	if requireRouteID {
-		if err := ValidateRouteID(message.RouteID); err != nil {
-			return err
+		if _, found := seen[member.Handle]; found {
+			return fmt.Errorf("%w: duplicate roster member", ErrInvalidMessage)
 		}
-	} else if message.RouteID != "" {
-		return fmt.Errorf("%w: native viewer route must be implicit", ErrInvalidMessage)
+		seen[member.Handle] = struct{}{}
+		creatorFound = creatorFound || member.Handle == snapshot.CreatorHandle
 	}
-	if _, err := decodeCanonicalBase64URLRange(message.Payload, 1, MaximumNativeOpaquePayloadBytes); err != nil {
-		return fmt.Errorf("%w: invalid native opaque payload", ErrInvalidMessage)
-	}
-	if message.ViewerKey != "" || message.Nonce != "" || message.Ciphertext != "" || message.Reason != "" || message.Code != "" || message.Text != "" {
-		return fmt.Errorf("%w: unexpected native relay fields", ErrInvalidMessage)
+	if !creatorFound {
+		return fmt.Errorf("%w: missing roster creator", ErrInvalidMessage)
 	}
 	return nil
 }
 
-func ValidateNativeCloseRoute(message Message, requireRouteID bool) error {
-	if message.Type != MessageNativeCloseRoute || message.Version != NativeMessageVersion {
-		return fmt.Errorf("%w: expected native close-route", ErrInvalidMessage)
+// ValidateNativeRoomClientMessage validates only the outer routing envelope.
+func ValidateNativeRoomClientMessage(message Message) error {
+	if message.Version != NativeRoomMessageVersion || message.Roster != nil ||
+		message.RoomDescriptor != "" || message.ReconnectCapability != "" ||
+		message.From != "" || message.MemberHandle != "" || message.Code != "" ||
+		message.Text != "" {
+		return fmt.Errorf("%w: invalid native-room envelope", ErrInvalidMessage)
 	}
-	if requireRouteID {
-		if err := ValidateRouteID(message.RouteID); err != nil {
-			return err
+	switch message.Type {
+	case MessageJoinKnock:
+		if message.CandidateHandle != "" || message.To != "" || message.PairID != "" ||
+			message.Sequence == 0 || message.Reason != "" {
+			return fmt.Errorf("%w: invalid join knock", ErrInvalidMessage)
 		}
-	} else if message.RouteID != "" {
-		return fmt.Errorf("%w: native viewer route must be implicit", ErrInvalidMessage)
+		return validateOpaquePayload(message.Payload)
+	case MessageAdmitCandidate:
+		if ValidateNativeMemberHandle(message.CandidateHandle) != nil ||
+			message.Sequence != 0 || message.To != "" || message.PairID != "" ||
+			message.Reason != "" {
+			return fmt.Errorf("%w: invalid candidate admission", ErrInvalidMessage)
+		}
+		return ValidateNativeDescriptor(message.Payload)
+	case MessageDenyCandidate:
+		if ValidateNativeMemberHandle(message.CandidateHandle) != nil ||
+			message.Sequence != 0 || message.Payload != "" || message.To != "" ||
+			message.PairID != "" || len(message.Reason) > MaximumProtocolErrorTextBytes {
+			return fmt.Errorf("%w: invalid candidate denial", ErrInvalidMessage)
+		}
+		return nil
+	case MessagePairSignal:
+		if ValidateNativeMemberHandle(message.To) != nil ||
+			ValidateNativePairID(message.PairID) != nil || message.Sequence == 0 ||
+			message.CandidateHandle != "" || message.Reason != "" {
+			return fmt.Errorf("%w: invalid pair signal", ErrInvalidMessage)
+		}
+		return validateOpaquePayload(message.Payload)
+	case MessageLeaveRoom:
+		if message.CandidateHandle != "" || message.To != "" || message.PairID != "" ||
+			message.Sequence != 0 || message.Payload != "" || message.Reason != "" {
+			return fmt.Errorf("%w: invalid leave-room", ErrInvalidMessage)
+		}
+		return nil
+	case MessageRemoveMember:
+		if ValidateNativeMemberHandle(message.To) != nil || message.CandidateHandle != "" ||
+			message.PairID != "" || message.Sequence != 0 || message.Payload != "" ||
+			message.Reason != "" {
+			return fmt.Errorf("%w: invalid remove-member", ErrInvalidMessage)
+		}
+		return nil
+	default:
+		return fmt.Errorf("%w: unsupported native-room message", ErrInvalidMessage)
 	}
-	if message.ViewerKey != "" || message.Sequence != 0 || message.Nonce != "" || message.Ciphertext != "" || message.Payload != "" || message.Code != "" || message.Text != "" {
-		return fmt.Errorf("%w: unexpected native close-route fields", ErrInvalidMessage)
-	}
-	return nil
 }
 
 func DecodeMessage(data []byte) (Message, error) {
@@ -338,21 +362,32 @@ func DecodeStrictJSON(reader io.Reader, maximumBytes int64, destination any) err
 	return nil
 }
 
-func ErrorMessage(code, text string) Message {
+func RoomProtocolError(code, text string) Message {
 	return Message{
-		Type: MessageError,
+		Type: MessageProtocolError, Version: NativeRoomMessageVersion,
 		Code: truncateASCII(code, MaximumProtocolErrorCodeBytes),
 		Text: truncateASCII(text, MaximumProtocolErrorTextBytes),
 	}
 }
 
-func NativeErrorMessage(code, text string) Message {
-	return Message{
-		Type:    MessageNativeError,
-		Version: NativeMessageVersion,
-		Code:    truncateASCII(code, MaximumProtocolErrorCodeBytes),
-		Text:    truncateASCII(text, MaximumProtocolErrorTextBytes),
+// RoomPairProtocolError preserves only opaque routing identifiers from the
+// rejected pair-signal. It lets a client retry or warn for that one direct
+// edge without treating a healthy room or unrelated P2P links as failed.
+func RoomPairProtocolError(code, text string, signal Message) Message {
+	message := RoomProtocolError(code, text)
+	if signal.Type == MessagePairSignal {
+		message.Sequence = signal.Sequence
+		message.To = signal.To
+		message.PairID = signal.PairID
 	}
+	return message
+}
+
+func validateOpaquePayload(value string) error {
+	if _, err := decodeCanonicalBase64URLRange(value, 1, MaximumNativeOpaquePayloadBytes); err != nil {
+		return fmt.Errorf("%w: invalid opaque payload", ErrInvalidMessage)
+	}
+	return nil
 }
 
 func decodeCanonicalBase64URL(value string, expectedBytes int) ([]byte, error) {
@@ -365,19 +400,20 @@ func decodeCanonicalBase64URL(value string, expectedBytes int) ([]byte, error) {
 
 func decodeCanonicalBase64URLRange(value string, minimumBytes, maximumBytes int) ([]byte, error) {
 	decoded, err := base64.RawURLEncoding.DecodeString(value)
-	if err != nil || len(decoded) < minimumBytes || len(decoded) > maximumBytes || base64.RawURLEncoding.EncodeToString(decoded) != value {
+	if err != nil || len(decoded) < minimumBytes || len(decoded) > maximumBytes ||
+		base64.RawURLEncoding.EncodeToString(decoded) != value {
 		return nil, errors.New("invalid base64url value")
 	}
 	return decoded, nil
 }
 
 func truncateASCII(value string, maximumBytes int) string {
-	value = strings.Map(func(r rune) rune {
+	value = string(bytes.Map(func(r rune) rune {
 		if r < 0x20 || r > 0x7e {
 			return -1
 		}
 		return r
-	}, value)
+	}, []byte(value)))
 	if len(value) > maximumBytes {
 		return value[:maximumBytes]
 	}

@@ -6,24 +6,103 @@ enum NativeViewerWindowCloseDisposition: Sendable {
     case leaveSession
 }
 
+enum NativeViewerCollaborationControlTool: CaseIterable, Equatable, Hashable, Sendable {
+    case pointer
+    case ping
+    case drawing
+
+    var title: String {
+        switch self {
+        case .pointer:
+            String(localized: "Reveal Pointer")
+        case .ping:
+            String(localized: "Ping")
+        case .drawing:
+            String(localized: "Draw")
+        }
+    }
+
+    var systemImageName: String {
+        switch self {
+        case .pointer:
+            "cursorarrow"
+        case .ping:
+            "scope"
+        case .drawing:
+            "pencil.tip"
+        }
+    }
+}
+
+struct NativeViewerCollaborationControlState: Equatable, Sendable {
+    var pointerEnabled: Bool
+    var pingEnabled: Bool
+    var drawingEnabled: Bool
+    var isUsingGlobalSettings: Bool
+
+    init(
+        pointerEnabled: Bool,
+        pingEnabled: Bool,
+        drawingEnabled: Bool,
+        isUsingGlobalSettings: Bool
+    ) {
+        self.pointerEnabled = pointerEnabled
+        self.pingEnabled = pingEnabled
+        self.drawingEnabled = drawingEnabled
+        self.isUsingGlobalSettings = isUsingGlobalSettings
+    }
+
+    func isEnabled(_ tool: NativeViewerCollaborationControlTool) -> Bool {
+        switch tool {
+        case .pointer:
+            pointerEnabled
+        case .ping:
+            pingEnabled
+        case .drawing:
+            drawingEnabled
+        }
+    }
+
+    static let globalDefaults = NativeViewerCollaborationControlState(
+        pointerEnabled: false,
+        pingEnabled: false,
+        drawingEnabled: false,
+        isUsingGlobalSettings: true
+    )
+}
+
 private enum NativeViewerHeaderAction {
-    case followHost
+    case followSource
     case native
     case fit
-    case matchHostSize
+    case matchSourceSize
+    case toggleCollaboration(NativeViewerCollaborationControlTool, enabled: Bool)
+    case resetCollaborationToGlobal
     case toggleFullScreen
     case close
 }
 
 @MainActor
-private final class NativeViewerHeaderButton: NSButton {
+private final class NativeViewerFloatingControlButton: NSButton {
     private var trackingArea: NSTrackingArea?
+    private var isHovered = false
+    private var foregroundColor = NSColor.black
+    private var selectionColor = NSColor.black.withAlphaComponent(0.12)
+
+    var isControlSelected = false {
+        didSet { updateAppearance() }
+    }
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
         wantsLayer = true
-        layer?.backgroundColor = NSColor.clear.cgColor
-        alphaValue = 0.62
+        layer?.cornerRadius = 6
+        bezelStyle = .inline
+        isBordered = false
+        focusRingType = .none
+        font = .systemFont(ofSize: 11, weight: .semibold)
+        imagePosition = .imageLeading
+        alphaValue = 0.72
     }
 
     @available(*, unavailable)
@@ -46,44 +125,110 @@ private final class NativeViewerHeaderButton: NSButton {
     }
 
     override func mouseEntered(with event: NSEvent) {
-        setHovered(true)
+        isHovered = true
+        updateAppearance(animated: true)
     }
 
     override func mouseExited(with event: NSEvent) {
-        setHovered(false)
+        isHovered = false
+        updateAppearance(animated: true)
     }
 
-    private func setHovered(_ hovered: Bool) {
-        let targetAlpha: CGFloat = hovered ? 1 : 0.62
-        guard alphaValue != targetAlpha else { return }
+    func setPalette(foreground: NSColor, selection: NSColor) {
+        foregroundColor = foreground
+        selectionColor = selection
+        updateAppearance()
+    }
+
+    private func updateAppearance(animated: Bool = false) {
+        let targetAlpha: CGFloat = isHovered || isControlSelected ? 1 : 0.72
+        let background = isControlSelected
+            ? selectionColor
+            : isHovered
+                ? foregroundColor.withAlphaComponent(0.10)
+                : .clear
+        contentTintColor = foregroundColor
+        guard animated else {
+            alphaValue = targetAlpha
+            layer?.backgroundColor = background.cgColor
+            return
+        }
         let duration = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion ? 0 : 0.1
         NSAnimationContext.runAnimationGroup { context in
             context.duration = duration
             context.timingFunction = CAMediaTimingFunction(name: .easeOut)
             animator().alphaValue = targetAlpha
         }
+        CATransaction.begin()
+        CATransaction.setAnimationDuration(duration)
+        layer?.backgroundColor = background.cgColor
+        CATransaction.commit()
+    }
+}
+
+@MainActor
+private final class NativeViewerFloatingControlGroupView: NSView {
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        wantsLayer = true
+        layer?.cornerRadius = 7
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    func updateAppearance(foreground: NSColor) {
+        layer?.backgroundColor = foreground.withAlphaComponent(0.08).cgColor
+        layer?.borderWidth = 0
+        layer?.borderColor = NSColor.clear.cgColor
     }
 }
 
 @MainActor
 private final class NativeViewerHeaderView: NSView {
     static let height: CGFloat = 28
+    static let fullScreenHeight: CGFloat = 36
+    static let preferredFullScreenWidth: CGFloat = 500
+    static let fullScreenHUDReserve: CGFloat = 200
+    static let fullScreenHUDGap: CGFloat = 16
 
     private let titleLabel = NSTextField(labelWithString: "")
-    private let zoomButton = NativeViewerHeaderButton()
-    private let fullScreenButton = NativeViewerHeaderButton()
-    private let closeButton = NativeViewerHeaderButton()
+    private let materialView = NSVisualEffectView()
+    private let collaborationGroup = NativeViewerFloatingControlGroupView()
+    private var collaborationButtons:
+        [NativeViewerCollaborationControlTool: NativeViewerFloatingControlButton] = [:]
+    private let zoomButton = NativeViewerFloatingControlButton()
+    private let fullScreenButton = NativeViewerFloatingControlButton()
+    private let closeButton = NativeViewerFloatingControlButton()
     private var scaleMode = NativeViewerScaleMode.follow
     private var zoomPercentage = 100
     private var isFullScreen = false
+    private var controlsAreInteractive = true
+    private var collaborationState = NativeViewerCollaborationControlState.globalDefaults
+    private var foregroundColor = NSColor.black
+    private var hoverTrackingArea: NSTrackingArea?
 
     var onAction: ((NativeViewerHeaderAction) -> Void)?
+    var onHoverChanged: ((Bool) -> Void)?
 
     override var mouseDownCanMoveWindow: Bool { false }
     override var isOpaque: Bool { false }
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
+
+        wantsLayer = true
+
+        materialView.material = .hudWindow
+        materialView.blendingMode = .withinWindow
+        materialView.state = .active
+        materialView.wantsLayer = true
+        materialView.layer?.cornerRadius = 10
+        materialView.layer?.masksToBounds = true
+        materialView.isHidden = true
+        addSubview(materialView)
 
         titleLabel.font = .systemFont(ofSize: 12, weight: .semibold)
         titleLabel.textColor = .white
@@ -92,11 +237,36 @@ private final class NativeViewerHeaderView: NSView {
         titleLabel.setAccessibilityIdentifier("clip.nativeViewer.windowTitle")
         addSubview(titleLabel)
 
+        addSubview(collaborationGroup)
+        for tool in NativeViewerCollaborationControlTool.allCases {
+            let button = NativeViewerFloatingControlButton()
+            button.title = ""
+            button.image = NSImage(
+                systemSymbolName: tool.systemImageName,
+                accessibilityDescription: tool.title
+            )
+            button.imagePosition = .imageOnly
+            button.toolTip = tool.title
+            button.setAccessibilityLabel(tool.title)
+            button.setAccessibilityIdentifier(
+                "clip.nativeViewer.collaboration.\(String(describing: tool))"
+            )
+            button.target = self
+            button.action = #selector(toggleCollaborationControl(_:))
+            button.tag = Self.tag(for: tool)
+            collaborationGroup.addSubview(button)
+            collaborationButtons[tool] = button
+        }
+
         configureButton(zoomButton, action: #selector(showZoomMenu))
         zoomButton.title = "100%"
         zoomButton.image = NSImage(systemSymbolName: "magnifyingglass", accessibilityDescription: nil)
         zoomButton.imagePosition = .imageLeading
-        zoomButton.setAccessibilityLabel("Viewer zoom")
+        // AppKit otherwise anchors the image independently at the leading edge
+        // of a wider borderless button. Keep the magnifier and mode title as one
+        // centered unit so the computed horizontal inset is real on both sides.
+        zoomButton.imageHugsTitle = true
+        zoomButton.setAccessibilityLabel(String(localized: "Shared-window zoom"))
         zoomButton.setAccessibilityIdentifier("clip.nativeViewer.zoom")
         addSubview(zoomButton)
 
@@ -118,6 +288,8 @@ private final class NativeViewerHeaderView: NSView {
         closeButton.setAccessibilityLabel("Close shared window")
         closeButton.setAccessibilityIdentifier("clip.nativeViewer.close")
         addSubview(closeButton)
+        updateCollaborationState(.globalDefaults)
+        updatePalette(.black)
     }
 
     @available(*, unavailable)
@@ -125,45 +297,98 @@ private final class NativeViewerHeaderView: NSView {
         fatalError("init(coder:) has not been implemented")
     }
 
+    override func updateTrackingAreas() {
+        if let hoverTrackingArea {
+            removeTrackingArea(hoverTrackingArea)
+        }
+        let replacement = NSTrackingArea(
+            rect: bounds,
+            options: [.activeAlways, .inVisibleRect, .mouseEnteredAndExited],
+            owner: self
+        )
+        addTrackingArea(replacement)
+        hoverTrackingArea = replacement
+        super.updateTrackingAreas()
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        onHoverChanged?(true)
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        onHoverChanged?(false)
+    }
+
     override func layout() {
         super.layout()
+        materialView.frame = bounds
         let closeWidth: CGFloat = 24
         let fullScreenWidth: CGFloat = 24
-        let zoomWidth: CGFloat = 78
-        let controlHeight = min(CGFloat(22), max(0, bounds.height - 4))
-        closeButton.frame = CGRect(
-            x: max(4, bounds.width - closeWidth - 4),
-            y: floor((bounds.height - controlHeight) / 2),
-            width: min(closeWidth, max(0, bounds.width - 8)),
-            height: controlHeight
-        )
+        let zoomWidth = zoomControlWidth()
+        let toolWidth: CGFloat = 24
+        let groupPadding: CGFloat = 2
+        let groupWidth = CGFloat(collaborationButtons.count) * toolWidth
+            + groupPadding * 2
+        let controlHeight = min(CGFloat(isFullScreen ? 28 : 22), max(0, bounds.height - 4))
+        let controlY = floor((bounds.height - controlHeight) / 2)
+        if isFullScreen {
+            closeButton.frame = .zero
+        } else {
+            closeButton.frame = CGRect(
+                x: max(4, bounds.width - closeWidth - 4),
+                y: controlY,
+                width: min(closeWidth, max(0, bounds.width - 8)),
+                height: controlHeight
+            )
+        }
+        let fullScreenMaxX = isFullScreen
+            ? max(4, bounds.width - 4)
+            : closeButton.frame.minX - 2
         fullScreenButton.frame = CGRect(
-            x: max(4, closeButton.frame.minX - fullScreenWidth - 2),
-            y: closeButton.frame.minY,
-            width: min(fullScreenWidth, max(0, closeButton.frame.minX - 6)),
+            x: max(4, fullScreenMaxX - fullScreenWidth),
+            y: controlY,
+            width: min(fullScreenWidth, max(0, fullScreenMaxX - 4)),
             height: controlHeight
         )
         zoomButton.frame = CGRect(
             x: max(4, fullScreenButton.frame.minX - zoomWidth - 2),
-            y: closeButton.frame.minY,
+            y: controlY,
             width: min(zoomWidth, max(0, fullScreenButton.frame.minX - 6)),
             height: controlHeight
         )
+        let collaborationMaxX = zoomButton.frame.minX - 2
+        collaborationGroup.frame = CGRect(
+            x: max(4, collaborationMaxX - groupWidth),
+            y: controlY,
+            width: min(groupWidth, max(0, collaborationMaxX - 4)),
+            height: controlHeight
+        )
+        for (index, tool) in NativeViewerCollaborationControlTool.allCases.enumerated() {
+            collaborationButtons[tool]?.frame = CGRect(
+                x: groupPadding + CGFloat(index) * toolWidth,
+                y: 0,
+                width: toolWidth,
+                height: controlHeight
+            )
+        }
         titleLabel.frame = CGRect(
-            x: 8,
+            x: isFullScreen ? 12 : 8,
             y: floor((bounds.height - 17) / 2),
-            width: max(0, zoomButton.frame.minX - 15),
+            width: max(0, collaborationGroup.frame.minX - (isFullScreen ? 20 : 15)),
             height: 17
         )
     }
 
     override func hitTest(_ point: NSPoint) -> NSView? {
+        guard controlsAreInteractive else { return nil }
         let hit = super.hitTest(point)
         if let hit,
            hit === zoomButton || hit === fullScreenButton || hit === closeButton
+            || collaborationButtons.values.contains(where: { hit === $0 })
             || hit.isDescendant(of: zoomButton)
             || hit.isDescendant(of: fullScreenButton)
-            || hit.isDescendant(of: closeButton) {
+            || hit.isDescendant(of: closeButton)
+            || hit.isDescendant(of: collaborationGroup) {
             return hit
         }
         return bounds.contains(point) ? self : nil
@@ -192,6 +417,21 @@ private final class NativeViewerHeaderView: NSView {
             zoomButton.title = String(localized: "Fit · \(self.zoomPercentage)%")
         }
         zoomButton.setAccessibilityValue(zoomButton.title)
+        needsLayout = true
+    }
+
+    func updateCollaborationState(_ state: NativeViewerCollaborationControlState) {
+        collaborationState = state
+        for (tool, button) in collaborationButtons {
+            button.isControlSelected = state.isEnabled(tool)
+            button.setAccessibilityValue(
+                state.isEnabled(tool)
+                    ? String(localized: "On")
+                    : String(localized: "Off")
+            )
+        }
+        collaborationGroup.updateAppearance(foreground: foregroundColor)
+        needsLayout = true
     }
 
     func updateFullScreen(_ fullScreen: Bool) {
@@ -207,15 +447,26 @@ private final class NativeViewerHeaderView: NSView {
             accessibilityDescription: label
         )
         fullScreenButton.setAccessibilityLabel(label)
-        let tint: NSColor = fullScreen ? .white : .black
-        zoomButton.contentTintColor = tint
-        fullScreenButton.contentTintColor = tint
-        closeButton.contentTintColor = tint
-        wantsLayer = true
-        layer?.backgroundColor = fullScreen
-            ? NSColor.black.withAlphaComponent(0.42).cgColor
-            : NSColor.clear.cgColor
-        layer?.cornerRadius = fullScreen ? 7 : 0
+        // Closing the last viewer window may leave the room. Fullscreen must be
+        // exited explicitly first so AppKit can restore its Space and window
+        // geometry before any close/leave confirmation is possible.
+        closeButton.isHidden = fullScreen
+        closeButton.setAccessibilityHidden(fullScreen)
+        closeButton.isEnabled = controlsAreInteractive && !fullScreen
+        materialView.isHidden = !fullScreen
+        updatePalette(fullScreen ? .white : foregroundColor)
+        needsLayout = true
+    }
+
+    func setControlsInteractive(_ interactive: Bool) {
+        controlsAreInteractive = interactive
+        for button in collaborationButtons.values {
+            button.isEnabled = interactive
+        }
+        for button in [zoomButton, fullScreenButton] {
+            button.isEnabled = interactive
+        }
+        closeButton.isEnabled = interactive && !isFullScreen
     }
 
     func updateIdentityColor(_ color: NSColor) {
@@ -223,9 +474,10 @@ private final class NativeViewerHeaderView: NSView {
         let luminance = 0.2126 * rgb.redComponent
             + 0.7152 * rgb.greenComponent
             + 0.0722 * rgb.blueComponent
-        titleLabel.textColor = luminance > 0.58
+        let resolved = luminance > 0.58
             ? NSColor.black.withAlphaComponent(0.82)
             : .white
+        updatePalette(isFullScreen ? .white : resolved)
     }
 
     var controlFrames: (zoom: CGRect, fullScreen: CGRect, close: CGRect) {
@@ -240,20 +492,84 @@ private final class NativeViewerHeaderView: NSView {
         [zoomButton.contentTintColor, fullScreenButton.contentTintColor, closeButton.contentTintColor]
     }
 
-    private func configureButton(_ button: NSButton, action: Selector) {
+    var collaborationControlFrames:
+        [NativeViewerCollaborationControlTool: CGRect] {
+        collaborationButtons.mapValues { collaborationGroup.convert($0.frame, to: self) }
+    }
+
+    var isResetCollaborationVisible: Bool {
+        false
+    }
+
+    var collaborationControlToolTips:
+        [NativeViewerCollaborationControlTool: String?] {
+        collaborationButtons.mapValues(\.toolTip)
+    }
+
+    var collaborationControlAccessibilityLabels:
+        [NativeViewerCollaborationControlTool: String?] {
+        collaborationButtons.mapValues { $0.accessibilityLabel() }
+    }
+
+    var controlsInteractive: Bool { controlsAreInteractive }
+
+    var controlsEnabled: Bool {
+        collaborationButtons.values.allSatisfy(\.isEnabled)
+            && [zoomButton, fullScreenButton].allSatisfy(\.isEnabled)
+            && (isFullScreen || closeButton.isEnabled)
+    }
+
+    var isCloseControlVisible: Bool {
+        !closeButton.isHidden && closeButton.frame.width > 0
+    }
+
+    func focusCollaborationControl(
+        _ tool: NativeViewerCollaborationControlTool
+    ) -> Bool {
+        guard let button = collaborationButtons[tool], button.isEnabled else {
+            return false
+        }
+        return window?.makeFirstResponder(button) ?? false
+    }
+
+    var containsKeyboardFocus: Bool {
+        guard let focusedView = window?.firstResponder as? NSView else {
+            return false
+        }
+        return focusedView === self || focusedView.isDescendant(of: self)
+    }
+
+    func activateCollaborationControl(
+        _ tool: NativeViewerCollaborationControlTool
+    ) {
+        onAction?(
+            .toggleCollaboration(
+                tool,
+                enabled: !collaborationState.isEnabled(tool)
+            )
+        )
+    }
+
+    func activateResetCollaborationToGlobal() {
+        onAction?(.resetCollaborationToGlobal)
+    }
+
+    private func configureButton(
+        _ button: NativeViewerFloatingControlButton,
+        action: Selector
+    ) {
         button.target = self
         button.action = action
-        button.bezelStyle = .inline
-        button.isBordered = false
-        button.font = .systemFont(ofSize: 11, weight: .semibold)
-        button.contentTintColor = .black
-        button.focusRingType = .none
+        button.setPalette(
+            foreground: foregroundColor,
+            selection: foregroundColor.withAlphaComponent(0.18)
+        )
     }
 
     @objc private func showZoomMenu() {
-        let menu = NSMenu(title: "Viewer Zoom")
+        let menu = NSMenu(title: String(localized: "Shared Window Zoom"))
         let follow = NSMenuItem(
-            title: String(localized: "Follow Host"),
+            title: String(localized: "Follow Source"),
             action: #selector(selectFollow),
             keyEquivalent: ""
         )
@@ -282,8 +598,8 @@ private final class NativeViewerHeaderView: NSView {
         menu.addItem(.separator())
 
         let match = NSMenuItem(
-            title: String(localized: "Match Host Size"),
-            action: #selector(matchHostSize),
+            title: String(localized: "Match Source Size"),
+            action: #selector(matchSourceSize),
             keyEquivalent: ""
         )
         match.target = self
@@ -306,7 +622,7 @@ private final class NativeViewerHeaderView: NSView {
     }
 
     @objc private func selectFollow() {
-        onAction?(.followHost)
+        onAction?(.followSource)
     }
 
     @objc private func selectFit() {
@@ -317,8 +633,17 @@ private final class NativeViewerHeaderView: NSView {
         onAction?(.native)
     }
 
-    @objc private func matchHostSize() {
-        onAction?(.matchHostSize)
+    @objc private func matchSourceSize() {
+        onAction?(.matchSourceSize)
+    }
+
+    @objc private func toggleCollaborationControl(_ sender: NSButton) {
+        guard let tool = Self.tool(for: sender.tag) else { return }
+        activateCollaborationControl(tool)
+    }
+
+    @objc private func resetCollaborationToGlobal() {
+        onAction?(.resetCollaborationToGlobal)
     }
 
     @objc private func toggleFullScreen() {
@@ -327,6 +652,66 @@ private final class NativeViewerHeaderView: NSView {
 
     @objc private func closeWindow() {
         onAction?(.close)
+    }
+
+    private func updatePalette(_ foreground: NSColor) {
+        foregroundColor = foreground
+        titleLabel.textColor = foreground
+        let selection = foreground.withAlphaComponent(isFullScreen ? 0.20 : 0.16)
+        for button in collaborationButtons.values {
+            button.setPalette(foreground: foreground, selection: selection)
+        }
+        for button in [
+            zoomButton,
+            fullScreenButton,
+            closeButton,
+        ] {
+            button.setPalette(foreground: foreground, selection: selection)
+        }
+        collaborationGroup.updateAppearance(foreground: foreground)
+    }
+
+    var collaborationGroupBorderWidth: CGFloat {
+        collaborationGroup.layer?.borderWidth ?? 0
+    }
+
+    var zoomContentHorizontalPadding: CGFloat {
+        max(0, (zoomButton.frame.width - zoomContentWidth()) / 2)
+    }
+
+    var zoomControlHugsTitle: Bool {
+        zoomButton.imageHugsTitle
+    }
+
+    private func zoomControlWidth() -> CGFloat {
+        max(68, ceil(zoomContentWidth() + 16))
+    }
+
+    private func zoomContentWidth() -> CGFloat {
+        let font = zoomButton.font ?? NSFont.systemFont(ofSize: 11)
+        let titleWidth = (zoomButton.title as NSString).size(
+            withAttributes: [.font: font]
+        ).width
+        let imageWidth = zoomButton.image?.size.width ?? 0
+        let spacing: CGFloat = titleWidth > 0 && imageWidth > 0 ? 4 : 0
+        return titleWidth + imageWidth + spacing
+    }
+
+    private static func tag(for tool: NativeViewerCollaborationControlTool) -> Int {
+        switch tool {
+        case .pointer: 1
+        case .ping: 2
+        case .drawing: 3
+        }
+    }
+
+    private static func tool(for tag: Int) -> NativeViewerCollaborationControlTool? {
+        switch tag {
+        case 1: .pointer
+        case 2: .ping
+        case 3: .drawing
+        default: nil
+        }
     }
 }
 
@@ -339,11 +724,15 @@ final class NativeViewerContentView: NSView {
     static var verticalChrome: CGFloat { identityBorderWidth * 2 + headerHeight }
 
     let videoView: NSView
+    let collaborationOverlayView = NativeViewerCollaborationOverlayView(frame: .zero)
 
-    var onFollowHost: (() -> Void)?
+    var onFollowSource: (() -> Void)?
     var onFitToWindow: (() -> Void)?
     var onNativeSize: (() -> Void)?
-    var onMatchHostSize: (() -> Void)?
+    var onMatchSourceSize: (() -> Void)?
+    var onCollaborationControlChanged:
+        ((NativeViewerCollaborationControlTool, Bool) -> Void)?
+    var onCollaborationControlResetToGlobal: (() -> Void)?
     var onToggleFullScreen: (() -> Void)?
     var onClose: (() -> Void)?
 
@@ -367,6 +756,9 @@ final class NativeViewerContentView: NSView {
     private var panTimer: Timer?
     private var fullScreenTrackingArea: NSTrackingArea?
     private var fullScreenHeaderHideTimer: Timer?
+    private var fullScreenHeaderHideTimerCreationCount = 0
+    private var isFullScreenHeaderHovered = false
+    private var headerVisibilityRevision = 0
     private(set) var isFullScreenHeaderVisible = true
 
     private struct PanGeometryKey: Equatable {
@@ -403,21 +795,38 @@ final class NativeViewerContentView: NSView {
         cursorLayer.isHidden = true
         videoViewport.layer?.addSublayer(cursorLayer)
 
+        collaborationOverlayView.translatesAutoresizingMaskIntoConstraints = true
+        collaborationOverlayView.autoresizingMask = [.width, .height]
+        videoViewport.addSubview(collaborationOverlayView)
+
         headerView.onAction = { [weak self] action in
             guard let self else { return }
             switch action {
-            case .followHost:
-                onFollowHost?()
+            case .followSource:
+                onFollowSource?()
             case .fit:
                 onFitToWindow?()
             case .native:
                 onNativeSize?()
-            case .matchHostSize:
-                onMatchHostSize?()
+            case .matchSourceSize:
+                onMatchSourceSize?()
+            case let .toggleCollaboration(tool, enabled):
+                onCollaborationControlChanged?(tool, enabled)
+            case .resetCollaborationToGlobal:
+                onCollaborationControlResetToGlobal?()
             case .toggleFullScreen:
                 onToggleFullScreen?()
             case .close:
                 onClose?()
+            }
+        }
+        headerView.onHoverChanged = { [weak self] hovered in
+            guard let self, isFullScreenPresentation else { return }
+            isFullScreenHeaderHovered = hovered
+            if hovered {
+                showFullScreenHeader(scheduleHide: false)
+            } else {
+                showFullScreenHeader(scheduleHide: true)
             }
         }
         addSubview(headerView)
@@ -468,13 +877,12 @@ final class NativeViewerContentView: NSView {
         super.layout()
         if isFullScreenPresentation {
             videoViewport.frame = bounds
-            headerView.frame = CGRect(
-                x: 8,
-                y: max(0, bounds.height - Self.headerHeight - 8),
-                width: max(0, bounds.width - 16),
-                height: min(Self.headerHeight, bounds.height)
+            headerView.frame = Self.fullScreenControlFrame(
+                bounds: bounds,
+                safeAreaTopInset: window?.screen?.safeAreaInsets.top ?? 0
             )
             cursorLayer.frame = videoViewport.bounds
+            collaborationOverlayView.frame = videoViewport.bounds
             layoutVideoSurface()
             return
         }
@@ -492,6 +900,7 @@ final class NativeViewerContentView: NSView {
             height: max(0, bounds.height - border * 2 - Self.headerHeight)
         )
         cursorLayer.frame = videoViewport.bounds
+        collaborationOverlayView.frame = videoViewport.bounds
         layoutVideoSurface()
     }
 
@@ -550,6 +959,7 @@ final class NativeViewerContentView: NSView {
             showFullScreenHeader(scheduleHide: true)
         } else {
             stopFullScreenHeaderTimer()
+            isFullScreenHeaderHovered = false
             setFullScreenHeaderVisible(true)
         }
         resetPanGeometry()
@@ -580,6 +990,34 @@ final class NativeViewerContentView: NSView {
         } else {
             stopPanAnimation()
         }
+    }
+
+    func setCollaborationOverlay(
+        _ snapshot: NativeViewerCollaborationOverlaySnapshot
+    ) {
+        collaborationOverlayView.update(snapshot)
+    }
+
+    func setCollaborationInteractionMode(
+        _ mode: NativeViewerCollaborationInteractionMode
+    ) {
+        collaborationOverlayView.interactionMode = mode
+    }
+
+    func setCollaborationControlState(
+        _ state: NativeViewerCollaborationControlState
+    ) {
+        headerView.updateCollaborationState(state)
+    }
+
+    func activateCollaborationControl(
+        _ tool: NativeViewerCollaborationControlTool
+    ) {
+        headerView.activateCollaborationControl(tool)
+    }
+
+    func activateResetCollaborationToGlobal() {
+        headerView.activateResetCollaborationToGlobal()
     }
 
     static func cursorPoint(
@@ -641,14 +1079,96 @@ final class NativeViewerContentView: NSView {
     }
     var headerControlOpacities: [CGFloat] { headerView.controlOpacities }
     var headerControlTintColors: [NSColor?] { headerView.controlTintColors }
+    var collaborationControlFrames:
+        [NativeViewerCollaborationControlTool: CGRect] {
+        headerView.collaborationControlFrames
+    }
+    var isResetCollaborationControlVisible: Bool {
+        headerView.isResetCollaborationVisible
+    }
+    var collaborationControlGroupBorderWidth: CGFloat {
+        headerView.collaborationGroupBorderWidth
+    }
+    var zoomControlHorizontalPadding: CGFloat {
+        headerView.zoomContentHorizontalPadding
+    }
+    var zoomControlHugsTitle: Bool {
+        headerView.zoomControlHugsTitle
+    }
+    var collaborationControlToolTips:
+        [NativeViewerCollaborationControlTool: String?] {
+        headerView.collaborationControlToolTips
+    }
+    var collaborationControlAccessibilityLabels:
+        [NativeViewerCollaborationControlTool: String?] {
+        headerView.collaborationControlAccessibilityLabels
+    }
+    var areFullScreenControlsInteractive: Bool {
+        headerView.controlsInteractive
+    }
+    var areFullScreenControlsEnabled: Bool {
+        headerView.controlsEnabled
+    }
+    var isCloseControlVisible: Bool {
+        headerView.isCloseControlVisible
+    }
+    var fullScreenHideTimerCreationCount: Int {
+        fullScreenHeaderHideTimerCreationCount
+    }
+    var hasKeyboardFocusedFullScreenControl: Bool {
+        headerView.containsKeyboardFocus
+    }
+
+    static func fullScreenControlFrame(
+        bounds: CGRect,
+        safeAreaTopInset: CGFloat
+    ) -> CGRect {
+        guard bounds.width > 0, bounds.height > 0 else { return .zero }
+        let horizontalInset: CGFloat = 16
+        // The sharing HUD occupies the top-right corner. Because this capsule
+        // remains centered, reserving the HUD on the right also requires the
+        // same amount on the left. Capping the width this way preserves the
+        // centered composition on narrower fullscreen displays instead of
+        // letting the capsule slide under the HUD.
+        let hudSafeCenteredWidth = bounds.width - 2 * (
+            NativeViewerHeaderView.fullScreenHUDReserve
+                + NativeViewerHeaderView.fullScreenHUDGap
+        )
+        let width = min(
+            NativeViewerHeaderView.preferredFullScreenWidth,
+            max(
+                0,
+                min(
+                    bounds.width - horizontalInset * 2,
+                    hudSafeCenteredWidth
+                )
+            )
+        )
+        let height = min(
+            NativeViewerHeaderView.fullScreenHeight,
+            bounds.height
+        )
+        // macOS reveals its menu/status bar at the display's top edge. The
+        // centered Clip capsule stays below both that transient surface and a
+        // possible notch, and it deliberately avoids Clip's top-right sharing
+        // HUD. `safeAreaTopInset` is zero on displays without a notch, so retain
+        // a menu-bar-sized minimum clearance there as well.
+        let topClearance = max(CGFloat(44), safeAreaTopInset + 14)
+        return CGRect(
+            x: floor(bounds.midX - width / 2),
+            y: max(12, floor(bounds.maxY - topClearance - height)),
+            width: width,
+            height: height
+        )
+    }
 
     private func layoutVideoSurface() {
         guard videoViewport.bounds.width > 0, videoViewport.bounds.height > 0 else {
             videoView.frame = .zero
+            collaborationOverlayView.contentFrame = .zero
             return
         }
-        if !isFullScreenPresentation,
-           scaleMode != .fit,
+        if usesNativeViewport,
            let sourceLogicalSize,
            let geometry = NativeViewerPanPolicy.geometry(
                sourceLogicalSize: sourceLogicalSize,
@@ -696,14 +1216,14 @@ final class NativeViewerContentView: NSView {
                 backingScale: effectiveBackingScale
             )
         }
+        collaborationOverlayView.contentFrame = videoView.frame
         updateZoomIndicator()
         layoutCursor()
     }
 
     private func updateNativePanTarget(animated: Bool) {
         guard isPresentationActive,
-              !isFullScreenPresentation,
-              scaleMode != .fit,
+              usesNativeViewport,
               let sourceLogicalSize,
               let geometry = NativeViewerPanPolicy.geometry(
                   sourceLogicalSize: sourceLogicalSize,
@@ -743,6 +1263,15 @@ final class NativeViewerContentView: NSView {
             currentNativeOrigin = geometry.contentFrame.origin
             applyCurrentNativeFrame()
         }
+    }
+
+    /// Native always renders the host's logical surface at 100%, including in
+    /// fullscreen, where an oversized source is cropped and follows the cursor.
+    /// Follow retains its established fullscreen fit behavior, while windowed
+    /// Follow remains the automatic form of Native.
+    private var usesNativeViewport: Bool {
+        scaleMode == .native
+            || (!isFullScreenPresentation && scaleMode == .follow)
     }
 
     private func startPanAnimation() {
@@ -793,6 +1322,7 @@ final class NativeViewerContentView: NSView {
             ),
             size: alignedSize
         )
+        collaborationOverlayView.contentFrame = videoView.frame
         layoutCursor()
     }
 
@@ -831,26 +1361,64 @@ final class NativeViewerContentView: NSView {
         bounds: CGRect,
         headerFrame: CGRect
     ) -> Bool {
-        pointer.y >= bounds.maxY - 64
+        bounds.contains(pointer)
             || headerFrame.insetBy(dx: -8, dy: -8).contains(pointer)
     }
 
     private func showFullScreenHeader(scheduleHide: Bool) {
-        stopFullScreenHeaderTimer()
         setFullScreenHeaderVisible(true)
-        guard scheduleHide, isFullScreenPresentation else { return }
-        let timer = Timer(timeInterval: 2.2, repeats: false) { [weak self] _ in
+        guard scheduleHide,
+              isFullScreenPresentation,
+              !isFullScreenHeaderHovered else {
+            stopFullScreenHeaderTimer()
+            return
+        }
+        scheduleFullScreenHeaderHide()
+    }
+
+    private func scheduleFullScreenHeaderHide() {
+        let fireDate = Date(timeIntervalSinceNow: 2.2)
+        if let fullScreenHeaderHideTimer,
+           fullScreenHeaderHideTimer.isValid {
+            fullScreenHeaderHideTimer.fireDate = fireDate
+            return
+        }
+        let timer = Timer(fire: fireDate, interval: 0, repeats: false) {
+            [weak self] _ in
             MainActor.assumeIsolated {
-                self?.hideFullScreenHeaderForInactivity()
+                guard let self else { return }
+                self.fullScreenHeaderHideTimer = nil
+                self.hideFullScreenHeaderForInactivity()
             }
         }
         RunLoop.main.add(timer, forMode: .common)
         fullScreenHeaderHideTimer = timer
+        fullScreenHeaderHideTimerCreationCount += 1
+    }
+
+    func noteFullScreenPointerActivityForTesting() {
+        guard isFullScreenPresentation else { return }
+        showFullScreenHeader(scheduleHide: true)
+    }
+
+    func focusFullScreenCollaborationControlForTesting(
+        _ tool: NativeViewerCollaborationControlTool
+    ) -> Bool {
+        headerView.focusCollaborationControl(tool)
+    }
+
+    func hideFullScreenHeaderImmediatelyForTesting() {
+        stopFullScreenHeaderTimer()
+        setFullScreenHeaderVisible(false)
     }
 
     func hideFullScreenHeaderForInactivity() {
         stopFullScreenHeaderTimer()
         guard isFullScreenPresentation else { return }
+        if isFullScreenHeaderHovered {
+            showFullScreenHeader(scheduleHide: false)
+            return
+        }
         if let window {
             let pointer = convert(window.mouseLocationOutsideOfEventStream, from: nil)
             if headerView.frame.insetBy(dx: -8, dy: -8).contains(pointer) {
@@ -863,14 +1431,37 @@ final class NativeViewerContentView: NSView {
 
     private func setFullScreenHeaderVisible(_ visible: Bool) {
         isFullScreenHeaderVisible = visible
-        let targetAlpha: CGFloat = visible ? 1 : 0.06
-        guard headerView.alphaValue != targetAlpha else { return }
-        let duration = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion ? 0 : 0.18
-        NSAnimationContext.runAnimationGroup { context in
-            context.duration = duration
-            context.timingFunction = CAMediaTimingFunction(name: .easeOut)
-            headerView.animator().alphaValue = targetAlpha
+        headerVisibilityRevision += 1
+        let revision = headerVisibilityRevision
+        headerView.setAccessibilityHidden(!visible)
+        if !visible, headerView.containsKeyboardFocus {
+            window?.makeFirstResponder(nil)
         }
+        headerView.setControlsInteractive(visible)
+        if visible {
+            headerView.isHidden = false
+        }
+        let targetAlpha: CGFloat = visible ? 1 : 0
+        guard headerView.alphaValue != targetAlpha else {
+            headerView.isHidden = !visible
+            return
+        }
+        let duration = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion ? 0 : 0.18
+        NSAnimationContext.runAnimationGroup(
+            { context in
+                context.duration = duration
+                context.timingFunction = CAMediaTimingFunction(name: .easeOut)
+                headerView.animator().alphaValue = targetAlpha
+            },
+            completionHandler: { [weak self] in
+                MainActor.assumeIsolated {
+                    guard let self,
+                          self.headerVisibilityRevision == revision,
+                          !visible else { return }
+                    self.headerView.isHidden = true
+                }
+            }
+        )
     }
 
     private func stopFullScreenHeaderTimer() {
@@ -939,6 +1530,19 @@ final class NativeViewerContentView: NSView {
 }
 
 @MainActor
+private final class NativeViewerPresentationWindow: NSWindow {
+    var onEscapePressed: (() -> Void)?
+
+    override func keyDown(with event: NSEvent) {
+        guard event.keyCode == 53, styleMask.contains(.fullScreen) else {
+            super.keyDown(with: event)
+            return
+        }
+        onEscapePressed?()
+    }
+}
+
+@MainActor
 final class NativeViewerWindowController: NSWindowController, NSWindowDelegate {
     private static let defaultMinimumFrameSize = CGSize(
         width: 320 + NativeViewerContentView.horizontalChrome,
@@ -953,6 +1557,13 @@ final class NativeViewerWindowController: NSWindowController, NSWindowDelegate {
     /// `setScaleMode(_:)` deliberately does not echo through this callback.
     var onScaleModeChanged: ((NativeViewerWindowController, NativeViewerScaleMode) -> Void)?
     var onFullScreenChanged: ((NativeViewerWindowController, Bool) -> Void)?
+    var onCollaborationControlChanged: ((
+        NativeViewerWindowController,
+        NativeViewerCollaborationControlTool,
+        Bool
+    ) -> Void)?
+    var onCollaborationControlResetToGlobal:
+        ((NativeViewerWindowController) -> Void)?
 
     private(set) var scaleMode = NativeViewerScaleMode.follow
     private(set) var isFullScreen = false
@@ -961,6 +1572,19 @@ final class NativeViewerWindowController: NSWindowController, NSWindowDelegate {
     private var isApplyingPolicySize = false
     private var pendingPolicyResizeAfterFullScreen = false
     private var pendingHideAfterFullScreen = false
+    private enum FullScreenTransition: Equatable {
+        case idle
+        case entering
+        case exiting
+    }
+    private var fullScreenTransition = FullScreenTransition.idle
+    private var tearDownRequested = false
+    private var tearDownCompleted = false
+    private var tearDownFullScreenExitAttempts = 0
+    private var pendingFullScreenExitAction: ((NSWindow) -> Void)?
+    // The coordinator releases its entry synchronously. Retain this controller
+    // until AppKit finishes restoring a fullscreen window, then close it.
+    private var pendingTearDownRetain: NativeViewerWindowController?
 
     init(
         id: NativeViewerWindowID,
@@ -972,10 +1596,7 @@ final class NativeViewerWindowController: NSWindowController, NSWindowDelegate {
         viewerWindowID = id
         self.source = source
         content = NativeViewerContentView(videoView: videoView, identityColor: identityColor)
-        let initialSourceSize = source.sourcePointSize ?? CGSize(
-            width: source.pixelSize.width / 2,
-            height: source.pixelSize.height / 2
-        )
+        let initialSourceSize = source.sourcePointSize
         let initialScale = min(
             1,
             960 / initialSourceSize.width,
@@ -985,7 +1606,7 @@ final class NativeViewerWindowController: NSWindowController, NSWindowDelegate {
             width: max(320, initialSourceSize.width * initialScale),
             height: max(180, initialSourceSize.height * initialScale)
         )
-        let window = NSWindow(
+        let window = NativeViewerPresentationWindow(
             contentRect: CGRect(
                 origin: .zero,
                 size: CGSize(
@@ -1019,8 +1640,11 @@ final class NativeViewerWindowController: NSWindowController, NSWindowDelegate {
         window.hasShadow = true
         window.minSize = Self.defaultMinimumFrameSize
         window.setAccessibilitySubrole(.standardWindow)
+        window.onEscapePressed = { [weak self] in
+            self?.toggleFullScreen()
+        }
 
-        content.onFollowHost = { [weak self] in
+        content.onFollowSource = { [weak self] in
             self?.setUserScaleMode(.follow)
         }
         content.onFitToWindow = { [weak self] in
@@ -1029,8 +1653,16 @@ final class NativeViewerWindowController: NSWindowController, NSWindowDelegate {
         content.onNativeSize = { [weak self] in
             self?.setUserScaleMode(.native)
         }
-        content.onMatchHostSize = { [weak self] in
-            self?.matchHostSize()
+        content.onMatchSourceSize = { [weak self] in
+            self?.matchSourceSize()
+        }
+        content.onCollaborationControlChanged = { [weak self] tool, enabled in
+            guard let self else { return }
+            onCollaborationControlChanged?(self, tool, enabled)
+        }
+        content.onCollaborationControlResetToGlobal = { [weak self] in
+            guard let self else { return }
+            onCollaborationControlResetToGlobal?(self)
         }
         content.onToggleFullScreen = { [weak self] in
             self?.toggleFullScreen()
@@ -1117,6 +1749,12 @@ final class NativeViewerWindowController: NSWindowController, NSWindowDelegate {
         window?.toggleFullScreen(nil)
     }
 
+    func setCollaborationControlState(
+        _ state: NativeViewerCollaborationControlState
+    ) {
+        content.setCollaborationControlState(state)
+    }
+
     func showWithoutTakingFocus() {
         pendingHideAfterFullScreen = false
         content.setPresentationActive(true)
@@ -1152,12 +1790,80 @@ final class NativeViewerWindowController: NSWindowController, NSWindowDelegate {
     }
 
     func tearDown() {
+        tearDown(requestFullScreenExit: { window in
+            window.toggleFullScreen(nil)
+        })
+    }
+
+    func tearDown(
+        requestFullScreenExit: @escaping (NSWindow) -> Void
+    ) {
+        guard !tearDownRequested else { return }
+        tearDownRequested = true
+        pendingFullScreenExitAction = requestFullScreenExit
+        pendingPolicyResizeAfterFullScreen = false
+        pendingHideAfterFullScreen = false
         onCloseRequested = nil
         onScaleModeChanged = nil
         onFullScreenChanged = nil
+        onCollaborationControlChanged = nil
+        onCollaborationControlResetToGlobal = nil
+        (window as? NativeViewerPresentationWindow)?.onEscapePressed = nil
+        content.onFollowSource = nil
+        content.onFitToWindow = nil
+        content.onNativeSize = nil
+        content.onMatchSourceSize = nil
+        content.onCollaborationControlChanged = nil
+        content.onCollaborationControlResetToGlobal = nil
+        content.onToggleFullScreen = nil
+        content.onClose = nil
+        content.setPresentationActive(false)
+
+        guard let window else {
+            finishTearDown()
+            return
+        }
+        guard fullScreenTransition != .entering else {
+            pendingTearDownRetain = self
+            return
+        }
+        guard isFullScreen
+            || fullScreenTransition == .exiting
+            || window.styleMask.contains(.fullScreen) else {
+            finishTearDown()
+            return
+        }
+        pendingTearDownRetain = self
+        requestFullScreenExitIfNeeded()
+    }
+
+    private func requestFullScreenExitIfNeeded() {
+        guard tearDownRequested,
+              fullScreenTransition == .idle,
+              let window,
+              let pendingFullScreenExitAction else { return }
+        tearDownFullScreenExitAttempts += 1
+        pendingFullScreenExitAction(window)
+    }
+
+    private func finishTearDown() {
+        guard !tearDownCompleted else { return }
+        tearDownCompleted = true
+        pendingFullScreenExitAction = nil
+        pendingPolicyResizeAfterFullScreen = false
+        pendingHideAfterFullScreen = false
         window?.delegate = nil
         content.removeFromSuperview()
         close()
+        pendingTearDownRetain = nil
+    }
+
+    var isTearDownPendingFullScreenExit: Bool {
+        tearDownRequested && !tearDownCompleted
+    }
+
+    var hasCompletedTearDown: Bool {
+        tearDownCompleted
     }
 
     func windowShouldClose(_ sender: NSWindow) -> Bool {
@@ -1205,23 +1911,35 @@ final class NativeViewerWindowController: NSWindowController, NSWindowDelegate {
     }
 
     func windowWillEnterFullScreen(_ notification: Notification) {
+        fullScreenTransition = .entering
         isFullScreen = true
         content.setFullScreenPresentation(true)
     }
 
     func windowDidEnterFullScreen(_ notification: Notification) {
+        fullScreenTransition = .idle
+        if tearDownRequested {
+            requestFullScreenExitIfNeeded()
+            return
+        }
         onFullScreenChanged?(self, true)
     }
 
     func windowWillExitFullScreen(_ notification: Notification) {
+        fullScreenTransition = .exiting
         // Keep the edge-to-edge presentation through AppKit's exit animation.
         // The restored window frame and persistent mode take effect together
         // in `windowDidExitFullScreen`.
     }
 
     func windowDidExitFullScreen(_ notification: Notification) {
+        fullScreenTransition = .idle
         isFullScreen = false
         content.setFullScreenPresentation(false)
+        if tearDownRequested {
+            finishTearDown()
+            return
+        }
         updateWindowMinimumSize(for: scaleMode)
         if scaleMode == .native {
             // Native keeps a viewer-owned frame while fullscreen, but a host
@@ -1244,14 +1962,29 @@ final class NativeViewerWindowController: NSWindowController, NSWindowDelegate {
     }
 
     func windowDidFailToEnterFullScreen(_ window: NSWindow) {
+        fullScreenTransition = .idle
         isFullScreen = false
         content.setFullScreenPresentation(false)
+        if tearDownRequested {
+            finishTearDown()
+        }
     }
 
     func windowDidFailToExitFullScreen(_ window: NSWindow) {
+        fullScreenTransition = .idle
         isFullScreen = true
         pendingHideAfterFullScreen = false
         content.setFullScreenPresentation(true)
+        guard tearDownRequested else { return }
+        if tearDownFullScreenExitAttempts < 2 {
+            DispatchQueue.main.async { [weak self] in
+                self?.requestFullScreenExitIfNeeded()
+            }
+        } else {
+            // A failed AppKit exit should not leave a permanently retained,
+            // frozen viewer. Closing is the last-resort cleanup after a retry.
+            finishTearDown()
+        }
     }
 
     func windowWillResize(
@@ -1294,7 +2027,7 @@ final class NativeViewerWindowController: NSWindowController, NSWindowDelegate {
         onScaleModeChanged?(self, mode)
     }
 
-    private func matchHostSize() {
+    private func matchSourceSize() {
         if let committed = dimensionStabilizer.committedPixelSize {
             resizeVideoContent(for: committed)
         }
@@ -1526,16 +2259,9 @@ final class NativeViewerWindowController: NSWindowController, NSWindowDelegate {
 
     private static func resolvedSourceLogicalSize(
         source: NativeViewerSourceSnapshot,
-        destinationBackingScale: CGFloat
+        destinationBackingScale _: CGFloat
     ) -> CGSize {
-        if let sourcePointSize = source.sourcePointSize {
-            return sourcePointSize
-        }
-        let scale = max(1, destinationBackingScale)
-        return CGSize(
-            width: source.pixelSize.width / scale,
-            height: source.pixelSize.height / scale
-        )
+        source.sourcePointSize
     }
 
     private static func title(

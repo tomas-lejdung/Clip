@@ -2,270 +2,177 @@ package protocol
 
 import (
 	"bytes"
-	"crypto/ecdsa"
-	"crypto/elliptic"
-	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"os"
 	"strings"
 	"testing"
 )
 
-func TestNormalizeRoomName(t *testing.T) {
-	t.Parallel()
-	valid := map[string]string{
-		"abc":                "ABC",
-		"  crisp-frog-042  ": "CRISP-FROG-042",
-		"A--B":               "A--B",
-		strings.Repeat("a", MaximumRoomNameBytes): strings.Repeat("A", MaximumRoomNameBytes),
-	}
-	for input, expected := range valid {
-		input, expected := input, expected
-		t.Run(input, func(t *testing.T) {
-			t.Parallel()
-			actual, err := NormalizeRoomName(input)
-			if err != nil || actual != expected {
-				t.Fatalf("NormalizeRoomName(%q) = %q, %v; want %q", input, actual, err, expected)
-			}
-		})
-	}
+func encodedBytes(value byte, count int) string {
+	return base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{value}, count))
+}
 
-	invalid := []string{
-		"AB", "-ABC", "ABC-", "A B", "A_B", "ÅBC", strings.Repeat("A", MaximumRoomNameBytes+1),
+func TestRoomIdentifiersCapabilitiesAndPairIDAreCanonical(t *testing.T) {
+	t.Parallel()
+	room := encodedBytes(1, NativeRoomIDBytes)
+	left := encodedBytes(2, NativeMemberHandleBytes)
+	right := encodedBytes(3, NativeMemberHandleBytes)
+	if err := ValidateNativeRoomID(room); err != nil {
+		t.Fatal(err)
 	}
-	for _, input := range invalid {
-		input := input
-		t.Run("invalid_"+input, func(t *testing.T) {
-			t.Parallel()
-			if _, err := NormalizeRoomName(input); !errors.Is(err, ErrInvalidRoomName) {
-				t.Fatalf("NormalizeRoomName(%q) error = %v; want ErrInvalidRoomName", input, err)
-			}
-		})
+	if err := ValidateNativeRoomID(room + "="); !errors.Is(err, ErrInvalidNativeRoomID) {
+		t.Fatalf("padded room = %v", err)
+	}
+	forward, err := NativePairID(room, left, right)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reverse, err := NativePairID(room, right, left)
+	if err != nil || reverse != forward {
+		t.Fatalf("reverse pair = %q, %v; forward=%q", reverse, err, forward)
+	}
+	if err := ValidateNativePairID(forward); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := NativePairID(room, left, left); err == nil {
+		t.Fatal("self pair accepted")
 	}
 }
 
-func TestOwnerTokenRequiresCanonicalThirtyTwoByteBase64URL(t *testing.T) {
+func TestOwnerAndReconnectCapabilitiesRequireCanonicalThirtyTwoBytes(t *testing.T) {
 	t.Parallel()
-	raw := bytes.Repeat([]byte{0xa5}, OwnerTokenBytes)
-	encoded := base64.RawURLEncoding.EncodeToString(raw)
-	decoded, err := DecodeOwnerToken(encoded)
-	if err != nil || !bytes.Equal(decoded[:], raw) {
-		t.Fatalf("DecodeOwnerToken() = %x, %v", decoded, err)
+	valid := encodedBytes(4, OwnerTokenBytes)
+	if _, err := DecodeOwnerToken(valid); err != nil {
+		t.Fatal(err)
 	}
-	for _, invalid := range []string{
-		encoded + "=",
-		base64.RawURLEncoding.EncodeToString(raw[:OwnerTokenBytes-1]),
-		strings.Repeat("!", len(encoded)),
-	} {
+	if _, err := HashNativeReconnectCapability(valid); err != nil {
+		t.Fatal(err)
+	}
+	for _, invalid := range []string{valid + "=", encodedBytes(4, OwnerTokenBytes-1), strings.Repeat("!", len(valid))} {
 		if _, err := DecodeOwnerToken(invalid); !errors.Is(err, ErrInvalidOwnerToken) {
-			t.Fatalf("DecodeOwnerToken(%q) error = %v; want ErrInvalidOwnerToken", invalid, err)
+			t.Fatalf("owner %q = %v", invalid, err)
+		}
+		if _, err := HashNativeReconnectCapability(invalid); !errors.Is(err, ErrInvalidOwnerToken) {
+			t.Fatalf("reconnect %q = %v", invalid, err)
 		}
 	}
 }
 
-func TestViewerKeyMustBeP256X963Point(t *testing.T) {
+func TestNativeRoomV4MessagesAreStrictOpaqueAndBounded(t *testing.T) {
 	t.Parallel()
-	privateKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if err != nil {
-		t.Fatal(err)
+	handle := encodedBytes(5, NativeMemberHandleBytes)
+	pairID := encodedBytes(6, NativePairIDBytes)
+	payload := encodedBytes(7, 128)
+	descriptor := encodedBytes(8, 256)
+	valid := []Message{
+		{Type: MessageJoinKnock, Version: NativeRoomMessageVersion, Sequence: 1, Payload: payload},
+		{Type: MessageAdmitCandidate, Version: NativeRoomMessageVersion, CandidateHandle: handle, Payload: descriptor},
+		{Type: MessageDenyCandidate, Version: NativeRoomMessageVersion, CandidateHandle: handle, Reason: "denied"},
+		{Type: MessagePairSignal, Version: NativeRoomMessageVersion, To: handle, PairID: pairID, Sequence: 1, Payload: payload},
+		{Type: MessageLeaveRoom, Version: NativeRoomMessageVersion},
+		{Type: MessageRemoveMember, Version: NativeRoomMessageVersion, To: handle},
 	}
-	key := elliptic.Marshal(elliptic.P256(), privateKey.X, privateKey.Y)
-	encoded := base64.RawURLEncoding.EncodeToString(key)
-	if err := ValidateViewerKey(encoded); err != nil {
-		t.Fatalf("ValidateViewerKey(valid) = %v", err)
-	}
-	invalidPoint := make([]byte, P256X963PublicKeyBytes)
-	invalidPoint[0] = 4
-	if err := ValidateViewerKey(base64.RawURLEncoding.EncodeToString(invalidPoint)); !errors.Is(err, ErrInvalidViewerKey) {
-		t.Fatalf("ValidateViewerKey(invalid curve point) = %v", err)
-	}
-}
-
-func TestNativeRendezvousIDRequiresCanonicalHighEntropyValue(t *testing.T) {
-	t.Parallel()
-	raw := bytes.Repeat([]byte{0x5a}, NativeRendezvousIDBytes)
-	encoded := base64.RawURLEncoding.EncodeToString(raw)
-	if err := ValidateNativeRendezvousID(encoded); err != nil {
-		t.Fatalf("ValidateNativeRendezvousID(valid) = %v", err)
-	}
-	for _, invalid := range []string{
-		encoded + "=",
-		base64.RawURLEncoding.EncodeToString(raw[:NativeRendezvousIDBytes-1]),
-		strings.Repeat("!", len(encoded)),
-	} {
-		if err := ValidateNativeRendezvousID(invalid); !errors.Is(err, ErrInvalidNativeRendezvousID) {
-			t.Fatalf("ValidateNativeRendezvousID(%q) = %v", invalid, err)
+	for index, message := range valid {
+		if err := ValidateNativeRoomClientMessage(message); err != nil {
+			t.Fatalf("valid %d = %v", index, err)
 		}
 	}
-}
-
-func TestNativeDescriptorAndRelayAreOpaqueCanonicalAndBounded(t *testing.T) {
-	t.Parallel()
-	descriptor := base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{1}, MaximumNativeDescriptorBytes))
-	if err := ValidateNativeDescriptor(descriptor); err != nil {
-		t.Fatalf("ValidateNativeDescriptor(maximum) = %v", err)
-	}
-	if err := ValidateNativeDescriptor(""); !errors.Is(err, ErrInvalidNativeDescriptor) {
-		t.Fatalf("ValidateNativeDescriptor(empty) = %v", err)
-	}
-	if err := ValidateNativeDescriptor(base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{1}, MaximumNativeDescriptorBytes+1))); !errors.Is(err, ErrInvalidNativeDescriptor) {
-		t.Fatalf("ValidateNativeDescriptor(oversized) = %v", err)
-	}
-
-	payload := base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{2}, MaximumNativeOpaquePayloadBytes))
-	routeID := base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{3}, RouteIDBytes))
-	viewerRelay := Message{
-		Type:     MessageNativeRelay,
-		Version:  NativeMessageVersion,
-		Sequence: 1,
-		Payload:  payload,
-	}
-	if err := ValidateNativeRelay(viewerRelay, false); err != nil {
-		t.Fatalf("ValidateNativeRelay(viewer maximum) = %v", err)
-	}
-	hostRelay := viewerRelay
-	hostRelay.RouteID = routeID
-	if err := ValidateNativeRelay(hostRelay, true); err != nil {
-		t.Fatalf("ValidateNativeRelay(host maximum) = %v", err)
-	}
-	encoded, err := json.Marshal(hostRelay)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(encoded) > MaximumMessageBytes {
-		t.Fatalf("maximum native relay JSON is %d bytes; outer limit is %d", len(encoded), MaximumMessageBytes)
-	}
-
 	invalid := []Message{
-		{Type: MessageNativeRelay, Version: NativeMessageVersion, Sequence: 1, Payload: payload, RouteID: routeID},
-		{Type: MessageNativeRelay, Version: NativeMessageVersion - 1, Sequence: 1, Payload: payload},
-		{Type: MessageNativeRelay, Version: NativeMessageVersion, Sequence: 0, Payload: payload},
-		{Type: MessageNativeRelay, Version: NativeMessageVersion, Sequence: 1, Payload: "AA=="},
-		{Type: MessageNativeRelay, Version: NativeMessageVersion, Sequence: 1, Payload: base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{4}, MaximumNativeOpaquePayloadBytes+1))},
-		{Type: MessageNativeRelay, Version: NativeMessageVersion, Sequence: 1, Payload: payload, Ciphertext: "AA"},
+		{Type: MessageJoinKnock, Version: 3, Sequence: 1, Payload: payload},
+		{Type: MessageJoinKnock, Version: 4, Payload: payload},
+		{Type: MessagePairSignal, Version: 4, To: handle, PairID: pairID, Sequence: 1, Payload: "AA=="},
+		{Type: MessagePairSignal, Version: 4, From: handle, To: handle, PairID: pairID, Sequence: 1, Payload: payload},
+		{Type: MessageRemoveMember, Version: 4, To: "short"},
 	}
 	for index, message := range invalid {
-		if err := ValidateNativeRelay(message, false); err == nil {
-			t.Fatalf("invalid native relay %d was accepted", index)
+		if err := ValidateNativeRoomClientMessage(message); err == nil {
+			t.Fatalf("invalid %d accepted", index)
 		}
 	}
-}
-
-func TestNativeCloseRouteRequiresRoleAppropriateRoute(t *testing.T) {
-	t.Parallel()
-	routeID := base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{9}, RouteIDBytes))
-	if err := ValidateNativeCloseRoute(Message{
-		Type:    MessageNativeCloseRoute,
-		Version: NativeMessageVersion,
-		RouteID: routeID,
-	}, true); err != nil {
-		t.Fatalf("host native close = %v", err)
-	}
-	if err := ValidateNativeCloseRoute(Message{
-		Type:    MessageNativeCloseRoute,
-		Version: NativeMessageVersion,
-	}, false); err != nil {
-		t.Fatalf("viewer native close = %v", err)
-	}
-	if err := ValidateNativeCloseRoute(Message{
-		Type:    MessageNativeCloseRoute,
-		Version: NativeMessageVersion,
-		RouteID: routeID,
-	}, false); err == nil {
-		t.Fatal("viewer supplied an explicit native route")
+	if _, err := DecodeMessage([]byte(`{"type":"leave-room","version":4,"inviteSecret":"must-not-reach-server"}`)); !errors.Is(err, ErrInvalidMessage) {
+		t.Fatalf("unknown secret field accepted: %v", err)
 	}
 }
 
-func TestValidateRelayEnforcesOpaqueEnvelopeBounds(t *testing.T) {
+func TestRosterRequiresCreatorUniqueMembersAndOpaqueDescriptors(t *testing.T) {
 	t.Parallel()
-	nonce := base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{1}, AESGCMNonceBytes))
-	ciphertext := base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{2}, AESGCMTagBytes))
-	routeID := base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{3}, RouteIDBytes))
-
-	viewerRelay := Message{Type: MessageRelay, Sequence: 1, Nonce: nonce, Ciphertext: ciphertext}
-	if err := ValidateRelay(viewerRelay, false); err != nil {
-		t.Fatalf("ValidateRelay(viewer) = %v", err)
+	creator := encodedBytes(9, NativeMemberHandleBytes)
+	member := encodedBytes(10, NativeMemberHandleBytes)
+	descriptor := encodedBytes(11, 128)
+	snapshot := RosterSnapshot{Revision: 2, CreatorHandle: creator, Members: []RosterMember{{Handle: creator, Descriptor: descriptor, Connected: true}, {Handle: member, Descriptor: descriptor}}}
+	if err := ValidateRosterSnapshot(snapshot); err != nil {
+		t.Fatal(err)
 	}
-	hostRelay := viewerRelay
-	hostRelay.RouteID = routeID
-	if err := ValidateRelay(hostRelay, true); err != nil {
-		t.Fatalf("ValidateRelay(host) = %v", err)
+	duplicate := snapshot
+	duplicate.Members = append(duplicate.Members, duplicate.Members[0])
+	if err := ValidateRosterSnapshot(duplicate); err == nil {
+		t.Fatal("duplicate accepted")
 	}
-
-	invalid := []Message{
-		{Type: MessageRelay, Sequence: 0, Nonce: nonce, Ciphertext: ciphertext},
-		{Type: MessageRelay, Sequence: 1, Nonce: nonce, Ciphertext: ciphertext, RouteID: routeID},
-		{Type: MessageRelay, Sequence: 1, Nonce: "AA", Ciphertext: ciphertext},
-		{Type: MessageRelay, Sequence: 1, Nonce: nonce, Ciphertext: "AA"},
-		{Type: MessageRelay, Sequence: 1, Nonce: nonce, Ciphertext: base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{4}, MaximumCiphertextBytes+1))},
-		{Type: MessageRelay, Sequence: 1, Nonce: nonce, Ciphertext: ciphertext, Payload: "AA"},
-	}
-	for index, message := range invalid {
-		if err := ValidateRelay(message, false); err == nil {
-			t.Fatalf("invalid relay %d was accepted", index)
-		}
+	missing := snapshot
+	missing.CreatorHandle = encodedBytes(12, NativeMemberHandleBytes)
+	if err := ValidateRosterSnapshot(missing); err == nil {
+		t.Fatal("missing creator accepted")
 	}
 }
 
-func TestMaximumEncryptedInnerMessageFitsOuterFrame(t *testing.T) {
+func TestStrictJSONRejectsUnknownTrailingAndOversized(t *testing.T) {
 	t.Parallel()
-	message := Message{
-		Type:       MessageRelay,
-		RouteID:    base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{1}, RouteIDBytes)),
-		Sequence:   ^uint64(0),
-		Nonce:      base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{2}, AESGCMNonceBytes)),
-		Ciphertext: base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{3}, MaximumCiphertextBytes)),
+	var request NativeRoomRequest
+	if err := DecodeStrictJSON(strings.NewReader(`{"ownerToken":"x","descriptor":"y","secret":"z"}`), 1024, &request); err == nil {
+		t.Fatal("unknown field accepted")
 	}
-	data, err := json.Marshal(message)
+	if err := DecodeStrictJSON(strings.NewReader(`{} {}`), 1024, &request); err == nil {
+		t.Fatal("trailing value accepted")
+	}
+	if err := DecodeStrictJSON(strings.NewReader(strings.Repeat("x", 1025)), 1024, &request); err == nil {
+		t.Fatal("oversized JSON accepted")
+	}
+}
+
+func TestCanonicalNativeRoomV4WireFixture(t *testing.T) {
+	t.Parallel()
+	data, err := os.ReadFile("testdata/native-room-v4-wire.json")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(data) > MaximumMessageBytes {
-		t.Fatalf("maximum relay JSON is %d bytes; outer limit is %d", len(data), MaximumMessageBytes)
+	var fixture struct {
+		RoomID        string `json:"roomId"`
+		CreatorHandle string `json:"creatorHandle"`
+		MemberHandle  string `json:"memberHandle"`
+		Messages      []struct {
+			Name    string  `json:"name"`
+			Message Message `json:"message"`
+		} `json:"messages"`
 	}
-	if err := ValidateRelay(message, true); err != nil {
-		t.Fatalf("maximum relay was rejected: %v", err)
+	if err := json.Unmarshal(data, &fixture); err != nil {
+		t.Fatal(err)
 	}
-}
-
-func TestDecodeMessageIsStrictAndBounded(t *testing.T) {
-	t.Parallel()
-	valid := []byte(`{"type":"host-unavailable"}`)
-	message, err := DecodeMessage(valid)
-	if err != nil || message.Type != MessageHostUnavailable {
-		t.Fatalf("DecodeMessage(valid) = %#v, %v", message, err)
+	if ValidateNativeRoomID(fixture.RoomID) != nil ||
+		ValidateNativeMemberHandle(fixture.CreatorHandle) != nil ||
+		ValidateNativeMemberHandle(fixture.MemberHandle) != nil {
+		t.Fatal("fixture routing identifiers are invalid")
 	}
-	for _, input := range [][]byte{
-		[]byte(`{"type":"host-unavailable","unknown":true}`),
-		[]byte(`{"type":"host-unavailable"}{}`),
-		bytes.Repeat([]byte(" "), MaximumMessageBytes+1),
-	} {
-		if _, err := DecodeMessage(input); err == nil {
-			t.Fatalf("DecodeMessage accepted invalid payload of %d bytes", len(input))
-		}
-	}
-}
-
-func TestMessageJSONMatchesContract(t *testing.T) {
-	t.Parallel()
-	message := Message{Type: MessageRouteOpened, RouteID: "route", ViewerKey: "key"}
-	data, err := json.Marshal(message)
+	pairID, err := NativePairID(fixture.RoomID, fixture.CreatorHandle, fixture.MemberHandle)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(data) != `{"type":"route-opened","routeId":"route","viewerKey":"key"}` {
-		t.Fatalf("unexpected JSON: %s", data)
+	wantTypes := []MessageType{MessageCandidateOpened, MessageMemberAdmitted, MessageMemberAdmitted, MessageRosterSnapshot, MessagePairSignal, MessageRoomEnded}
+	if len(fixture.Messages) != len(wantTypes) {
+		t.Fatalf("fixture messages = %d", len(fixture.Messages))
 	}
-}
-
-func TestErrorMessageRemovesControlCharactersAndBoundsFields(t *testing.T) {
-	t.Parallel()
-	message := ErrorMessage(strings.Repeat("x", 100)+"\n", strings.Repeat("y", 300)+"\u0000")
-	if len(message.Code) != MaximumProtocolErrorCodeBytes || len(message.Text) != MaximumProtocolErrorTextBytes {
-		t.Fatalf("unexpected error bounds: %d, %d", len(message.Code), len(message.Text))
-	}
-	if strings.ContainsAny(message.Code+message.Text, "\n\x00") {
-		t.Fatal("error message retained control characters")
+	for index, entry := range fixture.Messages {
+		if entry.Message.Type != wantTypes[index] || entry.Message.Version != NativeRoomMessageVersion {
+			t.Fatalf("fixture %q = %#v", entry.Name, entry.Message)
+		}
+		if entry.Message.Roster != nil {
+			if err := ValidateRosterSnapshot(*entry.Message.Roster); err != nil {
+				t.Fatalf("fixture %q roster = %v", entry.Name, err)
+			}
+		}
+		if entry.Message.Type == MessagePairSignal && entry.Message.PairID != pairID {
+			t.Fatalf("fixture pairId = %q; want %q", entry.Message.PairID, pairID)
+		}
 	}
 }

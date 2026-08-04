@@ -92,7 +92,7 @@ func (b *QueuedByteBudget) Used() int {
 
 // Socket owns the sole WebSocket writer. Its bounded queue provides a strict
 // memory ceiling. Send reports backpressure to the routing layer, which can
-// retire only the affected route instead of disconnecting a shared host.
+// retire only the affected route instead of disconnecting a shared owner.
 type Socket struct {
 	connection  *websocket.Conn
 	config      SocketConfiguration
@@ -174,8 +174,10 @@ func (s *Socket) Send(message protocol.Message) error {
 	}
 
 	limitedRouteID := ""
-	if message.Type == protocol.MessageRelay || message.Type == protocol.MessageNativeRelay {
-		limitedRouteID = message.RouteID
+	if message.Type == protocol.MessagePairSignal {
+		// Pair signaling shares a participant socket, so backpressure for one
+		// pair must not consume the entire socket queue or disturb other pairs.
+		limitedRouteID = message.PairID
 	}
 
 	s.mu.Lock()

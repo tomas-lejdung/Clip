@@ -6,134 +6,109 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SERVER_ROOT="$ROOT/server"
 CORE_PACKAGE="$ROOT/Packages/ClipLiveShare"
 WEBRTC_PACKAGE="$ROOT/Packages/ClipLiveShareWebRTC"
-WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/clip-live-share-acceptance.XXXXXX")"
 MODULE_CACHE="$ROOT/.build/ModuleCache"
 GO_MODULE_CACHE="${GOMODCACHE:-$ROOT/.build/GoModuleCache}"
-SERVER_PID=""
+DERIVED_DATA="${CLIP_DERIVED_DATA_PATH:-$ROOT/.build/DerivedData}"
+SOURCE_PACKAGES="${CLIP_SOURCE_PACKAGES_PATH:-$ROOT/.build/SourcePackages}"
 
-cleanup() {
-  local status=$?
-  trap - EXIT INT TERM
-  if [[ -n "$SERVER_PID" ]] && kill -0 "$SERVER_PID" 2>/dev/null; then
-    kill "$SERVER_PID" 2>/dev/null || true
-    wait "$SERVER_PID" 2>/dev/null || true
-  fi
-  if [[ "$status" -ne 0 && -f "$WORK_DIR/server.log" ]]; then
-    echo "Clip Live Share server log:" >&2
-    sed -n '1,200p' "$WORK_DIR/server.log" >&2
-  fi
-  rm -rf "$WORK_DIR"
-  exit "$status"
-}
-trap cleanup EXIT
-trap 'exit 130' INT
-trap 'exit 143' TERM
-
-for command in curl go lsof node rg swift; do
+for command in curl go node swift xcodebuild; do
   if ! command -v "$command" >/dev/null 2>&1; then
     echo "Required command is unavailable: $command" >&2
     exit 69
   fi
 done
 
-if [[ ! -f "$SERVER_ROOT/go.mod" || \
-      ! -f "$SERVER_ROOT/cmd/clip-live-share-server/main.go" || \
-      ! -f "$SERVER_ROOT/web/clip-protocol.test.mjs" ]]; then
-  echo "The in-repository Clip Live Share server/viewer is incomplete." >&2
+if [[ ! -f "$SERVER_ROOT/internal/signaling/room_v4.go" ||
+      ! -f "$ROOT/Packages/ClipLiveShare/Sources/ClipLiveShare/ClipLiveShareServerRoomV4Invite.swift" ||
+      ! -f "$ROOT/Packages/ClipLiveShareWebRTC/Sources/ClipLiveShareWebRTC/ClipLiveShareServerMeshPeerReconciler.swift" ]]; then
+  echo "The clean-slate server-coordinated mesh is incomplete." >&2
   exit 66
 fi
 
-PORT="${CLIP_LIVE_SHARE_ACCEPTANCE_PORT:-}"
-if [[ -z "$PORT" ]]; then
-  for _ in 1 2 3 4 5 6 7 8 9 10; do
-    PORT="$((30000 + RANDOM % 20000))"
-    if ! lsof -nP -iTCP:"$PORT" -sTCP:LISTEN >/dev/null 2>&1; then
-      break
-    fi
-    PORT=""
-  done
-fi
-if [[ -z "$PORT" || ! "$PORT" =~ ^[0-9]+$ || "$PORT" -lt 1 || "$PORT" -gt 65535 ]]; then
-  echo "CLIP_LIVE_SHARE_ACCEPTANCE_PORT must be an unused TCP port." >&2
-  exit 64
-fi
+"$ROOT/scripts/verify-web-viewer-native-boundary.sh"
 
-mkdir -p "$MODULE_CACHE" "$GO_MODULE_CACHE"
+mkdir -p "$MODULE_CACHE" "$GO_MODULE_CACHE" "$SOURCE_PACKAGES"
 export CLANG_MODULE_CACHE_PATH="$MODULE_CACHE"
 export SWIFTPM_MODULECACHE_OVERRIDE="$MODULE_CACHE"
 
-echo "Running Clip Live Share Go service tests..."
+echo "Running authoritative opaque-room service tests..."
 (
   cd "$SERVER_ROOT"
-  GOCACHE="$WORK_DIR/go-cache" GOMODCACHE="$GO_MODULE_CACHE" go test ./...
+  GOCACHE="$ROOT/.build/server-room-v4-go-cache" \
+    GOMODCACHE="$GO_MODULE_CACHE" go test ./...
 )
 
-echo "Running browser protocol and cryptography tests..."
-(
-  cd "$SERVER_ROOT"
-  node --test web/clip-protocol.test.mjs
-)
+echo "Running dependency-free browser invite, crypto, mesh, and viewer tests..."
+node --test "$SERVER_ROOT"/web/tests/*.test.mjs
 
-echo "Building and launching the in-repository service on loopback..."
-(
-  cd "$SERVER_ROOT"
-  GOCACHE="$WORK_DIR/go-cache" GOMODCACHE="$GO_MODULE_CACHE" \
-    go build -trimpath -o "$WORK_DIR/clip-live-share-server" \
-      ./cmd/clip-live-share-server
-)
+echo "Running v4 invite, admission, roster, and crypto tests..."
+swift test \
+  --package-path "$CORE_PACKAGE" \
+  --filter ClipLiveShareServerRoomV4
+swift test \
+  --package-path "$CORE_PACKAGE" \
+  --filter ClipLiveShareWebMediaControlInteropTests
 
-CLIP_SERVER_ADDRESS="127.0.0.1:$PORT" \
-  "$WORK_DIR/clip-live-share-server" >"$WORK_DIR/server.log" 2>&1 &
-SERVER_PID=$!
+echo "Running full-mesh transport and real WebRTC loopback tests..."
+swift test \
+  --package-path "$WEBRTC_PACKAGE" \
+  --manifest-cache none \
+  --filter ClipLiveShareServerRoomV4
+swift test \
+  --package-path "$WEBRTC_PACKAGE" \
+  --manifest-cache none \
+  --filter ClipLiveShareServerMesh
+swift test \
+  --package-path "$WEBRTC_PACKAGE" \
+  --manifest-cache none \
+  --filter WebRTCExactCodecPreferenceTests
+swift test \
+  --package-path "$WEBRTC_PACKAGE" \
+  --manifest-cache none \
+  --filter ClipLiveShareNativeV3RealWebRTCLoopbackTests
 
-READY=0
-for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
-  if curl --fail --silent "http://127.0.0.1:$PORT/healthz" \
-      >"$WORK_DIR/health.json" 2>/dev/null; then
-    READY=1
-    break
-  fi
-  sleep 0.1
-done
-if [[ "$READY" != "1" ]]; then
-  echo "Clip Live Share server did not become ready." >&2
-  exit 70
+echo "Running real localhost 2/3/4-participant server-room acceptance..."
+"$ROOT/scripts/run-server-room-v4-acceptance.sh"
+
+source "$ROOT/scripts/signing-config.sh"
+XCODE_CODE_SIGN_IDENTITY="$(clip_xcode_signing_identity)"
+XCODE_DEVELOPMENT_TEAM=""
+if ! clip_signing_is_ad_hoc; then
+  XCODE_DEVELOPMENT_TEAM="$(clip_resolved_development_team)"
 fi
 
-curl --fail --silent "http://127.0.0.1:$PORT/version" \
-  >"$WORK_DIR/version.json"
-curl --fail --silent "http://127.0.0.1:$PORT/.well-known/clip-live-share" \
-  >"$WORK_DIR/capabilities.json"
-curl --fail --silent "http://127.0.0.1:$PORT/.well-known/clip-native-rendezvous" \
-  >"$WORK_DIR/native-capabilities.json"
-curl --fail --silent "http://127.0.0.1:$PORT/CLIP-ACCEPTANCE" \
-  >"$WORK_DIR/viewer.html"
+XCODE_ARGUMENTS=(
+  -project "$ROOT/Clip.xcodeproj"
+  -scheme Clip
+  -configuration Debug
+  -destination "platform=macOS,arch=arm64"
+  -derivedDataPath "$DERIVED_DATA"
+  -clonedSourcePackagesDirPath "$SOURCE_PACKAGES"
+  -parallel-testing-enabled NO
+  -maximum-parallel-testing-workers 1
+  CODE_SIGNING_ALLOWED=YES
+  CODE_SIGN_IDENTITY="$XCODE_CODE_SIGN_IDENTITY"
+  ENABLE_TESTABILITY=YES
+)
+if [[ -n "$XCODE_DEVELOPMENT_TEAM" ]]; then
+  XCODE_ARGUMENTS+=(
+    DEVELOPMENT_TEAM="$XCODE_DEVELOPMENT_TEAM"
+    CODE_SIGN_STYLE=Manual
+  )
+fi
+XCODE_ARGUMENTS+=(
+  test
+  -only-testing:ClipTests/ServerCoordinatedMeshRoomSessionTests
+  -only-testing:ClipTests/ServerCoordinatedMeshMediaRuntimeTests
+  -only-testing:ClipTests/ServerCoordinatedMeshParticipantCoordinatorTests
+  -only-testing:ClipTests/ServerCoordinatedMeshThreeParticipantFlowTests
+  -only-testing:ClipTests/MeshParticipantLocalPublicationControllerTests
+  -only-testing:ClipTests/MeshRoomPresentationModelTests
+)
 
-rg --fixed-strings --quiet '"protocol":"clip-live-share"' \
-  "$WORK_DIR/capabilities.json" \
-  || { echo "Capabilities did not identify clip-live-share." >&2; exit 65; }
-rg --fixed-strings --quiet '"versions":[1]' "$WORK_DIR/capabilities.json" \
-  || { echo "Capabilities did not advertise protocol v1." >&2; exit 65; }
-rg --fixed-strings --quiet '"protocol":"clip-native-rendezvous"' \
-  "$WORK_DIR/native-capabilities.json" \
-  || { echo "Native capabilities did not identify Clip rendezvous." >&2; exit 65; }
-rg --fixed-strings --quiet '"apiVersion":1' \
-  "$WORK_DIR/native-capabilities.json" \
-  || { echo "Native rendezvous did not advertise API v1." >&2; exit 65; }
-rg --fixed-strings --quiet '"messageVersion":2' \
-  "$WORK_DIR/native-capabilities.json" \
-  || { echo "Native rendezvous did not advertise message v2." >&2; exit 65; }
-rg --fixed-strings --quiet 'Clip Live Share' "$WORK_DIR/viewer.html" \
-  || { echo "The embedded browser viewer was not served." >&2; exit 65; }
+echo "Running hosted server-coordinated participant-mesh gates..."
+xcodebuild "${XCODE_ARGUMENTS[@]}"
 
-echo "Running native protocol, crypto, state, signaling, and WebRTC tests..."
-swift test --package-path "$CORE_PACKAGE"
-CLIP_RUN_NATIVE_WEBKIT_ACCEPTANCE=1 \
-CLIP_LIVE_SHARE_ACCEPTANCE_ENDPOINT="http://127.0.0.1:$PORT" \
-  swift test \
-    --package-path "$WEBRTC_PACKAGE" \
-    --manifest-cache none
-
-echo "Clip Live Share local acceptance passed."
-echo "Covered: in-memory room ownership, native rendezvous discovery/routing, fresh signed-room friendship admission/removal, encrypted signaling, simultaneous four-stream native protocol peers, control after signaling handoff, browser crypto/viewer assets, and decoded stereo Opus waveform quality through the embedded WebKit viewer."
-echo "Not claimed: two separate Clip processes, simultaneous WebKit and native rendering on one host, termination of the Go process during live media, real ScreenCaptureKit content, audible hardware output, remote Internet/TURN traversal, overlay exclusion, or signed-DMG packaging."
+echo "Clip server-coordinated mesh local acceptance passed."
+echo "Covered: client-secret stable invite, authoritative opaque rosters, 1/3/6 direct pair topology, encrypted signaling, pair isolation, symmetric publication/control/collaboration, ordinary leave/reconnect, and terminal creator departure."
+echo "Not claimed: remote Internet/TURN availability, real ScreenCaptureKit or audio hardware, or the final signed multi-process GUI run."

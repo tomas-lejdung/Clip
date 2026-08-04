@@ -5,7 +5,9 @@ NS_ASSUME_NONNULL_BEGIN
 
 @class RTCPeerConnectionFactory;
 
-/// A bounded 48 kHz stereo PCM source presented to libwebrtc as its recording
+/// A full-duplex 48 kHz stereo PCM device presented to libwebrtc. Captured
+/// ScreenCaptureKit audio is the recording source, while remote WebRTC audio
+/// is mixed by libwebrtc and rendered through the current macOS default output
 /// device. The bridge exists because WebRTC M150 ships the injectable audio
 /// device implementation in its macOS binary but omits RTCAudioDevice.h from
 /// that xcframework slice.
@@ -37,6 +39,14 @@ NS_ASSUME_NONNULL_BEGIN
 @property(nonatomic, readonly) uint64_t deliveredFrameCount;
 /// Recording delivery calls rejected by WebRTC or its render callback.
 @property(nonatomic, readonly) uint64_t deliveryErrorCount;
+/// Calls from the macOS default-output AudioUnit into WebRTC's playout mixer.
+@property(nonatomic, readonly) uint64_t playoutCallbackCount;
+/// Stereo PCM frames successfully requested from WebRTC's playout mixer.
+@property(nonatomic, readonly) uint64_t renderedPlayoutFrameCount;
+/// Successfully rendered frames containing at least one non-zero sample.
+@property(nonatomic, readonly) uint64_t nonSilentPlayoutFrameCount;
+/// Output initialization, lifecycle, or mixer callback failures.
+@property(nonatomic, readonly) uint64_t playoutErrorCount;
 
 @end
 

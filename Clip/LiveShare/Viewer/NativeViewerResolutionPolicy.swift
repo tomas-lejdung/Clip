@@ -14,15 +14,15 @@ enum NativeViewerScaleMode: String, CaseIterable, Equatable, Sendable {
 
 struct NativeViewerResolutionRequest: Equatable, Sendable {
     let decodedPixelSize: CGSize
-    /// Logical point size reported by the source Mac. Older hosts omit it.
-    let sourcePointSize: CGSize?
+    /// Required logical point size reported by the native-v3 source Mac.
+    let sourcePointSize: CGSize
     let destinationBackingScale: CGFloat
     let maximumContentSize: CGSize
     let mode: NativeViewerScaleMode
 
     init(
         decodedPixelSize: CGSize,
-        sourcePointSize: CGSize? = nil,
+        sourcePointSize: CGSize,
         destinationBackingScale: CGFloat,
         maximumContentSize: CGSize,
         mode: NativeViewerScaleMode
@@ -59,8 +59,7 @@ enum NativeViewerResolutionPolicy {
             return nil
         }
 
-        if let sourcePointSize = request.sourcePointSize,
-           !isValid(sourcePointSize) {
+        if !isValid(request.sourcePointSize) {
             return nil
         }
 
@@ -72,11 +71,7 @@ enum NativeViewerResolutionPolicy {
         // Dividing them by the *viewer's* backing scale would incorrectly
         // double Retina-hosted windows on 1x viewers and halve 1x-hosted
         // windows on Retina viewers.
-        let legacyPointSize = CGSize(
-            width: request.decodedPixelSize.width / request.destinationBackingScale,
-            height: request.decodedPixelSize.height / request.destinationBackingScale
-        )
-        let preferredPointSize = request.sourcePointSize ?? legacyPointSize
+        let preferredPointSize = request.sourcePointSize
         let fitScale = min(
             1,
             request.maximumContentSize.width / preferredPointSize.width,

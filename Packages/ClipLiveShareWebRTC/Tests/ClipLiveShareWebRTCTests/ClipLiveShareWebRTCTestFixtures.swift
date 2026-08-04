@@ -23,7 +23,9 @@ enum ClipLiveShareWebRTCTestFixtures {
             windowName: windowName,
             width: width,
             height: height,
-            order: order
+            order: order,
+            sourcePointWidth: width,
+            sourcePointHeight: height
         )
     }
 

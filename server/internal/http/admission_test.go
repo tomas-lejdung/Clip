@@ -2,8 +2,6 @@ package httpapi
 
 import (
 	"fmt"
-	"io"
-	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -15,114 +13,74 @@ import (
 
 func TestSourceRateLimitsResetAfterWindow(t *testing.T) {
 	configuration := config.Default("test")
-	configuration.RoomAdvertisementsPerMinute = 2
+	configuration.RendezvousLeaseOperationsPerMinute = 2
 	configuration.WebSocketUpgradesPerMinute = 2
 	admission := newSourceAdmission(configuration)
 	now := time.Unix(1_000, 0)
 	admission.now = func() time.Time { return now }
 
-	if !admission.allowAdvertisement("198.51.100.1") || !admission.allowAdvertisement("198.51.100.1") {
-		t.Fatal("allowed advertisement burst was rejected")
+	if !admission.allowRendezvousLeaseOperation("198.51.100.1") ||
+		!admission.allowRendezvousLeaseOperation("198.51.100.1") {
+		t.Fatal("allowed rendezvous-lease operation burst was rejected")
 	}
-	if admission.allowAdvertisement("198.51.100.1") {
-		t.Fatal("advertisement rate limit was not enforced")
+	if admission.allowRendezvousLeaseOperation("198.51.100.1") {
+		t.Fatal("rendezvous-lease operation rate limit was not enforced")
 	}
-	if !admission.allowAdvertisement("198.51.100.2") {
+	if !admission.allowRendezvousLeaseOperation("198.51.100.2") {
 		t.Fatal("one source consumed another source's rate limit")
 	}
 	now = now.Add(time.Minute)
-	if !admission.allowAdvertisement("198.51.100.1") {
-		t.Fatal("advertisement limit did not reset")
+	if !admission.allowRendezvousLeaseOperation("198.51.100.1") {
+		t.Fatal("rendezvous-lease operation limit did not reset")
 	}
 }
 
-func TestConnectionAdmissionReservesCapacityForHosts(t *testing.T) {
-	configuration := config.Default("test")
-	configuration.MaximumConnections = 5
-	configuration.ReservedHostConnections = 2
-	configuration.MaximumConnectionsPerSource = 5
-	service := &Service{
-		connections:       make(chan struct{}, configuration.MaximumConnections),
-		viewerConnections: make(chan struct{}, configuration.MaximumConnections-configuration.ReservedHostConnections),
-		viewerRooms:       make(map[string]int),
-		admission:         newSourceAdmission(configuration),
+func admissionTestService(configuration config.Config) *Service {
+	return &Service{
+		connections: make(chan struct{}, configuration.MaximumConnections),
+		admission:   newSourceAdmission(configuration),
 	}
+}
+
+func TestConnectionAdmissionHonorsGlobalCapacity(t *testing.T) {
+	configuration := config.Default("test")
+	configuration.MaximumConnections = 3
+	configuration.MaximumConnectionsPerSource = 3
+	service := admissionTestService(configuration)
 
 	for index := 0; index < 3; index++ {
-		if !service.acquireViewerConnection("198.51.100.1", "ROOM") {
-			t.Fatalf("viewer %d was rejected", index)
+		if !service.acquireCoordinatorConnection("198.51.100.1") {
+			t.Fatalf("room socket %d was rejected", index)
 		}
 	}
-	if service.acquireViewerConnection("198.51.100.1", "ROOM") {
-		t.Fatal("viewer consumed reserved host capacity")
-	}
-	if !service.acquireHostConnection("198.51.100.1") || !service.acquireHostConnection("198.51.100.1") {
-		t.Fatal("reserved host capacity was unavailable")
-	}
-	if service.acquireHostConnection("198.51.100.1") {
-		t.Fatal("host exceeded total connection capacity")
+	if service.acquireCoordinatorConnection("198.51.100.1") {
+		t.Fatal("room socket exceeded total connection capacity")
 	}
 
-	for index := 0; index < 3; index++ {
-		service.releaseViewerConnection("198.51.100.1", "ROOM")
+	for range 3 {
+		service.releaseCoordinatorConnection("198.51.100.1")
 	}
-	service.releaseHostConnection("198.51.100.1")
-	service.releaseHostConnection("198.51.100.1")
 }
 
 func TestPerSourceConnectionCapacityIsIndependent(t *testing.T) {
 	configuration := config.Default("test")
 	configuration.MaximumConnections = 10
-	configuration.ReservedHostConnections = 2
 	configuration.MaximumConnectionsPerSource = 2
-	service := &Service{
-		connections:       make(chan struct{}, configuration.MaximumConnections),
-		viewerConnections: make(chan struct{}, configuration.MaximumConnections-configuration.ReservedHostConnections),
-		viewerRooms:       make(map[string]int),
-		admission:         newSourceAdmission(configuration),
-	}
-	if !service.acquireHostConnection("198.51.100.1") || !service.acquireHostConnection("198.51.100.1") {
+	service := admissionTestService(configuration)
+
+	if !service.acquireCoordinatorConnection("198.51.100.1") ||
+		!service.acquireCoordinatorConnection("198.51.100.1") {
 		t.Fatal("source could not use its connection allowance")
 	}
-	if service.acquireHostConnection("198.51.100.1") {
+	if service.acquireCoordinatorConnection("198.51.100.1") {
 		t.Fatal("source exceeded its connection allowance")
 	}
-	if !service.acquireHostConnection("198.51.100.2") {
+	if !service.acquireCoordinatorConnection("198.51.100.2") {
 		t.Fatal("one source consumed another source's connection allowance")
 	}
-	service.releaseHostConnection("198.51.100.1")
-	service.releaseHostConnection("198.51.100.1")
-	service.releaseHostConnection("198.51.100.2")
-}
-
-func TestPerRoomPreHelloCapacityIsBounded(t *testing.T) {
-	configuration := config.Default("test")
-	configuration.MaximumConnections = 16
-	configuration.ReservedHostConnections = 2
-	configuration.MaximumConnectionsPerSource = 16
-	service := &Service{
-		connections:       make(chan struct{}, configuration.MaximumConnections),
-		viewerConnections: make(chan struct{}, configuration.MaximumConnections-configuration.ReservedHostConnections),
-		viewerRooms:       make(map[string]int),
-		admission:         newSourceAdmission(configuration),
-	}
-
-	for index := 0; index < 8; index++ {
-		if !service.acquireViewerConnection("203.0.113.1", "ROOM-ONE") {
-			t.Fatalf("viewer %d was rejected", index)
-		}
-	}
-	if service.acquireViewerConnection("203.0.113.1", "ROOM-ONE") {
-		t.Fatal("ninth pre-hello viewer was accepted")
-	}
-	if !service.acquireViewerConnection("203.0.113.1", "ROOM-TWO") {
-		t.Fatal("one room consumed another room's pre-hello capacity")
-	}
-
-	for index := 0; index < 8; index++ {
-		service.releaseViewerConnection("203.0.113.1", "ROOM-ONE")
-	}
-	service.releaseViewerConnection("203.0.113.1", "ROOM-TWO")
+	service.releaseCoordinatorConnection("198.51.100.1")
+	service.releaseCoordinatorConnection("198.51.100.1")
+	service.releaseCoordinatorConnection("198.51.100.2")
 }
 
 func TestForwardedSourceRequiresExplicitTrustedProxy(t *testing.T) {
@@ -145,22 +103,39 @@ func TestForwardedSourceRequiresExplicitTrustedProxy(t *testing.T) {
 	}
 }
 
-func TestAdvertisementHandlerReturnsTooManyRequestsPerSource(t *testing.T) {
+func TestRendezvousLeaseHandlerReturnsTooManyRequestsPerSource(
+	t *testing.T,
+) {
 	configuration := testConfiguration()
-	configuration.RoomAdvertisementsPerMinute = 2
-	service, err := New(configuration, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	configuration.RendezvousLeaseOperationsPerMinute = 2
+	service, err := New(configuration)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer service.Close()
-	body := fmt.Sprintf(`{"ownerToken":%q}`, ownerToken(21))
-	for attempt, expected := range []int{http.StatusCreated, http.StatusOK, http.StatusTooManyRequests} {
-		request := httptest.NewRequest(http.MethodPut, "/api/v1/rooms/RATE-ROOM", strings.NewReader(body))
+	body := fmt.Sprintf(`{"ownerToken":%q,"creatorHandle":%q,"descriptor":%q}`,
+		ownerToken(21), roomV4Handle(22), roomV4Descriptor(22))
+	roomID := roomV4ID(22)
+	for attempt, expected := range []int{
+		http.StatusCreated,
+		http.StatusOK,
+		http.StatusTooManyRequests,
+	} {
+		request := httptest.NewRequest(
+			http.MethodPut,
+			"/api/native/v4/rooms/"+roomID,
+			strings.NewReader(body),
+		)
 		request.RemoteAddr = "198.51.100.44:1234"
 		recorder := httptest.NewRecorder()
 		service.Handler().ServeHTTP(recorder, request)
 		if recorder.Code != expected {
-			t.Fatalf("attempt %d status = %d; want %d", attempt+1, recorder.Code, expected)
+			t.Fatalf(
+				"attempt %d status = %d; want %d",
+				attempt+1,
+				recorder.Code,
+				expected,
+			)
 		}
 	}
 }

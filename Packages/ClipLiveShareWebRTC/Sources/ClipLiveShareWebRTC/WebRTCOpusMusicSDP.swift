@@ -5,7 +5,7 @@ import Foundation
 ///
 /// Opus always advertises `opus/48000/2` in SDP, but that RTP channel count is
 /// only the codec capability. libwebrtc selects a one-channel VoIP encoder
-/// unless the negotiated fmtp explicitly contains `stereo=1`. The viewer must
+/// unless the negotiated fmtp explicitly contains `stereo=1`. The receiver must
 /// apply the same profile to its answer so the remote description configures
 /// Clip's sender with these values.
 enum WebRTCOpusMusicSDP {

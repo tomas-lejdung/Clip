@@ -1,0 +1,34 @@
+{
+  "descriptor": {
+    "participantID": "MTExMTExMTExMTExMTExMQ",
+    "identity": "BFUPRxAD89-Xw99QaseX9nIfsaH7e49vg9IkSYplyI4kE2CT1wEuUJpzcVy9CwCjzA_0tcAbP_oZarH7MnA2uOY",
+    "pairSignalingPublicKey": "BHMQPsMLPM9X2q4I6TU0rvFEo1lAz2u7oSoM98vV1lpk2CyMmenTxF-SRbqbJ5gsmuqOwduUsZxEeVlCwOsiqjI",
+    "displayName": "Web Participant",
+    "deviceName": "Safari",
+    "clientKind": "webViewer",
+    "capabilityProfile": "webViewerV1"
+  },
+  "descriptorCanonicalBase64URL": "AAAAMGNsaXAtbGl2ZS1zaGFyZS1zZXJ2ZXItcm9vbS12NC9tZW1iZXItZGVzY3JpcHRvcgAAAAAAAAAEAAAAEDExMTExMTExMTExMTExMTEAAABBBFUPRxAD89-Xw99QaseX9nIfsaH7e49vg9IkSYplyI4kE2CT1wEuUJpzcVy9CwCjzA_0tcAbP_oZarH7MnA2uOYAAABBBHMQPsMLPM9X2q4I6TU0rvFEo1lAz2u7oSoM98vV1lpk2CyMmenTxF-SRbqbJ5gsmuqOwduUsZxEeVlCwOsiqjIAAAAPV2ViIFBhcnRpY2lwYW50AAAABlNhZmFyaQAAAAl3ZWJWaWV3ZXIAAAALd2ViVmlld2VyVjE",
+  "joinKnockCanonicalBase64URL": "AAAAKWNsaXAtbGl2ZS1zaGFyZS1zZXJ2ZXItcm9vbS12NC9qb2luLWtub2NrAAAAAAAAAAQAAAAgEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAAAAARdjQtc2Vzc2lvbi12ZWN0b3IAAAETAAAAMGNsaXAtbGl2ZS1zaGFyZS1zZXJ2ZXItcm9vbS12NC9tZW1iZXItZGVzY3JpcHRvcgAAAAAAAAAEAAAAEDExMTExMTExMTExMTExMTEAAABBBFUPRxAD89-Xw99QaseX9nIfsaH7e49vg9IkSYplyI4kE2CT1wEuUJpzcVy9CwCjzA_0tcAbP_oZarH7MnA2uOYAAABBBHMQPsMLPM9X2q4I6TU0rvFEo1lAz2u7oSoM98vV1lpk2CyMmenTxF-SRbqbJ5gsmuqOwduUsZxEeVlCwOsiqjIAAAAPV2ViIFBhcnRpY2lwYW50AAAABlNhZmFyaQAAAAl3ZWJWaWV3ZXIAAAALd2ViVmlld2VyVjEAAAAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAAAAAAACBSUlJSUlJSUlJSUlJSUlJSUlJSUlJSUlJSUlJSUlJSUg",
+  "identityPublicKeyBase64URL": "BFUPRxAD89-Xw99QaseX9nIfsaH7e49vg9IkSYplyI4kE2CT1wEuUJpzcVy9CwCjzA_0tcAbP_oZarH7MnA2uOY",
+  "signatureBase64URL": "dTl_N-GdbjoWz991BZ8st0ftvbTvAPkYJMMfibsCrVM8LnIYSPTGOVONEsDpiQ5A3sf95K05uS-_RRir0Ko_-A",
+  "signedJoinKnock": {
+    "knock": {
+      "roomID": "EBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBA",
+      "sessionID": "v4-session-vector",
+      "descriptor": {
+        "participantID": "MTExMTExMTExMTExMTExMQ",
+        "identity": "BFUPRxAD89-Xw99QaseX9nIfsaH7e49vg9IkSYplyI4kE2CT1wEuUJpzcVy9CwCjzA_0tcAbP_oZarH7MnA2uOY",
+        "pairSignalingPublicKey": "BHMQPsMLPM9X2q4I6TU0rvFEo1lAz2u7oSoM98vV1lpk2CyMmenTxF-SRbqbJ5gsmuqOwduUsZxEeVlCwOsiqjI",
+        "displayName": "Web Participant",
+        "deviceName": "Safari",
+        "clientKind": "webViewer",
+        "capabilityProfile": "webViewerV1"
+      },
+      "admissionCapability": "ICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICA",
+      "requiresCreatorApproval": false,
+      "nonce": "UlJSUlJSUlJSUlJSUlJSUlJSUlJSUlJSUlJSUlJSUlI="
+    },
+    "signature": "dTl_N-GdbjoWz991BZ8st0ftvbTvAPkYJMMfibsCrVM8LnIYSPTGOVONEsDpiQ5A3sf95K05uS-_RRir0Ko_-A"
+  }
+}

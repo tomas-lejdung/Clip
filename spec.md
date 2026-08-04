@@ -31,7 +31,8 @@ Clip should be:
 - Designed around sharing rather than video production.
 - Simple enough that users rarely need to open a settings window.
 - Local-first recording with no account or upload service; Live Share is a
-  separate explicit mode that requires the configured signaling service.
+  separate explicit mode that requires the configured room coordination
+  service.
 - Able to produce compact files while preserving readable interface text.
 
 ---
@@ -49,16 +50,20 @@ By default:
 - A Clip icon appears in the macOS menu bar.
 - Launch at login is Off but may be enabled in Settings.
 - Clip follows the current macOS light or dark appearance.
-- Version 1.0 is English-only and uses a String Catalog so later localization remains straightforward.
+- Clip is English-first and uses a String Catalog so later localization remains straightforward.
 
 Clicking the menu-bar icon opens the main Clip popover.
 
-Clip also provides a distinct **Live Share** workflow for sending one or more
-macOS windows, or one entire display, to native Clip viewers and browser
-viewers. Live Share uses Clip's in-repository Go room service, native viewer,
-and embedded browser fallback. The service routes bounded end-to-end-encrypted
-signaling and never receives plaintext access codes, friend names, trust
-decisions, SDP, ICE, stream metadata, media, or authoritative viewer state.
+Clip also provides an optional **Live Share** workflow. Up to four Native Clip
+and receive-only Web participants can join one room. Native participants may
+share their own macOS windows or one entire display and receive every other
+Native participant's sources; Web participants receive compatible Native
+sources but never publish. Every admitted pair uses a direct encrypted WebRTC
+connection. Clip's in-repository Go service owns the authoritative bounded
+opaque roster, socket presence, reconnect grace, and encrypted pair-signal
+routing. It never receives media, plaintext Access Words, participant names or
+identities, trust decisions, plaintext SDP/ICE, source metadata, or
+collaboration content.
 
 ---
 
@@ -85,343 +90,541 @@ Settings
 Quit Clip
 ```
 
-The idle popover includes an entry to begin Live Share. Once a room is being
-prepared or hosted, the entire popover switches to Live Share status and
-controls rather than mixing recording and sharing actions in one menu.
+The idle popover includes **Create Room** and **Join Invite**. Once a v4
+room session exists, the entire popover switches to the common participant room
+surface rather than mixing recording and sharing actions in one menu.
 
 ---
 
 # Live Share
 
-## Preparing and starting a room
+## Server-coordinated v4 room model
 
-Choosing **Live Share** first enters a preparation phase. Clip creates and
-reserves a fresh ephemeral room, owner capability, and P-256 session key pair,
-but does not capture or send pixels, publish native friend presence, or surface
-viewer approval requests. The preparation popover shows:
+Live Share is a clean-slate Clip participant mesh. **Create Room** and
+**Join Invite** both start the same participant session directly. Native apps
+and receive-only web viewers use the same authoritative roster, admission,
+pair identity, encrypted signaling, and direct WebRTC connection machinery.
+The signed member profile changes product capabilities and presentation only;
+it never selects a different native transport or routing path. There is no
+permanent native host/viewer media role, legacy protocol negotiation, in-place
+upgrade, role handoff, media mirror, or compatibility path.
 
-- One self-contained **Copy Invite** action. The invite contains the configured
-  endpoint, room name, protocol version, and ephemeral P-256 public key and can
-  be opened by Clip or the browser fallback. A room-name-only copy action is not
-  shown because the room name cannot authenticate a host.
-- A **New Room** action that atomically releases the old reservation and
-  regenerates the room name, owner capability, and P-256 key pair.
-- An optional generated guest access code that can be enabled, copied,
-  replaced, or disabled.
-- Friends who are actively sharing. Selecting one discards the unstarted host
-  preparation and enters native viewer mode.
-- A deliberate **Start Sharing** action.
+The room creator owns admission and room-level controls. The service owns only
+the authoritative opaque roster and encrypted pair-signal routing; neither the
+creator nor the service relays another participant's media or owns another
+participant's source state. Every admitted native participant can concurrently:
 
-Before **Start Sharing**, a copied browser or native-v1 invite may wait for the
-host for a bounded interval but must never produce an approval prompt, allocate
-a peer, or start capture. The wait is discarded when its route closes, the room
-is replaced, or preparation is cancelled. Pressing **Start Sharing** marks the
-room active, publishes friend presence, promotes still-valid waiting routes,
-permits new admissions, and reveals Sources, Stream Settings, Viewers,
-Statistics, and Stop Sharing. Starting with zero sources is valid; connected
-viewers receive an explicit waiting state until a source is selected. The room
-name is locked while active. The guest access code may still be replaced for
-future admissions and never ejects established viewers.
+- Publish up to four exact windows or one mutually exclusive fullscreen
+  display.
+- Publish one optional system-audio track.
+- Receive every other native participant's video, system audio, focus context,
+  collaboration events, and directional diagnostics.
+- Independently add, update, stop, hide, reopen, resize, or fullscreen its
+  local and remote presentations without ending the room.
 
-Stopping the session removes native presence, invalidates its invite, stops
-capture and peers, and returns to an inactive state. A later share always uses
-a new room name, owner capability, and ephemeral key pair.
+The product limit is four participants, including the creator and every web
+viewer. A complete room therefore contains six direct peer links. Raising the
+participant limit requires a new CPU, thermal, upstream-bandwidth, churn,
+audio-mixing, and real-network acceptance pass.
 
-Settings stores one validated Live Share server base address and derives the
-service endpoints from it. Changing that address affects the next room only;
-an active room continues with the configuration it started with. A
-non-destructive connection test checks service reachability without reserving a
-room or starting a share.
+Recording and Live Share remain mutually exclusive. Joining or creating a room
+first completes deterministic teardown of any current recording or room
+session. Late callbacks from a superseded session are ignored.
 
-The access code is a cryptographically random, session-only value. Clip checks
-it locally through a random HMAC challenge inside the encrypted route; the
-service never receives the code or plaintext proof. Changing it applies to new
-viewer admissions and does not eject an already connected viewer.
+## Invite and admission
 
-## Native viewer and Friends
+Creating a room reserves a fresh opaque service-room identifier, creates a
+client-only room agreement secret and stable admission capability, and produces
+one self-contained invite for both Clip and its web viewer:
 
-Clip can join the self-contained invite directly without loading server-owned
-viewer JavaScript. The first native connection uses the invite's ephemeral
-P-256 key to authenticate the host and establish encrypted signaling. Once
-connected, the native viewer may choose **Add as Friend**. The host Clip
-receives an explicit request naming the requesting device and may accept or
-decline.
+```text
+https://service.example/ROOMCODE#v=4&key=<sealed-client-payload>&join=<admission-capability>
+```
 
-Every Clip installation owns a persistent P-256 device signing identity stored
-in the data-protection Keychain as device-only material. Accepting a friend
-stores the friend's public identity, an opaque high-entropy rendezvous
-capability, the configured endpoint, and a locally editable display name.
-Private identities, friend labels, and trust decisions never reach the service.
-A second Mac is a separate device identity until explicitly accepted.
+`ROOMCODE` is an eight-character presentation code. It is not the service API
+room ID and grants no access. The encrypted `key` payload contains the opaque
+256-bit API room ID, session binding, creator identity, room agreement secret,
+and a copy of the admission capability. `join` derives the payload-encryption
+key and authorizes a candidate to knock. The unmodified client never places
+either fragment value in an HTTP path, query, header, server log, or outer
+WebSocket message. The client decrypts the API room ID before contacting the
+service; that opaque ID is routing material and never authorizes membership by
+itself. AES-GCM authenticated data binds the sealed payload to the exact
+`/ROOMCODE` path.
 
-Friendship uses a signed request, signed host acceptance, signed requester
-acknowledgement, and signed host commit receipt. The requester first persists a
-hidden pending contact and its exact recovery evidence, then shows **Finishing
-setup** rather than exposing it as an established friend. The host persists its
-trusted contact and exact evidence before issuing the receipt. Only a valid
-receipt promotes the requester contact to trusted. Exact acknowledgement and
-receipt retransmission is idempotent, so a one-sided app crash can finish after
-the same two device identities reconnect instead of inventing a new trust
-decision. Recovery evidence is local, limited to 16 entries, retained for at
-most seven days, and cleared by completion, decline, removal, blocking,
-identity reset, expiry, or deterministic capacity eviction. This is bounded
-eventual recovery, not an atomic write across two Macs.
+The room popover provides:
 
-When a friend presses **Start Sharing**, their saved contacts can see that
-friend as Live. Selecting the friend opens a fresh signed and encrypted route.
-The host receives **Allow <friend device> to join?** and must explicitly allow
-or deny each connection. Offline friends cannot send or queue requests, and
-the service stores no pending offline invitations. Friend admission does not
-require the guest access code; persistent mutual identity plus the per-session
-host decision is the admission boundary.
+- The room name and one clear **Copy Invite** action.
+- **New Invite**, which invalidates the prior invitation route and publishes
+  fresh join material without disrupting admitted participants.
+- An optional generated **Access Word** that can be enabled, copied, replaced,
+  or disabled for future admissions.
+- An optional **Ask Before Joining** setting. It is off by default.
+- When approval is required, prominent pending admission cards with explicit
+  **Allow** and **Deny** actions.
 
-The native viewer uses one WebRTC peer connection and creates one independent
-macOS desktop window for each of up to four active manual remote sources. Auto
-Share instead reuses one stable remote window as its authoritative source
-changes. Each remote window:
+The join capability is the mandatory anonymous admission secret. The optional
+Access Word is an independent short confirmation shared separately. The
+candidate proves both inside an encrypted server-room-v4 knock, bound to the
+exact room, session, participant identity, and creator. The room service never
+receives either secret or a plaintext proof.
+Replacing or disabling the Access Word affects future candidates only and does
+not eject admitted participants.
 
-- Uses the host source's authoritative logical dimensions for window and video
-  layout, independent of the receiver display's backing scale. A window shared
-  from a Retina display is therefore not doubled on another Mac, and a window
-  shared from a non-Retina display is not halved on a Retina display.
-- Offers **Fit to Window** and **Native 100%** presentation. Fit preserves the
-  source aspect ratio without upscaling by default. Native keeps the source at
-  its logical 100% size; if the receiver window is smaller, it crops rather
-  than scales and smoothly pans the visible region toward the focused remote
-  cursor without exposing blank space. The header shows the current zoom and
-  can reset the window to the source's actual logical size.
-- Can be moved, resized, minimized, zoomed, placed in another Space or display,
-  and made locally fullscreen without affecting the host window.
-- Is visually borderless: the receiver's ordinary title bar, traffic-light
-  controls, and redundant source-information chip are hidden because the host
-  title bar is already part of the shared image. A thick friend-colored frame
-  surrounds the entire video, and a matching rounded header sits outside it
-  with the source name and viewer controls. The header is the window's drag
-  surface. Its controls stay translucent while idle and become opaque on hover
-  so they do not unnecessarily obscure nearby content. The stable friend color
-  is derived from the saved identity, with contrasting title text. Remote focus
-  brightens the frame without moving, raising, or stealing focus from local
-  windows.
-- Shows the remote cursor only in the focused shared source. The host capture
-  pipeline disables cursor capture for every other source, and the viewer
-  rejects stale or wrong-source cursor messages. It never moves the local
-  pointer or sends keyboard/mouse input. Remote control is outside this
-  milestone.
+Every native Clip installation owns a persistent P-256 signing identity stored
+as device-only Keychain material; the receive-only web identity is scoped to
+one browser tab as described below. A room name, rendezvous identifier,
+identity, or Access Word alone never grants membership. By default, successful
+proof of the full high-entropy invite capability auto-admits a candidate after
+identity, capability, optional Access Word, duplicate, capacity, and room-availability
+validation. **Ask Before Joining** adds a creator-controlled approval boundary
+after those checks. The signed room descriptor tells an authenticated
+candidate whether approval is required; while waiting, Clip identifies the
+room and current admission authority without exposing room contents. Approval
+or automatic admission installs one creator-signed encrypted member descriptor
+in the service roster. Denial, timeout, invalid proof, or room-capacity failure
+removes all candidate resources.
 
-The viewer owns window placement. Clip may preserve the host's relative layout
-for initial placement, but host movement must not overwrite a viewer's manual
-arrangement. Adding a source creates a window; removing a source closes it;
-temporary zero-source state retains the session and shows a waiting status.
-Closing one remote window hides it locally and it remains reopenable from the
-popover. Closing the last visible window asks whether to stay connected or
-leave so audio cannot continue invisibly.
+## Membership and room lifetime
 
-System audio is one session-wide remote track and is played exactly once,
-regardless of the number of source windows. Mute and volume live in the viewer
-popover. While viewing, the popover lists visible and hidden sources, P2P/TURN
-state, statistics, Show All Windows, and Leave Live Share. Host focus changes
-only update the remote focus treatment and cursor routing; they never move,
-raise, or focus a viewer's local windows.
+The service publishes one complete authoritative opaque roster after every
+membership change. Every member decrypts and verifies each creator-signed
+descriptor, room/session binding, revision, creator continuity, and identity
+uniqueness before reconciling its peer links. Participant IDs are random per
+room and source identity is the tuple of publisher participant ID and
+source-instance ID.
 
-Clip supports one active role per process: recording, Live Share host, or Live
-Share viewer. Entering one role first completes teardown of any current role;
-switching from unstarted host preparation to viewing cannot leave a room,
-capture, peer, audio track, or host UI alive in the background. Late callbacks
-from the old role are ignored. Native viewing does not require Screen Recording
-permission.
+For every unordered participant pair there is exactly one independent direct
+WebRTC connection. For A, B, and C the topology is A-B, A-C, and B-C. Applying
+a new roster is set reconciliation: retained pairs are never replaced merely
+because another participant joined, left, or reconnected. A pair failure is
+isolated to that pair and cannot roll back any other connection.
 
-## Sources
+When an ordinary participant rejoins, its fresh member incarnation replaces
+only its stale pair/source state. Every ready pair exchanges the publisher's
+current authoritative source manifest, so all active windows reappear without
+requiring the publisher to stop and reshare them.
+
+An ordinary participant may leave without ending the room; the service removes
+only that participant and broadcasts the next complete roster. The creator has
+one terminal **End Room for Everyone** action. If the creator explicitly leaves
+or its signaling reconnect grace expires, the service ends the room for every
+participant. There is no election, successor, authority chain, quorum, or
+`leaderlessLocked` phase.
+
+The invite URL remains byte-for-byte stable across joins, leaves, reconnects,
+descriptor refreshes, and roster revisions. Only the explicit **New Invite**
+action rotates the admission capability and changes the copied URL; it does not
+replace the room ID or interrupt admitted participants.
+
+## Receive-only web participants
+
+The same-origin web viewer is a first-class member of the server-room-v4 mesh,
+not a mirrored stream or separate signaling product. For native participants A
+and B and web participant W, the direct topology is A-B, A-W, and B-W. Web-Web
+pairs retain the same authenticated DataChannel contract even though neither
+side publishes media.
+
+The room-service origin is part of the trusted Web client distribution. A
+malicious or compromised origin can serve modified JavaScript that reads and
+exfiltrates the fragment, so the product does not claim fragment secrecy from
+that origin. Internet viewer links require HTTPS; plain HTTP is accepted only
+for exact `localhost`, `127.0.0.1`, and `[::1]` development links.
+
+The encrypted creator-certified member descriptor contains one required,
+closed profile: `nativeApp/nativeV1` or `webViewer/webViewerV1`. Native clients
+run the normal pair reconciliation and concrete peer-link code for either
+profile. The profile only allows the UI and protocol boundary to enforce that a
+web viewer:
+
+- receives up to four video sources and one system-audio track from every
+  native publisher;
+- receives authenticated source, focus, and cursor metadata needed to present
+  those sources;
+- appears in participant and connection lists with a **Web** badge;
+- publishes an authenticated empty source snapshot and no media;
+- may leave and reconnect its own tab session;
+- cannot create or administer a room, rotate invitations, approve or remove
+  members, publish media, create friendships, send or render collaboration, or
+  control native viewer windows.
+
+The profile is an authenticated, creator-certified participant declaration;
+it is not platform attestation. A custom malicious client could claim
+`nativeApp/nativeV1` unless a future release adds Native application
+attestation. The Web capability gate prevents a participant declared as Web
+from publishing or using forbidden controls, while creator admission and the
+four-person room limit remain part of the trust boundary.
+
+One tab owns one ephemeral participant identity. Refresh in that tab restores
+its identity and reconnect capability from tab-scoped storage; explicit Leave
+deletes it, and opening the invite in another tab creates another participant.
+Because browsers cannot set a WebSocket authorization header, a same-origin
+POST exchanges the reconnect capability for a short-lived, single-use opaque
+ticket presented in the WebSocket subprotocol. The capability and ticket never
+appear in a URL, query, cookie, or service log, and the existing room hub still
+makes the authoritative reconnect decision.
+
+The browser presents all active sources using Focus or Row layout; Grid is not
+part of web-v1. Native size is the default, with Fit, Fill, drag-to-pan for an
+oversized Native source, a bottom-right viewport minimap, and browser
+fullscreen. The Focus HUD auto-hides after pointer/input inactivity, returns on
+movement, and shows a filmstrip of every active source. The filmstrip
+distinguishes the publisher-focused source from the viewer's manually selected
+source.
+
+Follow is participant-scoped and explicitly supports **Off**. With Follow Off,
+the viewer selects and keeps any source manually. With Follow enabled, the
+viewer selects a publisher and tracks that publisher's focused source; if that
+source stops, Clip advances within the publisher, and if the publisher stops
+or leaves, Clip advances to the next active publisher in authoritative roster
+order. Manually selecting a source turns Follow Off. System audio is one track
+per native publisher, initially muted until a user gesture, with master and
+per-participant mute/volume.
+
+Web-v1 targets current desktop Safari and Chromium. Firefox and mobile browsers
+are not release claims. Web participants have no friendship or collaboration
+surface in this version.
+
+## Friends
+
+A native participant may send **Add Friend** from another Native participant's
+room row.
+Friendship is established only after a signed request, explicit remote
+acceptance, requester acknowledgement, and accepter commit receipt cross that
+pair's already-authenticated reliable DataChannel. Both devices durably commit
+the same persistent P-256 identity or neither presents the relationship as
+trusted. Requests and receipts are idempotent and crash recoverable.
+
+Every friendship owns two independent opaque presence mailboxes: one for each
+direction. Each mailbox contains a random routing ID and random symmetric read
+secret exchanged only over the authenticated pair. A participant with an
+active room publishes a short-lived, signed, AES-GCM-encrypted copy of the
+current canonical v4 invite separately for each friend. The service stores only
+the opaque routing ID, monotonic revision, expiry, and bounded ciphertext. It
+never receives the friend graph, identity, name, trust decision, room code, API
+room ID, invite fragment, or presence key.
+
+The idle Live Share pane lists saved friends that are currently sharing.
+Selecting a friend decrypts and verifies their presence, pins the expected
+identity, and joins through the normal v4 room path. A saved-friend join always
+appears to that friend as a prominent **Allow** or **Deny** request even when
+the room's general **Ask Before Joining** setting is off. The candidate sees a
+clear waiting state. Removing a friend deletes both local mailbox secrets and
+stops future discovery; it does not remove an already admitted room member.
+
+## Common native participant popover
+
+Every native participant sees the same fluid, content-sized room popover.
+Creator authority changes available room actions, not the media layout. The
+popover uses shared pane, section, row, toggle, picker, metric, and action-button
+components so the creator and later joiners remain visually identical.
+
+The native creator sees Copy/New Invite, Access Word, Ask Before Joining,
+pending approval, member removal, and End Room authority. Other native
+participants see the same room identity and participant state without disabled
+creator-only placeholders. A pending request raises the menu-bar attention
+state and appears as a top-level Allow/Deny card; it is never hidden inside room
+settings.
+
+Participant rows identify the authenticated profile as **Native** or **Web**.
+Friendship controls are available only for Native profiles. The web viewer uses
+its dedicated receive-only layout rather than exposing disabled native
+publishing or room-administration controls.
+
+The overview contains:
+
+- Room name and invite state.
+- **Your Share**, with the participant's local sources, add/share controls,
+  system-audio publication, app-audio exclusions, and local stream state.
+- A compact **Shared With You** navigation row summarizing `N windows from M
+  people`. Its fluid detail pane groups visible and hidden windows, audio
+  playback, volume, connection route, and bring-to-front controls by remote
+  participant. **Your Share** remains expanded on the overview.
+- Room participants and pending admission state.
+- Stream Settings and Statistics.
+- Pointer, ping, and drawing controls.
+- **Bring All to Front**, plus per-source show/bring-forward controls.
+- **Leave Room** for an ordinary participant, and **End Room for Everyone** for
+  the creator.
+
+Starting or remaining connected with zero local sources is valid. Each remote
+participant section shows an explicit waiting state until that participant
+publishes a source. New remote source windows come forward once without
+becoming permanently floating, and hidden windows remain reopenable.
+
+## Local sources and audio
 
 Clip shares exact windows rather than every window owned by an application.
-The host may share up to four windows concurrently. Each source keeps its
-stable WebRTC track slot for the lifetime of the room so adding or removing a
-window does not require viewer renegotiation.
+Each native participant may share up to four exact windows concurrently. Each source
+keeps its stable reserved WebRTC track slot for the lifetime of the room so
+adding or removing a source does not require a new peer connection.
 
-Fullscreen is exclusive:
+A source-scoped capture failure is a transient notice, not persistent room
+state. Clip clears it only after authoritative publication/capture state proves
+that source recovered, or after the failed source or participant incarnation is
+removed. A recovered source must not leave a stale `Capture is not running`
+banner over otherwise working sharing controls.
 
-- Enabling fullscreen stops all exact-window capture sessions and uses one
-  display source.
-- Adding an exact window turns fullscreen off first.
-- Stopping fullscreen leaves the room connected and ready for another source.
+Fullscreen is locally exclusive:
 
-Software VP8, VP9, and AV1 use the native source frame geometry delivered by
-ScreenCaptureKit. Hardware H.264 aspect-fits only sources that exceed its
-4,096-pixel-side, 4,096 × 2,304 luma, or Level 5.2 macroblock envelope; an
-under-limit odd dimension is cropped by at most one final row or column at the
-encoder boundary. By default, Live Share normalizes capture to opaque SDR
-Rec.709: software VP8, VP9, and AV1 receive video-range NV12 while the native
-VideoToolbox H.264 path retains BGRA input tagged as Rec.709. The host may
-instead select full-range Rec.709 or display-native capture as
-described below. Clip does not perform a manual BGRA copy or synthetic
-timestamp rewrite. Clip's patched WebRTC M150 bridge carries the input
-primaries, transfer, matrix, and range onto native frames. Display-native BGRA
-keeps standard sRGB, Display P3, or Rec.709 primaries and transfer while
-describing the software codecs' libyuv packed-RGB conversion as BT.601
-limited-range I420. AV1 writes matching CICP into its sequence header, and the
-native viewer preserves decoded metadata through its Objective-C frame bridge,
-applies the matching BT.601 or Rec.709 Metal conversion, and identifies its
-sRGB, Display P3, or ITU-R BT.709 output to Core Animation. Clip's custom
-hardware H.264 encoder remains intentionally normalized to Rec.709 and signals
-that conversion in its own bitstream. Clip's native viewer explicitly applies
-this contract. The browser receives the same codec signaling, but its final
-display conversion remains browser- and platform-dependent.
-Capture-to-WebRTC pressure is bounded and observable; Live Share favors the
-latest frame to prevent latency growth and must report sustained overload
-rather than accumulating an unbounded queue.
+- Enabling fullscreen stops that participant's exact-window capture sessions
+  and publishes one display source.
+- Adding an exact window turns that participant's fullscreen source off first.
+- Stopping fullscreen leaves the participant connected and ready to publish a
+  different source.
 
-Signaling, SDP, ICE, viewer IDs, and control DataChannel payloads have explicit
-allocation limits before native peer work. Control delivery also has a native
-DataChannel high-water limit. Durable state is regenerated from the latest
-authoritative source snapshot after libwebrtc reports a low-water drain; Clip
-does not retain an application payload queue. Cursor samples remain ephemeral
-and may be superseded under pressure.
-
-## Window sharing controls
-
-While a Live Share room is active, the currently focused eligible window gets
-a small capture-excluded overlay with **Share** or **Stop**. An arrow button
-animates the control between the left and right side of the window. Clip-owned,
-hidden, desktop, protected, and otherwise unshareable windows never receive
-the control.
-
-A fixed capture-excluded status overlay appears in the top-right of the active
-display. It contains:
-
-- One dot per active exact-window source.
-- Viewer count.
-- A fullscreen share toggle.
-
-Both overlays remain operable without Accessibility permission. They use
-AppKit window discovery and ordinary button input and never install a global
-event tap or take control of the pointer.
-
-## Focus and cursor context
-
-Clip observes the frontmost application and focused shareable window. It sends
-focus changes and normalized cursor position for the focused shared source over
-the ordered, reliable `clip-control-v1` WebRTC DataChannel. These messages let
-the browser viewer follow the host's focus or cursor; they do not remotely
-control either computer. Cursor capture is enabled only on that focused source;
-focus changes update capture visibility in place without renegotiating its
-track. Native viewer state accepts cursor positions only for the current,
-connected focused stream and discards stale routing after focus or lifecycle
-changes.
-
-An optional Auto Share setting may follow eligible focused windows. It obeys
-the same four-source limit and uses deterministic least-recently-focused
+An optional Auto Share setting follows eligible focused windows. It obeys the
+same four-source limit and uses deterministic least-recently-focused
 replacement when the pool is full. Manual source management remains the
 default.
 
-Live Share can optionally send system audio. The setting defaults to Off and
-persists independently from recording audio settings. With exact-window
-sources, ScreenCaptureKit captures audio for the unique owning applications of
-all shared windows; macOS filters this at application scope, so audio cannot be
-isolated to one particular window when that application owns several windows.
-Fullscreen captures system audio while excluding Clip itself. Multiple windows
-from the same application never create duplicate
-audio capture or WebRTC tracks.
+Each native participant may optionally publish system audio. The state defaults
+to Off and persists independently from recording audio. Exact-window sharing
+captures audio for the unique owning applications of that participant's shared
+windows; macOS filters audio at application scope, not individual-window scope.
+Fullscreen captures system audio while always excluding Clip and may also
+exclude one or more user-selected applications, such as Discord. The exclusion
+row shows `None`, the selected application name, or `N Apps`.
 
-Live Share does not send microphone audio and cannot run at the same time as a
-recording. ScreenCaptureKit delivers 48 kHz stereo system audio to Clip's
-native PCM bridge, which feeds one stable Opus WebRTC send track for the room.
-The embedded browser viewer attaches that track and provides mute, volume, and
-an explicit user-gesture recovery when autoplay is blocked. Thirty FPS is the
-supported video default and 15 FPS is selectable.
-Sixty FPS may be exposed when the current hardware path supports it, but it is
-not a release requirement.
+Multiple windows from one application never produce duplicate audio tracks.
+ScreenCaptureKit feeds one stable 48 kHz stereo Opus track from each publishing
+participant. Live Share does not send microphone audio. Every receiver plays
+each remote participant's audio exactly once and owns an independent mute and
+volume control for that participant.
 
-The host can change Live Share color handling independently from codec and
-quality. **Compatible Rec.709** is the default 8-bit SDR video-range mode.
-**Full-range Rec.709** uses 8-bit SDR full-range YCbCr with VP8, VP9, and AV1;
-the native H.264 path continues to use its standard Rec.709 conversion.
-**Native Display** restores display-dependent ScreenCaptureKit color for VP8,
-VP9, and AV1. Standard sRGB, Display P3, and Rec.709 descriptions are
-preserved through those software codecs and Clip's native viewer; an
-unrecognized input display profile falls back to sRGB at the sender. H.264
-continues to output its standard Rec.709 conversion. Changing the mode updates
-active captures in place without replacing the room or peer connection. These
-modes do not select 4:2:0 versus 4:2:2 or enable 10-bit encoding. AV1 color
-controls are changed only when the source color description changes; that
-transition forces one keyframe rather than reconfiguring libaom on every
-captured frame.
+## Remote source windows
 
-Each codec has separately persisted advanced stream controls, available both
-as session defaults in Settings and beside the active codec selector. Changes
-remain a draft until **Apply**. In the active Live Share menu, the editor
-replaces the menu content inline; **Back** or **Cancel** discards the draft
-without creating a nested menu-bar popover. Applying updates the current sender
-immediately without replacing its peer connection.
-**Reset** restores that codec's automatic defaults. Every codec supports a
-requested bitrate floor, congestion behavior, temporal-layer count, and RTP
-resolution scale. The native H.264 encoder additionally exposes maximum QP,
-VideoToolbox quality, and keyframe interval. The bundled WebRTC VP8, VP9, and
-AV1 encoders remain native factory objects and do not expose a safe public QP
-override.
+Each received source uses one independent native macOS window:
 
-## Protocol and privacy
+- It uses the publisher's authoritative logical dimensions independently of
+  the receiver display's backing scale.
+- **Follow** uses native rendering and continually matches the publisher's
+  logical window size. Manually resizing a Follow window changes it to
+  **Native**.
+- **Native** keeps the source at its logical native size inside a
+  receiver-controlled viewport. A smaller viewport crops and pans toward the
+  remote cursor; a larger viewport does not blur or invent source detail.
+- **Fit** preserves the complete source aspect ratio inside a
+  receiver-controlled window.
+- Local fullscreen aspect-fits the source with auto-hiding controls and restores
+  the prior frame and presentation mode when it exits.
+- Windows can be moved, resized, minimized, placed in another Space or display,
+  hidden/reopened, brought forward individually, or brought forward together
+  without affecting the publisher.
+- The window is borderless with a participant-identity-colored frame and
+  matching external drag header. Remote focus changes its treatment without
+  raising, moving, or stealing local focus.
 
-Clip Live Share Protocol v1 is the only supported signaling contract:
+The receiver owns placement. Publisher movement does not overwrite a manually
+arranged receiver window. Removing a source closes its presentation. Closing
+the last visible source while remote audio remains active asks whether to stay
+connected or leave.
 
-- Clip advertises a client-generated room using
-  `PUT /api/v1/rooms/{room}` and authenticates the host WebSocket with a random
-  32-byte owner token. The server stores only the token's SHA-256 hash.
-- The browser link carries the host's ephemeral P-256 public key only in the
-  URL fragment. The fragment is not sent in the HTTP request. Every viewer
-  creates a fresh P-256 key and derives independent directional AES-GCM keys
-  with Clip through ECDH and HKDF-SHA256.
-- Admission, SDP, ICE, source/control metadata, and codec negotiation are
-  encrypted before crossing the server. The outer relay sees only bounded room,
-  route, sequence, nonce, ciphertext-size, timing, and network metadata.
-- Every viewer receives its own peer connection with four random-identity video
-  tracks, one optional Opus system-audio track, and the reliable ordered
-  `clip-control-v1` DataChannel. H.264 and VP8 are exact choices; VP9 may fall
-  back to VP8, and AV1 may fall back to VP9 then VP8 for each viewer
-  independently. Actual outbound RTP statistics identify what each viewer is
-  being sent.
-- Clip admits at most eight pending or connected peers, enforces a 15-second
-  initial answer timeout, and bounds WebSocket frames, decrypted messages, ICE,
-  SDP, control payloads, and native queue pressure.
-- The deployment advertises its STUN/TURN configuration through validated
-  capabilities. Remote Internet and TURN traversal require controlled
-  acceptance and are not implied by loopback tests.
+Source-aware ScreenCaptureKit resolution is mandatory. A genuine 1× source
+uses nominal capture resolution and a Retina source uses best capture
+resolution so mixed-display topology never causes a destructive resample.
+Source geometry, scale metadata, and native cursor behavior are re-evaluated
+when a shared window moves between displays.
 
-After the reliable DataChannel opens, the temporary viewer signaling route
-closes. Later control and renegotiation are peer-to-peer; only an ICE-selected
-TURN relay may carry encrypted WebRTC traffic. Clip counts connected peers and
-the server has no authoritative viewer count.
+The server-room-v4 mesh replaces only room signaling, membership, and peer
+coordination. It must reuse the established capture and media contract without
+changing its algorithms: source-aware 1×/Retina resolution, geometry and pixel
+formats, cursor/focus behavior, codec-specific H.264 constraints, codec
+transition ordering and rollback, quality allocation, encoder settings,
+system-audio sequencing, and captured-frame delivery remain behaviorally
+identical to the pre-mesh Live Share pipeline.
 
-Saved-friend discovery uses the additive native rendezvous API. While sharing
-is active, that API stores one bounded signed session descriptor and otherwise
-relays only bounded temporary route payloads. The Go service deliberately does
-not parse the descriptor, but the descriptor is authenticated public/random
-routing metadata rather than ciphertext; a service operator can inspect it.
-It contains no password, friend label, trust decision, viewer identity, or
-admission capability. The per-friend proof and all SDP, ICE, and later control
-messages remain encrypted end to end. A copied descriptor or a server-created
-replacement cannot approve a viewer or impersonate either saved identity.
+## Sharing controls, focus, and cursor
 
-No recording is written to History during Live Share. Raw frames, PCM audio,
-and network encodings are transient. Ending the room stops capture, peer
-connections, signaling, focus observation, overlays, and the server
-advertisement.
+The local participant's currently focused eligible window gets a small
+capture-excluded overlay with **Share** or **Stop**. An arrow moves it between
+the left and right edge. A capture-excluded status overlay shows one dot per
+local exact-window source, room participant count, and a fullscreen toggle.
+Clip-owned, hidden, desktop, protected, and otherwise unshareable windows never
+receive the control.
 
-The browser viewer is trusted as part of the selected deployment. Although the
-URL fragment is absent from normal HTTP requests, an operator who replaces the
-served JavaScript can read `location.hash`. A user who does not trust the
-default deployment can run the same in-repository Go service and embedded
-viewer. The relay can still deny service and observe IP addresses, timing and
-traffic shape; end-to-end signaling encryption does not prevent that.
+Both overlays use AppKit discovery and ordinary button input without an
+Accessibility event tap, pointer takeover, or remote input injection.
 
-The local acceptance lane builds the in-repository server/viewer, exercises
-strict opaque WebSocket routing, cross-language cryptography, encrypted
-signaling and native packages without pointer control. Real desktop capture,
-browser audio, overlay exclusion, secondary-display behavior, remote/TURN
-traversal, soak, and the signed Release DMG remain separately recorded gates in
-`docs/live-share-progress.md`.
+Clip publishes source focus and native cursor context for the local
+participant's focused source. Remote presentations reject stale, wrong-source,
+wrong-participant, and superseded-session cursor events. Publisher focus may
+change a remote frame treatment and cursor route, but never moves or focuses a
+receiver's local windows.
+
+## Collaboration
+
+Every native participant may deliberately reveal a collaboration pointer over a
+remote source, create a bounded ping, or draw temporary vector ink. These
+events use the existing pairwise WebRTC DataChannels rather than a media
+encode or server route. Replaceable pointer motion is coalesced to a latest-
+wins 60 Hz ceiling and may be dropped under transport pressure; pings, ink,
+and clear commands use reliable ordered delivery. Pointer movement refreshes a
+two-second activity lease; the sender emits one hidden sample when movement
+stops, and receivers independently expire stale pointers after the same two
+seconds in case that ephemeral hide packet is lost.
+
+- Pointer and ping events contain origin participant, source key, normalized
+  source coordinates, positive sequence, timestamp, visibility, and bounded
+  lifetime.
+- Drawing uses bounded begin/points/end events with a stable stroke ID, origin
+  participant, source key, color, and expiry.
+- Pointer and ink are rendered as resolution-independent local overlays at the
+  publisher and receivers. They are excluded from source capture to prevent a
+  feedback loop and never reduce the encoded source quality.
+- A publisher overlay for an exact-window source is ordered directly above
+  that source in the same WindowServer layer. Unrelated windows above the
+  shared window therefore cover its annotations too; minimizing the source or
+  leaving its Space hides the overlay. Fullscreen annotations remain a
+  display-level overlay because the complete display is their source.
+- Each participant has a stable identity color and visible attribution.
+- A source publisher can clear all ink on its source; each participant can
+  clear its own ink; all temporary drawing expires automatically.
+- Viewing alone never transmits pointer position. Pointer reveal and drawing
+  are explicit modes.
+- Stale, malformed, excessive, unauthorized, wrong-source, and
+  wrong-participant events are rejected.
+
+Collaboration never injects keyboard or mouse input into another Mac. Remote
+control, persistent whiteboards, messaging, and file transfer are outside this
+version.
+
+## Stream quality and sender settings
+
+Codec, quality, frame rate, color, performance mode, prioritization, Auto
+Share, and advanced settings belong to each participant's outgoing
+publication. Changing one participant's settings never changes another
+participant's sender or receiver preferences.
+
+Software VP8, VP9, and AV1 use native ScreenCaptureKit geometry. Hardware H.264
+aspect-fits only sources that exceed its 4,096-pixel-side, 4,096 × 2,304 luma,
+or Level 5.2 macroblock envelope; an under-limit odd dimension is cropped by at
+most one final row or column at the encoder boundary.
+
+Compatible Rec.709 is an available 8-bit SDR video-range mode. Full-range
+Rec.709 uses 8-bit full-range YCbCr with VP8, VP9, and AV1; H.264 retains its
+standard Rec.709 conversion. Native Display preserves standard sRGB, Display
+P3, or Rec.709 descriptions through the patched WebRTC frame bridge and native
+remote presentation and is the default. An unrecognized input profile falls
+back to sRGB. These modes neither enable 10-bit output nor choose 4:2:0 versus
+4:2:2.
+
+Each codec has separately persisted advanced sender controls. Changes remain a
+draft until **Apply**; **Back** or **Cancel** discards the draft and **Reset**
+restores automatic defaults. Every codec supports a requested bitrate floor,
+congestion behavior, temporal-layer count, and RTP resolution scale. Native
+H.264 also exposes maximum QP, VideoToolbox quality, and keyframe interval.
+Applying updates the participant's active senders without replacing established
+peer connections.
 
 H.264 is hardware encoded and geometry-capped. VP8, VP9 profile 0, and AV1 are
-software encoded at native geometry. AV1 may impose substantially higher CPU
-cost, so VP8 remains the default.
+software encoded at native geometry. AV1 is the default codec, Native Display
+is the default color mode, and Max (20 Mbps) is the default quality preset.
+Thirty FPS is the default and 15 FPS is selectable. Sixty FPS may be exposed
+when the hardware path supports it but is not a release requirement.
+
+Capture-to-WebRTC pressure is bounded per peer and observable. Each peer link
+favors its latest frame to prevent latency growth; one slow participant cannot
+backpressure another participant's sender. Sustained overload is visible in
+directional diagnostics rather than accumulating an unbounded queue.
+
+Each published source owns one ScreenCaptureKit session and one stream of raw
+frames feeding one shared `RTCVideoTrack`. The track is attached to a separate
+`RTCRtpSender` on every remote peer connection, so standard libwebrtc owns one
+encoder and congestion controller for each source/remote-peer edge. Adding a
+viewer does not create another ScreenCaptureKit session, disk recording, or
+AVAssetWriter pipeline, but it does add an encoder/sender and another copy of
+the outgoing network traffic. The common expected workload is two Native
+participants sharing together. Four participants is the current tested
+resource boundary rather than an inherent WebRTC protocol limit.
+
+## Directional diagnostics
+
+Diagnostics reflect actual peer-edge behavior rather than a room-wide assumed
+codec or encoder:
+
+- **Connections** lists every remote participant's connection state, P2P/TURN
+  route, RTT, packet loss, ICE state, and control-channel state.
+- **Your Publishing** groups each active local source by recipient because
+  every peer edge has its own encoder, congestion controller, target rate,
+  queue, and negotiated codec. Where the runtime exposes them, rows include
+  codec, dimensions, FPS, bitrate, drops, QP, encode time, target bitrate, and
+  send-queue pressure.
+- Incoming media is grouped by Native publisher and includes only actual
+  active tracks. A receive-only Web participant never creates an empty
+  publishing or incoming-media section merely because it belongs to the
+  roster.
+- The codec in directional RTP statistics is authoritative. A configured
+  codec label must not be presented as if it proves what a particular edge
+  negotiated.
+
+## Server-room-v4 protocol and privacy
+
+Server-room-v4 is the only supported Live Share connection contract:
+
+- A room has up to four unique participant identities in one complete
+  service-authoritative opaque roster whose member descriptors are
+  creator-signed and end-to-end encrypted.
+- For `n` members, Clip creates `n × (n - 1) / 2` direct WebRTC peer
+  connections: 0, 1, 3, or 6 links for one through four participants.
+- Each pair has one canonical participant-pair key, one independent
+  negotiation revision, four reserved random-identity video transceivers, one
+  optional Opus audio track per direction, and one reliable ordered
+  control DataChannel.
+- The room service routes encrypted admission, targeted SDP, and ICE and
+  broadcasts complete opaque roster snapshots. Source state, collaboration,
+  and diagnostics use authenticated pair DataChannels. Media is never
+  forwarded by the creator, service, or another participant.
+- P-256 ECDH, HKDF-SHA256, AES-GCM, signed possession handshakes, bounded
+  sequence spaces, and context-bound proofs protect admission and bootstrap.
+  Cross-route, cross-session, cross-pair, replayed, stale, malformed, or
+  unauthenticated traffic is rejected before it mutates room state.
+- Roster membership, each publisher's source state, and each canonical peer
+  link have independent positive revision domains. A stale update in one
+  domain cannot block a newer update in another.
+- Admission is transactional. A candidate is absent from the room until the
+  creator returns a valid encrypted admission record and the service commits a
+  newer complete roster.
+- A Native-Web video edge offers only the publisher's selected H.264, VP8,
+  VP9, or AV1 codec. It never falls back, transcodes, or starts a simultaneous
+  second-codec encoding for that edge. Native-Native edges retain the proven
+  pre-Web SDP preference ladder: AV1 prefers AV1, VP9, then VP8; VP9 prefers
+  VP9 then VP8; H.264 and VP8 are exact. That ladder negotiates one active
+  codec for the edge; each remote peer edge still owns its own standard
+  libwebrtc encoder and RTP sender. It is not permission to encode several
+  codecs on one edge at once.
+  Actual per-link RTP statistics identify the negotiated codec and route.
+- If a web runtime cannot decode the selected codec, the participant remains
+  in the authoritative roster. The affected source reports **Unsupported
+  Encoding: CODEC** when the codec is observable before negotiation fails;
+  otherwise that peer's video may remain unavailable or black. Current
+  libwebrtc may reject that incompatible peer connection as a whole, so web-v1
+  does not promise audio or a DataChannel on that one edge. Other mesh edges
+  and the publisher's encoders for other peer edges remain unchanged.
+- SDP, ICE, decrypted messages, source count, collaboration cadence, strokes,
+  queued control data, and native media pressure have explicit hard bounds.
+- Validated STUN/TURN configuration supports remote traversal. TURN carries
+  encrypted WebRTC traffic and gains no room authority.
+
+The service sees the non-authorizing presentation code when serving the web
+page, plus bounded random routing identifiers, ciphertext size, sequence,
+nonce, timing, and network metadata. It can deny service and observe
+traffic shape, but cannot prove an invite or Access Word, forge a valid member
+descriptor, decrypt
+signaling, or access media.
+
+No recording is written to History during Live Share. Raw frames, PCM audio,
+and network encodings are transient. Leaving removes exactly the departing
+participant's links, local capture, remote presentations, audio,
+collaboration overlays, statistics, and routes. Ending the room removes all
+room state.
+
+The release is intentionally server-room-v4-only. Obsolete connection,
+legacy-browser, upgrade, mirroring, handoff, and codec-fallback paths are
+removed rather than retained for compatibility. Existing implementation may
+remain only when it is a protocol-neutral building block that the v4 session
+still requires; implementation convenience alone is not a reason to retain a
+legacy path, wire type, role model, entry point, UI, server route, asset, or test.
 
 Unavailable options should be hidden. For example, `Display 2` should only appear when a second display is connected.
 
@@ -547,7 +750,7 @@ connected display.
 - The selected application and display are stored as the durable target so
   Retake can resolve the application again when it is still available.
 
-Individual-window capture remains outside the v1 scope.
+Individual-window recording remains outside the current recording scope.
 
 ---
 
@@ -1107,14 +1310,17 @@ exceed the window; controls and labels remain single-line where practical.
 - A non-destructive Test Connection action that does not reserve a room.
 - Reset Server Address, restoring the built-in Clip Live Share service address.
 - This device's persistent Live Share identity fingerprint, plus a destructive
-  Reset Identity action that creates a new identity and removes local Friends.
-- Local Friends management with editable names, Block/Unblock, and Remove.
+  Reset Identity action. Reset is unavailable while the identity belongs to an
+  active room.
 - Default video codec, quality/bandwidth rung, frame rate, and Performance or
   Quality encoding mode.
 - Per-codec advanced stream defaults with Apply and Reset, including shared
   sender controls and H.264-specific VideoToolbox controls.
-- Default System Audio, access-code requirement, Prioritize Focused Window, and
+- Default System Audio, Access Word requirement, Prioritize Focused Window, and
   Auto-share Focused Windows states.
+- Default Fullscreen app-audio exclusions.
+- Default collaboration pointer visibility, ping duration, ink color, and
+  automatic ink expiry.
 - Restore All Live Share Defaults, restoring session defaults without changing
   the separately managed server address.
 
@@ -1171,9 +1377,12 @@ Each permission should include a button that opens the relevant macOS System Set
 - System audio: Off.
 - Countdown: a silent 3 seconds, with Off, 1, 3, and 5-second choices.
 - Live Share server: `https://clip.tineestudio.se`.
-- Live Share video: VP8, Very High quality (`6 Mbps` ceiling), 30 FPS, Quality mode.
+- Live Share video: AV1, Max quality (`20 Mbps` ceiling), 30 FPS, Quality mode,
+  Native Display color.
 - Live Share System Audio: Off.
-- Live Share access code: Off.
+- Live Share Access Word: Off.
+- Live Share Ask Before Joining: Off; verified full invites auto-admit, while
+  friend joins always require Allow or Deny.
 - Live Share Prioritize Focused Window: On.
 - Live Share Auto-share Focused Windows: Off.
 - History retention: 7 days.
@@ -1263,11 +1472,23 @@ Clip should target:
 # Privacy
 
 Clip's recording workflow is local-first. Recording, Preview, History, and
-exports do not upload media. Live Share is the sole explicit networking mode:
-when the user starts a room, selected transient screen frames, optional system
-audio, and control metadata leave the Mac over encrypted WebRTC. The configured
-service sees room/routing metadata and bounded end-to-end-encrypted signaling
-envelopes, not plaintext admission, SDP, ICE, stream/control data, or media.
+exports do not upload media. Live Share is the only feature that transmits
+captured media: when the user starts a room, selected transient screen frames,
+optional system audio, and control metadata leave the Mac over encrypted
+WebRTC. Sparkle may separately contact the configured update feed to check for
+new application releases. The room service sees room/routing metadata and
+bounded end-to-end-encrypted signaling envelopes, not plaintext admission,
+SDP, ICE, stream/control data, or media.
+It can observe IP addresses, timing, room size, opaque identifiers, ciphertext
+sizes, and traffic shape, and it can deny service. TURN may relay encrypted
+WebRTC packets but gains no room authority or media plaintext.
+
+The room-service origin supplies the receive-only Web viewer JavaScript. A
+malicious or compromised origin could serve modified code that reads the invite
+fragment, so fragment secrecy from that Web origin is not a product claim.
+Native-to-Native use has the stronger separation because the service does not
+supply either Native client. Users may self-host the service and viewer to
+control that origin.
 
 The recording workflow includes:
 
@@ -1294,7 +1515,6 @@ Any future telemetry must be optional and transparent.
 - Xcode 26.6, build 17F113.
 - macOS 15.0 or later deployment target.
 - Apple Silicon (`arm64`).
-- Version 1.3.1 (build 6).
 
 ## User interface
 
@@ -1396,7 +1616,7 @@ boundaries:
   patch and published as an immutable checksummed arm64 XCFramework behind
   `Packages/ClipLiveShareWebRTC`, for ICE, DTLS-SRTP, SCTP DataChannel,
   congestion control, Opus system-audio transport, and hardware-H.264 plus
-  software-VP8/VP9/AV1 browser transport.
+  software-VP8/VP9/AV1 native mesh transport.
 
 WebRTC is a media-transport runtime, not Clip's recording/export encoder. Clip
 still bundles no FFmpeg, libx264, or helper media executable. Test-only
@@ -1409,13 +1629,19 @@ package state is not accepted as release provenance.
 ## Live Share service deployment
 
 - The top-level `server/` folder is an independent Go 1.25 module containing
-  the room registry, opaque signaling relay, embedded browser viewer, tests,
-  Dockerfile, and Docker Hub publication script.
-- Server room state is in-memory and intentionally single-replica in protocol
-  v1. A restart clears advertisements; an active Clip host reconnects and
-  re-advertises its room.
+  the bounded opaque server-room-v4 roster registry and encrypted signaling
+  relay, tests, Dockerfile, and Docker Hub publication script.
+- The service owns the authoritative opaque participant roster, socket
+  presence, reconnect grace, and pair-signal routing. It owns no plaintext
+  identity, admission secret, source state, or media state.
+- Server room state is in-memory and intentionally single-replica for the first
+  v4 release. A restart clears room state. Existing WebRTC peer links may stay
+  connected temporarily, but every client terminates the room after a bounded
+  signaling outage rather than inventing membership.
 - Internet deployments terminate TLS at a reverse proxy and expose HTTPS/WSS.
-  The service publishes validated ICE-server capabilities to both peers.
+  The Web client rejects non-loopback HTTP invites; only exact loopback hosts
+  are allowed for local development. The service publishes validated
+  ICE-server capabilities to participants.
 - The container is CGO-free, non-root, health-checked, and published for
   `linux/amd64` and `linux/arm64` with Buildx provenance and SBOM metadata.
 - The Go service is deployed separately and is never bundled in `Clip.app` or
@@ -1426,8 +1652,8 @@ package state is not accepted as release provenance.
 
 - Source editing can be done in Codex, Cursor, VS Code, Zed, or another editor.
 - Xcode 26.6 and Apple command-line tools provide the macOS 26.5 SDK, Swift 6.3.3, local signing, building, and DMG creation.
-- Go 1.25 and Node.js provide the local server/viewer acceptance lane; Docker
-  Buildx is required only to publish the service image.
+- Go 1.25 provides the local server-room-v4 acceptance lane; Docker Buildx
+  is required only to publish the service image.
 - The project should support command-line builds.
 
 ## Security configuration
@@ -1509,27 +1735,43 @@ A separate Homebrew tap can be added later if needed.
 - `--ui-scenario=<name>` fixtures are honored only with `--ui-testing`. They use isolated defaults and storage plus inert permission, audio, capture, display, pasteboard, shortcut, and external-AppKit actions; they never request privacy access or enter the real-capture lane.
 - Deterministic launch fixtures cover onboarding, the populated menu-bar popover and displays, denied permissions, recording, paused recording, Preview, History, every Settings tab, and a representative failure surface. Their UI-automation assertions compile in the permission-free suite but execute only after an explicit visible-pointer-control opt-in.
 - A pointer-free hosted visual lane renders the production Settings window at the top and fully scrolled bottom of every tab, writes ten PNGs plus scroll-position metadata, and fails if a scrollable form does not reach its bottom.
-- Live Share's pointer-free lane builds the in-repository Go service and
-  embedded viewer, exercises real loopback HTTP/WebSocket routing, validates
-  cross-language encrypted-signaling vectors, and runs Clip's native core and
-  peer-host/receiver suites. Deterministic native coverage verifies preparation
-  and Start policy, signed identities and fresh descriptors, admission,
-  Add-Friend request/acceptance/acknowledgement/receipt recovery, local
-  persistence, role exclusion, reconnect state, four authoritative remote
-  sources, window-state reconciliation, exact-pixel sizing, cursor mapping, and
-  one session audio track. It verifies one session and random-identity tracks
-  while preferences switch H.264 → VP8 → VP9 → AV1 → H.264, checks allowed
-  per-viewer fallbacks and actual outbound codecs, and verifies authoritative
-  stream, focus, cursor, admission and audio-control state. It does not touch
-  the installed app or control the pointer.
+- Live Share's pointer-free lane builds the in-repository opaque Go room
+  service, exercises real loopback HTTP/WebSocket routing, validates
+  server-room-v4 encrypted admission and pair-signaling vectors, and runs the
+  native protocol, mesh,
+  media, and presentation suites. Deterministic coverage proves:
+  - direct v4 Create Room and Join Invite with no legacy entry point;
+  - invite capability and optional Access Word proof plus explicit approval;
+  - signed identities, encrypted member descriptors, complete authoritative
+    rosters, revision isolation, denial, reconnect grace, and bounded cleanup;
+  - two-, three-, and four-participant topologies containing 1, 3, and 6
+    independent authenticated peer links;
+  - concurrent native publication and remote reception, four source slots,
+    fullscreen exclusivity, per-participant audio, the Native compatibility
+    preference ladder, exact selected-codec Web edges, explicit
+    unsupported-browser reporting, directional statistics, and slow-peer
+    isolation;
+  - receive-only Web profiles using the same admission, roster, pair identity,
+    encrypted signaling, fixed transceivers, and DataChannel contract as Native
+    profiles, with no browser-specific native transport path;
+  - common participant-room presentation, remote source grouping,
+    Fit/Native/Follow/fullscreen, visibility/fronting, cursor mapping, pointer,
+    ping, temporary ink, and exact teardown;
+  - noncreator leave isolation and terminal creator leave/grace expiry with no
+    election or locked phase.
+  It does not touch the installed app or control the pointer.
 - Real ScreenCaptureKit, microphone, system-audio, clipboard, drag, Save As, history, and DMG smoke tests run on the development Mac.
 - Real Live Share acceptance separately covers the production ScreenCaptureKit
-  coordinator path, two independently launched Clip GUI processes, one through
-  four windows, Fullscreen, resize, Retina/multi-display placement, overlay
-  exclusion and hit testing, remote/TURN traversal, repeated start/stop, and a
-  ten-minute soak. It also verifies mixed native/WebKit admission and deliberate
-  signaling-service process loss. Model-level handoff or two native receivers
-  in one test process cannot substitute for those gates.
+  participant path with two, three, and four independently launched signed Clip
+  processes. Every participant must publish and receive concurrently, exercise
+  one through four windows plus Fullscreen, independent audio and app-audio
+  exclusions, Fit/Native/Follow, local fullscreen, Retina/multi-display
+  placement, overlay exclusion and hit testing, pointer/ping/ink, direct/TURN
+  traversal, repeated source and room churn, noncreator leave/reconnect,
+  creator room termination, and a ten-minute soak. The four-participant
+  gate must prove all six links. Deliberate rendezvous-service loss after peer
+  establishment must not stop established media/control. A one-process model
+  test cannot substitute for these signed multi-process gates.
 - Application-update verification checks the embedded feed URL/public key,
   sandbox services and entitlements, nested code signatures, exact app/build
   versions, immutable enclosure URL, archive length, and Sparkle EdDSA
@@ -1594,29 +1836,56 @@ A separate Homebrew tap can be added later if needed.
 - Local launchable DMG distribution.
 - Signed application updates from immutable GitHub Release DMGs, with periodic
   automatic checks and an on-demand **Check for Updates…** action.
-- A distinct Live Share mode using the in-repository Go service, native Clip
-  viewer, and embedded browser fallback, with bounded end-to-end-encrypted
-  signaling, complete self-contained invites, persistent device identities,
-  local Friends, fresh-room discovery, and explicit per-connection host
-  approval.
-- Up to four exact-window Live Share sources or one mutually exclusive
-  fullscreen display, sent as transient preferred-codec WebRTC video with no
-  History recording.
-- Optional persisted Live Share system audio, defaulting to Off: unique owning
-  applications for window sharing or system audio for Fullscreen, excluding
-  Clip, sent as one stable Opus track. No microphone audio is sent. Native and
-  browser viewers provide session-wide mute and volume controls; the browser
-  also provides autoplay unlock.
-- A Live Share-specific menu-bar popover, optional session access code,
-  connected-viewer state, stream settings/statistics, focused-window Share/Stop
-  control, fixed source/viewer HUD, auto-share, reconnect, and Stop All without
-  ending the room.
+- A server-room-v4-only Live Share participant mesh using the in-repository
+  opaque roster/signaling service, end-to-end-encrypted admission and pair
+  signaling, client-only-fragment invites, persistent device identities,
+  optional Access Word, and optional creator approval.
+- Up to four participants and six direct authenticated WebRTC peer links, with
+  authoritative roster reconciliation, participant removal, pair-local failure
+  isolation, reconnect grace, and terminal creator departure.
+- One common native participant room popover. Every native member can
+  simultaneously publish up to four exact windows or one mutually exclusive
+  fullscreen display and receive every other native member's sources.
+- A receive-only web participant served by the same-origin room service for
+  current desktop Safari and Chromium. It joins the same complete mesh and
+  receives every native publisher's sources and audio, but cannot publish,
+  administer rooms, create friendships, or use collaboration controls.
+- Native-Web edges require the selected codec exactly, with one active codec
+  per edge: no browser-specific fallback, simultaneous second-codec encode, or
+  transcoding. Native-Native edges preserve the pre-Web SDP preference ladder
+  while still negotiating one active codec per edge. Every source uses one
+  capture/raw-track pipeline but a separate libwebrtc encoder/RTP sender for
+  each remote peer. Unsupported browser decoders show an
+  explicit source error when the codec is observable; an edge that fails before
+  that may remain unavailable or black, without changing unrelated mesh edges.
+- Optional independently persisted Live Share system audio per participant,
+  defaulting to Off: unique owning applications for window sharing or system
+  audio for Fullscreen, excluding Clip and selected applications, sent as one
+  stable Opus track. No microphone audio is sent. Each receiver has independent
+  mute and volume for every remote participant.
+- Per-participant remote source grouping, directional connection/statistics
+  state, Fit/Native/Follow, local fullscreen, hide/reopen, per-window and
+  Bring-All-to-Front actions, source-aware Retina/1× presentation, native
+  cursor context, reconnect, and exact participant teardown.
+- Participant pointer reveal, bounded pings, temporary attributed vector ink,
+  clear and expiry controls, with no remote input injection.
+- Local stream settings/statistics, focused-window Share/Stop control, status
+  HUD, Auto Share, and source stop/restart without ending the room.
 
 The recording release-critical path is: install and launch from DMG → select →
 record → preview → trim → drag or copy. The independent Live Share path is:
-prepare fresh room → copy complete invite or discover a Live Friend → Start
-Sharing → approve admission → share window/display → verify advancing
-native or browser video/context and audio → change/stop sources → end room.
+create a server-room-v4 room → copy its stable complete invite → join with invite
+and optional Access Word → auto-admit a verified full invite, or explicitly
+Allow/Deny when Ask Before Joining or a friend join requires it → every
+participant shares and receives windows/display/audio → exercise
+pointer/ping/ink → change or stop sources independently → leave as a
+participant or end as the creator.
+The web-v1 path opens that same invite in a supported desktop browser → joins
+the same authoritative roster → creates one direct pair per remote member →
+receives all compatible exact-codec sources and per-publisher audio → exercises
+Focus/Row, Follow Off and per-publisher Follow, the source filmstrip, HUD
+auto-hide, Fit/Fill/Native, Native pan/minimap, fullscreen, and mute/volume → leaves or
+reloads/reconnects without replacing an unaffected native pair.
 A recording release may remain valid without the networking feature, but a
 release advertising Live Share must pass the Live Share controlled and
 packaging gates above.
@@ -1634,7 +1903,6 @@ Potential later additions:
 - Custom click animations beyond the native system click-highlight rings.
 - Keystroke visualization.
 - Blur regions.
-- Simple annotations.
 - Automatic maximum-file-size encoding.
 - Explicit microphone-device selection.
 - Optional upload destinations.
@@ -1656,15 +1924,16 @@ Clip will not initially provide:
 - Multi-clip timelines.
 - Cloud accounts.
 - Team workspaces.
-- Multi-party editing or collaboration beyond view-only Live Share.
-- Comments.
+- Persistent whiteboards, comments, or collaborative document editing beyond
+  temporary Live Share pointer, ping, and ink overlays.
 - Hosted video links.
 - Mac App Store distribution.
 - AI features.
 - Transcription.
 - Automatic zoom effects.
 - Windows or Linux versions.
-- A browser extension.
+- Browser extensions, browser publishing, friendship, collaboration, or room
+  administration. The receive-only desktop web participant is included.
 - Watermarks.
 
 ---
@@ -1695,9 +1964,9 @@ clip
 
 ## Version
 
-```text
-1.3.1 (build 6)
-```
+The current marketing version and build number are release metadata defined by
+the Xcode project and release notes, not by this long-lived product
+specification.
 
 ## Bundle identifier
 
@@ -1789,5 +2058,39 @@ The local release uses free Personal Team ID `FJ2BS65H3F`. It is not a Developer
 - Improve error handling.
 - Optimize file size and export performance.
 - Produce and verify the local launchable DMG.
+
+## Phase 6 — Native participant mesh
+
+- Replace all Live Share creation and joining with direct server-room-v4
+  participant sessions.
+- Add stable client-only invite capability, Access Word, optional explicit
+  admission, creator-signed encrypted descriptors, authoritative opaque
+  rosters, complete-mesh peer links, and bounded participant lifecycle.
+- Give every participant the same local sharing controls and one remote
+  presentation per other participant.
+- Add per-participant audio, source grouping, diagnostics, pointer, ping, and
+  temporary ink.
+- Prove two-, three-, and four-participant operation before publishing the
+  v4 release. Remove obsolete connection protocols and role-specific
+  entry paths rather than shipping compatibility code.
+
+## Phase 7 — Receive-only web participant
+
+- Serve a same-origin repository-owned web client from the v4 room service.
+- Join with the canonical fragment-secret invite and advertise the authenticated
+  `webViewer/webViewerV1` profile.
+- Reuse the same roster reconciliation, pair identity, encrypted signaling,
+  fixed media slots, and DataChannel contract as Native participants.
+- Receive every compatible native source and per-participant system-audio
+  track with Focus/Row, Follow Off and per-publisher Follow, filmstrip source
+  selection, HUD auto-hide, Fit/Fill/Native, Native pan/minimap, fullscreen,
+  and audio controls.
+- Enforce the selected codec exactly on Native-Web edges with no simultaneous
+  second-codec encoding, transcoding, or fallback, and report unsupported
+  browser decoding explicitly. Preserve the pre-Web Native-Native SDP
+  preference ladder and one active codec per peer edge; each remote edge still
+  owns an independent encoder/RTP sender.
+- Prove mixed Native/Web mesh churn without replacing or renegotiating an
+  unaffected Native-Native pair.
 
 This specification is narrow enough for a strong first release while leaving clear room for later improvements.

@@ -3,7 +3,7 @@ import Foundation
 
 /// Keeps every available realtime codec available for the lifetime of the
 /// native peer factory. Individual transceivers select a preferred codec (and,
-/// where configured by the host, a compatibility fallback), so renegotiation
+/// where configured by the participant, a codec fallback), so renegotiation
 /// can switch codecs without replacing tracks or transports.
 final class WebRTCVideoEncoderFactory: NSObject, RTCVideoEncoderFactory,
     @unchecked Sendable

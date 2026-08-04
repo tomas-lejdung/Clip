@@ -14,46 +14,54 @@ import (
 )
 
 const (
-	defaultAddress                     = ":8080"
-	defaultMaximumRooms                = 1_024
-	defaultMaximumConnections          = 2_048
-	defaultReservedHostConnections     = 64
-	defaultMaximumConnectionsPerSource = 64
-	defaultRoomAdvertisementsPerMinute = 60
-	defaultWebSocketUpgradesPerMinute  = 240
-	defaultMaximumTrackedSources       = 4_096
-	defaultMaximumQueuedBytesPerSocket = 2 << 20
-	defaultMaximumQueuedBytesTotal     = 64 << 20
-	maximumConfiguredRooms             = 16_384
-	maximumConfiguredConnections       = 8_192
-	maximumConfiguredTrackedSources    = 65_536
-	maximumConfiguredQueuedBytes       = 512 << 20
+	defaultAddress                            = ":8080"
+	defaultMaximumRendezvous                  = 1_024
+	defaultMaximumConnections                 = 2_048
+	defaultMaximumConnectionsPerSource        = 64
+	defaultRendezvousLeaseOperationsPerMinute = 60
+	defaultWebSocketUpgradesPerMinute         = 240
+	defaultMaximumTrackedSources              = 4_096
+	defaultMaximumFriendPresenceRecords       = 16_384
+	defaultMaximumFriendPresenceBytes         = 64 << 20
+	defaultMaximumIssuedHandlesPerRoom        = 256
+	defaultMaximumQueuedBytesPerSocket        = 2 << 20
+	defaultMaximumQueuedBytesTotal            = 64 << 20
+	maximumConfiguredRendezvous               = 16_384
+	maximumConfiguredConnections              = 8_192
+	maximumConfiguredTrackedSources           = 65_536
+	minimumConfiguredFriendPresenceBytes      = 24 << 10
+	maximumConfiguredFriendPresenceRecords    = 262_144
+	maximumConfiguredFriendPresenceBytes      = 512 << 20
+	maximumConfiguredIssuedHandlesPerRoom     = 4_096
+	maximumConfiguredIssuedHandlesTotal       = 4_194_304
+	maximumConfiguredQueuedBytes              = 512 << 20
 )
 
 type Config struct {
-	Address                     string
-	ServerVersion               string
-	LeaseDuration               time.Duration
-	ReconnectGrace              time.Duration
-	CleanupInterval             time.Duration
-	HelloTimeout                time.Duration
-	ReadTimeout                 time.Duration
-	WriteTimeout                time.Duration
-	PingInterval                time.Duration
-	RouteIdleTimeout            time.Duration
-	ShutdownTimeout             time.Duration
-	MaximumRooms                int
-	MaximumConnections          int
-	ReservedHostConnections     int
-	MaximumConnectionsPerSource int
-	RoomAdvertisementsPerMinute int
-	WebSocketUpgradesPerMinute  int
-	MaximumTrackedSources       int
-	MaximumQueuedBytesPerSocket int
-	MaximumQueuedBytesTotal     int
-	TrustedProxyCIDRs           []string
-	AllowedOrigins              []string
-	ICEServers                  []protocol.ICEServer
+	Address                            string
+	ServerVersion                      string
+	LeaseDuration                      time.Duration
+	ReconnectGrace                     time.Duration
+	CleanupInterval                    time.Duration
+	ReadTimeout                        time.Duration
+	WriteTimeout                       time.Duration
+	PingInterval                       time.Duration
+	RouteIdleTimeout                   time.Duration
+	ShutdownTimeout                    time.Duration
+	MaximumRendezvous                  int
+	MaximumConnections                 int
+	MaximumConnectionsPerSource        int
+	RendezvousLeaseOperationsPerMinute int
+	WebSocketUpgradesPerMinute         int
+	MaximumTrackedSources              int
+	MaximumFriendPresenceRecords       int
+	MaximumFriendPresenceBytes         int
+	MaximumIssuedHandlesPerRoom        int
+	MaximumQueuedBytesPerSocket        int
+	MaximumQueuedBytesTotal            int
+	TrustedProxyCIDRs                  []string
+	AllowedOrigins                     []string
+	ICEServers                         []protocol.ICEServer
 }
 
 func Default(serverVersion string) Config {
@@ -61,26 +69,27 @@ func Default(serverVersion string) Config {
 		serverVersion = "development"
 	}
 	return Config{
-		Address:                     defaultAddress,
-		ServerVersion:               serverVersion,
-		LeaseDuration:               5 * time.Minute,
-		ReconnectGrace:              30 * time.Second,
-		CleanupInterval:             5 * time.Second,
-		HelloTimeout:                protocol.InitialAnswerTimeoutSeconds * time.Second,
-		ReadTimeout:                 45 * time.Second,
-		WriteTimeout:                10 * time.Second,
-		PingInterval:                15 * time.Second,
-		RouteIdleTimeout:            2 * time.Minute,
-		ShutdownTimeout:             10 * time.Second,
-		MaximumRooms:                defaultMaximumRooms,
-		MaximumConnections:          defaultMaximumConnections,
-		ReservedHostConnections:     defaultReservedHostConnections,
-		MaximumConnectionsPerSource: defaultMaximumConnectionsPerSource,
-		RoomAdvertisementsPerMinute: defaultRoomAdvertisementsPerMinute,
-		WebSocketUpgradesPerMinute:  defaultWebSocketUpgradesPerMinute,
-		MaximumTrackedSources:       defaultMaximumTrackedSources,
-		MaximumQueuedBytesPerSocket: defaultMaximumQueuedBytesPerSocket,
-		MaximumQueuedBytesTotal:     defaultMaximumQueuedBytesTotal,
+		Address:                            defaultAddress,
+		ServerVersion:                      serverVersion,
+		LeaseDuration:                      5 * time.Minute,
+		ReconnectGrace:                     30 * time.Second,
+		CleanupInterval:                    5 * time.Second,
+		ReadTimeout:                        45 * time.Second,
+		WriteTimeout:                       10 * time.Second,
+		PingInterval:                       15 * time.Second,
+		RouteIdleTimeout:                   2 * time.Minute,
+		ShutdownTimeout:                    10 * time.Second,
+		MaximumRendezvous:                  defaultMaximumRendezvous,
+		MaximumConnections:                 defaultMaximumConnections,
+		MaximumConnectionsPerSource:        defaultMaximumConnectionsPerSource,
+		RendezvousLeaseOperationsPerMinute: defaultRendezvousLeaseOperationsPerMinute,
+		WebSocketUpgradesPerMinute:         defaultWebSocketUpgradesPerMinute,
+		MaximumTrackedSources:              defaultMaximumTrackedSources,
+		MaximumFriendPresenceRecords:       defaultMaximumFriendPresenceRecords,
+		MaximumFriendPresenceBytes:         defaultMaximumFriendPresenceBytes,
+		MaximumIssuedHandlesPerRoom:        defaultMaximumIssuedHandlesPerRoom,
+		MaximumQueuedBytesPerSocket:        defaultMaximumQueuedBytesPerSocket,
+		MaximumQueuedBytesTotal:            defaultMaximumQueuedBytesTotal,
 		ICEServers: []protocol.ICEServer{
 			{URLs: []string{"stun:stun.l.google.com:19302"}},
 		},
@@ -113,19 +122,16 @@ func FromEnvironment(serverVersion string) (Config, error) {
 	if configuration.RouteIdleTimeout, err = durationEnvironment("CLIP_SERVER_ROUTE_IDLE_TIMEOUT", configuration.RouteIdleTimeout); err != nil {
 		return Config{}, err
 	}
-	if configuration.MaximumRooms, err = positiveIntegerEnvironment("CLIP_SERVER_MAXIMUM_ROOMS", configuration.MaximumRooms); err != nil {
+	if configuration.MaximumRendezvous, err = positiveIntegerEnvironment("CLIP_SERVER_MAXIMUM_RENDEZVOUS", configuration.MaximumRendezvous); err != nil {
 		return Config{}, err
 	}
 	if configuration.MaximumConnections, err = positiveIntegerEnvironment("CLIP_SERVER_MAXIMUM_CONNECTIONS", configuration.MaximumConnections); err != nil {
 		return Config{}, err
 	}
-	if configuration.ReservedHostConnections, err = positiveIntegerEnvironment("CLIP_SERVER_RESERVED_HOST_CONNECTIONS", min(configuration.ReservedHostConnections, max(1, configuration.MaximumConnections/8))); err != nil {
-		return Config{}, err
-	}
 	if configuration.MaximumConnectionsPerSource, err = positiveIntegerEnvironment("CLIP_SERVER_MAXIMUM_CONNECTIONS_PER_SOURCE", min(configuration.MaximumConnectionsPerSource, configuration.MaximumConnections)); err != nil {
 		return Config{}, err
 	}
-	if configuration.RoomAdvertisementsPerMinute, err = positiveIntegerEnvironment("CLIP_SERVER_ROOM_ADVERTISEMENTS_PER_MINUTE", configuration.RoomAdvertisementsPerMinute); err != nil {
+	if configuration.RendezvousLeaseOperationsPerMinute, err = positiveIntegerEnvironment("CLIP_SERVER_RENDEZVOUS_LEASE_OPERATIONS_PER_MINUTE", configuration.RendezvousLeaseOperationsPerMinute); err != nil {
 		return Config{}, err
 	}
 	if configuration.WebSocketUpgradesPerMinute, err = positiveIntegerEnvironment("CLIP_SERVER_WEBSOCKET_UPGRADES_PER_MINUTE", configuration.WebSocketUpgradesPerMinute); err != nil {
@@ -138,6 +144,15 @@ func FromEnvironment(serverVersion string) (Config, error) {
 		return Config{}, err
 	}
 	if configuration.MaximumTrackedSources, err = positiveIntegerEnvironment("CLIP_SERVER_MAXIMUM_TRACKED_SOURCES", configuration.MaximumTrackedSources); err != nil {
+		return Config{}, err
+	}
+	if configuration.MaximumFriendPresenceRecords, err = positiveIntegerEnvironment("CLIP_SERVER_MAXIMUM_FRIEND_PRESENCE_RECORDS", configuration.MaximumFriendPresenceRecords); err != nil {
+		return Config{}, err
+	}
+	if configuration.MaximumFriendPresenceBytes, err = positiveIntegerEnvironment("CLIP_SERVER_MAXIMUM_FRIEND_PRESENCE_BYTES", configuration.MaximumFriendPresenceBytes); err != nil {
+		return Config{}, err
+	}
+	if configuration.MaximumIssuedHandlesPerRoom, err = positiveIntegerEnvironment("CLIP_SERVER_MAXIMUM_ISSUED_HANDLES_PER_ROOM", configuration.MaximumIssuedHandlesPerRoom); err != nil {
 		return Config{}, err
 	}
 
@@ -186,7 +201,6 @@ func (c Config) Validate() error {
 		"lease duration":     c.LeaseDuration,
 		"reconnect grace":    c.ReconnectGrace,
 		"cleanup interval":   c.CleanupInterval,
-		"hello timeout":      c.HelloTimeout,
 		"read timeout":       c.ReadTimeout,
 		"write timeout":      c.WriteTimeout,
 		"ping interval":      c.PingInterval,
@@ -197,22 +211,48 @@ func (c Config) Validate() error {
 			return fmt.Errorf("%s must be positive", name)
 		}
 	}
-	if c.MaximumRooms <= 0 || c.MaximumConnections <= 0 || c.MaximumTrackedSources <= 0 {
+	if c.MaximumRendezvous <= 0 || c.MaximumConnections <= 0 || c.MaximumTrackedSources <= 0 ||
+		c.MaximumFriendPresenceRecords <= 0 || c.MaximumFriendPresenceBytes <= 0 ||
+		c.MaximumIssuedHandlesPerRoom <= 0 {
 		return errors.New("resource limits must be positive")
 	}
-	if c.MaximumRooms > maximumConfiguredRooms || c.MaximumConnections > maximumConfiguredConnections {
-		return fmt.Errorf("resource limits exceed safe maxima (%d rooms, %d connections)", maximumConfiguredRooms, maximumConfiguredConnections)
+	if c.MaximumRendezvous > maximumConfiguredRendezvous || c.MaximumConnections > maximumConfiguredConnections {
+		return fmt.Errorf("resource limits exceed safe maxima (%d rendezvous, %d connections)", maximumConfiguredRendezvous, maximumConfiguredConnections)
 	}
 	if c.MaximumTrackedSources > maximumConfiguredTrackedSources {
 		return fmt.Errorf("tracked source limit exceeds safe maximum %d", maximumConfiguredTrackedSources)
 	}
-	if c.ReservedHostConnections <= 0 || c.ReservedHostConnections >= c.MaximumConnections {
-		return errors.New("reserved host connections must be smaller than maximum connections")
+	if c.MaximumFriendPresenceRecords > maximumConfiguredFriendPresenceRecords {
+		return fmt.Errorf("friend presence record limit exceeds safe maximum %d", maximumConfiguredFriendPresenceRecords)
+	}
+	if c.MaximumFriendPresenceBytes < minimumConfiguredFriendPresenceBytes ||
+		c.MaximumFriendPresenceBytes > maximumConfiguredFriendPresenceBytes {
+		return fmt.Errorf(
+			"friend presence byte limit must be between %d and %d",
+			minimumConfiguredFriendPresenceBytes,
+			maximumConfiguredFriendPresenceBytes,
+		)
+	}
+	minimumIssuedHandlesPerRoom := protocol.MaximumNativeRoomMembers +
+		protocol.MaximumPendingCandidates
+	if c.MaximumIssuedHandlesPerRoom < minimumIssuedHandlesPerRoom ||
+		c.MaximumIssuedHandlesPerRoom > maximumConfiguredIssuedHandlesPerRoom {
+		return fmt.Errorf(
+			"issued handles per room must be between %d and %d",
+			minimumIssuedHandlesPerRoom,
+			maximumConfiguredIssuedHandlesPerRoom,
+		)
+	}
+	if c.MaximumRendezvous > maximumConfiguredIssuedHandlesTotal/c.MaximumIssuedHandlesPerRoom {
+		return fmt.Errorf(
+			"configured rooms and issued handles exceed safe combined maximum %d",
+			maximumConfiguredIssuedHandlesTotal,
+		)
 	}
 	if c.MaximumConnectionsPerSource <= 0 || c.MaximumConnectionsPerSource > c.MaximumConnections {
 		return errors.New("connections per source must be between 1 and maximum connections")
 	}
-	if c.RoomAdvertisementsPerMinute <= 0 || c.WebSocketUpgradesPerMinute <= 0 {
+	if c.RendezvousLeaseOperationsPerMinute <= 0 || c.WebSocketUpgradesPerMinute <= 0 {
 		return errors.New("source request rates must be positive")
 	}
 	if c.MaximumQueuedBytesPerSocket < protocol.MaximumMessageBytes || c.MaximumQueuedBytesPerSocket > maximumConfiguredQueuedBytes {

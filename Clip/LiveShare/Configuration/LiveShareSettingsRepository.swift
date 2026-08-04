@@ -1,6 +1,7 @@
 import Combine
 import ClipCore
 import ClipLiveShare
+import ClipLiveShareWebRTC
 import Foundation
 
 actor LiveShareSettingsRepository {
@@ -27,7 +28,7 @@ actor LiveShareSettingsRepository {
 }
 
 actor LiveShareServerEndpointRepository {
-    private let store: AtomicJSONFileStore<ClipLiveShareServerEndpoint>
+    private let store: AtomicJSONFileStore<ClipLiveShareRendezvousEndpoint>
 
     init(
         applicationSupportDirectory: URL,
@@ -40,11 +41,11 @@ actor LiveShareServerEndpointRepository {
         )
     }
 
-    func load() async throws -> ClipLiveShareServerEndpoint {
+    func load() async throws -> ClipLiveShareRendezvousEndpoint {
         try await store.load() ?? .official
     }
 
-    func save(_ endpoint: ClipLiveShareServerEndpoint) async throws {
+    func save(_ endpoint: ClipLiveShareRendezvousEndpoint) async throws {
         try await store.save(endpoint)
     }
 }
@@ -64,14 +65,14 @@ final class LiveSharePreferencesModel: ObservableObject {
     private var endpointPersistenceError: String?
 
     @Published private(set) var settings: LiveShareSettings
-    @Published private(set) var serverEndpoint: ClipLiveShareServerEndpoint
+    @Published private(set) var serverEndpoint: ClipLiveShareRendezvousEndpoint
     @Published private(set) var isLoaded = false
     @Published private(set) var lastPersistenceError: String?
 
     init(
         applicationSupportDirectory: URL,
         initialSettings: LiveShareSettings = .default,
-        initialServerEndpoint: ClipLiveShareServerEndpoint = .official,
+        initialServerEndpoint: ClipLiveShareRendezvousEndpoint = .official,
         settingsFileSystem: any AtomicFileSystem = LocalAtomicFileSystem(),
         endpointFileSystem: any AtomicFileSystem = LocalAtomicFileSystem()
     ) throws {
@@ -135,14 +136,14 @@ final class LiveSharePreferencesModel: ObservableObject {
         replaceSettings(with: .default)
     }
 
-    func setServerEndpoint(_ endpoint: ClipLiveShareServerEndpoint) {
+    func setServerEndpoint(_ endpoint: ClipLiveShareRendezvousEndpoint) {
         guard serverEndpoint != endpoint else { return }
         serverEndpoint = endpoint
         enqueueEndpointPersistence(endpoint)
     }
 
     func setServerAddress(_ address: String) throws {
-        setServerEndpoint(try ClipLiveShareServerEndpoint(userInput: address))
+        setServerEndpoint(try ClipLiveShareRendezvousEndpoint(userInput: address))
     }
 
     func resetServerEndpoint() {
@@ -175,7 +176,7 @@ final class LiveSharePreferencesModel: ObservableObject {
     }
 
     private func enqueueEndpointPersistence(
-        _ snapshot: ClipLiveShareServerEndpoint
+        _ snapshot: ClipLiveShareRendezvousEndpoint
     ) {
         let previous = endpointPersistenceTail
         let repository = endpointRepository
@@ -215,10 +216,10 @@ enum LiveShareServerConnectionProbeError: LocalizedError, Equatable, Sendable {
             String(localized: "The Live Share server returned an invalid response.")
         case let .incompatibleStatus(status):
             String(
-                localized: "The server does not expose Clip Live Share capabilities (HTTP \(status))."
+                localized: "The server does not expose Clip room capabilities (HTTP \(status))."
             )
         case .incompatibleProtocol:
-            String(localized: "The server does not support Clip Live Share Protocol v1.")
+            String(localized: "The server does not support Clip room protocol v4.")
         }
     }
 }
@@ -232,71 +233,71 @@ struct LiveShareServerProbeResponse: Sendable {
 struct LiveShareServerConnectionProbe: Sendable {
     typealias Execute = @Sendable (URLRequest) async throws -> LiveShareServerProbeResponse
 
-    private static let maximumResponseBytes = 65_536
-
-    private let execute: Execute
+    private let client: ClipLiveShareServerRoomV4HTTPClient
 
     init(execute: @escaping Execute) {
-        self.execute = execute
+        client = ClipLiveShareServerRoomV4HTTPClient(
+            transport: LiveShareServerProbeHTTPTransport(
+                handler: execute
+            )
+        )
     }
 
-    func test(_ endpoint: ClipLiveShareServerEndpoint) async throws {
-        var request = URLRequest(url: endpoint.capabilitiesURL)
-        request.httpMethod = "GET"
-        request.setValue("application/json", forHTTPHeaderField: "Accept")
-        request.timeoutInterval = 5
-        request.cachePolicy = .reloadIgnoringLocalAndRemoteCacheData
+    private init(client: ClipLiveShareServerRoomV4HTTPClient) {
+        self.client = client
+    }
 
-        let response: LiveShareServerProbeResponse
+    func test(_ endpoint: ClipLiveShareRendezvousEndpoint) async throws {
         do {
-            response = try await execute(request)
+            _ = try await client.discover(at: endpoint.rootURL)
         } catch is CancellationError {
             throw CancellationError()
+        } catch let error as ClipLiveShareServerRoomV4TransportError {
+            switch error {
+            case let .rejected(statusCode, _):
+                throw LiveShareServerConnectionProbeError
+                    .incompatibleStatus(statusCode)
+            case .invalidCapabilities, .invalidResponse,
+                 .responseTooLarge:
+                throw LiveShareServerConnectionProbeError
+                    .incompatibleProtocol
+            default:
+                throw LiveShareServerConnectionProbeError.unreachable
+            }
         } catch {
             throw LiveShareServerConnectionProbeError.unreachable
         }
-        guard response.statusCode == 200 else {
-            throw LiveShareServerConnectionProbeError.incompatibleStatus(response.statusCode)
-        }
-        guard !response.data.isEmpty, response.data.count <= Self.maximumResponseBytes,
-              (try? JSONDecoder().decode(
-                ClipLiveShareCapabilities.self,
-                from: response.data
-              )) != nil else {
-            throw LiveShareServerConnectionProbeError.incompatibleProtocol
-        }
     }
 
-    static let live = Self { request in
+    static let live: Self = {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.httpShouldSetCookies = false
         configuration.urlCache = nil
         configuration.timeoutIntervalForRequest = 5
         configuration.timeoutIntervalForResource = 5
         let session = URLSession(configuration: configuration)
-        defer { session.invalidateAndCancel() }
-        let (bytes, response) = try await session.bytes(for: request)
-        guard let response = response as? HTTPURLResponse else {
-            throw LiveShareServerConnectionProbeError.invalidResponse
-        }
-        guard response.expectedContentLength <= Int64(Self.maximumResponseBytes) else {
-            throw LiveShareServerConnectionProbeError.invalidResponse
-        }
-        var data = Data()
-        if response.expectedContentLength > 0 {
-            data.reserveCapacity(
-                min(Self.maximumResponseBytes, Int(response.expectedContentLength))
+        return Self(
+            client: ClipLiveShareServerRoomV4HTTPClient(
+                transport: URLSessionClipLiveShareHTTPTransport(
+                    session: session
+                )
             )
-        }
-        for try await byte in bytes {
-            guard data.count < Self.maximumResponseBytes else {
-                throw LiveShareServerConnectionProbeError.invalidResponse
-            }
-            data.append(byte)
-        }
-        return LiveShareServerProbeResponse(
+        )
+    }()
+}
+
+private struct LiveShareServerProbeHTTPTransport:
+    ClipLiveShareHTTPTransport
+{
+    let handler: LiveShareServerConnectionProbe.Execute
+
+    func execute(
+        _ request: URLRequest
+    ) async throws -> ClipLiveShareHTTPResult {
+        let response = try await handler(request)
+        return ClipLiveShareHTTPResult(
             statusCode: response.statusCode,
-            data: data
+            data: response.data
         )
     }
 }

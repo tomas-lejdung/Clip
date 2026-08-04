@@ -1,0 +1,67 @@
+{
+  "nativeSourceCursor": {
+    "payload": {
+      "participantId": "EREREREREREREREREREREQ",
+      "position": {
+        "x": 0.75,
+        "y": 0.25
+      },
+      "sequence": 9,
+      "sessionId": "web-media-control-fixture",
+      "sourceKey": {
+        "ownerParticipantId": "EREREREREREREREREREREQ",
+        "sourceInstanceId": "MzMzMzMzMzMzMzMzMzMzMw"
+      },
+      "streamId": "native-stream-0"
+    },
+    "type": "source-cursor",
+    "version": 4
+  },
+  "nativeSourceSnapshot": {
+    "payload": {
+      "membershipRevision": 1,
+      "ownerParticipantId": "EREREREREREREREREREREQ",
+      "sessionId": "web-media-control-fixture",
+      "sourceRevision": 7,
+      "sources": [
+        {
+          "descriptor": {
+            "sourceInstanceId": "MzMzMzMzMzMzMzMzMzMzMw",
+            "stream": {
+              "active": true,
+              "appName": "Fixture App",
+              "focused": true,
+              "height": 1440,
+              "id": "native-stream-0",
+              "mediaTrackId": "native-video-0",
+              "order": 0,
+              "sourcePointHeight": 720,
+              "sourcePointWidth": 1280,
+              "width": 2560,
+              "windowName": "Fixture Window"
+            }
+          },
+          "key": {
+            "ownerParticipantId": "EREREREREREREREREREREQ",
+            "sourceInstanceId": "MzMzMzMzMzMzMzMzMzMzMw"
+          }
+        }
+      ],
+      "version": 3
+    },
+    "type": "source-snapshot",
+    "version": 4
+  },
+  "webEmptySourceSnapshot": {
+    "payload": {
+      "membershipRevision": 1,
+      "ownerParticipantId": "IiIiIiIiIiIiIiIiIiIiIg",
+      "sessionId": "web-media-control-fixture",
+      "sourceRevision": 3,
+      "sources": [],
+      "version": 3
+    },
+    "type": "source-snapshot",
+    "version": 4
+  }
+}

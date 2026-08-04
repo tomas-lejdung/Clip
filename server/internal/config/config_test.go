@@ -12,15 +12,17 @@ var environmentNames = []string{
 	"CLIP_SERVER_LEASE_DURATION",
 	"CLIP_SERVER_RECONNECT_GRACE",
 	"CLIP_SERVER_ROUTE_IDLE_TIMEOUT",
-	"CLIP_SERVER_MAXIMUM_ROOMS",
+	"CLIP_SERVER_MAXIMUM_RENDEZVOUS",
 	"CLIP_SERVER_MAXIMUM_CONNECTIONS",
-	"CLIP_SERVER_RESERVED_HOST_CONNECTIONS",
 	"CLIP_SERVER_MAXIMUM_CONNECTIONS_PER_SOURCE",
-	"CLIP_SERVER_ROOM_ADVERTISEMENTS_PER_MINUTE",
+	"CLIP_SERVER_RENDEZVOUS_LEASE_OPERATIONS_PER_MINUTE",
 	"CLIP_SERVER_WEBSOCKET_UPGRADES_PER_MINUTE",
 	"CLIP_SERVER_MAXIMUM_QUEUED_BYTES_PER_SOCKET",
 	"CLIP_SERVER_MAXIMUM_QUEUED_BYTES_TOTAL",
 	"CLIP_SERVER_MAXIMUM_TRACKED_SOURCES",
+	"CLIP_SERVER_MAXIMUM_FRIEND_PRESENCE_RECORDS",
+	"CLIP_SERVER_MAXIMUM_FRIEND_PRESENCE_BYTES",
+	"CLIP_SERVER_MAXIMUM_ISSUED_HANDLES_PER_ROOM",
 	"CLIP_SERVER_TRUSTED_PROXY_CIDRS",
 	"CLIP_SERVER_ALLOWED_ORIGINS",
 	"CLIP_SERVER_ICE_SERVERS_JSON",
@@ -45,6 +47,11 @@ func TestDefaultConfigurationMatchesPublicDeploymentContract(t *testing.T) {
 	if configuration.LeaseDuration != 5*time.Minute || configuration.ReconnectGrace != 30*time.Second {
 		t.Fatalf("default leases = %v, %v", configuration.LeaseDuration, configuration.ReconnectGrace)
 	}
+	if configuration.MaximumFriendPresenceRecords != 16_384 ||
+		configuration.MaximumFriendPresenceBytes != 64<<20 ||
+		configuration.MaximumIssuedHandlesPerRoom != 256 {
+		t.Fatalf("default bounded state = %#v", configuration)
+	}
 	if len(configuration.ICEServers) != 1 || configuration.ICEServers[0].URLs[0] != "stun:stun.l.google.com:19302" {
 		t.Fatalf("default ICE servers = %#v", configuration.ICEServers)
 	}
@@ -56,15 +63,17 @@ func TestEnvironmentOverridesAreStrictlyParsed(t *testing.T) {
 	t.Setenv("CLIP_SERVER_LEASE_DURATION", "10m")
 	t.Setenv("CLIP_SERVER_RECONNECT_GRACE", "45s")
 	t.Setenv("CLIP_SERVER_ROUTE_IDLE_TIMEOUT", "90s")
-	t.Setenv("CLIP_SERVER_MAXIMUM_ROOMS", "50")
+	t.Setenv("CLIP_SERVER_MAXIMUM_RENDEZVOUS", "50")
 	t.Setenv("CLIP_SERVER_MAXIMUM_CONNECTIONS", "75")
-	t.Setenv("CLIP_SERVER_RESERVED_HOST_CONNECTIONS", "10")
 	t.Setenv("CLIP_SERVER_MAXIMUM_CONNECTIONS_PER_SOURCE", "20")
-	t.Setenv("CLIP_SERVER_ROOM_ADVERTISEMENTS_PER_MINUTE", "30")
+	t.Setenv("CLIP_SERVER_RENDEZVOUS_LEASE_OPERATIONS_PER_MINUTE", "30")
 	t.Setenv("CLIP_SERVER_WEBSOCKET_UPGRADES_PER_MINUTE", "120")
 	t.Setenv("CLIP_SERVER_MAXIMUM_QUEUED_BYTES_PER_SOCKET", "1048576")
 	t.Setenv("CLIP_SERVER_MAXIMUM_QUEUED_BYTES_TOTAL", "8388608")
 	t.Setenv("CLIP_SERVER_MAXIMUM_TRACKED_SOURCES", "1000")
+	t.Setenv("CLIP_SERVER_MAXIMUM_FRIEND_PRESENCE_RECORDS", "2000")
+	t.Setenv("CLIP_SERVER_MAXIMUM_FRIEND_PRESENCE_BYTES", "4194304")
+	t.Setenv("CLIP_SERVER_MAXIMUM_ISSUED_HANDLES_PER_ROOM", "128")
 	t.Setenv("CLIP_SERVER_TRUSTED_PROXY_CIDRS", "10.0.0.0/8, 2001:db8::/32")
 	t.Setenv("CLIP_SERVER_ALLOWED_ORIGINS", "https://viewer.example, http://localhost:3000")
 	t.Setenv("CLIP_SERVER_ICE_SERVERS_JSON", `[{"urls":["turns:turn.example:5349"],"username":"viewer","credential":"temporary"}]`)
@@ -73,7 +82,13 @@ func TestEnvironmentOverridesAreStrictlyParsed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if configuration.Address != ":9090" || configuration.LeaseDuration != 10*time.Minute || configuration.MaximumRooms != 50 || configuration.MaximumConnections != 75 || configuration.ReservedHostConnections != 10 {
+	if configuration.Address != ":9090" ||
+		configuration.LeaseDuration != 10*time.Minute ||
+		configuration.MaximumRendezvous != 50 ||
+		configuration.MaximumConnections != 75 ||
+		configuration.MaximumFriendPresenceRecords != 2_000 ||
+		configuration.MaximumFriendPresenceBytes != 4_194_304 ||
+		configuration.MaximumIssuedHandlesPerRoom != 128 {
 		t.Fatalf("environment configuration = %#v", configuration)
 	}
 	if len(configuration.AllowedOrigins) != 2 || configuration.ICEServers[0].Credential != "temporary" || len(configuration.TrustedProxyCIDRs) != 2 || configuration.MaximumQueuedBytesTotal != 8_388_608 {
@@ -86,14 +101,25 @@ func TestInvalidEnvironmentIsRejected(t *testing.T) {
 		name  string
 		value string
 	}{
-		"zero port":            {name: "PORT", value: "0"},
-		"invalid duration":     {name: "CLIP_SERVER_LEASE_DURATION", value: "later"},
-		"negative room limit":  {name: "CLIP_SERVER_MAXIMUM_ROOMS", value: "-1"},
+		"zero port":        {name: "PORT", value: "0"},
+		"invalid duration": {name: "CLIP_SERVER_LEASE_DURATION", value: "later"},
+		"negative rendezvous limit": {
+			name: "CLIP_SERVER_MAXIMUM_RENDEZVOUS", value: "-1",
+		},
 		"trailing ICE JSON":    {name: "CLIP_SERVER_ICE_SERVERS_JSON", value: `[{"urls":["stun:example"]}] {}`},
 		"HTTP ICE URL":         {name: "CLIP_SERVER_ICE_SERVERS_JSON", value: `[{"urls":["https://example"]}]`},
 		"origin with path":     {name: "CLIP_SERVER_ALLOWED_ORIGINS", value: "https://example.com/viewer"},
 		"invalid proxy CIDR":   {name: "CLIP_SERVER_TRUSTED_PROXY_CIDRS", value: "10.0.0.1"},
 		"too many connections": {name: "CLIP_SERVER_MAXIMUM_CONNECTIONS", value: "100000"},
+		"too many friend presence records": {
+			name: "CLIP_SERVER_MAXIMUM_FRIEND_PRESENCE_RECORDS", value: "1000000",
+		},
+		"too many friend presence bytes": {
+			name: "CLIP_SERVER_MAXIMUM_FRIEND_PRESENCE_BYTES", value: "1073741824",
+		},
+		"too few issued handles": {
+			name: "CLIP_SERVER_MAXIMUM_ISSUED_HANDLES_PER_ROOM", value: "2",
+		},
 	}
 	for description, test := range tests {
 		description, test := description, test
@@ -116,5 +142,11 @@ func TestValidateRejectsUnsafeTimingAndMetadata(t *testing.T) {
 	configuration = Default(strings.Repeat("v", 129))
 	if err := configuration.Validate(); err == nil || !strings.Contains(err.Error(), "server version") {
 		t.Fatalf("oversized version error = %v", err)
+	}
+	configuration = Default("test")
+	configuration.MaximumRendezvous = maximumConfiguredRendezvous
+	configuration.MaximumIssuedHandlesPerRoom = maximumConfiguredIssuedHandlesPerRoom
+	if err := configuration.Validate(); err == nil || !strings.Contains(err.Error(), "combined maximum") {
+		t.Fatalf("unsafe room handle product error = %v", err)
 	}
 }

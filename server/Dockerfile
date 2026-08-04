@@ -1,4 +1,4 @@
-FROM --platform=$BUILDPLATFORM golang:1.25-alpine AS builder
+FROM --platform=$BUILDPLATFORM golang:1.25-alpine3.24 AS builder
 
 ARG TARGETOS
 ARG TARGETARCH
@@ -18,7 +18,7 @@ RUN --mount=type=cache,target=/root/.cache/go-build \
     go build -trimpath -ldflags="-s -w -X main.version=${VERSION}" \
     -o /out/clip-live-share-server ./cmd/clip-live-share-server
 
-FROM alpine:3.20
+FROM alpine:3.24
 
 ARG VERSION=development
 

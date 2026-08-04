@@ -34,7 +34,7 @@ func run(logger *slog.Logger) error {
 		return fmt.Errorf("configuration: %w", err)
 	}
 
-	service, err := httpapi.New(configuration, logger)
+	service, err := httpapi.New(configuration)
 	if err != nil {
 		return fmt.Errorf("initialize service: %w", err)
 	}

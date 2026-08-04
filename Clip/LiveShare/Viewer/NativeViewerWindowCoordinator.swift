@@ -1,5 +1,16 @@
 import AppKit
 
+enum NativeViewerSurfaceBindingError: LocalizedError {
+    case unavailable(String)
+
+    var errorDescription: String? {
+        switch self {
+        case let .unavailable(streamID):
+            "The remote video stream \(streamID) is not available."
+        }
+    }
+}
+
 enum NativeViewerCursorFocusPolicy {
     static func shouldPresentCursor(
         streamID: String,
@@ -65,15 +76,19 @@ final class NativeViewerWindowCoordinator {
     var confirmLeaveWhenLastWindowCloses: () -> Bool = { false }
     var onLeaveRequested: () -> Void = {}
     var onPresentationChanged: () -> Void = {}
+    var onCollaborationControlChanged:
+        (String, NativeViewerCollaborationControlTool, Bool) -> Void = { _, _, _ in }
+    var onCollaborationControlResetToGlobal: (String) -> Void = { _ in }
 
     private var ownerName: String
     private let identityColor: NSColor
     private let surfaceFactory: SurfaceFactory
     private var registry: NativeViewerWindowRegistry
     private var entries: [NativeViewerWindowID: Entry] = [:]
+    private var collaborationControlStates:
+        [String: NativeViewerCollaborationControlState] = [:]
 
     init(
-        sessionID: String,
         ownerName: String,
         ownerPublicIdentity: Data,
         surfaceFactory: @escaping SurfaceFactory
@@ -83,7 +98,7 @@ final class NativeViewerWindowCoordinator {
             .stable(for: ownerPublicIdentity)
             .appKitColor
         self.surfaceFactory = surfaceFactory
-        registry = NativeViewerWindowRegistry(sessionID: sessionID)
+        registry = NativeViewerWindowRegistry()
     }
 
     var visibleWindowCount: Int { registry.visibleWindowCount }
@@ -93,6 +108,9 @@ final class NativeViewerWindowCoordinator {
     }
 
     func reconcile(_ sources: [NativeViewerSourceSnapshot]) throws {
+        let priorSourceInstanceIDs = registry.windows.mapValues {
+            $0.source.sourceInstanceID
+        }
         for change in registry.reconcile(sources) {
             switch change {
             case .create(let snapshot):
@@ -100,7 +118,7 @@ final class NativeViewerWindowCoordinator {
             case .update(let snapshot):
                 try update(snapshot)
             case .remove(let id):
-                remove(id)
+                remove(id, sourceInstanceID: priorSourceInstanceIDs[id])
             case .visibility(let id, let isVisible):
                 setVisibility(isVisible, id: id)
             }
@@ -231,6 +249,70 @@ final class NativeViewerWindowCoordinator {
         }
     }
 
+    func setCollaborationOverlay(
+        _ snapshot: NativeViewerCollaborationOverlaySnapshot,
+        sourceInstanceID: String
+    ) {
+        guard
+            let id = windowID(sourceInstanceID: sourceInstanceID),
+            let content = entries[id]?.controller.content
+        else {
+            return
+        }
+        content.setCollaborationOverlay(snapshot)
+    }
+
+    func setCollaborationInteraction(
+        _ mode: NativeViewerCollaborationInteractionMode,
+        sourceInstanceID: String,
+        actions: NativeViewerCollaborationActions = .init()
+    ) {
+        guard
+            let id = windowID(sourceInstanceID: sourceInstanceID),
+            let content = entries[id]?.controller.content
+        else {
+            return
+        }
+        let overlay = content.collaborationOverlayView
+        overlay.onPointerChanged = actions.pointerChanged
+        overlay.onPing = actions.ping
+        overlay.onStrokeBegan = actions.strokeBegan
+        overlay.onStrokePoints = actions.strokePoints
+        overlay.onStrokeEnded = actions.strokeEnded
+        content.setCollaborationInteractionMode(mode)
+    }
+
+    func setCollaborationControlState(
+        _ state: NativeViewerCollaborationControlState,
+        sourceInstanceID: String
+    ) {
+        collaborationControlStates[sourceInstanceID] = state
+        guard let id = windowID(sourceInstanceID: sourceInstanceID),
+              let controller = entries[id]?.controller else { return }
+        controller.setCollaborationControlState(state)
+    }
+
+    func collaborationControlState(
+        sourceInstanceID: String
+    ) -> NativeViewerCollaborationControlState? {
+        collaborationControlStates[sourceInstanceID]
+    }
+
+    func activateCollaborationControl(
+        _ tool: NativeViewerCollaborationControlTool,
+        sourceInstanceID: String
+    ) {
+        guard let id = windowID(sourceInstanceID: sourceInstanceID),
+              let content = entries[id]?.controller.content else { return }
+        content.activateCollaborationControl(tool)
+    }
+
+    func activateResetCollaborationToGlobal(sourceInstanceID: String) {
+        guard let id = windowID(sourceInstanceID: sourceInstanceID),
+              let content = entries[id]?.controller.content else { return }
+        content.activateResetCollaborationToGlobal()
+    }
+
     func markDisconnected() {
         let disconnected = registry.windows.values.map { snapshot in
             NativeViewerSourceSnapshot(
@@ -242,8 +324,7 @@ final class NativeViewerWindowCoordinator {
                 sourcePointSize: snapshot.source.sourcePointSize,
                 isFocused: snapshot.source.isFocused,
                 isConnected: false,
-                stateRevision: snapshot.source.stateRevision,
-                mode: snapshot.source.mode
+                stateRevision: snapshot.source.stateRevision
             )
         }
         try? reconcile(disconnected)
@@ -255,7 +336,8 @@ final class NativeViewerWindowCoordinator {
             entry.controller.tearDown()
         }
         entries.removeAll()
-        registry = NativeViewerWindowRegistry(sessionID: registry.sessionID)
+        collaborationControlStates.removeAll()
+        registry = NativeViewerWindowRegistry()
     }
 
     private func create(_ snapshot: NativeViewerWindowSnapshot) throws {
@@ -284,6 +366,25 @@ final class NativeViewerWindowCoordinator {
             registry.setFullScreen(isFullScreen, for: controller.viewerWindowID)
             onPresentationChanged()
         }
+        controller.onCollaborationControlChanged = {
+            [weak self] controller, tool, enabled in
+            guard let self,
+                  let sourceInstanceID = registry.windows[
+                    controller.viewerWindowID
+                  ]?.source.sourceInstanceID else { return }
+            onCollaborationControlChanged(sourceInstanceID, tool, enabled)
+        }
+        controller.onCollaborationControlResetToGlobal = { [weak self] controller in
+            guard let self,
+                  let sourceInstanceID = registry.windows[
+                    controller.viewerWindowID
+                  ]?.source.sourceInstanceID else { return }
+            onCollaborationControlResetToGlobal(sourceInstanceID)
+        }
+        controller.setCollaborationControlState(
+            collaborationControlStates[snapshot.source.sourceInstanceID]
+                ?? .globalDefaults
+        )
         do {
             try surface.bind(to: snapshot.source)
         } catch {
@@ -306,7 +407,14 @@ final class NativeViewerWindowCoordinator {
             try create(snapshot)
             return
         }
-        try entry.surface.bind(to: snapshot.source)
+        // A pair-local ICE/SDP recreation temporarily removes its remote track
+        // while the authoritative source still exists. Keep the existing
+        // surface and native window in place until a replacement track is ready;
+        // attempting to bind the disconnected descriptor would throw and tear
+        // down every window owned by this participant.
+        if snapshot.source.isConnected {
+            try entry.surface.bind(to: snapshot.source)
+        }
         entry.controller.update(
             ownerName: ownerName,
             source: snapshot.source,
@@ -317,7 +425,13 @@ final class NativeViewerWindowCoordinator {
         // or reposition an already visible native window.
     }
 
-    private func remove(_ id: NativeViewerWindowID) {
+    private func remove(
+        _ id: NativeViewerWindowID,
+        sourceInstanceID: String?
+    ) {
+        if let sourceInstanceID {
+            collaborationControlStates[sourceInstanceID] = nil
+        }
         guard let entry = entries.removeValue(forKey: id) else { return }
         entry.surface.tearDown()
         entry.controller.tearDown()

@@ -87,22 +87,13 @@
 		L2B100000000000000000002 /* LiveShareFocusedWindowMonitor.swift in Sources */ = {isa = PBXBuildFile; fileRef = L2F100000000000000000002 /* LiveShareFocusedWindowMonitor.swift */; };
 		L2B100000000000000000003 /* LiveShareAccessCode.swift in Sources */ = {isa = PBXBuildFile; fileRef = L2F100000000000000000003 /* LiveShareAccessCode.swift */; };
 		L2B100000000000000000004 /* LiveShareSettingsRepository.swift in Sources */ = {isa = PBXBuildFile; fileRef = L2F100000000000000000004 /* LiveShareSettingsRepository.swift */; };
-		L2B100000000000000000005 /* LiveSharePopoverView.swift in Sources */ = {isa = PBXBuildFile; fileRef = L2F100000000000000000005 /* LiveSharePopoverView.swift */; };
-		L2B100000000000000000006 /* LiveSharePresentationModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = L2F100000000000000000006 /* LiveSharePresentationModel.swift */; };
-		L2B100000000000000000007 /* LiveSharePresentationModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = L2F100000000000000000007 /* LiveSharePresentationModels.swift */; };
-		L2B100000000000000000008 /* FocusedWindowShareOverlay.swift in Sources */ = {isa = PBXBuildFile; fileRef = L2F100000000000000000008 /* FocusedWindowShareOverlay.swift */; };
-		L2B100000000000000000009 /* LiveShareOverlayGeometry.swift in Sources */ = {isa = PBXBuildFile; fileRef = L2F100000000000000000009 /* LiveShareOverlayGeometry.swift */; };
-		L2B10000000000000000000A /* LiveShareStatusHUD.swift in Sources */ = {isa = PBXBuildFile; fileRef = L2F10000000000000000000A /* LiveShareStatusHUD.swift */; };
 		L2B10000000000000000000B /* LiveShareAccessCodeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = L2F10000000000000000000B /* LiveShareAccessCodeTests.swift */; };
 		L2B10000000000000000000C /* LiveShareCursorPositionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = L2F10000000000000000000C /* LiveShareCursorPositionTests.swift */; };
-		L2B10000000000000000000D /* LiveShareOverlayGeometryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = L2F10000000000000000000D /* LiveShareOverlayGeometryTests.swift */; };
-		L2B10000000000000000000E /* LiveSharePresentationModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = L2F10000000000000000000E /* LiveSharePresentationModelTests.swift */; };
 		L2B10000000000000000000F /* LiveShareWindowCoordinateTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = L2F10000000000000000000F /* LiveShareWindowCoordinateTests.swift */; };
 		L2B100000000000000000010 /* ThirdPartyNotices.txt in Resources */ = {isa = PBXBuildFile; fileRef = L2F100000000000000000010 /* ThirdPartyNotices.txt */; };
 		L2B100000000000000000014 /* WebRTCThirdPartyNotices.txt in Resources */ = {isa = PBXBuildFile; fileRef = L2F100000000000000000014 /* WebRTCThirdPartyNotices.txt */; };
-		L2B100000000000000000011 /* LiveShareCoordinatorPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = L2F100000000000000000011 /* LiveShareCoordinatorPolicy.swift */; };
-		L2B100000000000000000012 /* LiveShareCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = L2F100000000000000000012 /* LiveShareCoordinator.swift */; };
-		L2B100000000000000000013 /* LiveShareCoordinatorPolicyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = L2F100000000000000000013 /* LiveShareCoordinatorPolicyTests.swift */; };
+		X8B100000000000000000001 /* LiveShareCapturePolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = X8F100000000000000000001 /* LiveShareCapturePolicy.swift */; };
+		X8B100000000000000000002 /* LiveShareCapturePolicyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = X8F100000000000000000002 /* LiveShareCapturePolicyTests.swift */; };
 		V1B100000000000000000001 /* NativeViewerResolutionPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = V1F100000000000000000001 /* NativeViewerResolutionPolicy.swift */; };
 		V1B100000000000000000002 /* NativeViewerResolutionPolicyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = V1F100000000000000000002 /* NativeViewerResolutionPolicyTests.swift */; };
 		V1B100000000000000000003 /* NativeViewerWindowState.swift in Sources */ = {isa = PBXBuildFile; fileRef = V1F100000000000000000003 /* NativeViewerWindowState.swift */; };
@@ -111,20 +102,40 @@
 		V1B100000000000000000006 /* NativeViewerWindowControllerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = V1F100000000000000000006 /* NativeViewerWindowControllerTests.swift */; };
 		V1B100000000000000000007 /* NativeViewerWindowCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = V1F100000000000000000007 /* NativeViewerWindowCoordinator.swift */; };
 		V1B100000000000000000008 /* NativeDeviceIdentityRepository.swift in Sources */ = {isa = PBXBuildFile; fileRef = V1F100000000000000000008 /* NativeDeviceIdentityRepository.swift */; };
+		H8B100000000000000000001 /* IsolatedNativeDeviceIdentityFileStorage.swift in Sources */ = {isa = PBXBuildFile; fileRef = H8F100000000000000000001 /* IsolatedNativeDeviceIdentityFileStorage.swift */; };
 		V1B100000000000000000009 /* NativeDeviceIdentityRepositoryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = V1F100000000000000000009 /* NativeDeviceIdentityRepositoryTests.swift */; };
-		V1B10000000000000000000A /* NativeFriendRepository.swift in Sources */ = {isa = PBXBuildFile; fileRef = V1F10000000000000000000A /* NativeFriendRepository.swift */; };
-		V1B10000000000000000000B /* NativeFriendRepositoryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = V1F10000000000000000000B /* NativeFriendRepositoryTests.swift */; };
-		V1B10000000000000000000C /* NativeFriendModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = V1F10000000000000000000C /* NativeFriendModel.swift */; };
-		V2B100000000000000000001 /* NativeLiveShareViewerCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = V2F100000000000000000001 /* NativeLiveShareViewerCoordinator.swift */; };
-		V2B100000000000000000002 /* NativeViewerPopoverView.swift in Sources */ = {isa = PBXBuildFile; fileRef = V2F100000000000000000002 /* NativeViewerPopoverView.swift */; };
-		V2B100000000000000000003 /* NativeViewerPresentationModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = V2F100000000000000000003 /* NativeViewerPresentationModel.swift */; };
-		V2B100000000000000000004 /* NativeViewerPresentationModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = V2F100000000000000000004 /* NativeViewerPresentationModels.swift */; };
-		V2B100000000000000000005 /* NativeViewerV1ControlState.swift in Sources */ = {isa = PBXBuildFile; fileRef = V2F100000000000000000005 /* NativeViewerV1ControlState.swift */; };
-		V2B100000000000000000006 /* NativeFriendPresenceMonitor.swift in Sources */ = {isa = PBXBuildFile; fileRef = V2F100000000000000000006 /* NativeFriendPresenceMonitor.swift */; };
-		V2B100000000000000000007 /* NativeViewerPresentationModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = V2F100000000000000000007 /* NativeViewerPresentationModelTests.swift */; };
-		V2B100000000000000000008 /* NativeViewerV1ControlStateTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = V2F100000000000000000008 /* NativeViewerV1ControlStateTests.swift */; };
-		V2B100000000000000000009 /* NativeFriendPresenceMonitorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = V2F100000000000000000009 /* NativeFriendPresenceMonitorTests.swift */; };
-		V2B10000000000000000000A /* ApplicationLiveShareRoleGateTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = V2F10000000000000000000A /* ApplicationLiveShareRoleGateTests.swift */; };
+		F4B100000000000000000001 /* MeshFriendshipRepository.swift in Sources */ = {isa = PBXBuildFile; fileRef = F4F100000000000000000001 /* MeshFriendshipRepository.swift */; };
+		F4B100000000000000000002 /* MeshFriendshipRepositoryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F4F100000000000000000002 /* MeshFriendshipRepositoryTests.swift */; };
+		F4B100000000000000000003 /* MeshFriendshipHandshakeController.swift in Sources */ = {isa = PBXBuildFile; fileRef = F4F100000000000000000003 /* MeshFriendshipHandshakeController.swift */; };
+		F4B100000000000000000004 /* MeshFriendshipHandshakeControllerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F4F100000000000000000004 /* MeshFriendshipHandshakeControllerTests.swift */; };
+		P6B100000000000000000001 /* MeshFriendPresenceController.swift in Sources */ = {isa = PBXBuildFile; fileRef = P6F100000000000000000001 /* MeshFriendPresenceController.swift */; };
+		P6B100000000000000000002 /* MeshFriendPresenceControllerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = P6F100000000000000000002 /* MeshFriendPresenceControllerTests.swift */; };
+		M3B100000000000000000001 /* RemoteParticipantPresentation.swift in Sources */ = {isa = PBXBuildFile; fileRef = M3F100000000000000000001 /* RemoteParticipantPresentation.swift */; };
+		M3B100000000000000000002 /* RemoteParticipantPresentationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = M3F100000000000000000002 /* RemoteParticipantPresentationTests.swift */; };
+		M4B100000000000000000001 /* MeshRoomPresentationModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = M4F100000000000000000001 /* MeshRoomPresentationModels.swift */; };
+		M4B100000000000000000002 /* MeshRoomPresentationModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = M4F100000000000000000002 /* MeshRoomPresentationModel.swift */; };
+		M4B100000000000000000003 /* MeshRoomPopoverView.swift in Sources */ = {isa = PBXBuildFile; fileRef = M4F100000000000000000003 /* MeshRoomPopoverView.swift */; };
+		M4B100000000000000000004 /* MeshRoomPresentationModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = M4F100000000000000000004 /* MeshRoomPresentationModelTests.swift */; };
+		M4B100000000000000000005 /* MeshMediaPresentationModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = M4F100000000000000000005 /* MeshMediaPresentationModels.swift */; };
+		M5B100000000000000000001 /* NativeViewerCollaborationOverlay.swift in Sources */ = {isa = PBXBuildFile; fileRef = M5F100000000000000000001 /* NativeViewerCollaborationOverlay.swift */; };
+		M5B100000000000000000002 /* LiveShareCollaborationSourceOverlay.swift in Sources */ = {isa = PBXBuildFile; fileRef = M5F100000000000000000002 /* LiveShareCollaborationSourceOverlay.swift */; };
+		M5B100000000000000000003 /* NativeViewerCollaborationOverlayTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = M5F100000000000000000003 /* NativeViewerCollaborationOverlayTests.swift */; };
+		M5B100000000000000000004 /* LiveShareCollaborationVisibleRegion.swift in Sources */ = {isa = PBXBuildFile; fileRef = M5F100000000000000000004 /* LiveShareCollaborationVisibleRegion.swift */; };
+		M5B100000000000000000005 /* LiveShareCollaborationVisibleRegionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = M5F100000000000000000005 /* LiveShareCollaborationVisibleRegionTests.swift */; };
+		M6B100000000000000000002 /* MeshParticipantCapturePublisher.swift in Sources */ = {isa = PBXBuildFile; fileRef = M6F100000000000000000002 /* MeshParticipantCapturePublisher.swift */; };
+		S5B100000000000000000001 /* MeshParticipantMediaPolicies.swift in Sources */ = {isa = PBXBuildFile; fileRef = S5F100000000000000000001 /* MeshParticipantMediaPolicies.swift */; };
+		S5B100000000000000000002 /* MeshParticipantPresentationPolicies.swift in Sources */ = {isa = PBXBuildFile; fileRef = S5F100000000000000000002 /* MeshParticipantPresentationPolicies.swift */; };
+		S5B100000000000000000003 /* MeshParticipantMediaPoliciesTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = S5F100000000000000000003 /* MeshParticipantMediaPoliciesTests.swift */; };
+		S4B100000000000000000001 /* ServerCoordinatedMeshMediaRuntime.swift in Sources */ = {isa = PBXBuildFile; fileRef = S4F100000000000000000001 /* ServerCoordinatedMeshMediaRuntime.swift */; };
+		S4B100000000000000000002 /* ServerCoordinatedMeshParticipantCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = S4F100000000000000000002 /* ServerCoordinatedMeshParticipantCoordinator.swift */; };
+		S4B100000000000000000003 /* ServerCoordinatedMeshParticipantCoordinatorDependencies.swift in Sources */ = {isa = PBXBuildFile; fileRef = S4F100000000000000000003 /* ServerCoordinatedMeshParticipantCoordinatorDependencies.swift */; };
+		S4B100000000000000000004 /* ServerCoordinatedMeshRoomSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = S4F100000000000000000004 /* ServerCoordinatedMeshRoomSession.swift */; };
+		S4B100000000000000000005 /* ServerCoordinatedMeshMediaRuntimeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = S4F100000000000000000005 /* ServerCoordinatedMeshMediaRuntimeTests.swift */; };
+		S4B100000000000000000006 /* ServerCoordinatedMeshParticipantCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = S4F100000000000000000006 /* ServerCoordinatedMeshParticipantCoordinatorTests.swift */; };
+		S4B100000000000000000007 /* ServerCoordinatedMeshRoomSessionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = S4F100000000000000000007 /* ServerCoordinatedMeshRoomSessionTests.swift */; };
+		S4B100000000000000000008 /* ServerCoordinatedMeshThreeParticipantFlowTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = S4F100000000000000000008 /* ServerCoordinatedMeshThreeParticipantFlowTests.swift */; };
+		M8B100000000000000000001 /* MeshParticipantLocalPublicationController.swift in Sources */ = {isa = PBXBuildFile; fileRef = M8F100000000000000000001 /* MeshParticipantLocalPublicationController.swift */; };
+		M8B100000000000000000002 /* MeshParticipantLocalPublicationControllerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = M8F100000000000000000002 /* MeshParticipantLocalPublicationControllerTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -221,22 +232,13 @@
 		L2F100000000000000000002 /* LiveShareFocusedWindowMonitor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveShareFocusedWindowMonitor.swift; sourceTree = "<group>"; };
 		L2F100000000000000000003 /* LiveShareAccessCode.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveShareAccessCode.swift; sourceTree = "<group>"; };
 		L2F100000000000000000004 /* LiveShareSettingsRepository.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveShareSettingsRepository.swift; sourceTree = "<group>"; };
-		L2F100000000000000000005 /* LiveSharePopoverView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveSharePopoverView.swift; sourceTree = "<group>"; };
-		L2F100000000000000000006 /* LiveSharePresentationModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveSharePresentationModel.swift; sourceTree = "<group>"; };
-		L2F100000000000000000007 /* LiveSharePresentationModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveSharePresentationModels.swift; sourceTree = "<group>"; };
-		L2F100000000000000000008 /* FocusedWindowShareOverlay.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FocusedWindowShareOverlay.swift; sourceTree = "<group>"; };
-		L2F100000000000000000009 /* LiveShareOverlayGeometry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveShareOverlayGeometry.swift; sourceTree = "<group>"; };
-		L2F10000000000000000000A /* LiveShareStatusHUD.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveShareStatusHUD.swift; sourceTree = "<group>"; };
 		L2F10000000000000000000B /* LiveShareAccessCodeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveShareAccessCodeTests.swift; sourceTree = "<group>"; };
 		L2F10000000000000000000C /* LiveShareCursorPositionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveShareCursorPositionTests.swift; sourceTree = "<group>"; };
-		L2F10000000000000000000D /* LiveShareOverlayGeometryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveShareOverlayGeometryTests.swift; sourceTree = "<group>"; };
-		L2F10000000000000000000E /* LiveSharePresentationModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveSharePresentationModelTests.swift; sourceTree = "<group>"; };
 		L2F10000000000000000000F /* LiveShareWindowCoordinateTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveShareWindowCoordinateTests.swift; sourceTree = "<group>"; };
 		L2F100000000000000000010 /* ThirdPartyNotices.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = ThirdPartyNotices.txt; sourceTree = "<group>"; };
 		L2F100000000000000000014 /* WebRTCThirdPartyNotices.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = WebRTCThirdPartyNotices.txt; sourceTree = "<group>"; };
-		L2F100000000000000000011 /* LiveShareCoordinatorPolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveShareCoordinatorPolicy.swift; sourceTree = "<group>"; };
-		L2F100000000000000000012 /* LiveShareCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveShareCoordinator.swift; sourceTree = "<group>"; };
-		L2F100000000000000000013 /* LiveShareCoordinatorPolicyTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveShareCoordinatorPolicyTests.swift; sourceTree = "<group>"; };
+		X8F100000000000000000001 /* LiveShareCapturePolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveShareCapturePolicy.swift; sourceTree = "<group>"; };
+		X8F100000000000000000002 /* LiveShareCapturePolicyTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveShareCapturePolicyTests.swift; sourceTree = "<group>"; };
 		V1F100000000000000000001 /* NativeViewerResolutionPolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeViewerResolutionPolicy.swift; sourceTree = "<group>"; };
 		V1F100000000000000000002 /* NativeViewerResolutionPolicyTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeViewerResolutionPolicyTests.swift; sourceTree = "<group>"; };
 		V1F100000000000000000003 /* NativeViewerWindowState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeViewerWindowState.swift; sourceTree = "<group>"; };
@@ -245,20 +247,40 @@
 		V1F100000000000000000006 /* NativeViewerWindowControllerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeViewerWindowControllerTests.swift; sourceTree = "<group>"; };
 		V1F100000000000000000007 /* NativeViewerWindowCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeViewerWindowCoordinator.swift; sourceTree = "<group>"; };
 		V1F100000000000000000008 /* NativeDeviceIdentityRepository.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeDeviceIdentityRepository.swift; sourceTree = "<group>"; };
+		H8F100000000000000000001 /* IsolatedNativeDeviceIdentityFileStorage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IsolatedNativeDeviceIdentityFileStorage.swift; sourceTree = "<group>"; };
 		V1F100000000000000000009 /* NativeDeviceIdentityRepositoryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeDeviceIdentityRepositoryTests.swift; sourceTree = "<group>"; };
-		V1F10000000000000000000A /* NativeFriendRepository.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeFriendRepository.swift; sourceTree = "<group>"; };
-		V1F10000000000000000000B /* NativeFriendRepositoryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeFriendRepositoryTests.swift; sourceTree = "<group>"; };
-		V1F10000000000000000000C /* NativeFriendModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeFriendModel.swift; sourceTree = "<group>"; };
-		V2F100000000000000000001 /* NativeLiveShareViewerCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeLiveShareViewerCoordinator.swift; sourceTree = "<group>"; };
-		V2F100000000000000000002 /* NativeViewerPopoverView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeViewerPopoverView.swift; sourceTree = "<group>"; };
-		V2F100000000000000000003 /* NativeViewerPresentationModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeViewerPresentationModel.swift; sourceTree = "<group>"; };
-		V2F100000000000000000004 /* NativeViewerPresentationModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeViewerPresentationModels.swift; sourceTree = "<group>"; };
-		V2F100000000000000000005 /* NativeViewerV1ControlState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeViewerV1ControlState.swift; sourceTree = "<group>"; };
-		V2F100000000000000000006 /* NativeFriendPresenceMonitor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeFriendPresenceMonitor.swift; sourceTree = "<group>"; };
-		V2F100000000000000000007 /* NativeViewerPresentationModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeViewerPresentationModelTests.swift; sourceTree = "<group>"; };
-		V2F100000000000000000008 /* NativeViewerV1ControlStateTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeViewerV1ControlStateTests.swift; sourceTree = "<group>"; };
-		V2F100000000000000000009 /* NativeFriendPresenceMonitorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeFriendPresenceMonitorTests.swift; sourceTree = "<group>"; };
-		V2F10000000000000000000A /* ApplicationLiveShareRoleGateTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ApplicationLiveShareRoleGateTests.swift; sourceTree = "<group>"; };
+		F4F100000000000000000001 /* MeshFriendshipRepository.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MeshFriendshipRepository.swift; sourceTree = "<group>"; };
+		F4F100000000000000000002 /* MeshFriendshipRepositoryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MeshFriendshipRepositoryTests.swift; sourceTree = "<group>"; };
+		F4F100000000000000000003 /* MeshFriendshipHandshakeController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MeshFriendshipHandshakeController.swift; sourceTree = "<group>"; };
+		F4F100000000000000000004 /* MeshFriendshipHandshakeControllerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MeshFriendshipHandshakeControllerTests.swift; sourceTree = "<group>"; };
+		P6F100000000000000000001 /* MeshFriendPresenceController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MeshFriendPresenceController.swift; sourceTree = "<group>"; };
+		P6F100000000000000000002 /* MeshFriendPresenceControllerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MeshFriendPresenceControllerTests.swift; sourceTree = "<group>"; };
+		M3F100000000000000000001 /* RemoteParticipantPresentation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteParticipantPresentation.swift; sourceTree = "<group>"; };
+		M3F100000000000000000002 /* RemoteParticipantPresentationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemoteParticipantPresentationTests.swift; sourceTree = "<group>"; };
+		M4F100000000000000000001 /* MeshRoomPresentationModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MeshRoomPresentationModels.swift; sourceTree = "<group>"; };
+		M4F100000000000000000002 /* MeshRoomPresentationModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MeshRoomPresentationModel.swift; sourceTree = "<group>"; };
+		M4F100000000000000000003 /* MeshRoomPopoverView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MeshRoomPopoverView.swift; sourceTree = "<group>"; };
+		M4F100000000000000000004 /* MeshRoomPresentationModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MeshRoomPresentationModelTests.swift; sourceTree = "<group>"; };
+		M4F100000000000000000005 /* MeshMediaPresentationModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MeshMediaPresentationModels.swift; sourceTree = "<group>"; };
+		M5F100000000000000000001 /* NativeViewerCollaborationOverlay.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeViewerCollaborationOverlay.swift; sourceTree = "<group>"; };
+		M5F100000000000000000002 /* LiveShareCollaborationSourceOverlay.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveShareCollaborationSourceOverlay.swift; sourceTree = "<group>"; };
+		M5F100000000000000000003 /* NativeViewerCollaborationOverlayTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeViewerCollaborationOverlayTests.swift; sourceTree = "<group>"; };
+		M5F100000000000000000004 /* LiveShareCollaborationVisibleRegion.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveShareCollaborationVisibleRegion.swift; sourceTree = "<group>"; };
+		M5F100000000000000000005 /* LiveShareCollaborationVisibleRegionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveShareCollaborationVisibleRegionTests.swift; sourceTree = "<group>"; };
+		M6F100000000000000000002 /* MeshParticipantCapturePublisher.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MeshParticipantCapturePublisher.swift; sourceTree = "<group>"; };
+		S5F100000000000000000001 /* MeshParticipantMediaPolicies.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MeshParticipantMediaPolicies.swift; sourceTree = "<group>"; };
+		S5F100000000000000000002 /* MeshParticipantPresentationPolicies.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MeshParticipantPresentationPolicies.swift; sourceTree = "<group>"; };
+		S5F100000000000000000003 /* MeshParticipantMediaPoliciesTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MeshParticipantMediaPoliciesTests.swift; sourceTree = "<group>"; };
+		S4F100000000000000000001 /* ServerCoordinatedMeshMediaRuntime.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServerCoordinatedMeshMediaRuntime.swift; sourceTree = "<group>"; };
+		S4F100000000000000000002 /* ServerCoordinatedMeshParticipantCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServerCoordinatedMeshParticipantCoordinator.swift; sourceTree = "<group>"; };
+		S4F100000000000000000003 /* ServerCoordinatedMeshParticipantCoordinatorDependencies.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServerCoordinatedMeshParticipantCoordinatorDependencies.swift; sourceTree = "<group>"; };
+		S4F100000000000000000004 /* ServerCoordinatedMeshRoomSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServerCoordinatedMeshRoomSession.swift; sourceTree = "<group>"; };
+		S4F100000000000000000005 /* ServerCoordinatedMeshMediaRuntimeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServerCoordinatedMeshMediaRuntimeTests.swift; sourceTree = "<group>"; };
+		S4F100000000000000000006 /* ServerCoordinatedMeshParticipantCoordinatorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServerCoordinatedMeshParticipantCoordinatorTests.swift; sourceTree = "<group>"; };
+		S4F100000000000000000007 /* ServerCoordinatedMeshRoomSessionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServerCoordinatedMeshRoomSessionTests.swift; sourceTree = "<group>"; };
+		S4F100000000000000000008 /* ServerCoordinatedMeshThreeParticipantFlowTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServerCoordinatedMeshThreeParticipantFlowTests.swift; sourceTree = "<group>"; };
+		M8F100000000000000000001 /* MeshParticipantLocalPublicationController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MeshParticipantLocalPublicationController.swift; sourceTree = "<group>"; };
+		M8F100000000000000000002 /* MeshParticipantLocalPublicationControllerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MeshParticipantLocalPublicationControllerTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -499,6 +521,7 @@
 				L2G100000000000000000002 /* Capture */,
 				L2G100000000000000000003 /* Configuration */,
 				L2G100000000000000000004 /* Interface */,
+				M4G100000000000000000001 /* Mesh */,
 				L2G100000000000000000005 /* Overlay */,
 				L2G100000000000000000007 /* Session */,
 				V1G100000000000000000001 /* Viewer */,
@@ -520,10 +543,10 @@
 			children = (
 				L2F100000000000000000003 /* LiveShareAccessCode.swift */,
 				L2F100000000000000000004 /* LiveShareSettingsRepository.swift */,
+				H8F100000000000000000001 /* IsolatedNativeDeviceIdentityFileStorage.swift */,
 				V1F100000000000000000008 /* NativeDeviceIdentityRepository.swift */,
-				V2F100000000000000000006 /* NativeFriendPresenceMonitor.swift */,
-				V1F10000000000000000000A /* NativeFriendRepository.swift */,
-				V1F10000000000000000000C /* NativeFriendModel.swift */,
+				F4F100000000000000000001 /* MeshFriendshipRepository.swift */,
+				P6F100000000000000000001 /* MeshFriendPresenceController.swift */,
 			);
 			path = Configuration;
 			sourceTree = "<group>";
@@ -531,9 +554,6 @@
 		L2G100000000000000000004 /* Interface */ = {
 			isa = PBXGroup;
 			children = (
-				L2F100000000000000000005 /* LiveSharePopoverView.swift */,
-				L2F100000000000000000006 /* LiveSharePresentationModel.swift */,
-				L2F100000000000000000007 /* LiveSharePresentationModels.swift */,
 			);
 			path = Interface;
 			sourceTree = "<group>";
@@ -541,9 +561,8 @@
 		L2G100000000000000000005 /* Overlay */ = {
 			isa = PBXGroup;
 			children = (
-				L2F100000000000000000008 /* FocusedWindowShareOverlay.swift */,
-				L2F100000000000000000009 /* LiveShareOverlayGeometry.swift */,
-				L2F10000000000000000000A /* LiveShareStatusHUD.swift */,
+				M5F100000000000000000002 /* LiveShareCollaborationSourceOverlay.swift */,
+				M5F100000000000000000004 /* LiveShareCollaborationVisibleRegion.swift */,
 			);
 			path = Overlay;
 			sourceTree = "<group>";
@@ -551,8 +570,7 @@
 		L2G100000000000000000007 /* Session */ = {
 			isa = PBXGroup;
 			children = (
-				L2F100000000000000000012 /* LiveShareCoordinator.swift */,
-				L2F100000000000000000011 /* LiveShareCoordinatorPolicy.swift */,
+				X8F100000000000000000001 /* LiveShareCapturePolicy.swift */,
 			);
 			path = Session;
 			sourceTree = "<group>";
@@ -560,17 +578,34 @@
 		V1G100000000000000000001 /* Viewer */ = {
 			isa = PBXGroup;
 			children = (
-				V2F100000000000000000001 /* NativeLiveShareViewerCoordinator.swift */,
-				V2F100000000000000000002 /* NativeViewerPopoverView.swift */,
-				V2F100000000000000000003 /* NativeViewerPresentationModel.swift */,
-				V2F100000000000000000004 /* NativeViewerPresentationModels.swift */,
 				V1F100000000000000000001 /* NativeViewerResolutionPolicy.swift */,
-				V2F100000000000000000005 /* NativeViewerV1ControlState.swift */,
 				V1F100000000000000000003 /* NativeViewerWindowState.swift */,
 				V1F100000000000000000005 /* NativeViewerWindowController.swift */,
 				V1F100000000000000000007 /* NativeViewerWindowCoordinator.swift */,
+				M5F100000000000000000001 /* NativeViewerCollaborationOverlay.swift */,
+				M3F100000000000000000001 /* RemoteParticipantPresentation.swift */,
 			);
 			path = Viewer;
+			sourceTree = "<group>";
+		};
+		M4G100000000000000000001 /* Mesh */ = {
+			isa = PBXGroup;
+			children = (
+				S5F100000000000000000001 /* MeshParticipantMediaPolicies.swift */,
+				S5F100000000000000000002 /* MeshParticipantPresentationPolicies.swift */,
+				F4F100000000000000000003 /* MeshFriendshipHandshakeController.swift */,
+				S4F100000000000000000001 /* ServerCoordinatedMeshMediaRuntime.swift */,
+				S4F100000000000000000002 /* ServerCoordinatedMeshParticipantCoordinator.swift */,
+				S4F100000000000000000003 /* ServerCoordinatedMeshParticipantCoordinatorDependencies.swift */,
+				S4F100000000000000000004 /* ServerCoordinatedMeshRoomSession.swift */,
+				M6F100000000000000000002 /* MeshParticipantCapturePublisher.swift */,
+				M8F100000000000000000001 /* MeshParticipantLocalPublicationController.swift */,
+				M4F100000000000000000003 /* MeshRoomPopoverView.swift */,
+				M4F100000000000000000002 /* MeshRoomPresentationModel.swift */,
+				M4F100000000000000000001 /* MeshRoomPresentationModels.swift */,
+				M4F100000000000000000005 /* MeshMediaPresentationModels.swift */,
+			);
+			path = Mesh;
 			sourceTree = "<group>";
 		};
 		G00000000000000000000008 /* ClipTests */ = {
@@ -597,21 +632,27 @@
 		L2G100000000000000000006 /* LiveShare */ = {
 			isa = PBXGroup;
 			children = (
-				V2F10000000000000000000A /* ApplicationLiveShareRoleGateTests.swift */,
+				S5F100000000000000000003 /* MeshParticipantMediaPoliciesTests.swift */,
+				S4F100000000000000000005 /* ServerCoordinatedMeshMediaRuntimeTests.swift */,
+				S4F100000000000000000006 /* ServerCoordinatedMeshParticipantCoordinatorTests.swift */,
+				S4F100000000000000000007 /* ServerCoordinatedMeshRoomSessionTests.swift */,
+				S4F100000000000000000008 /* ServerCoordinatedMeshThreeParticipantFlowTests.swift */,
 				L2F10000000000000000000B /* LiveShareAccessCodeTests.swift */,
-				L2F100000000000000000013 /* LiveShareCoordinatorPolicyTests.swift */,
+				X8F100000000000000000002 /* LiveShareCapturePolicyTests.swift */,
 				L2F10000000000000000000C /* LiveShareCursorPositionTests.swift */,
-				L2F10000000000000000000D /* LiveShareOverlayGeometryTests.swift */,
-				L2F10000000000000000000E /* LiveSharePresentationModelTests.swift */,
 				L2F10000000000000000000F /* LiveShareWindowCoordinateTests.swift */,
 				V1F100000000000000000002 /* NativeViewerResolutionPolicyTests.swift */,
 				V1F100000000000000000004 /* NativeViewerWindowStateTests.swift */,
 				V1F100000000000000000006 /* NativeViewerWindowControllerTests.swift */,
 				V1F100000000000000000009 /* NativeDeviceIdentityRepositoryTests.swift */,
-				V2F100000000000000000009 /* NativeFriendPresenceMonitorTests.swift */,
-				V1F10000000000000000000B /* NativeFriendRepositoryTests.swift */,
-				V2F100000000000000000007 /* NativeViewerPresentationModelTests.swift */,
-				V2F100000000000000000008 /* NativeViewerV1ControlStateTests.swift */,
+				F4F100000000000000000002 /* MeshFriendshipRepositoryTests.swift */,
+				F4F100000000000000000004 /* MeshFriendshipHandshakeControllerTests.swift */,
+				P6F100000000000000000002 /* MeshFriendPresenceControllerTests.swift */,
+				M5F100000000000000000003 /* NativeViewerCollaborationOverlayTests.swift */,
+				M5F100000000000000000005 /* LiveShareCollaborationVisibleRegionTests.swift */,
+				M3F100000000000000000002 /* RemoteParticipantPresentationTests.swift */,
+				M4F100000000000000000004 /* MeshRoomPresentationModelTests.swift */,
+				M8F100000000000000000002 /* MeshParticipantLocalPublicationControllerTests.swift */,
 			);
 			path = LiveShare;
 			sourceTree = "<group>";
@@ -831,31 +872,36 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				V2B100000000000000000001 /* NativeLiveShareViewerCoordinator.swift in Sources */,
-				V2B100000000000000000002 /* NativeViewerPopoverView.swift in Sources */,
-				V2B100000000000000000003 /* NativeViewerPresentationModel.swift in Sources */,
-				V2B100000000000000000004 /* NativeViewerPresentationModels.swift in Sources */,
-				V2B100000000000000000005 /* NativeViewerV1ControlState.swift in Sources */,
-				V2B100000000000000000006 /* NativeFriendPresenceMonitor.swift in Sources */,
+				S5B100000000000000000001 /* MeshParticipantMediaPolicies.swift in Sources */,
+				S5B100000000000000000002 /* MeshParticipantPresentationPolicies.swift in Sources */,
+				F4B100000000000000000003 /* MeshFriendshipHandshakeController.swift in Sources */,
+				S4B100000000000000000001 /* ServerCoordinatedMeshMediaRuntime.swift in Sources */,
+				S4B100000000000000000002 /* ServerCoordinatedMeshParticipantCoordinator.swift in Sources */,
+				S4B100000000000000000003 /* ServerCoordinatedMeshParticipantCoordinatorDependencies.swift in Sources */,
+				S4B100000000000000000004 /* ServerCoordinatedMeshRoomSession.swift in Sources */,
 				V1B100000000000000000001 /* NativeViewerResolutionPolicy.swift in Sources */,
 				V1B100000000000000000003 /* NativeViewerWindowState.swift in Sources */,
 				V1B100000000000000000005 /* NativeViewerWindowController.swift in Sources */,
 				V1B100000000000000000007 /* NativeViewerWindowCoordinator.swift in Sources */,
+				M5B100000000000000000001 /* NativeViewerCollaborationOverlay.swift in Sources */,
+				M3B100000000000000000001 /* RemoteParticipantPresentation.swift in Sources */,
+				M4B100000000000000000003 /* MeshRoomPopoverView.swift in Sources */,
+				M4B100000000000000000002 /* MeshRoomPresentationModel.swift in Sources */,
+				M4B100000000000000000001 /* MeshRoomPresentationModels.swift in Sources */,
+				M4B100000000000000000005 /* MeshMediaPresentationModels.swift in Sources */,
+				M6B100000000000000000002 /* MeshParticipantCapturePublisher.swift in Sources */,
+				M8B100000000000000000001 /* MeshParticipantLocalPublicationController.swift in Sources */,
+				H8B100000000000000000001 /* IsolatedNativeDeviceIdentityFileStorage.swift in Sources */,
 				V1B100000000000000000008 /* NativeDeviceIdentityRepository.swift in Sources */,
-				V1B10000000000000000000A /* NativeFriendRepository.swift in Sources */,
-				V1B10000000000000000000C /* NativeFriendModel.swift in Sources */,
+				F4B100000000000000000001 /* MeshFriendshipRepository.swift in Sources */,
+				P6B100000000000000000001 /* MeshFriendPresenceController.swift in Sources */,
 				L2B100000000000000000003 /* LiveShareAccessCode.swift in Sources */,
-				L2B100000000000000000012 /* LiveShareCoordinator.swift in Sources */,
-				L2B100000000000000000011 /* LiveShareCoordinatorPolicy.swift in Sources */,
+				X8B100000000000000000001 /* LiveShareCapturePolicy.swift in Sources */,
 				L2B100000000000000000001 /* LiveShareCursorPosition.swift in Sources */,
 				L2B100000000000000000002 /* LiveShareFocusedWindowMonitor.swift in Sources */,
 				L2B100000000000000000004 /* LiveShareSettingsRepository.swift in Sources */,
-				L2B100000000000000000005 /* LiveSharePopoverView.swift in Sources */,
-				L2B100000000000000000006 /* LiveSharePresentationModel.swift in Sources */,
-				L2B100000000000000000007 /* LiveSharePresentationModels.swift in Sources */,
-				L2B100000000000000000008 /* FocusedWindowShareOverlay.swift in Sources */,
-				L2B100000000000000000009 /* LiveShareOverlayGeometry.swift in Sources */,
-				L2B10000000000000000000A /* LiveShareStatusHUD.swift in Sources */,
+				M5B100000000000000000002 /* LiveShareCollaborationSourceOverlay.swift in Sources */,
+				M5B100000000000000000004 /* LiveShareCollaborationVisibleRegion.swift in Sources */,
 				U1B100000000000000000001 /* ApplicationUpdater.swift in Sources */,
 				B00000000000000000000001 /* ClipApp.swift in Sources */,
 				B00000000000000000000002 /* AppDelegate.swift in Sources */,
@@ -906,20 +952,26 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				V2B10000000000000000000A /* ApplicationLiveShareRoleGateTests.swift in Sources */,
-				V2B100000000000000000007 /* NativeViewerPresentationModelTests.swift in Sources */,
-				V2B100000000000000000008 /* NativeViewerV1ControlStateTests.swift in Sources */,
-				V2B100000000000000000009 /* NativeFriendPresenceMonitorTests.swift in Sources */,
+				S5B100000000000000000003 /* MeshParticipantMediaPoliciesTests.swift in Sources */,
+				S4B100000000000000000005 /* ServerCoordinatedMeshMediaRuntimeTests.swift in Sources */,
+				S4B100000000000000000006 /* ServerCoordinatedMeshParticipantCoordinatorTests.swift in Sources */,
+				S4B100000000000000000007 /* ServerCoordinatedMeshRoomSessionTests.swift in Sources */,
+				S4B100000000000000000008 /* ServerCoordinatedMeshThreeParticipantFlowTests.swift in Sources */,
 				V1B100000000000000000002 /* NativeViewerResolutionPolicyTests.swift in Sources */,
 				V1B100000000000000000004 /* NativeViewerWindowStateTests.swift in Sources */,
 				V1B100000000000000000006 /* NativeViewerWindowControllerTests.swift in Sources */,
+				M5B100000000000000000003 /* NativeViewerCollaborationOverlayTests.swift in Sources */,
+				M5B100000000000000000005 /* LiveShareCollaborationVisibleRegionTests.swift in Sources */,
+				M3B100000000000000000002 /* RemoteParticipantPresentationTests.swift in Sources */,
+				M4B100000000000000000004 /* MeshRoomPresentationModelTests.swift in Sources */,
+				M8B100000000000000000002 /* MeshParticipantLocalPublicationControllerTests.swift in Sources */,
 				V1B100000000000000000009 /* NativeDeviceIdentityRepositoryTests.swift in Sources */,
-				V1B10000000000000000000B /* NativeFriendRepositoryTests.swift in Sources */,
+				F4B100000000000000000002 /* MeshFriendshipRepositoryTests.swift in Sources */,
+				F4B100000000000000000004 /* MeshFriendshipHandshakeControllerTests.swift in Sources */,
+				P6B100000000000000000002 /* MeshFriendPresenceControllerTests.swift in Sources */,
 				L2B10000000000000000000B /* LiveShareAccessCodeTests.swift in Sources */,
-				L2B100000000000000000013 /* LiveShareCoordinatorPolicyTests.swift in Sources */,
+				X8B100000000000000000002 /* LiveShareCapturePolicyTests.swift in Sources */,
 				L2B10000000000000000000C /* LiveShareCursorPositionTests.swift in Sources */,
-				L2B10000000000000000000D /* LiveShareOverlayGeometryTests.swift in Sources */,
-				L2B10000000000000000000E /* LiveSharePresentationModelTests.swift in Sources */,
 				L2B10000000000000000000F /* LiveShareWindowCoordinateTests.swift in Sources */,
 				U1B100000000000000000003 /* ApplicationUpdateConfigurationTests.swift in Sources */,
 				B0000000000000000000000B /* ApplicationDirectoriesTests.swift in Sources */,

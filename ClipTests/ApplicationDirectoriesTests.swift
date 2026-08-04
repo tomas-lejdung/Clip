@@ -324,6 +324,264 @@ struct ApplicationDirectoriesTests {
         #expect(!configuration.isUITesting)
         #expect(!configuration.completesOnboarding)
         #expect(configuration.allowsSystemIntegrations)
+        #expect(configuration.meshAcceptanceRequest == .none)
+    }
+
+    @Test("Mesh acceptance requires every guard and isolates each run participant")
+    func meshAcceptanceIsGuardedAndParticipantIsolated() throws {
+        let temporaryDirectory = URL(fileURLWithPath: "/tmp/clip-launch-tests")
+        let arguments = meshAcceptanceArguments(
+            run: "mesh-acceptance-run-0001",
+            participant: "participant-a"
+        )
+        let isolationIdentifier = AppLaunchConfiguration.isolationIdentifier(
+            for: arguments
+        )
+        let configuration = AppLaunchConfiguration.resolve(
+            arguments: arguments,
+            temporaryDirectory: temporaryDirectory,
+            isolationIdentifier: isolationIdentifier
+        )
+        let participant = MeshAcceptanceParticipant(
+            runIdentifier: "mesh-acceptance-run-0001",
+            participantIdentifier: "participant-a"
+        )
+
+        #expect(configuration.mode == .meshAcceptance)
+        #expect(configuration.meshAcceptanceRequest == .participant(participant))
+        #expect(configuration.meshAcceptanceParticipantIdentifier == "participant-a")
+        #expect(
+            isolationIdentifier
+                == "mesh-acceptance-mesh-acceptance-run-0001-participant-a"
+        )
+        #expect(
+            configuration.isolatedStateRoot
+                == temporaryDirectory
+                    .appendingPathComponent("Clip-UI-Testing", isDirectory: true)
+                    .appendingPathComponent(isolationIdentifier, isDirectory: true)
+        )
+        #expect(configuration.completesOnboarding)
+        #expect(configuration.isUITesting)
+        #expect(!configuration.allowsSystemIntegrations)
+        #expect(!configuration.resetsIsolatedStateOnLaunch)
+        #expect(!configuration.launchesDeterministicUIScenario)
+        #expect(configuration.uiScenarioRequest == .none)
+        #expect(!configuration.meshAcceptanceUsesMenuBarPopover)
+    }
+
+    @Test("Mesh acceptance can opt into real menu-bar popovers without losing isolation")
+    func meshAcceptanceMenuBarPopoverIsGuarded() {
+        let temporaryDirectory = URL(fileURLWithPath: "/tmp/clip-launch-tests")
+        let valid = meshAcceptanceArguments(
+            run: "mesh-acceptance-run-0001",
+            participant: "participant-a"
+        ) + [AppLaunchConfiguration.meshAcceptanceMenuBarPopoverArgument]
+        let configuration = AppLaunchConfiguration.resolve(
+            arguments: valid,
+            temporaryDirectory: temporaryDirectory,
+            isolationIdentifier: AppLaunchConfiguration.isolationIdentifier(for: valid)
+        )
+
+        #expect(configuration.mode == .meshAcceptance)
+        #expect(configuration.meshAcceptanceUsesMenuBarPopover)
+        #expect(configuration.meshAcceptanceParticipantIdentifier == "participant-a")
+        #expect(configuration.isolatedStateRoot != nil)
+
+        for invalidArguments in [
+            [
+                "Clip",
+                AppLaunchConfiguration.uiTestingArgument,
+                AppLaunchConfiguration.meshAcceptanceMenuBarPopoverArgument,
+            ],
+            valid + [AppLaunchConfiguration.meshAcceptanceMenuBarPopoverArgument],
+        ] {
+            let invalid = AppLaunchConfiguration.resolve(
+                arguments: invalidArguments,
+                temporaryDirectory: temporaryDirectory,
+                isolationIdentifier: "invalid-menu-bar-popover"
+            )
+            #expect(invalid.meshAcceptanceRequest == .invalid)
+            #expect(!invalid.meshAcceptanceUsesMenuBarPopover)
+        }
+    }
+
+    @Test("Mesh acceptance can receive one validated test server endpoint")
+    func meshAcceptanceServerEndpointIsNarrowlyScoped() throws {
+        let temporaryDirectory = URL(fileURLWithPath: "/tmp/clip-launch-tests")
+        let endpointArgument =
+            "\(AppLaunchConfiguration.meshAcceptanceServerRootArgumentPrefix)http://127.0.0.1:18884"
+        let meshArguments = meshAcceptanceArguments(
+            run: "mesh-acceptance-run-0001",
+            participant: "participant-a"
+        ) + [endpointArgument]
+        let meshConfiguration = AppLaunchConfiguration.resolve(
+            arguments: meshArguments,
+            temporaryDirectory: temporaryDirectory,
+            isolationIdentifier: AppLaunchConfiguration.isolationIdentifier(
+                for: meshArguments
+            )
+        )
+
+        #expect(
+            meshConfiguration.meshAcceptanceServerEndpoint?.rootURL
+                == URL(string: "http://127.0.0.1:18884")
+        )
+
+        let duplicateEndpoint = AppLaunchConfiguration.resolve(
+            arguments: meshArguments + [endpointArgument],
+            temporaryDirectory: temporaryDirectory,
+            isolationIdentifier: "duplicate-endpoint"
+        )
+        #expect(duplicateEndpoint.meshAcceptanceServerEndpoint == nil)
+
+        let production = AppLaunchConfiguration.resolve(
+            arguments: ["Clip", endpointArgument],
+            temporaryDirectory: temporaryDirectory,
+            isolationIdentifier: "production"
+        )
+        #expect(production.meshAcceptanceServerEndpoint == nil)
+    }
+
+    @Test("Mesh acceptance flags fail closed when incomplete or ambiguous")
+    func meshAcceptanceRejectsInvalidLaunches() {
+        let temporaryDirectory = URL(fileURLWithPath: "/tmp/clip-launch-tests")
+        let valid = meshAcceptanceArguments(
+            run: "mesh-acceptance-run-0001",
+            participant: "participant-a"
+        )
+        let invalidArguments = [
+            Array(valid.dropLast()),
+            valid.filter {
+                $0 != AppLaunchConfiguration.meshAcceptanceAcknowledgementArgument
+            },
+            valid + [AppLaunchConfiguration.meshAcceptanceArgument],
+            valid + [
+                "\(AppLaunchConfiguration.meshAcceptanceParticipantArgumentPrefix)participant-b",
+            ],
+            valid + [
+                "\(AppLaunchConfiguration.meshAcceptanceRunArgumentPrefix)mesh-acceptance-run-0002",
+            ],
+            meshAcceptanceArguments(
+                run: "short",
+                participant: "participant-a"
+            ),
+            meshAcceptanceArguments(
+                run: "mesh-acceptance-run-0001",
+                participant: "-participant"
+            ),
+            meshAcceptanceArguments(
+                run: "mesh-acceptance-run-0001",
+                participant: "participant/escape"
+            ),
+            meshAcceptanceArguments(
+                run: "mesh-acceptance-run-0001",
+                participant: "participant_underscore"
+            ),
+            valid + [AppLaunchConfiguration.realCaptureAcceptanceArgument],
+        ]
+
+        for arguments in invalidArguments {
+            let configuration = AppLaunchConfiguration.resolve(
+                arguments: arguments,
+                temporaryDirectory: temporaryDirectory,
+                isolationIdentifier: AppLaunchConfiguration.isolationIdentifier(
+                    for: arguments
+                )
+            )
+            #expect(configuration.meshAcceptanceRequest == .invalid)
+            #expect(configuration.meshAcceptanceParticipantIdentifier == nil)
+        }
+
+        let flagsWithoutUIGuard = Array(valid.dropFirst(2))
+        let production = AppLaunchConfiguration.resolve(
+            arguments: ["Clip"] + flagsWithoutUIGuard,
+            temporaryDirectory: temporaryDirectory,
+            isolationIdentifier: "production"
+        )
+        #expect(production.mode == .standard)
+        #expect(production.meshAcceptanceRequest == .none)
+        #expect(production.isolatedStateRoot == nil)
+    }
+
+    @Test("Mesh acceptance runs never reuse another run or participant state")
+    func meshAcceptanceIsolationIncludesRunAndParticipant() {
+        let firstRunA = AppLaunchConfiguration.isolationIdentifier(
+            for: meshAcceptanceArguments(
+                run: "mesh-acceptance-run-0001",
+                participant: "participant-a"
+            )
+        )
+        let firstRunB = AppLaunchConfiguration.isolationIdentifier(
+            for: meshAcceptanceArguments(
+                run: "mesh-acceptance-run-0001",
+                participant: "participant-b"
+            )
+        )
+        let secondRunA = AppLaunchConfiguration.isolationIdentifier(
+            for: meshAcceptanceArguments(
+                run: "mesh-acceptance-run-0002",
+                participant: "participant-a"
+            )
+        )
+
+        #expect(firstRunA != firstRunB)
+        #expect(firstRunA != secondRunA)
+        #expect(firstRunB != secondRunA)
+    }
+
+    @Test("Mesh acceptance state persists while ordinary UI state resets")
+    func meshAcceptanceStatePersistenceIsNarrowlyScoped() throws {
+        let temporaryDirectory = URL(fileURLWithPath: "/tmp/clip-launch-tests")
+        let meshArguments = meshAcceptanceArguments(
+            run: "mesh-acceptance-run-0001",
+            participant: "participant-a"
+        )
+        let meshConfiguration = AppLaunchConfiguration.resolve(
+            arguments: meshArguments,
+            temporaryDirectory: temporaryDirectory,
+            isolationIdentifier: AppLaunchConfiguration.isolationIdentifier(
+                for: meshArguments
+            )
+        )
+        let meshSuite = try #require(meshConfiguration.defaultsSuiteName)
+        defer { UserDefaults.standard.removePersistentDomain(forName: meshSuite) }
+        let firstMeshDefaults = try meshConfiguration.makeUserDefaults()
+        firstMeshDefaults.set("persists", forKey: "mesh-acceptance-marker")
+        let secondMeshDefaults = try meshConfiguration.makeUserDefaults()
+        #expect(
+            secondMeshDefaults.string(forKey: "mesh-acceptance-marker")
+                == "persists"
+        )
+
+        let ordinaryArguments = [
+            "Clip",
+            AppLaunchConfiguration.uiTestingArgument,
+        ]
+        let ordinaryConfiguration = AppLaunchConfiguration.resolve(
+            arguments: ordinaryArguments,
+            temporaryDirectory: temporaryDirectory,
+            isolationIdentifier: "ordinary-ui"
+        )
+        let ordinarySuite = try #require(ordinaryConfiguration.defaultsSuiteName)
+        defer { UserDefaults.standard.removePersistentDomain(forName: ordinarySuite) }
+        let firstOrdinaryDefaults = try ordinaryConfiguration.makeUserDefaults()
+        firstOrdinaryDefaults.set("removed", forKey: "ordinary-marker")
+        let secondOrdinaryDefaults = try ordinaryConfiguration.makeUserDefaults()
+        #expect(secondOrdinaryDefaults.string(forKey: "ordinary-marker") == nil)
+    }
+
+    private func meshAcceptanceArguments(
+        run: String,
+        participant: String
+    ) -> [String] {
+        [
+            "Clip",
+            AppLaunchConfiguration.uiTestingArgument,
+            AppLaunchConfiguration.meshAcceptanceArgument,
+            AppLaunchConfiguration.meshAcceptanceAcknowledgementArgument,
+            "\(AppLaunchConfiguration.meshAcceptanceParticipantArgumentPrefix)\(participant)",
+            "\(AppLaunchConfiguration.meshAcceptanceRunArgumentPrefix)\(run)",
+        ]
     }
 
     @Test("Every deterministic UI scenario is guarded and receives its own isolated state")
@@ -712,11 +970,6 @@ struct ApplicationDirectoriesTests {
             applicationSupportDirectory: directories.applicationSupport
         )
         let liveShareIdentity = NativeDeviceIdentityRepository()
-        let nativeFriends = NativeFriendModel(
-            repository: try NativeFriendRepository(
-                applicationSupportDirectory: directories.applicationSupport
-            )
-        )
         let permissions = FakePermissionService()
         let audio = FakeAudioService()
         let pasteboard = FakePasteboardService()
@@ -742,7 +995,6 @@ struct ApplicationDirectoriesTests {
             settings: settings,
             liveSharePreferences: liveSharePreferences,
             liveShareIdentity: liveShareIdentity,
-            nativeFriends: nativeFriends,
             permissions: permissions,
             audio: audio,
             pasteboard: pasteboard,

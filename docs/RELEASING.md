@@ -109,6 +109,55 @@ Sparkle revision and checksum into an isolated, empty package cache, instead of
 trusting the ignored development cache. Preparation makes read-only public
 Git/tag/feed checks in bootstrap mode; it never changes GitHub.
 
+## Coordinate Native, server, and Web releases
+
+Live Share is a coordinated product even though normal Capture, Preview,
+History, and export are entirely local. The Native app speaks the clean-slate
+v4 room protocol. The Go server owns its authoritative opaque roster and embeds
+the matching receive-only Web viewer. There is no legacy Live Share protocol
+bridge, so a protocol-changing Native build must not be advertised against an
+incompatible server generation.
+
+For every Live Share protocol or Web viewer change:
+
+1. Run `./scripts/run-live-share-acceptance.sh` and the complete release gate
+   from one clean source commit.
+2. Publish an immutable server image from that exact commit without moving
+   `latest`:
+
+   ```bash
+   cd server
+   ./scripts/publish-docker.sh 1.4.0-server.N
+   ```
+
+3. Deploy the immutable image tag to a staging hostname. Do not deploy by a
+   mutable tag. Exercise the stable-signed Native build against it with the
+   acceptance launcher's `--server-root`, then complete Native + Native and
+   Native + Web smoke checks. Confirm the deployed image revision and viewer
+   assets come from the tested commit.
+4. Stage the Native DMG, release notes, checksum, and appcast from that same
+   commit. State in the notes when the matching server is required.
+5. Schedule the production cutover. The service is intentionally memory-only,
+   so replacing its process ends room signaling and can end active rooms; do
+   not describe the deployment as connection-preserving.
+6. Deploy the verified immutable server image, verify discovery, room creation,
+   the embedded Web viewer, reconnect, and health checks, then publish the
+   Native GitHub Release and appcast immediately afterward.
+7. Update `latest` only after the pinned production deployment is healthy. The
+   production workload should continue to reference the immutable version tag,
+   even if `latest` is maintained for convenient self-hosting.
+
+This ordering creates a short, explicit Live Share maintenance boundary for
+older clients. It never blocks or degrades Clip's local capture features. A
+zero-downtime incompatible protocol migration would require versioned parallel
+service endpoints and is not part of the current release system.
+
+App-only releases may skip the server cutover only when the release notes and
+diff confirm that the room protocol and embedded Web viewer are unchanged.
+Server/Web-only fixes must preserve the deployed v4 wire contract; otherwise
+they require the coordinated flow above. Self-hosters should pin the immutable
+server tag documented for their Native release and upgrade both sides together.
+
 ## Publish in a safe order
 
 Inspect the staged notes and manifest first. Then create a draft GitHub Release
@@ -201,3 +250,16 @@ It can only automate updates released after it.
   appcast, reuse a tag, or decrease `CURRENT_PROJECT_VERSION`.
 - Never regenerate the EdDSA key as a routine fix. Key rotation is a separate
   migration and must follow Sparkle's key-rotation documentation.
+- Before the Native appcast is published, a failed Live Share cutover may be
+  rolled back by redeploying the previous immutable server image and verifying
+  its health. Existing rooms were already ended by the restart and are not
+  recoverable.
+- After the new Native appcast is public and users may have updated, do not
+  restore an incompatible old server. Keep the matching v4 generation online
+  and publish a corrected immutable server image, or ship a Native hotfix with
+  a higher build number. Reverting the appcast does not downgrade installations
+  that already updated.
+- The Web viewer rolls back with its containing server image; never copy Web
+  assets independently into production. Record the Native tag, server image
+  digest, image revision label, and tested Git commit together in the release
+  evidence.

@@ -468,6 +468,179 @@ struct ClipPopoverActionRow<Trailing: View>: View {
     }
 }
 
+/// A card row with two independent actions: a wide primary action and a
+/// trailing menu. Both controls own their padding so their hover surfaces and
+/// hit targets extend to the row edges instead of leaving dead space around
+/// either label.
+struct ClipPopoverSplitMenuRow<PrimaryLabel: View, MenuContent: View>: View {
+    let isPrimaryEnabled: Bool
+    let primaryAccessibilityIdentifier: String?
+    let menuAccessibilityIdentifier: String?
+    let menuAccessibilityLabel: String
+    let menuHelp: String
+    let primaryAction: () -> Void
+    private let primaryLabel: PrimaryLabel
+    private let menuContent: MenuContent
+
+    init(
+        isPrimaryEnabled: Bool = true,
+        primaryAccessibilityIdentifier: String? = nil,
+        menuAccessibilityIdentifier: String? = nil,
+        menuAccessibilityLabel: String,
+        menuHelp: String,
+        primaryAction: @escaping () -> Void,
+        @ViewBuilder primaryLabel: () -> PrimaryLabel,
+        @ViewBuilder menuContent: () -> MenuContent
+    ) {
+        self.isPrimaryEnabled = isPrimaryEnabled
+        self.primaryAccessibilityIdentifier = primaryAccessibilityIdentifier
+        self.menuAccessibilityIdentifier = menuAccessibilityIdentifier
+        self.menuAccessibilityLabel = menuAccessibilityLabel
+        self.menuHelp = menuHelp
+        self.primaryAction = primaryAction
+        self.primaryLabel = primaryLabel()
+        self.menuContent = menuContent()
+    }
+
+    var body: some View {
+        ClipPopoverSplitMenuRowLayout {
+            Button(action: primaryAction) {
+                primaryLabel
+                    .padding(
+                        .horizontal,
+                        ClipPopoverDesign.rowHorizontalPadding
+                    )
+                    .frame(
+                        maxWidth: .infinity,
+                        maxHeight: .infinity,
+                        alignment: .leading
+                    )
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .disabled(!isPrimaryEnabled)
+            .modifier(
+                ClipPopoverHoverEffect(
+                    isInteractive:
+                        ClipPopoverSplitMenuRowInteractionPolicy
+                        .isPrimaryInteractive(isEnabled: isPrimaryEnabled)
+                )
+            )
+            .modifier(
+                ClipOptionalAccessibilityIdentifier(
+                    identifier: primaryAccessibilityIdentifier
+                )
+            )
+
+            Menu {
+                menuContent
+            } label: {
+                Image(systemName: "ellipsis")
+                    .frame(
+                        width: ClipPopoverSplitMenuRowDesign.iconSize,
+                        height: ClipPopoverSplitMenuRowDesign.iconSize
+                    )
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .contentShape(Rectangle())
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .modifier(
+                ClipPopoverHoverEffect(
+                    isInteractive:
+                        ClipPopoverSplitMenuRowInteractionPolicy
+                        .isMenuInteractive
+                )
+            )
+            .help(menuHelp)
+            .accessibilityLabel(menuAccessibilityLabel)
+            .modifier(
+                ClipOptionalAccessibilityIdentifier(
+                    identifier: menuAccessibilityIdentifier
+                )
+            )
+        }
+    }
+}
+
+enum ClipPopoverSplitMenuRowDesign {
+    static let rowHeight: CGFloat = 50
+    static let menuWidth: CGFloat = 44
+    static let iconSize: CGFloat = 28
+
+    static func segmentFrames(in bounds: CGRect) -> (
+        primary: CGRect,
+        menu: CGRect
+    ) {
+        let menuWidth = min(Self.menuWidth, max(0, bounds.width))
+        let primaryWidth = max(0, bounds.width - menuWidth)
+        return (
+            primary: CGRect(
+                x: bounds.minX,
+                y: bounds.minY,
+                width: primaryWidth,
+                height: bounds.height
+            ),
+            menu: CGRect(
+                x: bounds.maxX - menuWidth,
+                y: bounds.minY,
+                width: menuWidth,
+                height: bounds.height
+            )
+        )
+    }
+}
+
+enum ClipPopoverSplitMenuRowInteractionPolicy {
+    static func isPrimaryInteractive(isEnabled: Bool) -> Bool {
+        isEnabled
+    }
+
+    static let isMenuInteractive = true
+}
+
+private struct ClipPopoverSplitMenuRowLayout: Layout {
+    func sizeThatFits(
+        proposal: ProposedViewSize,
+        subviews: Subviews,
+        cache: inout ()
+    ) -> CGSize {
+        let primaryWidth = subviews.first?.sizeThatFits(
+            ProposedViewSize(
+                width: nil,
+                height: ClipPopoverSplitMenuRowDesign.rowHeight
+            )
+        ).width ?? 0
+        return CGSize(
+            width: proposal.width
+                ?? primaryWidth + ClipPopoverSplitMenuRowDesign.menuWidth,
+            height: ClipPopoverSplitMenuRowDesign.rowHeight
+        )
+    }
+
+    func placeSubviews(
+        in bounds: CGRect,
+        proposal: ProposedViewSize,
+        subviews: Subviews,
+        cache: inout ()
+    ) {
+        guard subviews.count == 2 else { return }
+        let frames = ClipPopoverSplitMenuRowDesign.segmentFrames(in: bounds)
+        subviews[0].place(
+            at: frames.primary.origin,
+            anchor: .topLeading,
+            proposal: ProposedViewSize(frames.primary.size)
+        )
+        subviews[1].place(
+            at: frames.menu.origin,
+            anchor: .topLeading,
+            proposal: ProposedViewSize(frames.menu.size)
+        )
+    }
+}
+
 extension ClipPopoverActionRow where Trailing == EmptyView {
     init(
         _ title: String,

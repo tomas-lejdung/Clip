@@ -7,7 +7,7 @@ import Testing
 struct NativeViewerWindowStateTests {
     @Test("Manual sources create independent windows")
     func manualSourcesCreateIndependentWindows() {
-        var registry = NativeViewerWindowRegistry(sessionID: "session")
+        var registry = NativeViewerWindowRegistry()
         let changes = registry.reconcile([
             source(instance: "one", stream: "video0", revision: 1),
             source(instance: "two", stream: "video1", revision: 1),
@@ -17,37 +17,35 @@ struct NativeViewerWindowStateTests {
         #expect(registry.windows.count == 2)
     }
 
-    @Test("Auto-share reuses one stable native window")
-    func automaticSourceReusesWindow() {
-        var registry = NativeViewerWindowRegistry(sessionID: "session")
+    @Test("Every published source keeps its own native window")
+    func autoSharedSourcesRemainIndependent() {
+        var registry = NativeViewerWindowRegistry()
         let first = source(
             instance: "arc-1",
             stream: "video0",
-            revision: 1,
-            mode: .followsFocusedWindow
+            revision: 1
         )
         let second = source(
             instance: "messages-2",
             stream: "video0",
-            revision: 2,
-            mode: .followsFocusedWindow
+            revision: 2
         )
 
         #expect(registry.reconcile([first]).count == 1)
-        let changes = registry.reconcile([second])
-        #expect(changes == [.update(.init(
-            id: .automatic(sessionID: "session"),
+        let changes = registry.reconcile([first, second])
+        #expect(changes == [.create(.init(
+            id: .source(instanceID: second.sourceInstanceID),
             source: second,
             isVisible: true
         ))])
-        #expect(registry.windows.count == 1)
+        #expect(registry.windows.count == 2)
     }
 
     @Test("Closing hides a live source and Show All restores it")
     func hiddenWindowsRemainReopenable() {
-        var registry = NativeViewerWindowRegistry(sessionID: "session")
+        var registry = NativeViewerWindowRegistry()
         _ = registry.reconcile([source(instance: "one", stream: "video0", revision: 1)])
-        let id = NativeViewerWindowID.manual(sourceInstanceID: "one")
+        let id = NativeViewerWindowID.source(instanceID: "one")
 
         #expect(registry.setVisible(false, for: id) == .visibility(id, isVisible: false))
         #expect(registry.visibleWindowCount == 0)
@@ -57,9 +55,9 @@ struct NativeViewerWindowStateTests {
 
     @Test("A hidden source stays hidden across remote metadata updates")
     func metadataDoesNotOverrideLocalVisibility() {
-        var registry = NativeViewerWindowRegistry(sessionID: "session")
+        var registry = NativeViewerWindowRegistry()
         _ = registry.reconcile([source(instance: "one", stream: "video0", revision: 1)])
-        let id = NativeViewerWindowID.manual(sourceInstanceID: "one")
+        let id = NativeViewerWindowID.source(instanceID: "one")
         _ = registry.setVisible(false, for: id)
 
         let updated = source(instance: "one", stream: "video0", revision: 2, title: "Renamed")
@@ -73,9 +71,9 @@ struct NativeViewerWindowStateTests {
 
     @Test("Host metadata cannot reset local sizing or fullscreen presentation")
     func metadataPreservesLocalPresentation() {
-        var registry = NativeViewerWindowRegistry(sessionID: "session")
+        var registry = NativeViewerWindowRegistry()
         _ = registry.reconcile([source(instance: "one", stream: "video0", revision: 1)])
-        let id = NativeViewerWindowID.manual(sourceInstanceID: "one")
+        let id = NativeViewerWindowID.source(instanceID: "one")
         registry.setScaleMode(.native, for: id)
         registry.setFullScreen(true, for: id)
 
@@ -93,32 +91,32 @@ struct NativeViewerWindowStateTests {
 
     @Test("New windows default to Follow without changing existing window modes")
     func newWindowsUseIndependentDefaultScaleMode() {
-        var registry = NativeViewerWindowRegistry(sessionID: "session")
+        var registry = NativeViewerWindowRegistry()
         let first = source(instance: "one", stream: "video0", revision: 1)
         let second = source(instance: "two", stream: "video1", revision: 1)
         _ = registry.reconcile([first])
         registry.setScaleMode(
             .native,
-            for: .manual(sourceInstanceID: first.sourceInstanceID)
+            for: .source(instanceID: first.sourceInstanceID)
         )
 
         _ = registry.reconcile([first, second])
 
         #expect(
-            registry.windows[.manual(sourceInstanceID: first.sourceInstanceID)]?
+            registry.windows[.source(instanceID: first.sourceInstanceID)]?
                 .scaleMode == .native
         )
         #expect(
-            registry.windows[.manual(sourceInstanceID: second.sourceInstanceID)]?
+            registry.windows[.source(instanceID: second.sourceInstanceID)]?
                 .scaleMode == .follow
         )
     }
 
     @Test("Removing a source closes its window")
     func removalClosesWindow() {
-        var registry = NativeViewerWindowRegistry(sessionID: "session")
+        var registry = NativeViewerWindowRegistry()
         _ = registry.reconcile([source(instance: "one", stream: "video0", revision: 1)])
-        let id = NativeViewerWindowID.manual(sourceInstanceID: "one")
+        let id = NativeViewerWindowID.source(instanceID: "one")
 
         #expect(registry.reconcile([]) == [.remove(id)])
         #expect(registry.windows.isEmpty)
@@ -126,21 +124,23 @@ struct NativeViewerWindowStateTests {
 
     @Test("Authoritative reconciliation restores connection after ICE recovery")
     func reconnectionRestoresConnectedPresentation() {
-        var registry = NativeViewerWindowRegistry(sessionID: "session")
+        var registry = NativeViewerWindowRegistry()
         let connected = source(instance: "one", stream: "video0", revision: 1)
         _ = registry.reconcile([connected])
-        let id = NativeViewerWindowID.manual(sourceInstanceID: "one")
+        let id = NativeViewerWindowID.source(instanceID: "one")
         _ = registry.setVisible(false, for: id)
+        registry.setScaleMode(.native, for: id)
+        registry.setFullScreen(true, for: id)
         let disconnected = NativeViewerSourceSnapshot(
             sourceInstanceID: connected.sourceInstanceID,
             streamID: connected.streamID,
             applicationName: connected.applicationName,
             windowName: connected.windowName,
             pixelSize: connected.pixelSize,
+            sourcePointSize: connected.sourcePointSize,
             isFocused: connected.isFocused,
             isConnected: false,
-            stateRevision: connected.stateRevision,
-            mode: connected.mode
+            stateRevision: connected.stateRevision
         )
         _ = registry.reconcile([disconnected])
 
@@ -148,10 +148,14 @@ struct NativeViewerWindowStateTests {
         #expect(registry.reconcile([connected]) == [.update(.init(
             id: id,
             source: connected,
-            isVisible: false
+            isVisible: false,
+            scaleMode: .native,
+            isFullScreen: true
         ))])
         #expect(registry.windows[id]?.source.isConnected == true)
         #expect(registry.windows[id]?.isVisible == false)
+        #expect(registry.windows[id]?.scaleMode == .native)
+        #expect(registry.windows[id]?.isFullScreen == true)
     }
 
     @Test("Cursor follows focus and clears the previously focused source")
@@ -211,8 +215,7 @@ struct NativeViewerWindowStateTests {
             sourcePointSize: secondFocused.sourcePointSize,
             isFocused: true,
             isConnected: false,
-            stateRevision: secondFocused.stateRevision,
-            mode: secondFocused.mode
+            stateRevision: secondFocused.stateRevision
         )
         #expect(NativeViewerCursorFocusPolicy.shouldClearCursor(
             streamID: "video1",
@@ -220,24 +223,30 @@ struct NativeViewerWindowStateTests {
         ))
     }
 
-    @Test("Stale duplicate auto-source state cannot replace a newer revision")
-    func latestAutomaticRevisionWins() {
-        var registry = NativeViewerWindowRegistry(sessionID: "session")
+    @Test("Auto-shared source identifiers never collide")
+    func autoSharedSourceIdentifiersNeverCollide() {
+        var registry = NativeViewerWindowRegistry()
         let newer = source(
             instance: "new",
             stream: "video0",
-            revision: 8,
-            mode: .followsFocusedWindow
+            revision: 8
         )
         let stale = source(
             instance: "stale",
             stream: "video0",
-            revision: 7,
-            mode: .followsFocusedWindow
+            revision: 7
         )
         _ = registry.reconcile([newer, stale])
 
-        #expect(registry.windows[.automatic(sessionID: "session")]?.source == newer)
+        #expect(
+            registry.windows[.source(instanceID: newer.sourceInstanceID)]?
+                .source == newer
+        )
+        #expect(
+            registry.windows[.source(instanceID: stale.sourceInstanceID)]?
+                .source == stale
+        )
+        #expect(registry.windows.count == 2)
     }
 
     @Test("Friend color is stable and focus only brightens it")
@@ -258,7 +267,6 @@ struct NativeViewerWindowStateTests {
         stream: String,
         revision: UInt64,
         title: String = "Document",
-        mode: NativeViewerSourceMode = .manual,
         focused: Bool = false
     ) -> NativeViewerSourceSnapshot {
         NativeViewerSourceSnapshot(
@@ -267,10 +275,10 @@ struct NativeViewerWindowStateTests {
             applicationName: "Fixture",
             windowName: title,
             pixelSize: CGSize(width: 1_280, height: 720),
+            sourcePointSize: CGSize(width: 1_280, height: 720),
             isFocused: focused,
             isConnected: true,
-            stateRevision: revision,
-            mode: mode
+            stateRevision: revision
         )
     }
 }

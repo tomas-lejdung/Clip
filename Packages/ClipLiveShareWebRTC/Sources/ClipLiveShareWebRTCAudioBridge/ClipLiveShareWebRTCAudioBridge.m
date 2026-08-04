@@ -6,6 +6,7 @@
 #import <WebRTC/RTCVideoEncoderFactory.h>
 
 #import <math.h>
+#import <stdatomic.h>
 #import <stdlib.h>
 #import <string.h>
 #import <time.h>
@@ -105,8 +106,72 @@ static uint64_t ClipAudioMonotonicNanoseconds(void) {
     return (uint64_t)time.tv_sec * NSEC_PER_SEC + (uint64_t)time.tv_nsec;
 }
 
+static void ClipAudioSilenceOutput(
+    AudioUnitRenderActionFlags *actionFlags,
+    AudioBufferList *outputData
+) {
+    if (actionFlags != NULL) {
+        *actionFlags |= kAudioUnitRenderAction_OutputIsSilence;
+    }
+    if (outputData == NULL) {
+        return;
+    }
+    for (UInt32 index = 0; index < outputData->mNumberBuffers; ++index) {
+        AudioBuffer *buffer = &outputData->mBuffers[index];
+        if (buffer->mData != NULL && buffer->mDataByteSize > 0) {
+            memset(buffer->mData, 0, buffer->mDataByteSize);
+        }
+    }
+}
+
+static uint64_t ClipAudioCountNonSilentFrames(
+    const AudioBufferList *outputData,
+    UInt32 requestedFrameCount
+) {
+    if (outputData == NULL || requestedFrameCount == 0) {
+        return 0;
+    }
+    uint64_t nonSilentFrames = 0;
+    for (UInt32 frame = 0; frame < requestedFrameCount; ++frame) {
+        BOOL frameIsNonSilent = NO;
+        for (UInt32 bufferIndex = 0;
+             bufferIndex < outputData->mNumberBuffers && !frameIsNonSilent;
+             ++bufferIndex) {
+            const AudioBuffer *buffer = &outputData->mBuffers[bufferIndex];
+            UInt32 channels = MAX(buffer->mNumberChannels, 1);
+            size_t bytesPerFrame = channels * sizeof(int16_t);
+            if (buffer->mData == NULL
+                || buffer->mDataByteSize < (frame + 1) * bytesPerFrame) {
+                continue;
+            }
+            const int16_t *samples = (const int16_t *)buffer->mData
+                + frame * channels;
+            for (UInt32 channel = 0; channel < channels; ++channel) {
+                if (samples[channel] != 0) {
+                    frameIsNonSilent = YES;
+                    break;
+                }
+            }
+        }
+        if (frameIsNonSilent) {
+            nonSilentFrames += 1;
+        }
+    }
+    return nonSilentFrames;
+}
+
+static OSStatus ClipAudioOutputRenderCallback(
+    void *context,
+    AudioUnitRenderActionFlags *actionFlags,
+    const AudioTimeStamp *timestamp,
+    UInt32 inputBusNumber,
+    UInt32 frameCount,
+    AudioBufferList *outputData
+);
+
 @interface ClipLiveShareWebRTCSystemAudioDevice () <RTCAudioDevice> {
     NSLock *_lock;
+    NSLock *_playoutLifecycleLock;
     id<RTCAudioDeviceDelegate> _delegate;
     int16_t *_ring;
     NSUInteger _ringReadFrame;
@@ -123,12 +188,28 @@ static uint64_t ClipAudioMonotonicNanoseconds(void) {
     BOOL _initialized;
     BOOL _playoutInitialized;
     BOOL _playing;
+    AudioUnit _outputUnit;
+    ClipRTCAudioDeviceGetPlayoutDataBlock _playoutDataBlock;
+    _Atomic(uint64_t) _playoutCallbackCount;
+    _Atomic(uint64_t) _renderedPlayoutFrameCount;
+    _Atomic(uint64_t) _nonSilentPlayoutFrameCount;
+    _Atomic(uint64_t) _playoutErrorCount;
     BOOL _recordingInitialized;
     BOOL _recording;
     NSThread *_recordingThread;
     dispatch_semaphore_t _recordingWakeup;
     dispatch_semaphore_t _recordingFinished;
 }
+- (void)disposePlayout;
+- (BOOL)initializePlayoutLocked;
+- (BOOL)stopPlayoutLocked;
+- (void)disposePlayoutLocked;
+- (OSStatus)renderPlayoutWithActionFlags:
+    (AudioUnitRenderActionFlags *)actionFlags
+    timestamp:(const AudioTimeStamp *)timestamp
+    inputBusNumber:(UInt32)inputBusNumber
+    frameCount:(UInt32)frameCount
+    outputData:(AudioBufferList *)outputData;
 @end
 
 @implementation ClipLiveShareWebRTCSystemAudioDevice
@@ -137,6 +218,7 @@ static uint64_t ClipAudioMonotonicNanoseconds(void) {
     self = [super init];
     if (self) {
         _lock = [[NSLock alloc] init];
+        _playoutLifecycleLock = [[NSLock alloc] init];
         _ring = calloc(
             ClipAudioRingCapacityFrames * ClipAudioChannelCount,
             sizeof(int16_t)
@@ -150,6 +232,7 @@ static uint64_t ClipAudioMonotonicNanoseconds(void) {
 
 - (void)dealloc {
     [self stopRecording];
+    [self disposePlayout];
     free(_ring);
 }
 
@@ -174,23 +257,26 @@ static uint64_t ClipAudioMonotonicNanoseconds(void) {
 }
 
 - (BOOL)initializeWithDelegate:(id<RTCAudioDeviceDelegate>)delegate {
+    [_playoutLifecycleLock lock];
     [_lock lock];
     _delegate = delegate;
     _initialized = YES;
     [_lock unlock];
+    [_playoutLifecycleLock unlock];
     return YES;
 }
 
 - (BOOL)terminateDevice {
+    [_playoutLifecycleLock lock];
     [self stopRecording];
+    [self disposePlayoutLocked];
     [_lock lock];
     _delegate = nil;
     _initialized = NO;
-    _playoutInitialized = NO;
-    _playing = NO;
     _recordingInitialized = NO;
     [self clearQueuedAudioLocked];
     [_lock unlock];
+    [_playoutLifecycleLock unlock];
     return YES;
 }
 
@@ -202,7 +288,101 @@ static uint64_t ClipAudioMonotonicNanoseconds(void) {
 }
 
 - (BOOL)initializePlayout {
+    [_playoutLifecycleLock lock];
+    BOOL result = [self initializePlayoutLocked];
+    [_playoutLifecycleLock unlock];
+    return result;
+}
+
+- (BOOL)initializePlayoutLocked {
     [_lock lock];
+    if (_playoutInitialized) {
+        [_lock unlock];
+        return YES;
+    }
+    if (!_initialized || _delegate == nil) {
+        [_lock unlock];
+        return NO;
+    }
+    // Cache WebRTC's mixer callback before entering the real-time render path.
+    // The AudioUnit is stopped synchronously before this block is released, so
+    // the render callback can use a non-retaining reference without an ObjC
+    // property lookup or allocation on the audio thread.
+    ClipRTCAudioDeviceGetPlayoutDataBlock playoutDataBlock =
+        [_delegate.getPlayoutData copy];
+    [_lock unlock];
+    if (playoutDataBlock == nil) {
+        atomic_fetch_add_explicit(
+            &_playoutErrorCount,
+            1,
+            memory_order_relaxed
+        );
+        return NO;
+    }
+
+    AudioComponentDescription description = {0};
+    description.componentType = kAudioUnitType_Output;
+    description.componentSubType = kAudioUnitSubType_DefaultOutput;
+    description.componentManufacturer = kAudioUnitManufacturer_Apple;
+    AudioComponent component = AudioComponentFindNext(NULL, &description);
+    AudioUnit outputUnit = NULL;
+    OSStatus status = component == NULL
+        ? kAudioUnitErr_FailedInitialization
+        : AudioComponentInstanceNew(component, &outputUnit);
+    if (status == noErr) {
+        AudioStreamBasicDescription format = {0};
+        format.mSampleRate = ClipAudioSampleRate;
+        format.mFormatID = kAudioFormatLinearPCM;
+        format.mFormatFlags =
+            kAudioFormatFlagIsSignedInteger | kAudioFormatFlagIsPacked;
+        format.mBytesPerPacket =
+            ClipAudioChannelCount * sizeof(int16_t);
+        format.mFramesPerPacket = 1;
+        format.mBytesPerFrame =
+            ClipAudioChannelCount * sizeof(int16_t);
+        format.mChannelsPerFrame = ClipAudioChannelCount;
+        format.mBitsPerChannel = 8 * sizeof(int16_t);
+        status = AudioUnitSetProperty(
+            outputUnit,
+            kAudioUnitProperty_StreamFormat,
+            kAudioUnitScope_Input,
+            0,
+            &format,
+            sizeof(format)
+        );
+    }
+    if (status == noErr) {
+        AURenderCallbackStruct callback = {
+            .inputProc = ClipAudioOutputRenderCallback,
+            .inputProcRefCon = (__bridge void *)self,
+        };
+        status = AudioUnitSetProperty(
+            outputUnit,
+            kAudioUnitProperty_SetRenderCallback,
+            kAudioUnitScope_Input,
+            0,
+            &callback,
+            sizeof(callback)
+        );
+    }
+    if (status == noErr) {
+        status = AudioUnitInitialize(outputUnit);
+    }
+    if (status != noErr) {
+        if (outputUnit != NULL) {
+            AudioUnitUninitialize(outputUnit);
+            AudioComponentInstanceDispose(outputUnit);
+        }
+        atomic_fetch_add_explicit(
+            &_playoutErrorCount,
+            1,
+            memory_order_relaxed
+        );
+        return NO;
+    }
+    [_lock lock];
+    _outputUnit = outputUnit;
+    _playoutDataBlock = playoutDataBlock;
     _playoutInitialized = YES;
     [_lock unlock];
     return YES;
@@ -216,18 +396,187 @@ static uint64_t ClipAudioMonotonicNanoseconds(void) {
 }
 
 - (BOOL)startPlayout {
+    [_playoutLifecycleLock lock];
+    if (![self initializePlayoutLocked]) {
+        [_playoutLifecycleLock unlock];
+        return NO;
+    }
     [_lock lock];
-    _playoutInitialized = YES;
-    _playing = YES;
+    if (_playing) {
+        [_lock unlock];
+        [_playoutLifecycleLock unlock];
+        return YES;
+    }
+    AudioUnit outputUnit = _outputUnit;
     [_lock unlock];
-    return YES;
+
+    // Starting can synchronously invoke the render callback. The dedicated
+    // lifecycle lock is intentionally never touched by that callback, so it
+    // can serialize external AudioUnit ownership without blocking audio I/O.
+    OSStatus status = AudioOutputUnitStart(outputUnit);
+    [_lock lock];
+    if (status == noErr) {
+        _playing = YES;
+    } else {
+        atomic_fetch_add_explicit(
+            &_playoutErrorCount,
+            1,
+            memory_order_relaxed
+        );
+    }
+    [_lock unlock];
+    [_playoutLifecycleLock unlock];
+    return status == noErr;
 }
 
 - (BOOL)stopPlayout {
+    [_playoutLifecycleLock lock];
+    BOOL result = [self stopPlayoutLocked];
+    [_playoutLifecycleLock unlock];
+    return result;
+}
+
+- (BOOL)stopPlayoutLocked {
     [_lock lock];
-    _playing = NO;
+    if (!_playing) {
+        [_lock unlock];
+        return YES;
+    }
+    AudioUnit outputUnit = _outputUnit;
     [_lock unlock];
-    return YES;
+    OSStatus status = outputUnit == NULL
+        ? noErr
+        : AudioOutputUnitStop(outputUnit);
+    if (status != noErr) {
+        atomic_fetch_add_explicit(
+            &_playoutErrorCount,
+            1,
+            memory_order_relaxed
+        );
+    }
+    [_lock lock];
+    _playing = status != noErr;
+    [_lock unlock];
+    return status == noErr;
+}
+
+- (void)disposePlayout {
+    [_playoutLifecycleLock lock];
+    [self disposePlayoutLocked];
+    [_playoutLifecycleLock unlock];
+}
+
+- (void)disposePlayoutLocked {
+    [self stopPlayoutLocked];
+    [_lock lock];
+    AudioUnit outputUnit = _outputUnit;
+    [_lock unlock];
+    if (outputUnit != NULL) {
+        OSStatus status = AudioUnitUninitialize(outputUnit);
+        if (status != noErr) {
+            atomic_fetch_add_explicit(
+                &_playoutErrorCount,
+                1,
+                memory_order_relaxed
+            );
+        }
+        status = AudioComponentInstanceDispose(outputUnit);
+        if (status != noErr) {
+            atomic_fetch_add_explicit(
+                &_playoutErrorCount,
+                1,
+                memory_order_relaxed
+            );
+        }
+    }
+    [_lock lock];
+    _outputUnit = NULL;
+    _playoutInitialized = NO;
+    _playing = NO;
+    _playoutDataBlock = nil;
+    [_lock unlock];
+}
+
+- (OSStatus)renderPlayoutWithActionFlags:
+    (AudioUnitRenderActionFlags *)actionFlags
+    timestamp:(const AudioTimeStamp *)timestamp
+    inputBusNumber:(UInt32)inputBusNumber
+    frameCount:(UInt32)frameCount
+    outputData:(AudioBufferList *)outputData {
+    atomic_fetch_add_explicit(
+        &_playoutCallbackCount,
+        1,
+        memory_order_relaxed
+    );
+    ClipRTCAudioDeviceGetPlayoutDataBlock __unsafe_unretained
+        getPlayoutData = _playoutDataBlock;
+    if (getPlayoutData == nil || outputData == NULL) {
+        ClipAudioSilenceOutput(actionFlags, outputData);
+        atomic_fetch_add_explicit(
+            &_playoutErrorCount,
+            1,
+            memory_order_relaxed
+        );
+        return noErr;
+    }
+    OSStatus status = getPlayoutData(
+        actionFlags,
+        timestamp,
+        inputBusNumber,
+        frameCount,
+        outputData
+    );
+    if (status != noErr) {
+        ClipAudioSilenceOutput(actionFlags, outputData);
+        atomic_fetch_add_explicit(
+            &_playoutErrorCount,
+            1,
+            memory_order_relaxed
+        );
+        // The output AudioUnit must keep running after a transient WebRTC
+        // mixer failure. Silence this buffer while preserving the original
+        // error in diagnostics.
+        return noErr;
+    }
+    atomic_fetch_add_explicit(
+        &_renderedPlayoutFrameCount,
+        frameCount,
+        memory_order_relaxed
+    );
+    atomic_fetch_add_explicit(
+        &_nonSilentPlayoutFrameCount,
+        ClipAudioCountNonSilentFrames(outputData, frameCount),
+        memory_order_relaxed
+    );
+    return noErr;
+}
+
+- (uint64_t)playoutCallbackCount {
+    return atomic_load_explicit(
+        &_playoutCallbackCount,
+        memory_order_relaxed
+    );
+}
+
+- (uint64_t)renderedPlayoutFrameCount {
+    return atomic_load_explicit(
+        &_renderedPlayoutFrameCount,
+        memory_order_relaxed
+    );
+}
+
+- (uint64_t)nonSilentPlayoutFrameCount {
+    return atomic_load_explicit(
+        &_nonSilentPlayoutFrameCount,
+        memory_order_relaxed
+    );
+}
+
+- (uint64_t)playoutErrorCount {
+    return atomic_load_explicit(
+        &_playoutErrorCount,
+        memory_order_relaxed
+    );
 }
 
 - (BOOL)isRecordingInitialized {
@@ -788,6 +1137,27 @@ static uint64_t ClipAudioMonotonicNanoseconds(void) {
 }
 
 @end
+
+static OSStatus ClipAudioOutputRenderCallback(
+    void *context,
+    AudioUnitRenderActionFlags *actionFlags,
+    const AudioTimeStamp *timestamp,
+    UInt32 inputBusNumber,
+    UInt32 frameCount,
+    AudioBufferList *outputData
+) {
+    __unsafe_unretained ClipLiveShareWebRTCSystemAudioDevice *device =
+        (__bridge ClipLiveShareWebRTCSystemAudioDevice *)context;
+    if (device == nil) {
+        ClipAudioSilenceOutput(actionFlags, outputData);
+        return noErr;
+    }
+    return [device renderPlayoutWithActionFlags:actionFlags
+                                     timestamp:timestamp
+                                inputBusNumber:inputBusNumber
+                                     frameCount:frameCount
+                                     outputData:outputData];
+}
 
 RTCPeerConnectionFactory *ClipLiveShareWebRTCCreatePeerConnectionFactory(
     id encoderFactory,
