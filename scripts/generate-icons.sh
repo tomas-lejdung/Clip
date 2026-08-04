@@ -3,6 +3,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 DESTINATION="$ROOT/Clip/Resources/Assets.xcassets/AppIcon.appiconset"
+SERVER_FAVICON="$ROOT/server/web/assets/clip-favicon.png"
 MASTER="${TMPDIR:-/tmp}/clip-app-icon-master.png"
 
 if ! command -v magick >/dev/null 2>&1; then
@@ -40,6 +41,10 @@ for size in 16 32 64 128 256 512 1024; do
     "$DESTINATION/ClipAppIcon-${size}.png"
 done
 
+# The Web viewer deliberately reuses the exact application icon bytes. Keep
+# this copy in the generator so app and server branding cannot drift.
+cp "$DESTINATION/ClipAppIcon-64.png" "$SERVER_FAVICON"
+
 rm -f "$MASTER"
 
-echo "Generated Clip app icon assets in $DESTINATION"
+echo "Generated Clip app icon assets in $DESTINATION and $SERVER_FAVICON"

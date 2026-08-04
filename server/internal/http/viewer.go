@@ -17,6 +17,7 @@ const (
 )
 
 var viewerAssets = map[string]string{
+	"clip-favicon.png":        "assets/clip-favicon.png",
 	"clip-viewer.js":          "assets/clip-viewer.js",
 	"clip-viewer.css":         "assets/clip-viewer.css",
 	"clip-room-crypto.js":     "assets/clip-room-crypto.js",
@@ -86,6 +87,9 @@ func (s *Service) viewerAsset(writer http.ResponseWriter, request *http.Request)
 func viewerAssetContentType(asset string) string {
 	if strings.HasSuffix(asset, ".css") {
 		return "text/css; charset=utf-8"
+	}
+	if strings.HasSuffix(asset, ".png") {
+		return "image/png"
 	}
 	return "text/javascript; charset=utf-8"
 }

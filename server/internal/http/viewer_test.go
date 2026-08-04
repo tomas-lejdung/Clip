@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -27,10 +28,15 @@ func TestViewerPageIsStaticNoStoreAndUsesIsolatedSecurityPolicy(t *testing.T) {
 		if readErr != nil {
 			t.Fatal(readErr)
 		}
+		faviconLink := []byte(
+			`rel="icon" type="image/png" sizes="64x64" ` +
+				`href="/assets/clip-favicon.png"`,
+		)
 		if response.StatusCode != http.StatusOK ||
 			response.Header.Get("Content-Type") != "text/html; charset=utf-8" ||
 			response.Header.Get("Cache-Control") != "no-store" ||
-			!bytes.Contains(body, []byte("clip-viewer.js")) {
+			!bytes.Contains(body, []byte("clip-viewer.js")) ||
+			!bytes.Contains(body, faviconLink) {
 			t.Fatalf("viewer response = %d, %#v, %d bytes", response.StatusCode, response.Header, len(body))
 		}
 		csp := response.Header.Get("Content-Security-Policy")
@@ -132,6 +138,10 @@ func TestViewerAssetsAreEmbeddedAllowlistedAndRevalidated(t *testing.T) {
 			if contentType != "text/css; charset=utf-8" {
 				t.Fatalf("CSS type = %q", contentType)
 			}
+		} else if strings.HasSuffix(asset, ".png") {
+			if contentType != "image/png" {
+				t.Fatalf("PNG type = %q", contentType)
+			}
 		} else if contentType != "text/javascript; charset=utf-8" {
 			t.Fatalf("JavaScript type = %q", contentType)
 		}
@@ -153,6 +163,25 @@ func TestViewerAssetsAreEmbeddedAllowlistedAndRevalidated(t *testing.T) {
 		if revalidated.StatusCode != http.StatusNotModified || len(revalidatedBody) != 0 {
 			t.Fatalf("asset %s revalidation = %d, %d bytes", asset, revalidated.StatusCode, len(revalidatedBody))
 		}
+	}
+}
+
+func TestViewerFaviconMatchesCheckedInAppIcon(t *testing.T) {
+	t.Parallel()
+	embedded, err := fs.ReadFile(viewerweb.Assets, viewerAssets["clip-favicon.png"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	appIconPath := filepath.Join(
+		"..", "..", "..", "Clip", "Resources", "Assets.xcassets",
+		"AppIcon.appiconset", "ClipAppIcon-64.png",
+	)
+	appIcon, err := os.ReadFile(appIconPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(embedded, appIcon) {
+		t.Fatal("embedded Web favicon differs from ClipAppIcon-64.png")
 	}
 }
 
