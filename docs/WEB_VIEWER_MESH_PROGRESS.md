@@ -73,6 +73,9 @@ administration.
   URLs, logs, analytics, or third parties.
 - [x] Implement waiting, approval, denial, full-room, reconnecting, room-ended,
   malformed, replay, and protocol-error states.
+- [x] Restore a replaced browser answerer with a targeted ICE restart for only
+  that canonical pair; a failed signaling write remains retryable instead of
+  leaving the recovery gate latched.
 - [x] Keep the encrypted declared profile, identities, SDP, media, and source
   metadata hidden from an honest server deployment. HTTP/WebSocket endpoints
   may reveal use of the Web surface, but the unmodified client never sends the
@@ -111,6 +114,13 @@ administration.
 - [x] Clicking a source selects it manually and turns Follow Off.
 - [x] Add explicit audio unlock, master mute/volume, and per-participant
   mute/volume.
+- [x] Restore the original low-latency receive policy: video stays at the live
+  edge while audio retains a small jitter reservoir.
+- [x] Provide browser-side diagnostics for P2P/TURN route, RTT, codec, decoded
+  dimensions, FPS, measured receive rate, packet loss, and connection state.
+- [x] Keep the top-left HUD compact (connection status plus room code), and
+  replace all viewer controls with a reliable Join Again terminal state after
+  explicit Leave.
 - [x] Hide publishing, friendship, collaboration, invite administration, room
   creation, approval, and removal controls.
 - [x] Handle 1–4 sources per native publisher and all twelve possible incoming
@@ -146,6 +156,9 @@ administration.
   other peer edge.
 - [x] Native-Native codec preference tests retain the pre-Web ladder while
   proving one negotiated codec and one encoder.
+- [x] Native and Web edges receive the same complete sender policy. Browser
+  SDP has one selected codec and no RID/simulcast layer; no Web-specific
+  bitrate division, scaling, fallback, or secondary representation exists.
 - [ ] Desktop Safari and Chromium acceptance passes; mobile and Firefox remain
   explicitly unsupported for web-v1. This manual gate must cover Native-default
   rendering, Focus/Row, Follow Off and per-publisher Follow, the source

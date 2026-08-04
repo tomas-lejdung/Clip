@@ -17,14 +17,16 @@ const (
 )
 
 var viewerAssets = map[string]string{
-	"clip-viewer.js":       "assets/clip-viewer.js",
-	"clip-viewer.css":      "assets/clip-viewer.css",
-	"clip-room-crypto.js":  "assets/clip-room-crypto.js",
-	"clip-room-session.js": "assets/clip-room-session.js",
-	"clip-mesh-peer.js":    "assets/clip-mesh-peer.js",
-	"clip-media-store.js":  "assets/clip-media-store.js",
-	"clip-serial-queue.js": "assets/clip-serial-queue.js",
-	"clip-viewer-state.js": "assets/clip-viewer-state.js",
+	"clip-viewer.js":          "assets/clip-viewer.js",
+	"clip-viewer.css":         "assets/clip-viewer.css",
+	"clip-room-crypto.js":     "assets/clip-room-crypto.js",
+	"clip-room-session.js":    "assets/clip-room-session.js",
+	"clip-mesh-peer.js":       "assets/clip-mesh-peer.js",
+	"clip-media-store.js":     "assets/clip-media-store.js",
+	"clip-serial-queue.js":    "assets/clip-serial-queue.js",
+	"clip-web-diagnostics.js": "assets/clip-web-diagnostics.js",
+	"clip-web-receiver.js":    "assets/clip-web-receiver.js",
+	"clip-viewer-state.js":    "assets/clip-viewer-state.js",
 }
 
 // viewerPage serves one byte-identical, trusted application shell for every

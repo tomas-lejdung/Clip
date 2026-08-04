@@ -51,3 +51,42 @@ test("HUD and window navigation preserve the old interaction cues", () => {
   assert.match(script, /reason === "cursor"\) scheduleMotionRender\(\)/u);
   assert.doesNotMatch(script, /reason === "cursor"\) scheduleLayoutRender\(\)/u);
 });
+
+test("Web diagnostics are reachable from the bottom HUD and hold HUD visibility while open", () => {
+  for (const identifier of [
+    "diagnostics-button", "diagnostics-panel", "diagnostics-copy",
+    "diagnostics-summary", "diagnostics-list",
+  ]) assert.match(html, new RegExp(`id="${identifier}"`, "u"));
+  assert.match(html, /id="diagnostics-button"[^>]*>Diagnostics</u);
+  assert.match(script, /new ClipWebDiagnosticsSampler\(\)/u);
+  assert.match(script, /!elements\.participants_panel\.hidden \|\| !elements\.diagnostics_panel\.hidden/u);
+  assert.match(script, /navigator\.clipboard\.writeText\(formatWebDiagnostics\(latestDiagnostics\)\)/u);
+  assert.match(stylesheet, /\.diagnostics-panel/u);
+});
+
+test("top-left HUD is a compact accessible room status without redundant branding", () => {
+  const topbar = html.match(/<header class="topbar hud">[\s\S]*?<\/header>/u)?.[0] ?? "";
+  assert.match(topbar, /id="room-heading"[^>]*data-state="joining"[^>]*aria-labelledby="room-status room-label"/u);
+  assert.match(topbar, /class="room-status-chip">\s*<span class="room-status-dot"/u);
+  assert.match(topbar, /id="room-status" role="status" aria-live="polite">Joining<\/span>/u);
+  assert.match(topbar, /id="room-label" class="room-code" aria-label="Room code">…<\/strong>/u);
+  assert.doesNotMatch(topbar, /Clip Live Share|Secure room|· WEB|brand-mark|room-heading-copy/u);
+  assert.match(script, /elements\.room_label\.textContent = session\.invite\.roomCode/u);
+  assert.doesNotMatch(script, /elements\.room_label\.textContent = `Room /u);
+  assert.match(script, /case "connected": setHeaderStatus\("Connected", "connected"\)/u);
+  assert.match(stylesheet, /\.room-status-chip, \.room-code[^}]*display:\s*flex/su);
+  assert.match(stylesheet, /\.room-heading\[data-state="connected"\] \.room-status-dot/u);
+  assert.match(stylesheet, /\.hud-hidden \.topbar/u);
+});
+
+test("leaving the room replaces dead viewer controls with terminal actions", () => {
+  assert.match(html, /id="top-actions" class="top-actions"/u);
+  assert.match(html, /id="controlbar" class="controlbar hud"/u);
+  assert.match(html, /id="terminal-actions" class="terminal-actions" hidden/u);
+  assert.match(html, /id="rejoin-button"[^>]*>Join Again<\/button>/u);
+  assert.doesNotMatch(html, /id="close-tab-button"/u);
+  assert.match(script, /setTerminalUI\(state === "left" \|\| state === "ended"\)/u);
+  assert.match(script, /elements\.top_actions\.hidden = isTerminal/u);
+  assert.match(script, /elements\.controlbar\.hidden = isTerminal/u);
+  assert.match(script, /elements\.rejoin_button\.addEventListener\("click", \(\) => window\.location\.reload\(\)\)/u);
+});

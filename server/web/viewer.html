@@ -10,11 +10,14 @@
   <body>
     <main id="app">
       <header class="topbar hud">
-        <div class="brand">
-          <span class="brand-mark" aria-hidden="true">●</span>
-          <div><strong>Clip Live Share</strong><span id="room-label">Secure room</span></div>
+        <div id="room-heading" class="room-heading" data-state="joining" aria-labelledby="room-status room-label">
+          <span class="room-status-chip">
+            <span class="room-status-dot" aria-hidden="true"></span>
+            <span id="room-status" role="status" aria-live="polite">Joining</span>
+          </span>
+          <strong id="room-label" class="room-code" aria-label="Room code">…</strong>
         </div>
-        <div class="top-actions">
+        <div id="top-actions" class="top-actions">
           <button id="audio-unlock" class="primary compact" type="button">Enable Audio</button>
           <button id="participants-button" class="icon-button" type="button" aria-label="Show participants" title="Participants">People <span id="participant-count">0</span></button>
           <button id="fullscreen-button" class="icon-button" type="button" aria-label="Enter fullscreen" title="Fullscreen">Fullscreen</button>
@@ -39,13 +42,16 @@
             <label for="access-word">Access Word</label>
             <div class="inline-form"><input id="access-word" autocomplete="off" spellcheck="false" maxlength="256" /><button class="primary" type="submit">Join</button></div>
           </form>
+          <div id="terminal-actions" class="terminal-actions" hidden>
+            <button id="rejoin-button" class="primary" type="button">Join Again</button>
+          </div>
         </div>
         <div id="unsupported" class="unsupported" hidden><strong id="unsupported-title">Unsupported Encoding</strong><span id="unsupported-message">This browser cannot decode a participant’s selected video codec. Room membership and compatible participant links continue normally.</span></div>
       </section>
 
       <div id="source-filmstrip" class="source-filmstrip hud" hidden aria-label="Shared windows"></div>
 
-      <nav class="controlbar hud" aria-label="Viewer controls">
+      <nav id="controlbar" class="controlbar hud" aria-label="Viewer controls">
         <div class="segmented" aria-label="Layout">
           <button type="button" data-layout="focus" class="active">Focus</button>
           <button type="button" data-layout="row">Row</button>
@@ -57,6 +63,7 @@
         </div>
         <label class="select-label">Follow <select id="follow-select"><option value="manual">Off · Manual</option></select></label>
         <div id="source-summary" class="source-summary">Waiting for a shared window</div>
+        <button id="diagnostics-button" type="button" class="icon-button" aria-label="Show diagnostics" title="Diagnostics">Diagnostics</button>
         <button id="master-mute" type="button" class="icon-button">Muted</button>
         <input id="master-volume" type="range" min="0" max="1" step="0.01" value="0.8" aria-label="Master volume" />
       </nav>
@@ -64,6 +71,19 @@
       <aside id="participants-panel" class="side-panel" hidden>
         <div class="panel-heading"><div><strong>Participants</strong><span>Direct peer-to-peer mesh</span></div><button id="participants-close" class="icon-button" aria-label="Close participants">Close</button></div>
         <div id="participants-list"></div>
+      </aside>
+
+      <aside id="diagnostics-panel" class="side-panel diagnostics-panel" hidden>
+        <div class="panel-heading">
+          <div><strong>Diagnostics</strong><span>Live browser and peer statistics</span></div>
+          <div class="panel-actions">
+            <button id="diagnostics-copy" class="icon-button" type="button">Copy</button>
+            <button id="diagnostics-close" class="icon-button" type="button" aria-label="Close diagnostics">Close</button>
+          </div>
+        </div>
+        <div id="diagnostics-summary" class="diagnostics-summary"></div>
+        <div id="diagnostics-list" class="diagnostics-list"></div>
+        <p class="diagnostics-note">Statistics come from this browser. Values that its WebRTC implementation does not expose are shown as unavailable.</p>
       </aside>
     </main>
     <script type="module" src="/assets/clip-viewer.js"></script>

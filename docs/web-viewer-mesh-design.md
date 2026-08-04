@@ -137,6 +137,12 @@ tab restores that identity and reconnect capability from tab-scoped browser
 storage. Explicit Leave deletes it. Opening the invite in another tab creates
 a distinct candidate and room member.
 
+When a restored browser is the canonical answerer, its replacement
+`RTCPeerConnection` requests an authenticated ICE restart from the permanent
+offerer. Ordinary renegotiation is insufficient because it can reuse the
+offerer's prior ICE credentials. This restart is pair-local and does not
+recreate or renegotiate any unaffected room edge.
+
 Browsers cannot set arbitrary WebSocket authorization headers. A same-origin
 POST exchanges a reconnect capability from an `Authorization` header for one
 short-lived, single-use opaque ticket. The browser presents that ticket in the
@@ -173,6 +179,24 @@ explicit Off state:
 System audio remains one track per publishing participant. The browser starts
 muted until an explicit user gesture unlocks playback, then provides a master
 mute/volume plus per-participant mute/volume.
+
+Video receivers request the live edge (`jitterBufferTarget = 0` and
+`playoutDelayHint = 0` where the browser exposes those optional hints), matching
+the original Web viewer's low-latency behavior. Audio retains a small jitter
+reservoir to avoid scheduler and network dropouts. Unsupported or read-only
+browser hints never fail an otherwise healthy peer link.
+
+The viewer's read-only Diagnostics page reports each direct connection's
+P2P/TURN route, RTT, ICE/control state, negotiated codec, decoded dimensions,
+FPS, measured receive rate, and packet loss. Missing browser statistics are
+reported as unavailable. Its copied report includes the room code but never
+the invite fragment or cryptographic capability.
+
+Explicit Leave is terminal for that tab session. Media controls, participant
+actions, and the Leave button are removed and replaced with a Join Again
+action. The terminal message also makes clear that the user may close the tab;
+the page does not expose a nonfunctional `window.close()` control that browsers
+normally reject for user-opened tabs.
 
 ## Compatibility boundary
 

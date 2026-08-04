@@ -1,4 +1,5 @@
 import { ClipWebRoomSession } from "./clip-room-session.js";
+import { ClipWebDiagnosticsSampler, formatWebDiagnostics } from "./clip-web-diagnostics.js";
 import {
   createAnimationFrameCoalescer,
   nativeManualPanGeometry,
@@ -10,11 +11,13 @@ import {
 } from "./clip-viewer-state.js";
 
 const elements = Object.fromEntries([
-  "room-label", "participant-count", "audio-unlock", "participants-button", "fullscreen-button", "leave-button",
+  "room-heading", "room-label", "room-status", "top-actions", "controlbar", "participant-count", "audio-unlock", "participants-button", "fullscreen-button", "leave-button",
   "stage", "focus-view", "focus-surface", "focus-video", "row-view", "source-filmstrip",
   "native-minimap", "native-minimap-image", "native-minimap-viewport", "empty-state", "state-title", "state-message",
   "access-form", "access-word", "unsupported", "follow-select", "source-summary", "master-mute", "master-volume",
   "participants-panel", "participants-close", "participants-list", "unsupported-title", "unsupported-message",
+  "diagnostics-button", "diagnostics-panel", "diagnostics-close", "diagnostics-copy", "diagnostics-summary", "diagnostics-list",
+  "terminal-actions", "rejoin-button",
 ].map((id) => [id.replaceAll("-", "_"), document.getElementById(id)]));
 
 let session = null;
@@ -27,9 +30,14 @@ const HUD_IDLE_MILLISECONDS = 3_000;
 const MANUAL_FOLLOW_VALUE = "manual";
 let hudTimeout = null;
 let minimapTimer = null;
+let diagnosticsTimer = null;
+let diagnosticsGeneration = 0;
+let diagnosticsRefreshPending = false;
+let latestDiagnostics = null;
 let panGesture = null;
 let revealHUD = () => {};
 let hadRenderableMedia = false;
+const diagnosticsSampler = new ClipWebDiagnosticsSampler();
 const scheduleMotionRender = createAnimationFrameCoalescer(() => {
   if (session && !session.closed && session.state === "connected") renderMotionPresentation();
 });
@@ -43,7 +51,7 @@ window.addEventListener("resize", handleViewportChange);
 async function start() {
   try {
     session = await ClipWebRoomSession.bootstrap(window.location.href, browserDisplayName());
-    elements.room_label.textContent = `Room ${session.invite.roomCode} · WEB`;
+    elements.room_label.textContent = session.invite.roomCode;
     session.addEventListener("state", (event) => renderRoomState(event.detail));
     session.addEventListener("roster", render);
     session.media.addEventListener("change", (event) => {
@@ -54,6 +62,7 @@ async function start() {
     bindControls();
     await session.connect();
   } catch (error) {
+    setHeaderStatus("Unavailable", "error");
     showState("Couldn’t Join Live Share", String(error?.message ?? error));
   }
 }
@@ -74,8 +83,13 @@ function bindControls() {
     const value = elements.follow_select.value;
     session.media.followParticipant(value === MANUAL_FOLLOW_VALUE ? null : value);
   });
-  elements.participants_button.addEventListener("click", () => { elements.participants_panel.hidden = false; });
-  elements.participants_close.addEventListener("click", () => { elements.participants_panel.hidden = true; });
+  elements.participants_button.addEventListener("click", () => {
+    closeDiagnostics(); elements.participants_panel.hidden = false; revealHUD();
+  });
+  elements.participants_close.addEventListener("click", () => { elements.participants_panel.hidden = true; revealHUD(); });
+  elements.diagnostics_button.addEventListener("click", openDiagnostics);
+  elements.diagnostics_close.addEventListener("click", closeDiagnostics);
+  elements.diagnostics_copy.addEventListener("click", () => void copyDiagnostics());
   elements.fullscreen_button.addEventListener("click", async () => {
     if (document.fullscreenElement) await document.exitFullscreen();
     else await document.documentElement.requestFullscreen();
@@ -85,6 +99,7 @@ function bindControls() {
     scheduleMotionRender();
   });
   elements.leave_button.addEventListener("click", () => session.close());
+  elements.rejoin_button.addEventListener("click", () => window.location.reload());
   elements.audio_unlock.addEventListener("click", () => {
     audioUnlocked = true; masterMuted = false; syncAudio();
   });
@@ -103,19 +118,39 @@ function bindControls() {
 }
 
 function renderRoomState({ state, message }) {
+  setTerminalUI(state === "left" || state === "ended");
   switch (state) {
-    case "connected": render(); break;
-    case "waiting": showState("Waiting for approval", message || "The room is checking this invite."); break;
-    case "access-word": showState("Access Word Required", message || "Enter the room Access Word.", true); break;
-    case "denied": showState("Request Denied", message || "The room owner denied this browser."); break;
-    case "full": showState("Room Is Full", message); break;
-    case "ended": showState("Live Share Ended", message); break;
-    case "left": showState("You left the room", message || "This browser is no longer connected."); break;
-    case "reconnecting": showState("Reconnecting…", message); break;
-    case "reconnect-failed": showState("Couldn’t Reconnect", message); break;
-    case "error": showState("Connection Issue", message); break;
-    default: showState("Joining Live Share…", message || "Preparing encrypted peer connections.");
+    case "connected": setHeaderStatus("Connected", "connected"); render(); break;
+    case "waiting": setHeaderStatus("Waiting", "waiting"); showState("Waiting for approval", message || "The room is checking this invite."); break;
+    case "access-word": setHeaderStatus("Access word required", "waiting"); showState("Access Word Required", message || "Enter the room Access Word.", true); break;
+    case "denied": setHeaderStatus("Denied", "error"); showState("Request Denied", message || "The room owner denied this browser."); break;
+    case "full": setHeaderStatus("Room full", "error"); showState("Room Is Full", message); break;
+    case "ended": setHeaderStatus("Ended", "error"); showState("Live Share Ended", message); break;
+    case "left": setHeaderStatus("Left", "waiting"); showState("You left the room", message || "This browser is no longer connected. Join again or close this tab when you are finished."); break;
+    case "reconnecting": setHeaderStatus("Reconnecting", "waiting"); showState("Reconnecting…", message); break;
+    case "reconnect-failed": setHeaderStatus("Reconnect failed", "error"); showState("Couldn’t Reconnect", message); break;
+    case "error": setHeaderStatus("Connection issue", "error"); showState("Connection Issue", message); break;
+    default: setHeaderStatus("Joining", "joining"); showState("Joining Live Share…", message || "Preparing encrypted peer connections.");
   }
+}
+
+function setTerminalUI(isTerminal) {
+  elements.top_actions.hidden = isTerminal;
+  elements.controlbar.hidden = isTerminal;
+  elements.terminal_actions.hidden = !isTerminal;
+  if (!isTerminal) return;
+  elements.participants_panel.hidden = true;
+  closeDiagnostics();
+  clearTimeout(hudTimeout);
+  document.body.classList.remove("hud-hidden");
+  elements.source_filmstrip.hidden = true;
+  elements.native_minimap.hidden = true;
+  elements.unsupported.hidden = true;
+}
+
+function setHeaderStatus(label, state) {
+  elements.room_status.textContent = label;
+  elements.room_heading.dataset.state = state;
 }
 
 function showState(title, message, accessWord = false) {
@@ -412,14 +447,14 @@ function bindHUDVisibility() {
     document.body.classList.remove("hud-hidden");
     clearTimeout(hudTimeout);
     hudTimeout = setTimeout(() => {
-      if (!elements.participants_panel.hidden) return;
+      if (!elements.participants_panel.hidden || !elements.diagnostics_panel.hidden) return;
       if (!elements.focus_video.srcObject && elements.row_view.hidden) return;
       document.body.classList.add("hud-hidden");
     }, HUD_IDLE_MILLISECONDS);
   };
   for (const eventName of ["pointermove", "pointerdown", "keydown"]) document.addEventListener(eventName, revealHUD, { passive: true });
   window.addEventListener("pagehide", () => {
-    clearTimeout(hudTimeout); clearInterval(minimapTimer); scheduleMotionRender.cancel();
+    clearTimeout(hudTimeout); clearInterval(minimapTimer); clearInterval(diagnosticsTimer); scheduleMotionRender.cancel();
     stageResizeObserver.disconnect(); window.removeEventListener("resize", handleViewportChange);
   }, { once: true });
   revealHUD();
@@ -543,4 +578,142 @@ function renderUnsupported() {
   if (!presentation) return;
   elements.unsupported_title.textContent = presentation.title;
   elements.unsupported_message.textContent = presentation.message;
+}
+
+function openDiagnostics() {
+  elements.participants_panel.hidden = true;
+  elements.diagnostics_panel.hidden = false;
+  revealHUD();
+  clearInterval(diagnosticsTimer);
+  void refreshDiagnostics();
+  diagnosticsTimer = setInterval(() => void refreshDiagnostics(), 1_000);
+}
+
+function closeDiagnostics() {
+  elements.diagnostics_panel.hidden = true;
+  clearInterval(diagnosticsTimer);
+  diagnosticsTimer = null;
+  diagnosticsGeneration += 1;
+  revealHUD();
+}
+
+async function refreshDiagnostics() {
+  if (!session || session.closed || elements.diagnostics_panel.hidden || diagnosticsRefreshPending) return;
+  const generation = diagnosticsGeneration;
+  diagnosticsRefreshPending = true;
+  let snapshot;
+  try {
+    snapshot = await diagnosticsSampler.sample(session);
+  } finally {
+    diagnosticsRefreshPending = false;
+  }
+  if (generation !== diagnosticsGeneration || elements.diagnostics_panel.hidden) return;
+  latestDiagnostics = snapshot;
+  renderDiagnostics(snapshot);
+}
+
+function renderDiagnostics(snapshot) {
+  elements.diagnostics_summary.replaceChildren(
+    diagnosticMetric("Room", snapshot.roomCode),
+    diagnosticMetric("Participants", snapshot.participantCount),
+    diagnosticMetric("Direct Links", snapshot.directLinkCount),
+    diagnosticMetric("Visible Sources", snapshot.activeSources),
+  );
+  if (snapshot.peers.length === 0) {
+    const empty = document.createElement("p");
+    empty.className = "diagnostics-empty";
+    empty.textContent = "No remote peer connections yet.";
+    elements.diagnostics_list.replaceChildren(empty);
+    return;
+  }
+  elements.diagnostics_list.replaceChildren(...snapshot.peers.map(diagnosticPeerCard));
+}
+
+function diagnosticMetric(label, value) {
+  const metric = document.createElement("div");
+  const strong = document.createElement("strong"); strong.textContent = String(value);
+  const span = document.createElement("span"); span.textContent = label;
+  metric.append(strong, span);
+  return metric;
+}
+
+function diagnosticPeerCard(peer) {
+  const card = document.createElement("article");
+  card.className = "diagnostics-peer";
+  const heading = document.createElement("div"); heading.className = "diagnostics-peer-heading";
+  const identity = document.createElement("div"); identity.className = "diagnostics-peer-name";
+  const name = document.createElement("strong"); name.textContent = peer.displayName;
+  const state = document.createElement("span"); state.textContent = peer.connectionState;
+  identity.append(name, state);
+  const badge = document.createElement("span"); badge.className = "badge"; badge.textContent = peer.clientKind;
+  heading.append(identity, badge);
+
+  const facts = document.createElement("dl"); facts.className = "diagnostics-facts";
+  diagnosticFact(facts, "Route", [peer.route.label, peer.route.detail].filter(Boolean).join(" · "));
+  diagnosticFact(facts, "RTT", diagnosticValue(peer.roundTripTimeMs, "ms"));
+  diagnosticFact(facts, "ICE", peer.iceState);
+  diagnosticFact(facts, "Control", peer.controlState);
+  card.append(heading, facts);
+
+  if (peer.error) {
+    const error = document.createElement("p"); error.className = "diagnostics-error";
+    error.textContent = peer.error; card.append(error);
+  }
+  const tracks = document.createElement("div"); tracks.className = "diagnostics-tracks";
+  if (peer.tracks.length === 0) {
+    const unavailable = document.createElement("p"); unavailable.textContent = "No incoming media statistics reported.";
+    tracks.append(unavailable);
+  } else {
+    tracks.append(...peer.tracks.map(diagnosticTrack));
+  }
+  card.append(tracks);
+  return card;
+}
+
+function diagnosticFact(list, label, value) {
+  const term = document.createElement("dt"); term.textContent = label;
+  const description = document.createElement("dd"); description.textContent = value || "Unavailable";
+  list.append(term, description);
+}
+
+function diagnosticTrack(track) {
+  const row = document.createElement("section"); row.className = "diagnostics-track";
+  const heading = document.createElement("div"); heading.className = "diagnostics-track-heading";
+  const name = document.createElement("strong"); name.textContent = track.label;
+  const codec = document.createElement("span"); codec.textContent = track.codec ?? "Codec unavailable";
+  heading.append(name, codec);
+  const metrics = document.createElement("div"); metrics.className = "diagnostics-track-metrics";
+  metrics.append(
+    diagnosticTrackMetric("Resolution", track.width && track.height ? `${track.width}×${track.height}` : "Unavailable"),
+    diagnosticTrackMetric("FPS", track.fps ?? "Unavailable"),
+    diagnosticTrackMetric("Rate", diagnosticValue(track.bitrateKbps, "kbps")),
+    diagnosticTrackMetric("Lost", track.packetsLost ?? "Unavailable"),
+  );
+  row.append(heading, metrics);
+  return row;
+}
+
+function diagnosticTrackMetric(label, value) {
+  const metric = document.createElement("span");
+  const strong = document.createElement("strong"); strong.textContent = String(value);
+  const small = document.createElement("small"); small.textContent = label;
+  metric.append(strong, small);
+  return metric;
+}
+
+function diagnosticValue(value, unit) {
+  return typeof value === "number" && Number.isFinite(value) ? `${value} ${unit}` : "Unavailable";
+}
+
+async function copyDiagnostics() {
+  if (!latestDiagnostics) await refreshDiagnostics();
+  if (!latestDiagnostics) return;
+  const original = elements.diagnostics_copy.textContent;
+  try {
+    await navigator.clipboard.writeText(formatWebDiagnostics(latestDiagnostics));
+    elements.diagnostics_copy.textContent = "Copied";
+  } catch {
+    elements.diagnostics_copy.textContent = "Copy Failed";
+  }
+  setTimeout(() => { elements.diagnostics_copy.textContent = original; }, 1_500);
 }

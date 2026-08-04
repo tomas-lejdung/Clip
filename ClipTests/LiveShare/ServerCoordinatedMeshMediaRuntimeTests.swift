@@ -105,6 +105,38 @@ struct ServerCoordinatedMeshMediaRuntimeTests {
         await session.runtime.close()
     }
 
+    @Test("remote replacement peer restarts ICE on only its canonical pair")
+    func remoteReplacementPeerRestartIsTargeted() async throws {
+        let fixture = try ServerMeshRuntimeFixture()
+        let session = fixture.makeRuntime()
+        let roster = try fixture.roster(revision: 1, memberCount: 3)
+        try await session.runtime.start(roster: roster)
+        let peerB = fixture.nodes[1].participantID
+        let peerC = fixture.nodes[2].participantID
+        let pairB = try #require(roster.pairsByParticipant[peerB])
+        let transportB = try #require(
+            await session.factory.transport(for: peerB)
+        )
+        let transportC = try #require(
+            await session.factory.transport(for: peerC)
+        )
+
+        // A browser answerer that restored its tab owns a replacement peer
+        // connection. Its authenticated ICE-restart request must gather a new
+        // candidate generation on the permanent offerer without disturbing C.
+        try await session.runtime.receiveAuthenticatedPairSignal(.init(
+            pairID: pairB.pairID,
+            senderHandle: fixture.nodes[1].handle,
+            sequence: 1,
+            payload: .iceRestart(epoch: pairB.epoch)
+        ))
+
+        #expect(await transportB.restartCount() == 1)
+        #expect(await transportC.restartCount() == 0)
+        #expect(try await session.runtime.snapshot().links.links.count == 2)
+        await session.runtime.close()
+    }
+
     @Test("offerer codec change initiates exactly one canonical negotiation")
     func offererCodecChangeNegotiatesOnce() async throws {
         let fixture = try ServerMeshRuntimeFixture()

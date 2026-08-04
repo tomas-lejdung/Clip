@@ -865,6 +865,63 @@ struct ClipLiveShareNativeV3MeshPeerLinkManagerTests {
     await manager.close()
   }
 
+  @Test("native and Web links receive the same complete sender policy")
+  func webAndNativeSenderPoliciesStayIdentical() async throws {
+    let local = try meshParticipant(0x10)
+    let nativePeer = try meshParticipant(0x20)
+    let webPeer = try meshParticipant(0x30)
+    let factory = MeshFakeTransportFactory()
+    let manager = ClipLiveShareNativeV3MeshPeerLinkManager(
+      localParticipantID: local,
+      transportFactory: factory
+    )
+    await manager.setVideoCodecNegotiationPolicies([
+      nativePeer: .nativeCompatible,
+      webPeer: .exact,
+    ])
+    try await manager.reconcileParticipants([local, nativePeer, webPeer])
+
+    let nativeTransport = try #require(
+      await factory.transport(for: nativePeer)
+    )
+    let webTransport = try #require(await factory.transport(for: webPeer))
+    #expect(
+      nativeTransport.configuration.videoCodecNegotiationPolicy
+        == .nativeCompatible
+    )
+    #expect(webTransport.configuration.videoCodecNegotiationPolicy == .exact)
+
+    let fallback = WebRTCSenderPolicy(
+      maximumBitrateBps: 20_000_000,
+      minimumBitrateBps: 4_000_000,
+      maximumFramesPerSecond: 60,
+      degradationStrategy: .resolution,
+      temporalLayerCount: 2,
+      resolutionScale: 1,
+      bitratePriority: 3
+    )
+    await manager.updateSenderPolicies(
+      [
+        0: WebRTCSenderPolicy(
+          maximumBitrateBps: 1_000_000,
+          maximumFramesPerSecond: 15,
+          resolutionScale: 2
+        )
+      ],
+      fallback: fallback,
+      videoEncodingMode: .quality
+    )
+
+    let expected = MeshSenderPolicyUpdate(
+      policiesBySlot: [:],
+      fallback: fallback,
+      videoEncodingMode: nil
+    )
+    #expect(await nativeTransport.senderPolicyUpdates() == [expected])
+    #expect(await webTransport.senderPolicyUpdates() == [expected])
+    await manager.close()
+  }
+
   @Test("creator-certified Web peers keep exact codec policy per link")
   func profileAwareCodecPolicyIsRetainedByRecreatedLinks() async throws {
     let local = try meshParticipant(0x10)

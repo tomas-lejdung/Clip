@@ -751,6 +751,44 @@ test("same-revision roster recovery recreates only interrupted peer edges", asyn
   assert.equal(newStarted, 1);
 });
 
+test("browser room rejoin restores its handle and rebuilds the interrupted direct edge", async () => {
+  const room = new ClipWebRoomSession({
+    invite: { sessionId: "room" },
+    identity: {},
+    iceServers: [],
+  });
+  room.localHandle = "web";
+  room.reconnectCapability = "capability";
+  room.state = "connected";
+  room.members = new Map([
+    ["web", { handle: "web", connected: true, descriptor: { participantID: "web-id" } }],
+    ["native", { handle: "native", connected: true, descriptor: { participantID: "native-id" } }],
+  ]);
+  let closed = 0;
+  room.peers.set("native", {
+    needsRecreationAfterSignalingReconnect: () => true,
+    close() { closed += 1; },
+  });
+  let started = 0;
+  room.createPeer = async () => ({
+    remoteParticipantID: "native-id",
+    needsRecreationAfterSignalingReconnect: () => false,
+    async start() { started += 1; },
+    close() {},
+  });
+  room.obtainReconnectTicket = async () => "reconnect-ticket-1234567890";
+  let protocols = null;
+  room.openSocket = async (value) => { protocols = value; };
+
+  await room.connect();
+  assert.equal(room.signalingRecoveryRequired, true);
+  assert.deepEqual(protocols, ["clip-native-room-v4", "reconnect.reconnect-ticket-1234567890"]);
+  await room.recoverInterruptedPeerEdges();
+  assert.equal(closed, 1);
+  assert.equal(started, 1);
+  assert.equal(room.peers.size, 1);
+});
+
 test("roster topology maintains one peer per remote member across A+B+Web and A+B+C+Web", async () => {
   const room = new ClipWebRoomSession({ invite: { sessionId: "room" }, identity: {}, iceServers: [] });
   room.localHandle = "web";
@@ -1024,7 +1062,7 @@ test("concurrent peer signals serialize encryption, send, decrypt, and handling"
   }
 });
 
-test("answerer requests one same-epoch renegotiation when its edge fails", async () => {
+test("answerer requests one same-epoch ICE restart when its edge fails", async () => {
   const prior = globalThis.RTCPeerConnection;
   class FakePeerConnection {
     constructor() { this.signalingState = "stable"; this.connectionState = "new"; this.listeners = new Map(); }
@@ -1045,7 +1083,86 @@ test("answerer requests one same-epoch renegotiation when its edge fails", async
     peer.connection.listeners.get("connectionstatechange")();
     peer.connection.listeners.get("connectionstatechange")();
     await peer.outboundSignalQueue.tail;
-    assert.deepEqual(sent, [{ type: "renegotiation-request", epoch: 1 }]);
+    assert.deepEqual(sent, [{ type: "ice-restart", epoch: 1 }]);
+  } finally {
+    globalThis.RTCPeerConnection = prior;
+  }
+});
+
+test("restored answerer requests fresh ICE before waiting for its canonical offerer", async () => {
+  const prior = globalThis.RTCPeerConnection;
+  class FakePeerConnection {
+    constructor() { this.signalingState = "stable"; this.connectionState = "new"; }
+    addEventListener() {}
+    close() {}
+  }
+  globalThis.RTCPeerConnection = FakePeerConnection;
+  try {
+    const sent = [];
+    const peer = new ClipWebMeshPeer({
+      context: { localHandle: "B", remoteHandle: "A", initialOfferer: "A" },
+      remoteMember: { descriptor: { participantID: "native" } },
+      pairChannel: {
+        inboundSequence: 7,
+        outboundSequence: 9,
+        async seal(payload) {
+          this.outboundSequence += 1;
+          return { payload, sequence: this.outboundSequence };
+        },
+      },
+      iceServers: [],
+      mediaStore: { setPeerState() {}, clearRemoteMedia() {} },
+      sendSignal: async (envelope) => sent.push(envelope),
+      localParticipantID: "web",
+      sessionId: "room",
+      initialState: { inbound: 7, outbound: 9, epoch: 1, sourceRevision: 3 },
+    });
+    await peer.start();
+    assert.equal(peer.resumed, true);
+    assert.deepEqual(sent.map((envelope) => envelope.payload), [
+      { type: "ice-restart", epoch: 1 },
+    ]);
+    assert.equal(sent[0].sequence, 10);
+  } finally {
+    globalThis.RTCPeerConnection = prior;
+  }
+});
+
+test("failed answerer ICE restart write is retryable after signaling resumes", async () => {
+  const prior = globalThis.RTCPeerConnection;
+  class FakePeerConnection {
+    constructor() { this.signalingState = "stable"; this.connectionState = "new"; }
+    addEventListener() {}
+    close() {}
+  }
+  globalThis.RTCPeerConnection = FakePeerConnection;
+  try {
+    let writes = 0;
+    const peer = new ClipWebMeshPeer({
+      context: { localHandle: "B", remoteHandle: "A", initialOfferer: "A" },
+      remoteMember: { descriptor: { participantID: "native" } },
+      pairChannel: {
+        inboundSequence: 0,
+        outboundSequence: 0,
+        async seal(payload) {
+          this.outboundSequence += 1;
+          return { payload, sequence: this.outboundSequence };
+        },
+      },
+      iceServers: [],
+      mediaStore: { setPeerState() {}, clearRemoteMedia() {} },
+      sendSignal: async () => {
+        writes += 1;
+        if (writes === 1) throw new Error("room socket interrupted");
+      },
+      localParticipantID: "web",
+      sessionId: "room",
+    });
+    await assert.rejects(peer.requestPeerICERestart(), /socket interrupted/u);
+    assert.equal(peer.recoveryRequested, false);
+    await peer.requestPeerICERestart();
+    assert.equal(writes, 2);
+    assert.equal(peer.recoveryRequested, true);
   } finally {
     globalThis.RTCPeerConnection = prior;
   }

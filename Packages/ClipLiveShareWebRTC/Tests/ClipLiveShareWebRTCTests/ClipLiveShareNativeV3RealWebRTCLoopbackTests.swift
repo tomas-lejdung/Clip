@@ -763,6 +763,8 @@ extension NativeMediaResourceTests {
           #expect(sections["audio"] == 1)
           #expect(sections["application"] == 1)
           #expect(nativeV3NamedVideoCodecs(in: description.sdp) == ["VP8"])
+          #expect(!description.sdp.contains("a=simulcast:"))
+          #expect(!description.sdp.contains("a=rid:"))
         }
         let browserDirections = nativeV3MediaDirections(
           in: browserLocal.sdp

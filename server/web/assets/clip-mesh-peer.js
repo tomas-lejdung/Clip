@@ -1,5 +1,6 @@
 import { emptyWebSourceSnapshot, validateSourceSnapshot } from "./clip-viewer-state.js";
 import { ClipSerialQueue } from "./clip-serial-queue.js";
+import { configureWebReceiverLatency } from "./clip-web-receiver.js";
 
 const CONTROL_LABEL = "clip-native-control-v3";
 const MAX_CONTROL_BYTES = 196400;
@@ -72,7 +73,7 @@ export class ClipWebMeshPeer extends EventTarget {
       if (state === "connected") this.recoveryRequested = false;
       if (state === "failed") {
         if (this.isOfferer) void this.restartICE().catch(() => {});
-        else void this.requestRenegotiation().catch(() => {});
+        else void this.requestPeerICERestart().catch(() => {});
       }
     });
     pc.addEventListener("track", (event) => {
@@ -83,11 +84,9 @@ export class ClipWebMeshPeer extends EventTarget {
         return;
       }
       const advertisedTrackID = this.remoteTrackIDsByMID.get(event.transceiver?.mid) ?? event.track.id;
+      configureWebReceiverLatency(event.receiver, event.track.kind);
       if (event.track.kind === "video") this.mediaStore.setVideoTrack(this.remoteParticipantID, event.track, advertisedTrackID);
       if (event.track.kind === "audio") {
-        if ("jitterBufferTarget" in event.receiver) {
-          try { event.receiver.jitterBufferTarget = 60; } catch { /* Optional browser hint. */ }
-        }
         this.mediaStore.setAudioTrack(this.remoteParticipantID, event.track);
       }
     });
@@ -107,7 +106,13 @@ export class ClipWebMeshPeer extends EventTarget {
   async start() {
     this.mediaStore.setPeerState(this.remoteParticipantID, "connecting");
     if (!this.isOfferer) {
-      if (this.resumed) await this.signal({ type: "renegotiation-request", epoch: this.epoch });
+      // A restored answerer owns a new RTCPeerConnection while the canonical
+      // offerer can still own the prior connection's ICE credentials. A plain
+      // renegotiation would reuse those credentials and can never attach the
+      // offerer's old transport to this replacement peer. Ask the permanent
+      // offerer to restart ICE explicitly; this preserves deterministic offer
+      // ownership while gathering a fresh candidate generation on both ends.
+      if (this.resumed) await this.requestPeerICERestart();
       return;
     }
     for (let index = 0; index < 4; index += 1) this.connection.addTransceiver("video", { direction: "recvonly" });
@@ -130,10 +135,18 @@ export class ClipWebMeshPeer extends EventTarget {
     await this.makeOffer(true);
   }
 
-  async requestRenegotiation() {
+  async requestPeerICERestart() {
     if (this.closed || this.isOfferer || this.recoveryRequested) return;
     this.recoveryRequested = true;
-    await this.signal({ type: "renegotiation-request", epoch: PAIR_EPOCH });
+    try {
+      await this.signal({ type: "ice-restart", epoch: PAIR_EPOCH });
+    } catch (error) {
+      // A failed room-socket write must be retryable after signaling resumes.
+      // The replacement peer has not made progress until the remote offerer
+      // receives this request, so do not leave the one-shot gate latched.
+      this.recoveryRequested = false;
+      throw error;
+    }
   }
 
   applyExactVideoCodec(codec) {
