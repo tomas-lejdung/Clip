@@ -246,6 +246,11 @@ private final class ServerCoordinatedMeshLocalMediaBridge {
     private var publicationController:
         MeshParticipantLocalPublicationController?
     private var mediaFactory: ClipLiveShareNativeV3WebRTCTransportFactory?
+    /// True after any pair rejected a codec transaction. Even if the factory
+    /// already contains the restored codec, the next settings application
+    /// must reconcile every current pair because an individual rollback may
+    /// have failed or membership may have changed while negotiation awaited.
+    private var codecRequiresFullReconciliation = false
     private var failureForwardingTask: Task<Void, Never>?
     private var localControlsTask: Task<Void, Never>?
     private var startRequested = false
@@ -533,9 +538,12 @@ private final class ServerCoordinatedMeshLocalMediaBridge {
 
     /// Preserves the pre-v4 media transition exactly. Mesh networking changes
     /// how many direct peer links exist, not capture quality or encoder policy:
-    /// retain the participant codec for future links, update each current pair
-    /// independently, then apply encoder mode, codec-specific advanced
-    /// settings, and one full sender policy to every active source.
+    /// provisionally retain the participant codec for future links, update
+    /// each current pair independently, then apply encoder mode,
+    /// codec-specific advanced settings, and one full sender policy to every
+    /// active source. A peer failure restores every pair that already accepted
+    /// the codec as well as the factory preference, keeping the operation
+    /// retryable as one participant-wide transaction.
     private func applySettings(_ settings: LiveShareSettings) async throws {
         guard let mediaFactory, let roomSession else {
             throw ServerCoordinatedMeshApplicationError.connectionFailed(
@@ -545,34 +553,48 @@ private final class ServerCoordinatedMeshLocalMediaBridge {
         let requestedCodec = MeshParticipantMediaSettingsPolicy.videoCodec(
             settings.videoCodec
         )
-        if mediaFactory.videoCodec != requestedCodec {
+        if mediaFactory.videoCodec != requestedCodec
+            || codecRequiresFullReconciliation {
             let previousCodec = mediaFactory.videoCodec
-            // This is deliberately committed before current-pair negotiation,
-            // matching the previous participant runtime. A failed peer rolls
-            // back only its own transport; future links retain the requested
-            // participant preference.
-            try mediaFactory.retainVideoCodec(requestedCodec)
-            let snapshot = await roomSession.snapshot()
-            let remotes = snapshot.verifiedRoom?.members
-                .filter { !$0.isLocal }
-                .map(\.descriptor.participantID) ?? []
-            var failures: [String] = []
-            for participantID in remotes {
-                do {
-                    try await roomSession.updateVideoCodecPreference(
-                        requestedCodec,
-                        for: participantID,
-                        rollbackTo: previousCodec
-                    )
-                } catch {
-                    failures.append(participantID.rawValue)
+            do {
+                try await MeshParticipantCodecTransaction.apply(
+                    requestedCodec: requestedCodec,
+                    previousCodec: previousCodec,
+                    participantIDs: {
+                        let snapshot = await roomSession.snapshot()
+                        return snapshot.verifiedRoom?.members
+                            .filter { !$0.isLocal }
+                            .map(\.descriptor.participantID) ?? []
+                    },
+                    retainCodec: { codec in
+                        try mediaFactory.retainVideoCodec(codec)
+                    },
+                    updateParticipant: { participantID, codec, rollback in
+                        try await roomSession.updateVideoCodecPreference(
+                            codec,
+                            for: participantID,
+                            rollbackTo: rollback
+                        )
+                    }
+                )
+                codecRequiresFullReconciliation = false
+            } catch let failure as MeshParticipantCodecTransaction.Failure {
+                codecRequiresFullReconciliation = true
+                var rollbackFailures = failure
+                    .rollbackFailedParticipantIDs
+                    .map(\.rawValue)
+                if failure.factoryRollbackFailed {
+                    rollbackFailures.append("future links")
                 }
-            }
-            if !failures.isEmpty {
+                if !rollbackFailures.isEmpty {
+                    ClipLog.media.error(
+                        "Could not completely roll back the Live Share codec transaction for: \(rollbackFailures.sorted().joined(separator: ", "), privacy: .public)"
+                    )
+                }
                 throw ServerCoordinatedMeshApplicationError.connectionFailed(
                     String(
                         localized:
-                            "Clip couldn’t update video quality for: \(failures.sorted().joined(separator: ", "))."
+                            "Clip couldn’t update video quality for: \(failure.failedParticipantIDs.map(\.rawValue).sorted().joined(separator: ", "))."
                     )
                 )
             }

@@ -113,4 +113,118 @@ struct MeshParticipantMediaPoliciesTests {
         #expect(settings.codec.codec == .av1)
         #expect(settings.colorMode == .nativeDisplay)
     }
+
+    @Test("partial codec failure rolls back every accepted peer and remains retryable")
+    @MainActor
+    func codecTransactionRollsBackAndRetries() async throws {
+        enum FixtureError: Error { case rejected }
+        let participants = (1...3).map {
+            try! ClipLiveShareNativeV3ParticipantID(
+                bytes: Data(
+                    repeating: UInt8($0),
+                    count: ClipLiveShareNativeV3.participantIDByteCount
+                )
+            )
+        }
+        var retained: [WebRTCVideoCodec] = []
+        var updates: [
+            (
+                ClipLiveShareNativeV3ParticipantID,
+                WebRTCVideoCodec,
+                WebRTCVideoCodec
+            )
+        ] = []
+        var rejectsMiddleParticipant = true
+        var membershipSnapshots = [participants, participants]
+
+        do {
+            try await MeshParticipantCodecTransaction.apply(
+                requestedCodec: .vp8,
+                previousCodec: .av1,
+                participantIDs: { membershipSnapshots.removeFirst() },
+                retainCodec: { retained.append($0) },
+                updateParticipant: { participantID, codec, rollback in
+                    updates.append((participantID, codec, rollback))
+                    if codec == .vp8,
+                       participantID == participants[1],
+                       rejectsMiddleParticipant {
+                        throw FixtureError.rejected
+                    }
+                }
+            )
+            Issue.record("The partial codec transaction unexpectedly succeeded.")
+        } catch let failure as MeshParticipantCodecTransaction.Failure {
+            #expect(failure.failedParticipantIDs == [participants[1]])
+            #expect(failure.factoryRollbackFailed == false)
+            #expect(failure.rollbackFailedParticipantIDs.isEmpty)
+        }
+
+        #expect(retained == [.vp8, .av1])
+        #expect(updates.map(\.0) == [
+            participants[0], participants[1], participants[2],
+            participants[2], participants[1], participants[0]
+        ])
+        #expect(updates.map(\.1) == [
+            .vp8, .vp8, .vp8, .av1, .av1, .av1
+        ])
+
+        retained.removeAll()
+        updates.removeAll()
+        rejectsMiddleParticipant = false
+        try await MeshParticipantCodecTransaction.apply(
+            requestedCodec: .vp8,
+            previousCodec: .av1,
+            participantIDs: { participants },
+            retainCodec: { retained.append($0) },
+            updateParticipant: { participantID, codec, rollback in
+                updates.append((participantID, codec, rollback))
+            }
+        )
+
+        #expect(retained == [.vp8])
+        #expect(updates.map(\.0) == participants)
+        #expect(updates.allSatisfy { $0.1 == .vp8 && $0.2 == .av1 })
+    }
+
+    @Test("codec rollback includes a participant that joins mid-transaction")
+    @MainActor
+    func codecRollbackUsesFreshMembership() async throws {
+        enum FixtureError: Error { case rejected }
+        let participants = (1...3).map {
+            try! ClipLiveShareNativeV3ParticipantID(
+                bytes: Data(
+                    repeating: UInt8($0),
+                    count: ClipLiveShareNativeV3.participantIDByteCount
+                )
+            )
+        }
+        var snapshots = [
+            Array(participants.prefix(2)),
+            participants,
+        ]
+        var updates: [
+            (ClipLiveShareNativeV3ParticipantID, WebRTCVideoCodec)
+        ] = []
+
+        await #expect(throws: MeshParticipantCodecTransaction.Failure.self) {
+            try await MeshParticipantCodecTransaction.apply(
+                requestedCodec: .vp8,
+                previousCodec: .av1,
+                participantIDs: { snapshots.removeFirst() },
+                retainCodec: { _ in },
+                updateParticipant: { participantID, codec, _ in
+                    updates.append((participantID, codec))
+                    if participantID == participants[1], codec == .vp8 {
+                        throw FixtureError.rejected
+                    }
+                }
+            )
+        }
+
+        #expect(updates.map(\.0) == [
+            participants[0], participants[1],
+            participants[2], participants[1], participants[0],
+        ])
+        #expect(updates.suffix(3).allSatisfy { $0.1 == .av1 })
+    }
 }

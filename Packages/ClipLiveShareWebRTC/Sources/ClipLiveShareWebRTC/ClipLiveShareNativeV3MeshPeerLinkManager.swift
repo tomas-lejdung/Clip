@@ -432,6 +432,7 @@ public enum ClipLiveShareNativeV3MeshPeerLinkManagerError: Error, Equatable, Sen
   case localParticipantMissing
   case invalidPeerLink(ClipLiveShareNativeV3PeerLinkKey)
   case unknownPeer(ClipLiveShareNativeV3ParticipantID)
+  case videoCodecRollbackFailed(ClipLiveShareNativeV3ParticipantID)
   case controlChannelNotOpen(ClipLiveShareNativeV3ParticipantID)
   case controlMessageTooLarge(maximumBytes: Int, actualBytes: Int)
 
@@ -447,6 +448,8 @@ public enum ClipLiveShareNativeV3MeshPeerLinkManagerError: Error, Equatable, Sen
       "The native-v3 peer-link key does not include the local participant."
     case .unknownPeer:
       "The native-v3 participant does not have a local peer connection."
+    case .videoCodecRollbackFailed:
+      "The native-v3 peer link could not restore its previous video codec."
     case .controlChannelNotOpen:
       "The native-v3 reliable control channel is not open."
     case let .controlMessageTooLarge(maximumBytes, actualBytes):
@@ -1004,9 +1007,14 @@ public actor ClipLiveShareNativeV3MeshPeerLinkManager {
       try await link.transport.updateVideoCodecPreference(codec)
       videoCodecPreferences[remoteParticipantID] = codec
     } catch {
-      try? await link.transport.restoreVideoCodecPreference(
-        authoritativePreviousCodec
-      )
+      do {
+        try await link.transport.restoreVideoCodecPreference(
+          authoritativePreviousCodec
+        )
+      } catch {
+        throw ClipLiveShareNativeV3MeshPeerLinkManagerError
+          .videoCodecRollbackFailed(remoteParticipantID)
+      }
       throw error
     }
   }

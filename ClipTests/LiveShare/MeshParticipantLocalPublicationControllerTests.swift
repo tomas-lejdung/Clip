@@ -194,6 +194,283 @@ struct MeshParticipantLocalPublicationControllerTests {
         await controller.stop()
     }
 
+    @Test("Failed settings transaction rolls back and permits the same retry")
+    func failedSettingsTransactionIsRetryable() async {
+        var applied: [LiveShareSettings] = []
+        var persisted: [LiveShareSettings] = []
+        var snapshots: [MeshParticipantLocalPublicationSnapshot] = []
+        var failures: [String] = []
+        var rejectsFirstVP8Attempt = true
+        let controller = MeshParticipantLocalPublicationController(
+            settings: .default,
+            discovery: FixedMeshCaptureDiscovery(
+                content: .init(displays: [], windows: [])
+            ),
+            maximumActiveSources: 4,
+            operations: .init(
+                start: { _, _ in },
+                update: { _, _ in },
+                stop: { _ in },
+                stopAll: {},
+                setSystemAudio: { _ in },
+                applySettings: { value in
+                    applied.append(value)
+                    if value.videoCodec == .vp8,
+                       rejectsFirstVP8Attempt {
+                        rejectsFirstVP8Attempt = false
+                        throw MeshLocalPublicationFixtureError.settingsFailed
+                    }
+                }
+            ),
+            observesFocusedWindow: false,
+            persistSettings: { persisted.append($0) },
+            onChange: { snapshots.append($0) },
+            onFailure: { failures.append($0) }
+        )
+        let requested = LiveShareSettingsViewSnapshot(
+            codec: .init(codec: .vp8, acceleration: .software)
+        )
+
+        controller.start()
+        controller.updateSettings(requested)
+        await controller.settlePendingOperations()
+
+        #expect(applied.map(\.videoCodec) == [.vp8, .av1])
+        #expect(persisted.isEmpty)
+        #expect(snapshots.last?.settings.codec.codec == .av1)
+        #expect(failures.count == 1)
+
+        controller.updateSettings(requested)
+        await controller.settlePendingOperations()
+
+        #expect(applied.map(\.videoCodec) == [.vp8, .av1, .vp8])
+        #expect(persisted.map(\.videoCodec) == [.vp8])
+        #expect(snapshots.last?.settings.codec.codec == .vp8)
+
+        await controller.stop()
+    }
+
+    @Test("Rapid settings updates use their own media snapshots")
+    func rapidSettingsUpdatesAreSnapshotIsolated() async throws {
+        let window = makeWindow(1)
+        var descriptorFrameRates: [Int] = []
+        var applied: [LiveShareSettings] = []
+        var persisted: [LiveShareSettings] = []
+        var snapshots: [MeshParticipantLocalPublicationSnapshot] = []
+        var failures: [String] = []
+        let controller = MeshParticipantLocalPublicationController(
+            settings: .default,
+            discovery: FixedMeshCaptureDiscovery(
+                content: .init(displays: [], windows: [window])
+            ),
+            maximumActiveSources: 4,
+            operations: .init(
+                start: { _, _ in },
+                update: { _, descriptor in
+                    descriptorFrameRates.append(
+                        descriptor.video.framesPerSecond
+                    )
+                },
+                stop: { _ in },
+                stopAll: {},
+                setSystemAudio: { _ in },
+                applySettings: { value in
+                    applied.append(value)
+                    if value.videoCodec == .vp8 {
+                        throw MeshLocalPublicationFixtureError.settingsFailed
+                    }
+                }
+            ),
+            observesFocusedWindow: false,
+            persistSettings: { persisted.append($0) },
+            onChange: { snapshots.append($0) },
+            onFailure: { failures.append($0) }
+        )
+        controller.start()
+        controller.focusedWindowDidChange(focused(window))
+        await controller.settlePendingOperations()
+        controller.shareFocusedWindow()
+        await controller.settlePendingOperations()
+        descriptorFrameRates.removeAll()
+
+        controller.updateSettings(.init(frameRate: .sixty))
+        controller.updateSettings(
+            .init(
+                frameRate: .thirty,
+                codec: .init(codec: .vp8, acceleration: .software)
+            )
+        )
+        await controller.settlePendingOperations()
+
+        #expect(applied.map(\.frameRate) == [.sixty, .thirty, .sixty])
+        #expect(descriptorFrameRates == [60])
+        #expect(persisted.map(\.frameRate) == [.sixty])
+        #expect(snapshots.last?.settings.frameRate == .sixty)
+        #expect(snapshots.last?.settings.codec.codec == .av1)
+        #expect(failures.count == 1)
+
+        await controller.stop()
+    }
+
+    @Test("Descriptor failure rolls back and permits the same retry")
+    func failedDescriptorUpdateIsRetryable() async {
+        let window = makeWindow(1)
+        var descriptorFrameRates: [Int] = []
+        var persisted: [LiveShareSettings] = []
+        var snapshots: [MeshParticipantLocalPublicationSnapshot] = []
+        var failures: [String] = []
+        var rejectsFirstSixtyFPSUpdate = true
+        let controller = MeshParticipantLocalPublicationController(
+            settings: .default,
+            discovery: FixedMeshCaptureDiscovery(
+                content: .init(displays: [], windows: [window])
+            ),
+            maximumActiveSources: 4,
+            operations: .init(
+                start: { _, _ in },
+                update: { _, descriptor in
+                    descriptorFrameRates.append(
+                        descriptor.video.framesPerSecond
+                    )
+                    if descriptor.video.framesPerSecond == 60,
+                       rejectsFirstSixtyFPSUpdate {
+                        rejectsFirstSixtyFPSUpdate = false
+                        throw MeshLocalPublicationFixtureError.settingsFailed
+                    }
+                },
+                stop: { _ in },
+                stopAll: {},
+                setSystemAudio: { _ in },
+                applySettings: { _ in }
+            ),
+            observesFocusedWindow: false,
+            persistSettings: { persisted.append($0) },
+            onChange: { snapshots.append($0) },
+            onFailure: { failures.append($0) }
+        )
+        controller.start()
+        controller.focusedWindowDidChange(focused(window))
+        await controller.settlePendingOperations()
+        controller.shareFocusedWindow()
+        await controller.settlePendingOperations()
+        descriptorFrameRates.removeAll()
+        let requested = LiveShareSettingsViewSnapshot(frameRate: .sixty)
+
+        controller.updateSettings(requested)
+        await controller.settlePendingOperations()
+
+        #expect(descriptorFrameRates == [60])
+        #expect(persisted.isEmpty)
+        #expect(snapshots.last?.settings.frameRate == .thirty)
+        #expect(failures.count == 1)
+
+        controller.updateSettings(requested)
+        await controller.settlePendingOperations()
+
+        #expect(descriptorFrameRates == [60, 60])
+        #expect(persisted.map(\.frameRate) == [.sixty])
+        #expect(snapshots.last?.settings.frameRate == .sixty)
+
+        await controller.stop()
+    }
+
+    @Test("Audio failure does not clobber a later optimistic settings request")
+    func audioFailurePreservesLaterOptimisticRequest() async {
+        let window = makeWindow(1)
+        var audioRequests: [CaptureAudioSessionRequest?] = []
+        var persisted: [LiveShareSettings] = []
+        var snapshots: [MeshParticipantLocalPublicationSnapshot] = []
+        var failures: [String] = []
+        var rejectsFirstEnable = true
+        let controller = MeshParticipantLocalPublicationController(
+            settings: .default,
+            discovery: FixedMeshCaptureDiscovery(
+                content: .init(displays: [], windows: [window])
+            ),
+            maximumActiveSources: 4,
+            operations: .init(
+                start: { _, _ in },
+                update: { _, _ in },
+                stop: { _ in },
+                stopAll: {},
+                setSystemAudio: { request in
+                    audioRequests.append(request)
+                    if request != nil, rejectsFirstEnable {
+                        rejectsFirstEnable = false
+                        throw MeshLocalPublicationFixtureError.settingsFailed
+                    }
+                },
+                applySettings: { _ in }
+            ),
+            observesFocusedWindow: false,
+            persistSettings: { persisted.append($0) },
+            onChange: { snapshots.append($0) },
+            onFailure: { failures.append($0) }
+        )
+        controller.start()
+        controller.focusedWindowDidChange(focused(window))
+        await controller.settlePendingOperations()
+        controller.shareFocusedWindow()
+        await controller.settlePendingOperations()
+        audioRequests.removeAll()
+
+        controller.updateSettings(.init(systemAudioEnabled: true))
+        controller.updateSettings(
+            .init(frameRate: .sixty, systemAudioEnabled: true)
+        )
+        await controller.settlePendingOperations()
+
+        #expect(audioRequests.map { $0 != nil } == [true, false, true])
+        #expect(persisted.map(\.systemAudioEnabled) == [false, true])
+        #expect(snapshots.last?.settings.systemAudioEnabled == true)
+        #expect(snapshots.last?.settings.frameRate == .sixty)
+        #expect(failures.count == 1)
+
+        await controller.stop()
+    }
+
+    @Test("Capture failure commits audio off without clobbering a later retry")
+    func captureAudioFailurePreservesLaterRetry() async {
+        var persisted: [LiveShareSettings] = []
+        var snapshots: [MeshParticipantLocalPublicationSnapshot] = []
+        var failures: [String] = []
+        let controller = MeshParticipantLocalPublicationController(
+            settings: .init(systemAudioEnabled: true),
+            discovery: FixedMeshCaptureDiscovery(
+                content: .init(displays: [], windows: [])
+            ),
+            maximumActiveSources: 4,
+            operations: .init(
+                start: { _, _ in },
+                update: { _, _ in },
+                stop: { _ in },
+                stopAll: {},
+                setSystemAudio: { _ in },
+                applySettings: { _ in }
+            ),
+            observesFocusedWindow: false,
+            persistSettings: { persisted.append($0) },
+            onChange: { snapshots.append($0) },
+            onFailure: { failures.append($0) }
+        )
+        controller.start()
+
+        controller.systemAudioCaptureFailed(
+            message: "System audio became unavailable."
+        )
+        controller.updateSettings(
+            .init(frameRate: .sixty, systemAudioEnabled: true)
+        )
+        await controller.settlePendingOperations()
+
+        #expect(persisted.map(\.systemAudioEnabled) == [false, true])
+        #expect(snapshots.last?.settings.systemAudioEnabled == true)
+        #expect(snapshots.last?.settings.frameRate == .sixty)
+        #expect(failures == ["System audio became unavailable."])
+
+        await controller.stop()
+    }
+
     @Test("Re-sharing the same window creates a fresh source generation")
     func resharingWindowUsesFreshSourceInstanceID() async throws {
         let window = makeWindow(1)
@@ -270,6 +547,7 @@ struct MeshParticipantLocalPublicationControllerTests {
 
 private enum MeshLocalPublicationFixtureError: Error {
     case startFailed
+    case settingsFailed
 }
 
 private struct FixedMeshCaptureDiscovery: CaptureContentDiscovering {

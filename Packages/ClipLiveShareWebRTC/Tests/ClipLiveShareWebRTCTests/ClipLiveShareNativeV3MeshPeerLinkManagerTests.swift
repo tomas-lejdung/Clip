@@ -995,6 +995,36 @@ struct ClipLiveShareNativeV3MeshPeerLinkManagerTests {
     await manager.close()
   }
 
+  @Test("failed codec preference surfaces a failed restoration")
+  func failedCodecPreferenceReportsRestoreFailure() async throws {
+    let local = try meshParticipant(0x10)
+    let remote = try meshParticipant(0x20)
+    let factory = MeshFakeTransportFactory()
+    let manager = ClipLiveShareNativeV3MeshPeerLinkManager(
+      localParticipantID: local,
+      transportFactory: factory
+    )
+    try await manager.reconcileParticipants([local, remote])
+    let transport = try #require(await factory.transport(for: remote))
+    await transport.failNextCodecUpdate()
+    await transport.failNextCodecRestore()
+
+    await #expect(
+      throws: ClipLiveShareNativeV3MeshPeerLinkManagerError
+        .videoCodecRollbackFailed(remote)
+    ) {
+      try await manager.updateVideoCodecPreference(
+        .vp9,
+        for: remote,
+        rollbackTo: .av1
+      )
+    }
+
+    #expect(await transport.videoCodecUpdates() == [.vp9])
+    #expect(await transport.restoredVideoCodecs() == [.av1])
+    await manager.close()
+  }
+
   @Test("offered codec survives answerer transport recreation")
   func offeredCodecSurvivesAnswererRecreation() async throws {
     let local = try meshParticipant(0x20)
@@ -1459,6 +1489,7 @@ private actor MeshFakeTransport:
   private var restarts = 0
   private var shouldFailNextRestart = false
   private var shouldFailNextCodecUpdate = false
+  private var shouldFailNextCodecRestore = false
   private var currentVideoCodec: WebRTCVideoCodec = .av1
   private var shouldFailNextStatistics = false
   private var descriptions: [WebRTCSessionDescription] = []
@@ -1576,6 +1607,10 @@ private actor MeshFakeTransport:
 
   func restoreVideoCodecPreference(_ codec: WebRTCVideoCodec) async throws {
     recordedRestoredVideoCodecs.append(codec)
+    if shouldFailNextCodecRestore {
+      shouldFailNextCodecRestore = false
+      throw MeshFakeError.codecUpdateFailed
+    }
     currentVideoCodec = codec
   }
 
@@ -1630,6 +1665,10 @@ private actor MeshFakeTransport:
 
   func failNextCodecUpdate() {
     shouldFailNextCodecUpdate = true
+  }
+
+  func failNextCodecRestore() {
+    shouldFailNextCodecRestore = true
   }
 
   func setCurrentVideoCodec(_ codec: WebRTCVideoCodec) {

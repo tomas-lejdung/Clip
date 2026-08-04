@@ -99,6 +99,11 @@ final class MeshParticipantLocalPublicationController {
         var status: LiveShareSourceViewStatus
     }
 
+    private struct SystemAudioReconciliationOutcome {
+        var committedSettings: LiveShareSettings
+        var failure: (any Error)?
+    }
+
     nonisolated private static let logger = Logger(
         subsystem: ApplicationDirectories.bundleIdentifier,
         category: "live-share-mesh-local-publication"
@@ -113,7 +118,13 @@ final class MeshParticipantLocalPublicationController {
     private let audioRequestIdentifier = UUID()
     private let maximumActiveSources: Int
 
+    /// The value currently presented by the controls. It may be optimistic
+    /// while the serialized media transaction is still in flight.
     private var settings: LiveShareSettings
+    /// The last settings snapshot that every local media operation accepted.
+    /// Persistence and rollback are anchored here so a partial peer failure
+    /// cannot make the UI, defaults, and active transports disagree.
+    private var appliedSettings: LiveShareSettings
     private var activeByInstanceID:
         [ClipLiveShareSourceInstanceID: ActiveSource] = [:]
     private var instanceIDBySourceID:
@@ -124,6 +135,8 @@ final class MeshParticipantLocalPublicationController {
     private var refreshTask: Task<Void, Never>?
     private var transitionTask: Task<Void, Never>?
     private var transitionGeneration: UInt64 = 0
+    private var settingsRevision: UInt64 = 0
+    private var settingsTransactionInFlight = false
     private var focusOrdinal: UInt64 = 0
     private var isRunning = false
 
@@ -148,6 +161,7 @@ final class MeshParticipantLocalPublicationController {
         onFailure: @escaping (String) -> Void
     ) {
         self.settings = settings
+        appliedSettings = settings
         self.discovery = discovery
         self.operations = operations
         self.observesFocusedWindow = observesFocusedWindow
@@ -374,9 +388,15 @@ final class MeshParticipantLocalPublicationController {
     }
 
     func systemAudioCaptureFailed(message: String) {
+        let observedSettingsRevision = settingsRevision
         enqueue { controller in
-            controller.settings.systemAudioEnabled = false
-            controller.persistSettings(controller.settings)
+            var committed = controller.appliedSettings
+            committed.systemAudioEnabled = false
+            controller.appliedSettings = committed
+            controller.persistSettings(committed)
+            if controller.settingsRevision == observedSettingsRevision {
+                controller.settings.systemAudioEnabled = false
+            }
             try? await controller.operations.setSystemAudio(nil)
             controller.report(message: message)
         }
@@ -406,19 +426,30 @@ final class MeshParticipantLocalPublicationController {
 
     private func updateSettings(_ next: LiveShareSettings) {
         guard next != settings else { return }
-        let previous = settings
+        settingsRevision &+= 1
+        let revision = settingsRevision
         settings = next
-        persistSettings(next)
         publish()
         enqueue { controller in
+            controller.settingsTransactionInFlight = true
+            defer { controller.settingsTransactionInFlight = false }
+            let previous = controller.appliedSettings
             do {
                 try await controller.operations.applySettings(next)
                 if previous.frameRate != next.frameRate
                     || previous.videoCodec != next.videoCodec
                     || previous.colorMode != next.colorMode {
-                    await controller.refreshActiveDescriptors()
+                    try await controller.refreshActiveDescriptors(using: next)
                 }
-                await controller.reconcileSystemAudio()
+                let audio = try await controller.reconcileSystemAudio(
+                    using: next
+                )
+                let committed = audio.committedSettings
+                controller.appliedSettings = committed
+                controller.persistSettings(committed)
+                if controller.settingsRevision == revision {
+                    controller.settings = committed
+                }
                 if next.autoShareFocusedWindows,
                    !previous.autoShareFocusedWindows,
                    controller.fullscreenActiveSource == nil,
@@ -428,7 +459,42 @@ final class MeshParticipantLocalPublicationController {
                         focusedOrdinal: controller.nextFocusOrdinal()
                     )
                 }
+                if let failure = audio.failure {
+                    controller.report(failure)
+                } else {
+                    controller.publish()
+                }
             } catch {
+                // `applySettings` spans every direct peer and can fail after
+                // one transport has already changed. Reapply the last fully
+                // accepted snapshot before exposing the failure. This also
+                // restores `settings`, allowing the same user selection to be
+                // retried instead of being discarded as a no-op.
+                do {
+                    try await controller.operations.applySettings(previous)
+                    try await controller.refreshActiveDescriptors(
+                        using: previous
+                    )
+                    let audio = try await controller.reconcileSystemAudio(
+                        using: previous
+                    )
+                    if audio.committedSettings != previous {
+                        controller.appliedSettings = audio.committedSettings
+                        controller.persistSettings(audio.committedSettings)
+                    }
+                    if let failure = audio.failure {
+                        Self.logger.error(
+                            "System audio could not be restored while rolling back local mesh settings: \(failure.localizedDescription, privacy: .public)"
+                        )
+                    }
+                } catch {
+                    Self.logger.error(
+                        "Could not roll back local mesh settings: \(error.localizedDescription, privacy: .public)"
+                    )
+                }
+                if controller.settingsRevision == revision {
+                    controller.settings = controller.appliedSettings
+                }
                 controller.report(error)
             }
         }
@@ -756,6 +822,10 @@ final class MeshParticipantLocalPublicationController {
                     activeByInstanceID[instanceID] = active
                 }
             }
+            guard !settingsTransactionInFlight else {
+                publish()
+                return
+            }
             await refreshActiveDescriptors()
             await reconcileSystemAudio()
             publish()
@@ -767,18 +837,37 @@ final class MeshParticipantLocalPublicationController {
     }
 
     private func refreshActiveDescriptors() async {
-        for instanceID in Array(activeByInstanceID.keys) {
-            guard var active = activeByInstanceID[instanceID] else {
-                continue
-            }
-            do {
+        do {
+            try await refreshActiveDescriptors(using: appliedSettings)
+        } catch {
+            report(error)
+        }
+    }
+
+    /// Updates the complete active-source set as one local settings
+    /// transaction. Any source accepted before a later failure is restored to
+    /// its original descriptor before the error escapes to the settings
+    /// rollback path.
+    private func refreshActiveDescriptors(
+        using mediaSettings: LiveShareSettings
+    ) async throws {
+        var updated: [
+            (ClipLiveShareSourceInstanceID, LiveShareCaptureDescriptor)
+        ] = []
+        do {
+            for instanceID in Array(activeByInstanceID.keys) {
+                guard var active = activeByInstanceID[instanceID] else {
+                    continue
+                }
+                let previous = active.descriptor
                 let next = try makeDescriptor(
                     source: active.source,
                     window: active.window,
                     display: active.display,
                     isFocused: active.descriptor.stream.focused,
                     order: active.descriptor.stream.order,
-                    existingStream: active.descriptor.stream
+                    existingStream: active.descriptor.stream,
+                    using: mediaSettings
                 )
                 guard next != active.descriptor else { continue }
                 try await operations.update(
@@ -787,35 +876,89 @@ final class MeshParticipantLocalPublicationController {
                 )
                 active.descriptor = next
                 activeByInstanceID[instanceID] = active
-            } catch {
-                report(error)
+                updated.append((instanceID, previous))
             }
+        } catch {
+            for (instanceID, previous) in updated.reversed() {
+                do {
+                    try await operations.update(instanceID, previous)
+                    activeByInstanceID[instanceID]?.descriptor = previous
+                } catch {
+                    Self.logger.error(
+                        "Could not roll back a local mesh capture descriptor: \(error.localizedDescription, privacy: .public)"
+                    )
+                }
+            }
+            publish()
+            throw error
         }
         publish()
     }
 
     private func reconcileSystemAudio() async {
+        let target = appliedSettings
+        do {
+            let outcome = try await reconcileSystemAudio(using: target)
+            if outcome.committedSettings != target {
+                appliedSettings = outcome.committedSettings
+                persistSettings(outcome.committedSettings)
+                if settings == target {
+                    settings = outcome.committedSettings
+                }
+            }
+            if let failure = outcome.failure {
+                report(failure)
+            } else {
+                publish()
+            }
+        } catch {
+            report(error)
+        }
+    }
+
+    /// Applies audio for the supplied transaction snapshot rather than the
+    /// potentially newer optimistic UI state. Failure to enable audio is a
+    /// valid committed result with audio disabled, provided the disabled
+    /// state itself can be applied successfully.
+    private func reconcileSystemAudio(
+        using mediaSettings: LiveShareSettings
+    ) async throws -> SystemAudioReconciliationOutcome {
         let sourceSelection = selection
         let request = LiveShareCapturePolicy.captureAudioRequest(
-            systemAudioEnabled: settings.systemAudioEnabled,
+            systemAudioEnabled: mediaSettings.systemAudioEnabled,
             sources: sourceSelection,
             knownWindows: windowsByID,
             filterDisplayID: CGMainDisplayID(),
             clipBundleIdentifier: ApplicationDirectories.bundleIdentifier,
             excludedAudioApplicationBundleIdentifiers:
-                settings.excludedAudioApplicationBundleIdentifiers,
+                mediaSettings.excludedAudioApplicationBundleIdentifiers,
             filterApplicationProcessIdentifiers:
-                audioFilterProcessIdentifiers(),
+                audioFilterProcessIdentifiers(
+                    excludedBundleIdentifiers:
+                        mediaSettings
+                            .excludedAudioApplicationBundleIdentifiers
+                ),
             requestIdentifier: audioRequestIdentifier
         )
         do {
             try await operations.setSystemAudio(request)
+            return SystemAudioReconciliationOutcome(
+                committedSettings: mediaSettings,
+                failure: nil
+            )
         } catch {
-            settings.systemAudioEnabled = false
-            persistSettings(settings)
-            report(error)
+            guard mediaSettings.systemAudioEnabled else { throw error }
+            // A failed enable request must not leave an older capture alive.
+            // Only commit the deliberate disabled fallback after that state
+            // has itself been accepted by the media layer.
+            try await operations.setSystemAudio(nil)
+            var committed = mediaSettings
+            committed.systemAudioEnabled = false
+            return SystemAudioReconciliationOutcome(
+                committedSettings: committed,
+                failure: error
+            )
         }
-        publish()
     }
 
     private func makeDescriptor(
@@ -824,8 +967,10 @@ final class MeshParticipantLocalPublicationController {
         display: ShareableCaptureDisplay?,
         isFocused: Bool,
         order: Int,
-        existingStream: ClipLiveShareStreamDescriptor? = nil
+        existingStream: ClipLiveShareStreamDescriptor? = nil,
+        using mediaSettings: LiveShareSettings? = nil
     ) throws -> LiveShareCaptureDescriptor {
+        let mediaSettings = mediaSettings ?? appliedSettings
         let sourceWidth: Int
         let sourceHeight: Int
         let pointWidth: Int
@@ -878,12 +1023,12 @@ final class MeshParticipantLocalPublicationController {
         let captureGeometry = LiveShareCapturePolicy.captureGeometry(
             sourceWidth: sourceWidth,
             sourceHeight: sourceHeight,
-            codec: settings.videoCodec,
-            framesPerSecond: settings.frameRate.rawValue
+            codec: mediaSettings.videoCodec,
+            framesPerSecond: mediaSettings.frameRate.rawValue
         )
         let streamGeometry = LiveShareCapturePolicy.streamGeometry(
             captureGeometry: captureGeometry,
-            codec: settings.videoCodec
+            codec: mediaSettings.videoCodec
         )
         let stream = try ClipLiveShareStreamDescriptor(
             id: existingStream?.id ?? .random(),
@@ -909,9 +1054,9 @@ final class MeshParticipantLocalPublicationController {
             video: LiveShareCapturePolicy.captureVideoConfiguration(
                 width: captureGeometry.width,
                 height: captureGeometry.height,
-                framesPerSecond: settings.frameRate.rawValue,
-                codec: settings.videoCodec,
-                colorMode: settings.colorMode,
+                framesPerSecond: mediaSettings.frameRate.rawValue,
+                codec: mediaSettings.videoCodec,
+                colorMode: mediaSettings.colorMode,
                 showsCursor: isFocused,
                 captureResolution: resolution
             ),
@@ -939,7 +1084,9 @@ final class MeshParticipantLocalPublicationController {
         }
     }
 
-    private func audioFilterProcessIdentifiers() -> Set<pid_t> {
+    private func audioFilterProcessIdentifiers(
+        excludedBundleIdentifiers: Set<String>
+    ) -> Set<pid_t> {
         let candidates = NSWorkspace.shared.runningApplications.compactMap {
             application -> LiveShareCaptureAudioApplicationProcessCandidate? in
             guard !application.isTerminated,
@@ -953,8 +1100,7 @@ final class MeshParticipantLocalPublicationController {
         }
         return LiveShareCapturePolicy.audioFilterProcessIdentifiers(
             candidates: candidates,
-            excludedBundleIdentifiers:
-                settings.excludedAudioApplicationBundleIdentifiers,
+            excludedBundleIdentifiers: excludedBundleIdentifiers,
             clipBundleIdentifier: ApplicationDirectories.bundleIdentifier
         )
     }
