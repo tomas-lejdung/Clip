@@ -21,11 +21,19 @@ const (
 	defaultRendezvousLeaseOperationsPerMinute = 60
 	defaultWebSocketUpgradesPerMinute         = 240
 	defaultMaximumTrackedSources              = 4_096
+	defaultMaximumFriendPresenceRecords       = 16_384
+	defaultMaximumFriendPresenceBytes         = 64 << 20
+	defaultMaximumIssuedHandlesPerRoom        = 256
 	defaultMaximumQueuedBytesPerSocket        = 2 << 20
 	defaultMaximumQueuedBytesTotal            = 64 << 20
 	maximumConfiguredRendezvous               = 16_384
 	maximumConfiguredConnections              = 8_192
 	maximumConfiguredTrackedSources           = 65_536
+	minimumConfiguredFriendPresenceBytes      = 24 << 10
+	maximumConfiguredFriendPresenceRecords    = 262_144
+	maximumConfiguredFriendPresenceBytes      = 512 << 20
+	maximumConfiguredIssuedHandlesPerRoom     = 4_096
+	maximumConfiguredIssuedHandlesTotal       = 4_194_304
 	maximumConfiguredQueuedBytes              = 512 << 20
 )
 
@@ -46,6 +54,9 @@ type Config struct {
 	RendezvousLeaseOperationsPerMinute int
 	WebSocketUpgradesPerMinute         int
 	MaximumTrackedSources              int
+	MaximumFriendPresenceRecords       int
+	MaximumFriendPresenceBytes         int
+	MaximumIssuedHandlesPerRoom        int
 	MaximumQueuedBytesPerSocket        int
 	MaximumQueuedBytesTotal            int
 	TrustedProxyCIDRs                  []string
@@ -74,6 +85,9 @@ func Default(serverVersion string) Config {
 		RendezvousLeaseOperationsPerMinute: defaultRendezvousLeaseOperationsPerMinute,
 		WebSocketUpgradesPerMinute:         defaultWebSocketUpgradesPerMinute,
 		MaximumTrackedSources:              defaultMaximumTrackedSources,
+		MaximumFriendPresenceRecords:       defaultMaximumFriendPresenceRecords,
+		MaximumFriendPresenceBytes:         defaultMaximumFriendPresenceBytes,
+		MaximumIssuedHandlesPerRoom:        defaultMaximumIssuedHandlesPerRoom,
 		MaximumQueuedBytesPerSocket:        defaultMaximumQueuedBytesPerSocket,
 		MaximumQueuedBytesTotal:            defaultMaximumQueuedBytesTotal,
 		ICEServers: []protocol.ICEServer{
@@ -132,6 +146,15 @@ func FromEnvironment(serverVersion string) (Config, error) {
 	if configuration.MaximumTrackedSources, err = positiveIntegerEnvironment("CLIP_SERVER_MAXIMUM_TRACKED_SOURCES", configuration.MaximumTrackedSources); err != nil {
 		return Config{}, err
 	}
+	if configuration.MaximumFriendPresenceRecords, err = positiveIntegerEnvironment("CLIP_SERVER_MAXIMUM_FRIEND_PRESENCE_RECORDS", configuration.MaximumFriendPresenceRecords); err != nil {
+		return Config{}, err
+	}
+	if configuration.MaximumFriendPresenceBytes, err = positiveIntegerEnvironment("CLIP_SERVER_MAXIMUM_FRIEND_PRESENCE_BYTES", configuration.MaximumFriendPresenceBytes); err != nil {
+		return Config{}, err
+	}
+	if configuration.MaximumIssuedHandlesPerRoom, err = positiveIntegerEnvironment("CLIP_SERVER_MAXIMUM_ISSUED_HANDLES_PER_ROOM", configuration.MaximumIssuedHandlesPerRoom); err != nil {
+		return Config{}, err
+	}
 
 	if proxies := strings.TrimSpace(os.Getenv("CLIP_SERVER_TRUSTED_PROXY_CIDRS")); proxies != "" {
 		for _, proxy := range strings.Split(proxies, ",") {
@@ -188,7 +211,9 @@ func (c Config) Validate() error {
 			return fmt.Errorf("%s must be positive", name)
 		}
 	}
-	if c.MaximumRendezvous <= 0 || c.MaximumConnections <= 0 || c.MaximumTrackedSources <= 0 {
+	if c.MaximumRendezvous <= 0 || c.MaximumConnections <= 0 || c.MaximumTrackedSources <= 0 ||
+		c.MaximumFriendPresenceRecords <= 0 || c.MaximumFriendPresenceBytes <= 0 ||
+		c.MaximumIssuedHandlesPerRoom <= 0 {
 		return errors.New("resource limits must be positive")
 	}
 	if c.MaximumRendezvous > maximumConfiguredRendezvous || c.MaximumConnections > maximumConfiguredConnections {
@@ -196,6 +221,33 @@ func (c Config) Validate() error {
 	}
 	if c.MaximumTrackedSources > maximumConfiguredTrackedSources {
 		return fmt.Errorf("tracked source limit exceeds safe maximum %d", maximumConfiguredTrackedSources)
+	}
+	if c.MaximumFriendPresenceRecords > maximumConfiguredFriendPresenceRecords {
+		return fmt.Errorf("friend presence record limit exceeds safe maximum %d", maximumConfiguredFriendPresenceRecords)
+	}
+	if c.MaximumFriendPresenceBytes < minimumConfiguredFriendPresenceBytes ||
+		c.MaximumFriendPresenceBytes > maximumConfiguredFriendPresenceBytes {
+		return fmt.Errorf(
+			"friend presence byte limit must be between %d and %d",
+			minimumConfiguredFriendPresenceBytes,
+			maximumConfiguredFriendPresenceBytes,
+		)
+	}
+	minimumIssuedHandlesPerRoom := protocol.MaximumNativeRoomMembers +
+		protocol.MaximumPendingCandidates
+	if c.MaximumIssuedHandlesPerRoom < minimumIssuedHandlesPerRoom ||
+		c.MaximumIssuedHandlesPerRoom > maximumConfiguredIssuedHandlesPerRoom {
+		return fmt.Errorf(
+			"issued handles per room must be between %d and %d",
+			minimumIssuedHandlesPerRoom,
+			maximumConfiguredIssuedHandlesPerRoom,
+		)
+	}
+	if c.MaximumRendezvous > maximumConfiguredIssuedHandlesTotal/c.MaximumIssuedHandlesPerRoom {
+		return fmt.Errorf(
+			"configured rooms and issued handles exceed safe combined maximum %d",
+			maximumConfiguredIssuedHandlesTotal,
+		)
 	}
 	if c.MaximumConnectionsPerSource <= 0 || c.MaximumConnectionsPerSource > c.MaximumConnections {
 		return errors.New("connections per source must be between 1 and maximum connections")

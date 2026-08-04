@@ -45,6 +45,11 @@ WebCrypto implementation in `server/web/assets/clip-room-crypto.js`. Swift and
 JavaScript share the fixed cross-language fixture in
 `Tests/Fixtures/server-room-v4-invite.json`.
 
+Every parser enforces the same service-transport boundary: remote room services
+must use HTTPS. Plain HTTP is accepted only for development on the exact
+loopback hosts `localhost`, `127.0.0.1`, and `[::1]`; localhost suffixes and
+lookalike hosts are rejected.
+
 After decryption, Native and Web enter the same authoritative room roster and
 use the same encrypted pair-signaling contract. A signed member descriptor
 declares the closed client profile (`nativeApp/nativeV1` or

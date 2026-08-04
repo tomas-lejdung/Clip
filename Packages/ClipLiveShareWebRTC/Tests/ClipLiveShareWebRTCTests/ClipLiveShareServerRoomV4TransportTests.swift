@@ -118,6 +118,68 @@ struct ClipLiveShareServerRoomV4TransportTests {
     }
   }
 
+  @Test("HTTP targets require TLS except on exact loopback hosts")
+  func endpointTransportSecurity() async throws {
+    let fixture = try V4TransportFixture()
+    let acceptedEndpoints = [
+      "https://room.example.test",
+      "https://room.example.test:8443",
+      "http://localhost",
+      "http://localhost:8080",
+      "http://127.0.0.1:8080",
+      "http://[::1]:8080",
+    ]
+    for endpointString in acceptedEndpoints {
+      let endpoint = try #require(URL(string: endpointString))
+      let target = try ClipLiveShareServerRoomV4Target(
+        endpoint: endpoint,
+        roomID: fixture.roomID
+      )
+      #expect(target.endpoint.port == endpoint.port)
+      let webSocketURL = try fixture.capabilities.roomWebSocketURL(for: target)
+      #expect(webSocketURL.port == endpoint.port)
+      #expect(webSocketURL.scheme == (endpoint.scheme == "http" ? "ws" : "wss"))
+    }
+
+    let rejectedEndpoints = [
+      "http://room.example.test",
+      "http://room.example.test:8080",
+      "http://localhost.example.test:8080",
+      "http://dev.localhost:8080",
+      "http://localhost.:8080",
+      "http://127.0.0.2:8080",
+      "http://[::2]:8080",
+    ]
+    for endpointString in rejectedEndpoints {
+      let endpoint = try #require(URL(string: endpointString))
+      #expect(throws: ClipLiveShareServerRoomV4TransportError.invalidEndpoint) {
+        try ClipLiveShareServerRoomV4Target(
+          endpoint: endpoint,
+          roomID: fixture.roomID
+        )
+      }
+    }
+
+    let transport = V4TestHTTPTransport { _, _ in
+      Issue.record("Plaintext remote discovery reached the HTTP transport")
+      return .init(statusCode: 500, data: Data())
+    }
+    let client = ClipLiveShareServerRoomV4HTTPClient(transport: transport)
+    await #expect(throws: ClipLiveShareServerRoomV4TransportError.invalidEndpoint) {
+      try await client.discover(at: URL(string: "http://room.example.test:8080")!)
+    }
+    let routingID = try ClipLiveShareServerRoomV4FriendRoutingID(
+      bytes: Data(repeating: 0x71, count: 32)
+    )
+    await #expect(throws: ClipLiveShareServerRoomV4TransportError.invalidEndpoint) {
+      try await client.friendPresence(
+        at: URL(string: "http://room.example.test:8080")!,
+        routingID: routingID
+      )
+    }
+    #expect(await transport.recordedRequests().isEmpty)
+  }
+
   @Test("candidate is promoted in place and reconnects with its stable capability")
   func candidatePromotionAndReconnect() async throws {
     let fixture = try V4TransportFixture()

@@ -51,6 +51,95 @@ struct ClipLiveShareServerRoomV4Tests {
     )
   }
 
+  @Test("invites require TLS except on exact loopback HTTP hosts")
+  func inviteTransportSecurity() throws {
+    let fixture = try V4Fixture()
+    let acceptedEndpoints = [
+      "https://mesh.clip.example",
+      "https://mesh.clip.example:8443",
+      "http://localhost",
+      "http://localhost:8080",
+      "http://127.0.0.1:8080",
+      "http://[::1]:8080",
+    ]
+    for endpointString in acceptedEndpoints {
+      let endpoint = try #require(URL(string: endpointString))
+      let invite = try ClipLiveShareServerRoomV4Invite(
+        serviceEndpoint: endpoint,
+        roomID: fixture.roomID,
+        sessionID: fixture.sessionID,
+        creatorIdentity: fixture.creatorSigner.publicKey,
+        roomAgreementSecret: fixture.roomAgreementSecret,
+        admissionCapability: fixture.admissionCapability,
+        roomCode: fixture.roomCode
+      )
+      #expect(invite.serviceEndpoint.port == endpoint.port)
+      #expect(try ClipLiveShareServerRoomV4Invite(url: invite.url) == invite)
+      #expect(try invite.url.absoluteString.hasPrefix(endpointString))
+    }
+
+    let rejectedEndpoints = [
+      "http://mesh.clip.example",
+      "http://mesh.clip.example:8080",
+      "http://localhost.example.com:8080",
+      "http://dev.localhost:8080",
+      "http://localhost.:8080",
+      "http://127.0.0.2:8080",
+      "http://[::2]:8080",
+    ]
+    for endpointString in rejectedEndpoints {
+      let endpoint = try #require(URL(string: endpointString))
+      #expect(throws: ClipLiveShareServerRoomV4Error.invalidEndpoint) {
+        try ClipLiveShareServerRoomV4Invite(
+          serviceEndpoint: endpoint,
+          roomID: fixture.roomID,
+          sessionID: fixture.sessionID,
+          creatorIdentity: fixture.creatorSigner.publicKey,
+          roomAgreementSecret: fixture.roomAgreementSecret,
+          admissionCapability: fixture.admissionCapability,
+          roomCode: fixture.roomCode
+        )
+      }
+    }
+
+    var crafted = try #require(
+      URLComponents(url: fixture.invite(nonceByte: 5).url, resolvingAgainstBaseURL: false)
+    )
+    crafted.scheme = "http"
+    #expect(throws: ClipLiveShareServerRoomV4Error.invalidEndpoint) {
+      try ClipLiveShareServerRoomV4Invite(url: try #require(crafted.url))
+    }
+  }
+
+  @Test("rendezvous settings use the same exact loopback transport policy")
+  func rendezvousEndpointTransportSecurity() throws {
+    for endpointString in [
+      "https://mesh.clip.example",
+      "http://localhost:8080",
+      "http://127.0.0.1:8080",
+      "http://[::1]:8080",
+    ] {
+      let endpoint = try ClipLiveShareRendezvousEndpoint(
+        rootURL: #require(URL(string: endpointString))
+      )
+      #expect(endpoint.rootURL.port == URL(string: endpointString)?.port)
+    }
+
+    for endpointString in [
+      "http://mesh.clip.example",
+      "http://dev.localhost:8080",
+      "http://localhost.example.com:8080",
+      "http://127.0.0.2:8080",
+      "http://[::2]:8080",
+    ] {
+      #expect(throws: ClipLiveShareProtocolError.self) {
+        try ClipLiveShareRendezvousEndpoint(
+          rootURL: try #require(URL(string: endpointString))
+        )
+      }
+    }
+  }
+
   @Test("only explicit New Invite rotation changes copied URL")
   func explicitOnlyInviteRotation() throws {
     let fixture = try V4Fixture()

@@ -52,6 +52,7 @@ func New(configuration config.Config) (*Service, error) {
 		CandidateIdleTimeout: configuration.RouteIdleTimeout,
 		MaximumRooms:         configuration.MaximumRendezvous,
 		MaximumPending:       protocol.MaximumPendingCandidates,
+		MaximumIssuedHandles: configuration.MaximumIssuedHandlesPerRoom,
 	})
 	return NewWithRoomHub(configuration, roomHub)
 }
@@ -68,11 +69,14 @@ func NewWithRoomHub(
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	service := &Service{
-		config:         configuration,
-		roomHub:        roomHub,
-		friendPresence: newFriendPresenceStore(configuration.MaximumRendezvous * 64),
-		webReconnect:   newBrowserReconnectTicketStore(configuration.MaximumTrackedSources),
-		connections:    make(chan struct{}, configuration.MaximumConnections),
+		config:  configuration,
+		roomHub: roomHub,
+		friendPresence: newFriendPresenceStore(
+			configuration.MaximumFriendPresenceRecords,
+			configuration.MaximumFriendPresenceBytes,
+		),
+		webReconnect: newBrowserReconnectTicketStore(configuration.MaximumTrackedSources),
+		connections:  make(chan struct{}, configuration.MaximumConnections),
 		queueBudget: signaling.NewQueuedByteBudget(
 			configuration.MaximumQueuedBytesTotal,
 		),

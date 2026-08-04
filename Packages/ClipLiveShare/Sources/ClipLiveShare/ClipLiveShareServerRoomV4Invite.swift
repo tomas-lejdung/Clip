@@ -1,6 +1,45 @@
 import CryptoKit
 import Foundation
 
+/// Canonical transport policy for server-room v4 service endpoints.
+///
+/// Remote services must use TLS. Plain HTTP is reserved for a developer
+/// server on an exact loopback host; suffixes such as `dev.localhost` and
+/// lookalikes such as `localhost.example.com` are intentionally rejected.
+public enum ClipLiveShareServerRoomV4ServiceEndpointPolicy {
+  public static func normalizedEndpoint(_ endpoint: URL) -> URL? {
+    guard
+      var components = URLComponents(url: endpoint, resolvingAgainstBaseURL: false),
+      let scheme = components.scheme?.lowercased(),
+      let rawHost = components.host,
+      !rawHost.isEmpty,
+      components.user == nil,
+      components.password == nil,
+      components.query == nil,
+      components.fragment == nil,
+      components.path.isEmpty || components.path == "/"
+    else {
+      return nil
+    }
+    let host = rawHost.lowercased()
+    guard
+      scheme == "https"
+        || (scheme == "http" && isExactLoopbackHost(host))
+    else {
+      return nil
+    }
+    components.scheme = scheme
+    components.host = host
+    components.percentEncodedPath = ""
+    return components.url
+  }
+
+  private static func isExactLoopbackHost(_ host: String) -> Bool {
+    host == "localhost" || host == "127.0.0.1"
+      || host == "::1" || host == "[::1]"
+  }
+}
+
 /// Stable invitation for one server-coordinated room.
 ///
 /// The short room code in the HTTP path is presentation-only. The opaque
@@ -333,21 +372,10 @@ public struct ClipLiveShareServerRoomV4Invite: Equatable, Hashable, Sendable,
 
   private static func validateServiceEndpoint(_ endpoint: URL) throws -> URL {
     guard
-      var components = URLComponents(url: endpoint, resolvingAgainstBaseURL: false),
-      let scheme = components.scheme?.lowercased(),
-      scheme == "https" || scheme == "http",
-      components.host != nil,
-      components.user == nil,
-      components.password == nil,
-      components.query == nil,
-      components.fragment == nil,
-      components.path.isEmpty || components.path == "/"
+      let normalized =
+        ClipLiveShareServerRoomV4ServiceEndpointPolicy
+        .normalizedEndpoint(endpoint)
     else {
-      throw ClipLiveShareServerRoomV4Error.invalidEndpoint
-    }
-    components.scheme = scheme
-    components.percentEncodedPath = ""
-    guard let normalized = components.url else {
       throw ClipLiveShareServerRoomV4Error.invalidEndpoint
     }
     return normalized

@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/tomas-lejdung/Clip/server/internal/config"
 	"github.com/tomas-lejdung/Clip/server/internal/protocol"
 )
 
@@ -25,7 +26,7 @@ func friendPresencePayload(value byte, count int) string {
 
 func TestFriendPresenceStoreIsBoundedMonotonicAndExpires(t *testing.T) {
 	now := time.Unix(2_000_000_000, 0)
-	store := newFriendPresenceStore(1)
+	store := newFriendPresenceStore(1, 1<<20)
 	store.now = func() time.Time { return now }
 	route := friendPresenceRoutingID(1)
 	first := protocol.NativeFriendPresence{
@@ -95,6 +96,86 @@ func TestFriendPresenceStoreIsBoundedMonotonicAndExpires(t *testing.T) {
 	)
 	if removed := store.cleanup(); removed != 1 {
 		t.Fatalf("expired tombstone cleanup removed %d", removed)
+	}
+}
+
+func TestFriendPresenceStoreEnforcesByteBudgetAndAccountsForCleanup(t *testing.T) {
+	now := time.Unix(2_000_000_000, 0)
+	firstRoute := friendPresenceRoutingID(11)
+	secondRoute := friendPresenceRoutingID(12)
+	first := protocol.NativeFriendPresence{
+		Revision: 1, ExpiresAtMilliseconds: now.Add(time.Minute).UnixMilli(),
+		Payload: friendPresencePayload(1, 256),
+	}
+	second := protocol.NativeFriendPresence{
+		Revision: 1, ExpiresAtMilliseconds: now.Add(time.Minute).UnixMilli(),
+		Payload: friendPresencePayload(2, 256),
+	}
+	firstBytes := friendPresenceStoredBytes(firstRoute, first)
+	secondBytes := friendPresenceStoredBytes(secondRoute, second)
+	store := newFriendPresenceStore(8, firstBytes+secondBytes-1)
+	store.now = func() time.Time { return now }
+
+	if _, err := store.put(firstRoute, first); err != nil {
+		t.Fatalf("first put error = %v", err)
+	}
+	if store.totalBytes != firstBytes {
+		t.Fatalf("first byte accounting = %d, want %d", store.totalBytes, firstBytes)
+	}
+	if _, err := store.put(secondRoute, second); !errors.Is(err, errFriendPresenceCapacity) {
+		t.Fatalf("byte capacity error = %v", err)
+	}
+	if len(store.records) != 1 || store.totalBytes != firstBytes {
+		t.Fatalf("rejected put mutated store = %d records, %d bytes", len(store.records), store.totalBytes)
+	}
+
+	shrunk := first
+	shrunk.Revision = 2
+	shrunk.Payload = friendPresencePayload(3, 64)
+	shrunkBytes := friendPresenceStoredBytes(firstRoute, shrunk)
+	if _, err := store.put(firstRoute, shrunk); err != nil {
+		t.Fatalf("shrinking update error = %v", err)
+	}
+	if store.totalBytes != shrunkBytes {
+		t.Fatalf("replacement byte accounting = %d, want %d", store.totalBytes, shrunkBytes)
+	}
+	if _, err := store.put(secondRoute, second); err != nil {
+		t.Fatalf("put after releasing replacement bytes = %v", err)
+	}
+	if want := shrunkBytes + secondBytes; store.totalBytes != want {
+		t.Fatalf("combined byte accounting = %d, want %d", store.totalBytes, want)
+	}
+
+	now = time.UnixMilli(first.ExpiresAtMilliseconds).Add(
+		(protocol.MaximumNativeFriendPresenceLifetimeSeconds +
+			protocol.MaximumNativeFriendPresenceClockSkewSeconds) * time.Second,
+	)
+	if removed := store.cleanup(); removed != 2 {
+		t.Fatalf("cleanup removed %d records", removed)
+	}
+	if len(store.records) != 0 || store.totalBytes != 0 {
+		t.Fatalf("cleanup accounting = %d records, %d bytes", len(store.records), store.totalBytes)
+	}
+}
+
+func TestServiceFriendPresenceBudgetIsIndependentOfRoomLimit(t *testing.T) {
+	configuration := config.Default("test")
+	configuration.MaximumRendezvous = 1
+	configuration.MaximumFriendPresenceRecords = 23
+	configuration.MaximumFriendPresenceBytes = 2 << 20
+	service, err := New(configuration)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(service.Close)
+
+	if service.friendPresence.maximumRecords != 23 ||
+		service.friendPresence.maximumBytes != 2<<20 {
+		t.Fatalf(
+			"friend presence budget = %d records, %d bytes",
+			service.friendPresence.maximumRecords,
+			service.friendPresence.maximumBytes,
+		)
 	}
 }
 

@@ -9,7 +9,13 @@ import (
 	"github.com/tomas-lejdung/Clip/server/internal/protocol"
 )
 
-const maximumNativeFriendPresenceRequestBytes = 24 * 1_024
+const (
+	maximumNativeFriendPresenceRequestBytes = 24 * 1_024
+	// Account for the map entry, strings, timestamps, and struct metadata in
+	// addition to the exact key and opaque payload bytes. This is deliberately
+	// conservative: the budget is a memory-safety boundary, not wire metadata.
+	friendPresenceRecordOverheadBytes = 128
+)
 
 var (
 	errFriendPresenceCapacity = errors.New("friend presence capacity reached")
@@ -22,23 +28,37 @@ type friendPresenceStore struct {
 	mu             sync.Mutex
 	records        map[string]storedFriendPresence
 	maximumRecords int
+	maximumBytes   int
+	totalBytes     int
 	now            func() time.Time
 }
 
 type storedFriendPresence struct {
 	record      protocol.NativeFriendPresence
 	retainUntil time.Time
+	byteSize    int
 }
 
-func newFriendPresenceStore(maximumRecords int) *friendPresenceStore {
+func newFriendPresenceStore(maximumRecords, maximumBytes int) *friendPresenceStore {
 	if maximumRecords < 1 {
 		maximumRecords = 1
+	}
+	if maximumBytes < 1 {
+		maximumBytes = maximumNativeFriendPresenceRequestBytes
 	}
 	return &friendPresenceStore{
 		records:        make(map[string]storedFriendPresence),
 		maximumRecords: maximumRecords,
+		maximumBytes:   maximumBytes,
 		now:            time.Now,
 	}
+}
+
+func friendPresenceStoredBytes(
+	routingID string,
+	record protocol.NativeFriendPresence,
+) int {
+	return friendPresenceRecordOverheadBytes + len(routingID) + len(record.Payload)
 }
 
 func (s *friendPresenceStore) put(
@@ -76,13 +96,25 @@ func (s *friendPresenceStore) put(
 	} else if len(s.records) >= s.maximumRecords {
 		return false, errFriendPresenceCapacity
 	}
+	byteSize := friendPresenceStoredBytes(routingID, record)
+	projectedBytes := s.totalBytes + byteSize
+	if found {
+		projectedBytes -= current.byteSize
+	}
+	// Reject instead of evicting a live record. Routing IDs are opaque and the
+	// server cannot determine which friendship would be safest to discard.
+	if projectedBytes > s.maximumBytes {
+		return false, errFriendPresenceCapacity
+	}
 	s.records[routingID] = storedFriendPresence{
 		record: record,
 		retainUntil: expiresAt.Add(
 			(protocol.MaximumNativeFriendPresenceLifetimeSeconds +
 				protocol.MaximumNativeFriendPresenceClockSkewSeconds) * time.Second,
 		),
+		byteSize: byteSize,
 	}
+	s.totalBytes = projectedBytes
 	return !found, nil
 }
 
@@ -115,6 +147,7 @@ func (s *friendPresenceStore) cleanupLocked(now time.Time) int {
 	for routingID, stored := range s.records {
 		if !stored.retainUntil.After(now) {
 			delete(s.records, routingID)
+			s.totalBytes -= stored.byteSize
 			removed++
 		}
 	}

@@ -76,26 +76,15 @@ public struct ClipLiveShareServerRoomV4Target: Equatable, Sendable {
     endpoint: URL,
     roomID: ClipLiveShareServerRoomV4RoomID
   ) throws {
-    guard Self.isValid(endpoint: endpoint) else {
+    guard
+      let endpoint =
+        ClipLiveShareServerRoomV4ServiceEndpointPolicy
+        .normalizedEndpoint(endpoint)
+    else {
       throw ClipLiveShareServerRoomV4TransportError.invalidEndpoint
     }
     self.endpoint = endpoint
     self.roomID = roomID
-  }
-
-  private static func isValid(endpoint: URL) -> Bool {
-    guard
-      let components = URLComponents(url: endpoint, resolvingAgainstBaseURL: false),
-      let scheme = components.scheme?.lowercased(),
-      scheme == "http" || scheme == "https",
-      components.host != nil,
-      components.user == nil,
-      components.password == nil,
-      components.query == nil,
-      components.fragment == nil,
-      components.path.isEmpty || components.path == "/"
-    else { return false }
-    return true
   }
 }
 

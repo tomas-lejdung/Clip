@@ -37,6 +37,35 @@ test("browser parser opens the canonical Swift v4 invite", async () => {
   );
 });
 
+test("browser parser requires TLS except on exact loopback HTTP hosts", async () => {
+  for (const host of ["localhost:8080", "127.0.0.1:8080", "[::1]:8080"]) {
+    const loopback = new URL(fixture.url);
+    loopback.protocol = "http:";
+    loopback.host = host;
+    assert.equal(
+      (await openClipServerRoomV4Invite(loopback)).roomId,
+      fixture.roomId,
+    );
+  }
+
+  for (const host of [
+    "mesh.clip.example",
+    "localhost.example.com",
+    "dev.localhost",
+    "localhost.",
+    "127.0.0.2",
+    "[::2]",
+  ]) {
+    const insecure = new URL(fixture.url);
+    insecure.protocol = "http:";
+    insecure.host = `${host}:8080`;
+    await assert.rejects(
+      openClipServerRoomV4Invite(insecure),
+      /Invalid Clip room service URL/u,
+    );
+  }
+});
+
 test("browser parser binds ciphertext to the human room code", async () => {
   const invite = new URL(fixture.url);
   invite.pathname = "/MESH4APQ";

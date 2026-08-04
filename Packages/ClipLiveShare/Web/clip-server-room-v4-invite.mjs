@@ -26,7 +26,7 @@ const textDecoder = new TextDecoder("utf-8", { fatal: true });
 export async function openClipServerRoomV4Invite(value) {
   const url = value instanceof URL ? new URL(value.href) : new URL(value);
   if (
-    (url.protocol !== "https:" && url.protocol !== "http:") ||
+    !isTrustedServiceTransport(url) ||
     url.username !== "" ||
     url.password !== "" ||
     url.search !== ""
@@ -120,6 +120,18 @@ export async function openClipServerRoomV4Invite(value) {
     roomAgreementSecret: payload.roomAgreementSecret,
     admissionCapability: payload.admissionCapability,
   });
+}
+
+function isTrustedServiceTransport(url) {
+  if (url.protocol === "https:") return true;
+  if (url.protocol !== "http:") return false;
+  // Plain HTTP exists only for a developer server on the exact loopback
+  // hosts supported by the native client and deployed web viewer. Do not
+  // accept localhost suffixes: names such as localhost.example.com are
+  // ordinary remote hosts and would expose the viewer code to interception.
+  return url.hostname === "localhost"
+    || url.hostname === "127.0.0.1"
+    || url.hostname === "[::1]";
 }
 
 function inviteAuthenticatedData(roomCode) {

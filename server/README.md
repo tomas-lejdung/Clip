@@ -151,6 +151,9 @@ or compatibility endpoint for older protocols.
 | `CLIP_SERVER_MAXIMUM_QUEUED_BYTES_PER_SOCKET` | `2097152` | Per-socket queued application-frame budget. |
 | `CLIP_SERVER_MAXIMUM_QUEUED_BYTES_TOTAL` | `67108864` | Process-wide queued-frame budget. |
 | `CLIP_SERVER_MAXIMUM_TRACKED_SOURCES` | `4096` | In-memory source-admission record ceiling. |
+| `CLIP_SERVER_MAXIMUM_FRIEND_PRESENCE_RECORDS` | `16384` | Independent in-memory friend-presence record ceiling. |
+| `CLIP_SERVER_MAXIMUM_FRIEND_PRESENCE_BYTES` | `67108864` | Process-wide budget for opaque friend-presence records. |
+| `CLIP_SERVER_MAXIMUM_ISSUED_HANDLES_PER_ROOM` | `256` | Lifetime ceiling for participant handles issued by one room. Reserved handles are never reused. |
 | `CLIP_SERVER_TRUSTED_PROXY_CIDRS` | empty | Proxies allowed to supply `X-Forwarded-For`. |
 | `CLIP_SERVER_ALLOWED_ORIGINS` | same origin | Additional WebSocket origins. |
 | `CLIP_SERVER_ICE_SERVERS_JSON` | Google STUN | STUN/TURN configuration returned by discovery. |

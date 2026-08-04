@@ -33,6 +33,7 @@ type RoomConfiguration struct {
 	CandidateIdleTimeout time.Duration
 	MaximumRooms         int
 	MaximumPending       int
+	MaximumIssuedHandles int
 	Now                  func() time.Time
 	Random               func([]byte) error
 }
@@ -119,6 +120,9 @@ func NewRoomHub(configuration RoomConfiguration) *RoomHub {
 	}
 	if configuration.MaximumPending <= 0 {
 		configuration.MaximumPending = protocol.MaximumPendingCandidates
+	}
+	if configuration.MaximumIssuedHandles <= 0 {
+		configuration.MaximumIssuedHandles = 256
 	}
 	if configuration.Now == nil {
 		configuration.Now = time.Now
@@ -305,7 +309,9 @@ func (h *RoomHub) OpenCandidate(roomID, connectionID string, peer Peer) (RoomSes
 		h.mu.Unlock()
 		return RoomSession{}, ErrRoomCreatorOffline
 	}
-	if len(room.members) >= protocol.MaximumNativeRoomMembers || len(room.pending) >= h.config.MaximumPending {
+	if len(room.members) >= protocol.MaximumNativeRoomMembers ||
+		len(room.pending) >= h.config.MaximumPending ||
+		len(room.usedHandles) >= h.config.MaximumIssuedHandles {
 		h.mu.Unlock()
 		return RoomSession{}, ErrRoomCapacity
 	}

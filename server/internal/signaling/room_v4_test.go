@@ -219,6 +219,36 @@ func TestRoomHubBuildsCompleteFourParticipantMeshWithoutReplacingExistingPairs(t
 	}
 }
 
+func TestRoomHubRejectsCandidateHandleChurnAtConfiguredLimit(t *testing.T) {
+	clock := &hubClock{now: time.Unix(25_000, 0)}
+	hub := newRoomTestHub(clock)
+	// The creator consumes one issued handle. Disconnected or denied candidate
+	// handles intentionally remain reserved for the room lifetime so an old
+	// encrypted identity can never be confused with a later participant.
+	hub.config.MaximumIssuedHandles = 3
+	roomID := roomTestID(72)
+	attachRoomCreator(t, hub, roomID, roomTestOwner(72), &fakePeer{})
+
+	for _, connectionID := range []string{"candidate-churn-1", "candidate-churn-2"} {
+		session, err := hub.OpenCandidate(roomID, connectionID, &fakePeer{})
+		if err != nil {
+			t.Fatalf("OpenCandidate(%s) = %v", connectionID, err)
+		}
+		hub.Detach(session)
+	}
+	if _, err := hub.OpenCandidate(roomID, "candidate-over-limit", &fakePeer{}); !errors.Is(err, ErrRoomCapacity) {
+		t.Fatalf("candidate beyond handle budget error = %v", err)
+	}
+
+	hub.mu.Lock()
+	issued := len(hub.rooms[roomID].usedHandles)
+	pending := len(hub.rooms[roomID].pending)
+	hub.mu.Unlock()
+	if issued != 3 || pending != 0 {
+		t.Fatalf("room handle accounting = %d issued, %d pending", issued, pending)
+	}
+}
+
 func TestRoomHubInviteAndHandlesStayStableAcrossJoinsAndReconnect(t *testing.T) {
 	t.Parallel()
 	clock := &hubClock{now: time.Unix(30_000, 0)}
