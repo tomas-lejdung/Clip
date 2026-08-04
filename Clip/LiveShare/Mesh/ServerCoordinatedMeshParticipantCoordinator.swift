@@ -126,6 +126,8 @@ final class ServerCoordinatedMeshParticipantCoordinator {
     private var pairFailures:
         [ClipLiveShareNativeV3ParticipantID: String] = [:]
     private var mediaRateEstimator = MeshRoomMediaRateEstimator()
+    private var localCaptureDiagnosticsBySourceID:
+        [String: MeshParticipantCaptureDiagnostics] = [:]
 
     private var accessWord: String?
     private var askBeforeJoining: Bool
@@ -368,6 +370,7 @@ final class ServerCoordinatedMeshParticipantCoordinator {
                 do {
                     try await Task.sleep(for: .seconds(1))
                     guard let self, !isEnding else { return }
+                    await refreshLocalCaptureDiagnostics()
                     _ = try await session.refreshStatistics()
                 } catch is CancellationError {
                     return
@@ -1435,12 +1438,35 @@ final class ServerCoordinatedMeshParticipantCoordinator {
                         capturedAt: statistics.transport.capturedAt,
                         bytes: source.bytes,
                         frames: source.frames,
-                        reportedFramesPerSecond: source.framesPerSecond
+                        reportedFramesPerSecond: source.framesPerSecond,
+                        packets: source.packets,
+                        droppedFrames: source.droppedFrames,
+                        queuePressureDrops: source.queuePressureDrops,
+                        qpSum: source.qpSum,
+                        targetBitrateBps: source.targetBitrateBps,
+                        totalEncodeTimeSeconds:
+                            source.totalEncodeTimeSeconds,
+                        totalPacketSendDelaySeconds:
+                            source.totalPacketSendDelaySeconds,
+                        qualityLimitationResolutionChanges:
+                            source.qualityLimitationResolutionChanges
                     )
                 }
             }
         }
         mediaRateEstimator.record(samples)
+    }
+
+    private func refreshLocalCaptureDiagnostics() async {
+        let diagnostics = await localMedia.captureDiagnostics()
+        let next = Dictionary(
+            uniqueKeysWithValues: diagnostics.map {
+                ($0.sourceInstanceID.rawValue, $0)
+            }
+        )
+        guard next != localCaptureDiagnosticsBySourceID else { return }
+        localCaptureDiagnosticsBySourceID = next
+        publish()
     }
 
     private func mediaDiagnostics(
@@ -1472,6 +1498,25 @@ final class ServerCoordinatedMeshParticipantCoordinator {
                 direction: direction
             )
             let stream = published.descriptor.stream
+            let rate = mediaRateEstimator.rates[key]
+            let captureDiagnostics = direction == .outgoing
+                ? localCaptureDiagnosticsBySourceID[sourceID] : nil
+            let configuredMaximumBitrate = direction == .outgoing
+                ? localPublication.settings.quality
+                    .maximumBitrateBitsPerSecond : nil
+            let advancedSettings = localPublication.settings
+                .advancedVideoSettings.settings(
+                    for: localPublication.settings.codec.codec
+                )
+            let configuredMinimumBitrate = configuredMaximumBitrate.flatMap {
+                maximum in
+                advancedSettings.minimumBitratePercent.map {
+                    maximum * $0 / 100
+                }
+            }
+            let recipientName = roomSnapshot?.verifiedRoom?.members.first {
+                $0.descriptor.participantID == participantID
+            }?.descriptor.displayName
             let title = !stream.windowName.isEmpty
                 ? stream.windowName
                 : !stream.appName.isEmpty
@@ -1481,22 +1526,78 @@ final class ServerCoordinatedMeshParticipantCoordinator {
                 sourceIdentifier: sourceID,
                 sourceName: title,
                 direction: direction,
+                recipientID:
+                    direction == .outgoing
+                        ? participantID.rawValue : nil,
+                recipientName:
+                    direction == .outgoing ? recipientName : nil,
                 codec: source.codec,
                 width: source.width,
                 height: source.height,
                 framesPerSecond:
                     source.framesPerSecond > 0
                         ? source.framesPerSecond
-                        : mediaRateEstimator.rates[key]?.framesPerSecond ?? 0,
-                bitsPerSecond:
-                    mediaRateEstimator.rates[key]?.bitsPerSecond ?? 0,
+                        : rate?.framesPerSecond ?? 0,
+                bitsPerSecond: rate?.bitsPerSecond ?? 0,
                 droppedFrames: source.droppedFrames,
                 queuePressureDrops: source.queuePressureDrops,
                 queuePressureReason: source.queuePressureReason,
                 packetsLost: source.packetsLost,
                 processingLatencyMilliseconds:
-                    source.processingLatencyMilliseconds
+                    source.processingLatencyMilliseconds,
+                targetBitrateBps: rate?.targetBitrateBps,
+                averageQuantizer: rate?.averageQuantizer,
+                recentEncodeTimeMilliseconds:
+                    rate?.averageEncodeTimeMilliseconds,
+                recentSendDelayMilliseconds:
+                    rate?.averageSendDelayMilliseconds,
+                recentDroppedFrames: rate?.droppedFrames ?? 0,
+                recentQueuePressureDrops:
+                    rate?.queuePressureDrops ?? 0,
+                qualityLimitationResolutionChanges:
+                    rate?.qualityLimitationResolutionChanges ?? 0,
+                sourcePointWidth: stream.sourcePointWidth,
+                sourcePointHeight: stream.sourcePointHeight,
+                sourcePixelWidth:
+                    captureDiagnostics?.capture.sourcePixelWidth,
+                sourcePixelHeight:
+                    captureDiagnostics?.capture.sourcePixelHeight,
+                captureWidth: captureDiagnostics?.capture.video.width,
+                captureHeight: captureDiagnostics?.capture.video.height,
+                capturePixelFormat: captureDiagnostics.map {
+                    Self.capturePixelFormatDescription(
+                        $0.capture.video.pixelFormat
+                    )
+                },
+                manifestWidth: stream.width,
+                manifestHeight: stream.height,
+                configuredMinimumBitratePerRecipientBps:
+                    configuredMinimumBitrate,
+                configuredMaximumBitratePerRecipientBps:
+                    configuredMaximumBitrate,
+                bytesSent: source.bytes,
+                captureDeliveredFrames:
+                    captureDiagnostics?.deliveredFrames ?? 0,
+                captureBackpressureDrops:
+                    captureDiagnostics?.backpressureDrops ?? 0,
+                qualityLimitationReasons:
+                    [source.queuePressureReason].compactMap { $0 }
             )
+        }
+    }
+
+    private static func capturePixelFormatDescription(
+        _ pixelFormat: CaptureVideoPixelFormat
+    ) -> String {
+        switch pixelFormat {
+        case .bgra:
+            "BGRA"
+        case .rec709BGRA:
+            "BGRA · Rec.709"
+        case .rec709VideoRange:
+            "NV12 · Rec.709 video range"
+        case .rec709FullRange:
+            "NV12 · Rec.709 full range"
         }
     }
 

@@ -422,6 +422,9 @@ private final class ServerCoordinatedMeshLocalMediaBridge {
             activeCaptures: { [weak self] in
                 await self?.capturePublisher?.activeSources ?? []
             },
+            captureDiagnostics: { [weak self] in
+                await self?.capturePublisher?.diagnostics() ?? []
+            },
             cursorSnapshot: { [weak self] in
                 self?.publicationController?.cursorSnapshot
             },

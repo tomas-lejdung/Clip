@@ -264,6 +264,9 @@ struct ServerCoordinatedMeshParticipantLocalMediaClient {
     var activeCaptures: () async -> [MeshParticipantCapturePublisher.ActiveSource] = {
         []
     }
+    var captureDiagnostics: () async -> [MeshParticipantCaptureDiagnostics] = {
+        []
+    }
     var cursorSnapshot: () -> MeshParticipantLocalCursorSnapshot? = { nil }
     var settle: () async -> Void = {}
     var failures: () async -> AsyncStream<MeshParticipantCaptureFailure> = {

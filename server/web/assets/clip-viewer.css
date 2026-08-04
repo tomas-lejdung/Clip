@@ -98,7 +98,7 @@ button:focus-visible, select:focus-visible, input:focus-visible { outline: 2px s
 .terminal-actions button { min-width: 112px; }
 .unsupported { position: fixed; z-index: 10; top: 90px; left: 50%; transform: translateX(-50%); width: min(620px, calc(100% - 36px)); display: grid; gap: 4px; padding: 13px 16px; border-radius: 12px; color: #ffd59a; background: rgba(95,58,8,.82); border: 1px solid rgba(255,159,10,.28); backdrop-filter: blur(18px); text-align: center; }
 .unsupported span { font-size: 13px; opacity: .86; }
-.controlbar { position: fixed; z-index: 20; bottom: 16px; left: 50%; transform: translateX(-50%); width: min(900px, calc(100% - 36px)); min-height: 58px; padding: 10px; gap: 10px; background: rgba(20,20,23,.78); border: 1px solid var(--border); border-radius: 17px; backdrop-filter: blur(24px) saturate(150%); box-shadow: 0 16px 48px rgba(0,0,0,.36); transition: opacity 220ms ease, transform 220ms ease; }
+.controlbar { position: fixed; z-index: 20; bottom: 16px; left: 50%; transform: translateX(-50%); width: fit-content; max-width: calc(100% - 36px); min-height: 58px; padding: 10px; gap: 10px; background: rgba(20,20,23,.78); border: 1px solid var(--border); border-radius: 17px; backdrop-filter: blur(24px) saturate(150%); box-shadow: 0 16px 48px rgba(0,0,0,.36); transition: opacity 220ms ease, transform 220ms ease; }
 .hud-hidden .topbar { opacity: 0; transform: translateY(-20px); pointer-events: none; }
 .hud-hidden .controlbar { opacity: 0; transform: translateX(-50%) translateY(22px); pointer-events: none; }
 .segmented { display: flex; padding: 3px; border-radius: 10px; background: rgba(255,255,255,.06); }
@@ -106,7 +106,6 @@ button:focus-visible, select:focus-visible, input:focus-visible { outline: 2px s
 .segmented button.active { color: var(--text); background: rgba(255,255,255,.14); }
 .select-label { display: flex; align-items: center; gap: 7px; color: var(--secondary); font-size: 13px; }
 select { height: 34px; max-width: 190px; padding: 0 28px 0 10px; border-radius: 9px; color: var(--text); background: var(--raised); border: 1px solid var(--border); }
-.source-summary { flex: 1; min-width: 0; color: var(--secondary); font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-align: center; }
 #master-volume { width: 92px; accent-color: var(--blue); }
 .controlbar [data-tooltip]::after { top: auto; bottom: calc(100% + 9px); transform: translate(-50%, 2px); }
 .controlbar [data-tooltip]:focus-visible::after { transform: translate(-50%, 0); }
@@ -146,33 +145,34 @@ select { height: 34px; max-width: 190px; padding: 0 28px 0 10px; border-radius: 
 .hud-hidden .native-minimap { bottom: 16px; }
 .native-minimap canvas { display: block; border-radius: 4px; opacity: .76; }
 #native-minimap-viewport { position: absolute; border: 2px solid var(--blue); border-radius: 2px; background: rgba(10,132,255,.14); transform: translate(5px, 5px); }
-.side-panel { position: fixed; z-index: 30; right: 18px; top: 88px; bottom: 88px; width: min(370px, calc(100% - 36px)); padding: 14px; overflow-y: auto; border: 1px solid var(--border); border-radius: 17px; background: rgba(25,25,28,.91); backdrop-filter: blur(28px) saturate(150%); box-shadow: 0 24px 70px rgba(0,0,0,.55); }
+.side-panel { position: fixed; z-index: 30; right: 18px; top: 88px; bottom: 88px; width: min(370px, calc(100% - 36px)); padding: 14px; overflow-x: hidden; overflow-y: auto; border: 1px solid var(--border); border-radius: 17px; background: rgba(25,25,28,.91); backdrop-filter: blur(28px) saturate(150%); box-shadow: 0 24px 70px rgba(0,0,0,.55); }
 .panel-heading { justify-content: space-between; padding: 3px 2px 12px; }
 .panel-heading div { display: grid; }
 .panel-actions { display: flex !important; gap: 7px; }
-.diagnostics-panel { width: min(450px, calc(100% - 36px)); }
-.diagnostics-summary { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; margin-bottom: 12px; }
-.diagnostics-summary > div { display: grid; gap: 2px; padding: 10px 11px; border-radius: 10px; background: rgba(255,255,255,.055); }
-.diagnostics-summary strong { font-size: 15px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
-.diagnostics-summary span { color: var(--secondary); font-size: 11px; }
+.diagnostics-panel { bottom: auto; width: min(420px, calc(100% - 36px)); max-height: calc(100% - 176px); }
 .diagnostics-list { display: grid; gap: 10px; }
 .diagnostics-peer { overflow: hidden; border: 1px solid var(--border); border-radius: 13px; background: rgba(255,255,255,.045); }
-.diagnostics-peer-heading { display: flex; align-items: center; gap: 9px; padding: 11px 12px; border-bottom: 1px solid var(--border); }
+.diagnostics-peer-heading { display: flex; align-items: center; gap: 9px; padding: 9px 11px; border-bottom: 1px solid var(--border); }
 .diagnostics-peer-name { display: grid; min-width: 0; flex: 1; }
 .diagnostics-peer-name strong { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .diagnostics-peer-name span { margin-top: 2px; color: var(--secondary); font-size: 11px; text-transform: capitalize; }
-.diagnostics-facts { display: grid; grid-template-columns: auto 1fr; gap: 5px 12px; margin: 0; padding: 10px 12px; font-size: 12px; }
-.diagnostics-facts dt { color: var(--secondary); }
-.diagnostics-facts dd { margin: 0; text-align: right; overflow-wrap: anywhere; }
+.diagnostics-facts { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; margin: 0; padding: 8px 11px; }
+.diagnostics-fact { display: grid; gap: 2px; min-width: 0; }
+.diagnostics-facts dt { color: var(--secondary); font-size: 10px; }
+.diagnostics-facts dd { margin: 0; overflow: hidden; font-size: 11px; font-weight: 650; white-space: nowrap; text-overflow: ellipsis; }
+.diagnostics-fact:first-child dd { overflow: visible; line-height: 1.25; overflow-wrap: anywhere; white-space: normal; text-overflow: clip; }
 .diagnostics-error { margin: 0 12px 10px; padding: 8px 9px; border-radius: 8px; color: #ffd59a; background: rgba(255,159,10,.11); font-size: 11px; line-height: 1.35; overflow-wrap: anywhere; }
 .diagnostics-tracks { border-top: 1px solid var(--border); }
 .diagnostics-tracks > p, .diagnostics-empty { margin: 0; padding: 14px 12px; color: var(--secondary); font-size: 12px; }
-.diagnostics-track { padding: 10px 12px 11px; }
-.diagnostics-track + .diagnostics-track { border-top: 1px solid var(--border); }
+.diagnostics-audio-track { display: flex; align-items: center; justify-content: space-between; gap: 10px; min-width: 0; padding: 8px 11px; }
+.diagnostics-audio-track strong { min-width: 0; overflow: hidden; font-size: 12px; white-space: nowrap; text-overflow: ellipsis; }
+.diagnostics-audio-track span { flex: 0 0 auto; color: var(--secondary); font-size: 11px; }
+.diagnostics-audio-track + .diagnostics-track, .diagnostics-track + .diagnostics-track { border-top: 1px solid var(--border); }
+.diagnostics-track { padding: 8px 11px 9px; }
 .diagnostics-track-heading { display: flex; justify-content: space-between; gap: 10px; align-items: baseline; }
 .diagnostics-track-heading strong { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 13px; }
 .diagnostics-track-heading span { flex: 0 0 auto; color: var(--secondary); font-size: 11px; }
-.diagnostics-track-metrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 7px; margin-top: 8px; }
+.diagnostics-track-metrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; margin-top: 6px; }
 .diagnostics-track-metrics > span { display: grid; gap: 2px; min-width: 0; }
 .diagnostics-track-metrics strong { overflow: hidden; font-size: 12px; white-space: nowrap; text-overflow: ellipsis; }
 .diagnostics-track-metrics small { color: var(--secondary); font-size: 10px; }
@@ -193,7 +193,6 @@ select { height: 34px; max-width: 190px; padding: 0 28px 0 10px; border-radius: 
   .top-actions { gap: 5px; }
   .top-actions button:not(.icon-only) { padding: 0 9px; font-size: 12px; }
   .controlbar { bottom: 8px; width: calc(100% - 16px); flex-wrap: wrap; }
-  .source-summary { order: 3; flex-basis: 100%; }
   .select-label { margin-left: auto; }
   .source-filmstrip { bottom: 126px; max-width: calc(100% - 16px); }
   .source-thumbnail { width: 104px; height: 60px; }

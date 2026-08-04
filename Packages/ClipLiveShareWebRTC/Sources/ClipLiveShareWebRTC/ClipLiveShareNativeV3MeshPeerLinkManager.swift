@@ -180,6 +180,17 @@ public struct ClipLiveShareNativeV3VideoSourceStatistics:
   public let queuePressureDrops: UInt64
   public let packets: UInt64
   public let packetsLost: Int64
+  /// Cumulative quantizer total for outgoing encoded frames. Callers derive
+  /// a recent average from deltas against `frames` from a matching sample.
+  public let qpSum: UInt64?
+  /// libwebrtc's current outbound codec target, in bits per second.
+  public let targetBitrateBps: Double?
+  /// Cumulative encoder time for outgoing video, in seconds.
+  public let totalEncodeTimeSeconds: Double?
+  /// Cumulative time outbound RTP packets waited before socket handoff.
+  public let totalPacketSendDelaySeconds: Double?
+  /// Cumulative sender resolution adaptations reported by libwebrtc.
+  public let qualityLimitationResolutionChanges: UInt64?
   /// Average encoder time for outgoing video, or jitter-buffer delay for
   /// incoming video. This is not presented as end-to-end latency.
   public let processingLatencyMilliseconds: Double?
@@ -199,6 +210,11 @@ public struct ClipLiveShareNativeV3VideoSourceStatistics:
     queuePressureDrops: UInt64 = 0,
     packets: UInt64 = 0,
     packetsLost: Int64 = 0,
+    qpSum: UInt64? = nil,
+    targetBitrateBps: Double? = nil,
+    totalEncodeTimeSeconds: Double? = nil,
+    totalPacketSendDelaySeconds: Double? = nil,
+    qualityLimitationResolutionChanges: UInt64? = nil,
     processingLatencyMilliseconds: Double? = nil,
     queuePressureReason: String? = nil
   ) {
@@ -215,6 +231,18 @@ public struct ClipLiveShareNativeV3VideoSourceStatistics:
     self.queuePressureDrops = queuePressureDrops
     self.packets = packets
     self.packetsLost = max(0, packetsLost)
+    self.qpSum = qpSum
+    self.targetBitrateBps = targetBitrateBps.flatMap {
+      $0.isFinite && $0 >= 0 ? $0 : nil
+    }
+    self.totalEncodeTimeSeconds = totalEncodeTimeSeconds.flatMap {
+      $0.isFinite && $0 >= 0 ? $0 : nil
+    }
+    self.totalPacketSendDelaySeconds = totalPacketSendDelaySeconds.flatMap {
+      $0.isFinite && $0 >= 0 ? $0 : nil
+    }
+    self.qualityLimitationResolutionChanges =
+      qualityLimitationResolutionChanges
     self.processingLatencyMilliseconds =
       processingLatencyMilliseconds.flatMap {
         $0.isFinite ? max(0, $0) : nil

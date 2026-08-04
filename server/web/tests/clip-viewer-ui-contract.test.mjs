@@ -74,7 +74,7 @@ test("HUD and window navigation preserve the old interaction cues", () => {
 test("Web diagnostics are reachable from the top HUD, not the bottom controlbar", () => {
   for (const identifier of [
     "diagnostics-button", "diagnostics-panel", "diagnostics-copy",
-    "diagnostics-summary", "diagnostics-list",
+    "diagnostics-list",
   ]) assert.match(html, new RegExp(`id="${identifier}"`, "u"));
   const topActions = elementWithID("div", "top-actions");
   const controlbar = elementWithID("nav", "controlbar");
@@ -85,6 +85,14 @@ test("Web diagnostics are reachable from the top HUD, not the bottom controlbar"
   assert.match(script, /!elements\.participants_panel\.hidden \|\| !elements\.diagnostics_panel\.hidden/u);
   assert.match(script, /navigator\.clipboard\.writeText\(formatWebDiagnostics\(latestDiagnostics\)\)/u);
   assert.match(stylesheet, /\.diagnostics-panel/u);
+  assert.doesNotMatch(html, /id="diagnostics-summary"/u);
+  assert.doesNotMatch(script, /diagnosticMetric\(/u);
+  assert.match(stylesheet, /\.side-panel[^}]*overflow-x:\s*hidden/su);
+  assert.match(stylesheet, /\.diagnostics-panel[^}]*bottom:\s*auto[^}]*max-height:/su);
+  assert.match(stylesheet, /\.diagnostics-fact:first-child dd[^}]*overflow-wrap:\s*anywhere[^}]*white-space:\s*normal/su);
+  assert.match(script, /function diagnosticAudioTrack\(track\)[\s\S]*track\.codec[\s\S]*track\.bitrateKbps/u);
+  assert.match(script, /const audioTracks = peer\.tracks\.filter[\s\S]*const videoTracks = peer\.tracks\.filter/u);
+  assert.match(stylesheet, /\.diagnostics-audio-track/u);
   assert.doesNotMatch(html, /Statistics come from this browser\. Values that its WebRTC implementation does not expose are shown as unavailable\./u);
 });
 
@@ -116,9 +124,20 @@ test("participant count updates the badge and participant control description", 
   assert.match(script, /function syncParticipantsControl\(count[\s\S]*setControlLabel\(elements\.participants_button,[\s\S]*summary\)/u);
 });
 
-test("audio permission and destructive room actions retain explicit text labels", () => {
-  assert.match(elementWithID("button", "audio-unlock"), />Enable Audio<\/button>$/u);
+test("the master mute control is the single browser audio-unlock entry point", () => {
+  assert.doesNotMatch(html, /id="audio-unlock"|>Enable Audio<\/button>/u);
+  assert.match(script, /elements\.master_mute\.addEventListener\("click", toggleMasterAudio\)/u);
+  assert.match(script, /function toggleMasterAudio\(\)[\s\S]*audioUnlocked = true;[\s\S]*masterMuted = false;[\s\S]*syncAudio\(\)/u);
+  assert.match(script, /audio\.play\(\)\.catch\(\(\) => \{[\s\S]*audioUnlocked = false;[\s\S]*masterMuted = true;/u);
   assert.match(elementWithID("button", "leave-button"), />Leave<\/button>$/u);
+});
+
+test("the bottom HUD does not repeat the selected source next to Follow", () => {
+  const controlbar = elementWithID("nav", "controlbar");
+  assert.doesNotMatch(controlbar, /id="source-summary"|class="source-summary"/u);
+  assert.doesNotMatch(script, /source_summary/u);
+  assert.doesNotMatch(stylesheet, /\.source-summary/u);
+  assert.match(stylesheet, /\.controlbar[^}]*width:\s*fit-content/su);
 });
 
 test("top-left HUD is a compact accessible room status without redundant branding", () => {

@@ -48,7 +48,6 @@
           <strong id="room-label" class="room-code" aria-label="Room code">…</strong>
         </div>
         <div id="top-actions" class="top-actions">
-          <button id="audio-unlock" class="primary compact" type="button">Enable Audio</button>
           <button id="participants-button" class="icon-button icon-only" type="button" aria-label="Show participants, 0 participants" aria-controls="participants-panel" aria-expanded="false" data-tooltip="Participants">
             <svg class="control-icon" aria-hidden="true" focusable="false"><use href="#icon-people"></use></svg>
             <span id="participant-count" class="participant-count-badge" aria-hidden="true">0</span>
@@ -100,7 +99,6 @@
           <button type="button" data-scale="fill">Fill</button>
         </div>
         <label class="select-label">Follow <select id="follow-select"><option value="manual">Off · Manual</option></select></label>
-        <div id="source-summary" class="source-summary">Waiting for a shared window</div>
         <button id="master-mute" type="button" class="icon-button icon-only" aria-label="Unmute audio" aria-pressed="true" data-tooltip="Unmute audio">
           <svg class="control-icon" aria-hidden="true" focusable="false"><use href="#icon-volume-muted"></use></svg>
         </button>
@@ -119,7 +117,7 @@
 
       <aside id="diagnostics-panel" class="side-panel diagnostics-panel" hidden>
         <div class="panel-heading">
-          <div><strong>Diagnostics</strong><span>Live browser and peer statistics</span></div>
+          <div><strong>Diagnostics</strong></div>
           <div class="panel-actions">
             <button id="diagnostics-copy" class="icon-button icon-only" type="button" aria-label="Copy diagnostics" data-tooltip="Copy diagnostics">
               <svg class="control-icon" aria-hidden="true" focusable="false"><use href="#icon-copy"></use></svg>
@@ -129,7 +127,6 @@
             </button>
           </div>
         </div>
-        <div id="diagnostics-summary" class="diagnostics-summary"></div>
         <div id="diagnostics-list" class="diagnostics-list"></div>
       </aside>
     </main>

@@ -934,7 +934,7 @@ struct MeshRoomPopoverView: View {
         let linkCount = model.snapshot.peerDiagnostics.count
         let sourceCount =
             model.snapshot.outgoingDiagnostics.count
-                + model.snapshot.remoteParticipants.reduce(0) {
+                + model.snapshot.diagnosticRemoteParticipants.reduce(0) {
                     $0 + $1.diagnostics.count
                 }
         return String(
@@ -1215,7 +1215,7 @@ struct MeshRoomPopoverView: View {
             }
 
             ClipPopoverSection(String(localized: "Your Publishing")) {
-                diagnosticsRows(
+                publishingDiagnosticsRows(
                     model.snapshot.outgoingDiagnostics,
                     emptyMessage: String(
                         localized:
@@ -1224,7 +1224,8 @@ struct MeshRoomPopoverView: View {
                 )
             }
 
-            ForEach(model.snapshot.remoteParticipants) { participant in
+            ForEach(model.snapshot.diagnosticRemoteParticipants) {
+                participant in
                 ClipPopoverSection(
                     String(localized: "From \(participant.displayName)")
                 ) {
@@ -1239,6 +1240,26 @@ struct MeshRoomPopoverView: View {
             }
         }
         .accessibilityIdentifier("clip.meshRoom.diagnostics")
+    }
+
+    private func publishingDiagnosticsRows(
+        _ rows: [MeshRoomMediaDiagnosticsSnapshot],
+        emptyMessage: String
+    ) -> some View {
+        Group {
+            if rows.isEmpty {
+                MeshRoomEmptyCardMessage(emptyMessage)
+            } else {
+                VStack(spacing: 8) {
+                    ForEach(rows) { diagnostics in
+                        MeshRoomPublishingDiagnosticsCard(
+                            diagnostics: diagnostics
+                        )
+                    }
+                }
+                .padding(8)
+            }
+        }
     }
 
     private func diagnosticsRows(
@@ -2018,6 +2039,559 @@ private struct MeshRoomSettingRow<Content: View>: View {
     }
 }
 
+struct MeshRoomPublishingDiagnosticsPresentation: Equatable {
+    struct Item: Equatable, Identifiable {
+        let id: String
+        let label: String
+        let value: String
+
+        init(_ label: String, value: String) {
+            id = label
+            self.label = label
+            self.value = value
+        }
+    }
+
+    let geometry: [Item]
+    let headlineMetrics: [Item]
+    let detailMetrics: [Item]
+    let qualitySummary: String?
+    let recipientCount: Int
+
+    init(_ diagnostics: MeshRoomMediaDiagnosticsSnapshot) {
+        var geometry: [Item] = []
+        if let source = Self.sourceGeometry(diagnostics) {
+            geometry.append(
+                Item(String(localized: "Source"), value: source)
+            )
+        }
+        if let capture = Self.captureGeometry(diagnostics) {
+            geometry.append(
+                Item(String(localized: "Capture"), value: capture)
+            )
+        }
+        if let encoded = Self.encodedGeometry(diagnostics) {
+            geometry.append(
+                Item(String(localized: "Encoded"), value: encoded)
+            )
+        }
+        self.geometry = geometry
+
+        var headlineMetrics: [Item] = []
+        if let codec = diagnostics.codec?.nilIfEmpty {
+            headlineMetrics.append(
+                Item(String(localized: "Codec"), value: codec)
+            )
+        }
+        headlineMetrics.append(
+            Item(
+                String(localized: "FPS"),
+                value: Self.formatDecimal(diagnostics.framesPerSecond)
+            )
+        )
+        if let quantizer = diagnostics.averageQuantizer {
+            headlineMetrics.append(
+                Item(
+                    String(localized: "QP"),
+                    value: Self.formatDecimal(quantizer)
+                )
+            )
+        }
+        headlineMetrics.append(
+            Item(
+                String(localized: "Actual"),
+                value: formatBitrate(diagnostics.bitsPerSecond)
+            )
+        )
+        self.headlineMetrics = headlineMetrics
+
+        var detailMetrics: [Item] = []
+        if let target = diagnostics.targetBitrateBps {
+            detailMetrics.append(
+                Item(
+                    String(localized: "Target"),
+                    value: formatBitrate(target)
+                )
+            )
+        }
+        if let bitrateRange = Self.configuredBitrateRange(diagnostics) {
+            detailMetrics.append(
+                Item(
+                    String(localized: "Per Recipient"),
+                    value: bitrateRange
+                )
+            )
+        }
+        if diagnostics.bytesSent > 0 {
+            detailMetrics.append(
+                Item(
+                    String(localized: "Sent"),
+                    value: formatByteCount(diagnostics.bytesSent)
+                )
+            )
+        }
+        if diagnostics.captureDeliveredFrames > 0 {
+            detailMetrics.append(
+                Item(
+                    String(localized: "Captured"),
+                    value: diagnostics.captureDeliveredFrames.formatted()
+                )
+            )
+        }
+        if diagnostics.captureBackpressureDrops > 0 {
+            detailMetrics.append(
+                Item(
+                    String(localized: "Capture Drops"),
+                    value: diagnostics.captureBackpressureDrops.formatted()
+                )
+            )
+        }
+        if diagnostics.recentDroppedFrames > 0 {
+            detailMetrics.append(
+                Item(
+                    String(localized: "Recent Drops"),
+                    value: diagnostics.recentDroppedFrames.formatted()
+                )
+            )
+        } else if diagnostics.droppedFrames > 0 {
+            detailMetrics.append(
+                Item(
+                    String(localized: "Encoder Drops"),
+                    value: diagnostics.droppedFrames.formatted()
+                )
+            )
+        }
+        if diagnostics.recentQueuePressureDrops > 0 {
+            detailMetrics.append(
+                Item(
+                    String(localized: "Recent Queue"),
+                    value: diagnostics.recentQueuePressureDrops.formatted()
+                )
+            )
+        } else if diagnostics.queuePressureDrops > 0 {
+            detailMetrics.append(
+                Item(
+                    String(localized: "Queue Drops"),
+                    value: diagnostics.queuePressureDrops.formatted()
+                )
+            )
+        }
+        if let encode = diagnostics.recentEncodeTimeMilliseconds {
+            detailMetrics.append(
+                Item(
+                    String(localized: "Encode"),
+                    value: Self.formatMilliseconds(encode)
+                )
+            )
+        }
+        if let sendQueue = diagnostics.recentSendDelayMilliseconds {
+            detailMetrics.append(
+                Item(
+                    String(localized: "Send Queue"),
+                    value: Self.formatMilliseconds(sendQueue)
+                )
+            )
+        }
+        if diagnostics.packetsLost > 0 {
+            detailMetrics.append(
+                Item(
+                    String(localized: "Packets Lost"),
+                    value: diagnostics.packetsLost.formatted()
+                )
+            )
+        }
+        self.detailMetrics = detailMetrics
+        qualitySummary = Self.qualitySummary(diagnostics)
+        recipientCount = diagnostics.recipientEdges.count
+    }
+
+    private static func sourceGeometry(
+        _ diagnostics: MeshRoomMediaDiagnosticsSnapshot
+    ) -> String? {
+        let points = dimensions(
+            width: diagnostics.sourcePointWidth,
+            height: diagnostics.sourcePointHeight,
+            suffix: String(localized: "pt")
+        )
+        let pixels = dimensions(
+            width: diagnostics.sourcePixelWidth,
+            height: diagnostics.sourcePixelHeight,
+            suffix: String(localized: "px")
+        )
+        return [points, pixels].compactMap { $0 }.nilIfEmpty?
+            .joined(separator: " · ")
+    }
+
+    private static func captureGeometry(
+        _ diagnostics: MeshRoomMediaDiagnosticsSnapshot
+    ) -> String? {
+        let dimensions = dimensions(
+            width: diagnostics.captureWidth,
+            height: diagnostics.captureHeight
+        )
+        let format = diagnostics.capturePixelFormat?.nilIfEmpty
+        return [dimensions, format].compactMap { $0 }.nilIfEmpty?
+            .joined(separator: " · ")
+    }
+
+    private static func encodedGeometry(
+        _ diagnostics: MeshRoomMediaDiagnosticsSnapshot
+    ) -> String? {
+        let manifest = dimensions(
+            width: diagnostics.manifestWidth,
+            height: diagnostics.manifestHeight
+        )
+        let delivered = dimensions(
+            width: diagnostics.width,
+            height: diagnostics.height
+        )
+        guard let manifest else { return delivered }
+        guard let delivered, delivered != manifest else { return manifest }
+        return String(
+            localized: "\(manifest) manifest · \(delivered) delivered"
+        )
+    }
+
+    private static func configuredBitrateRange(
+        _ diagnostics: MeshRoomMediaDiagnosticsSnapshot
+    ) -> String? {
+        let minimum = diagnostics.configuredMinimumBitratePerRecipientBps
+        let maximum = diagnostics.configuredMaximumBitratePerRecipientBps
+        switch (minimum, maximum) {
+        case let (minimum?, maximum?):
+            if minimum == maximum {
+                return formatBitrate(minimum)
+            }
+            return "\(formatBitrate(minimum))–\(formatBitrate(maximum))"
+        case let (minimum?, nil):
+            return "≥ \(formatBitrate(minimum))"
+        case let (nil, maximum?):
+            return "≤ \(formatBitrate(maximum))"
+        case (nil, nil):
+            return nil
+        }
+    }
+
+    private static func qualitySummary(
+        _ diagnostics: MeshRoomMediaDiagnosticsSnapshot
+    ) -> String? {
+        var seen: Set<String> = []
+        let rawReasons = diagnostics.qualityLimitationReasons
+            + [diagnostics.queuePressureReason].compactMap { $0 }
+        var values = rawReasons.compactMap { raw -> String? in
+            let normalized = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            let key = normalized.lowercased()
+            guard !key.isEmpty, key != "none", seen.insert(key).inserted else {
+                return nil
+            }
+            switch key {
+            case "cpu":
+                return "CPU"
+            default:
+                return normalized.capitalized
+            }
+        }
+        let changes = diagnostics.qualityLimitationResolutionChanges
+        if changes > 0 {
+            values.append(
+                changes == 1
+                    ? String(localized: "1 resolution change")
+                    : String(localized: "\(changes) resolution changes")
+            )
+        }
+        return values.nilIfEmpty?.joined(separator: " · ")
+    }
+
+    private static func dimensions(
+        width: Int?,
+        height: Int?,
+        suffix: String? = nil
+    ) -> String? {
+        guard let width, let height, width > 0, height > 0 else {
+            return nil
+        }
+        return ["\(width)×\(height)", suffix].compactMap { $0 }
+            .joined(separator: " ")
+    }
+
+    private static func dimensions(width: Int, height: Int) -> String? {
+        dimensions(width: Optional(width), height: Optional(height))
+    }
+
+    fileprivate static func formatDecimal(_ value: Double) -> String {
+        value.formatted(.number.precision(.fractionLength(0...1)))
+    }
+
+    fileprivate static func formatMilliseconds(_ value: Double) -> String {
+        "\(formatDecimal(value)) ms"
+    }
+}
+
+private struct MeshRoomPublishingDiagnosticsCard: View {
+    let diagnostics: MeshRoomMediaDiagnosticsSnapshot
+    @State private var recipientsExpanded = false
+
+    private static let metricColumns = [
+        GridItem(.adaptive(minimum: 68), spacing: 8, alignment: .leading)
+    ]
+
+    private var presentation: MeshRoomPublishingDiagnosticsPresentation {
+        MeshRoomPublishingDiagnosticsPresentation(diagnostics)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 9) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text(diagnostics.sourceName)
+                    .font(.subheadline.weight(.semibold))
+                    .lineLimit(1)
+                Spacer(minLength: 4)
+                if presentation.recipientCount > 0 {
+                    Text(recipientCountLabel)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            if !presentation.geometry.isEmpty {
+                VStack(alignment: .leading, spacing: 3) {
+                    ForEach(presentation.geometry) { item in
+                        HStack(alignment: .firstTextBaseline, spacing: 8) {
+                            Text(item.label)
+                                .frame(width: 50, alignment: .leading)
+                                .foregroundStyle(.secondary)
+                            Text(item.value)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                        .font(.caption2.monospacedDigit())
+                        .accessibilityElement(children: .combine)
+                    }
+                }
+                .padding(7)
+                .background(
+                    Color.primary.opacity(0.035),
+                    in: RoundedRectangle(cornerRadius: 7)
+                )
+            }
+
+            LazyVGrid(columns: Self.metricColumns, spacing: 7) {
+                ForEach(presentation.headlineMetrics) { item in
+                    MeshRoomPublishingMetricCell(item: item)
+                }
+            }
+
+            if !presentation.detailMetrics.isEmpty {
+                Divider().opacity(0.55)
+                LazyVGrid(columns: Self.metricColumns, spacing: 7) {
+                    ForEach(presentation.detailMetrics) { item in
+                        MeshRoomPublishingMetricCell(item: item)
+                    }
+                }
+            }
+
+            if let qualitySummary = presentation.qualitySummary {
+                Label(qualitySummary, systemImage: "gauge.with.dots.needle.33percent")
+                    .font(.caption2)
+                    .foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityLabel(
+                        String(localized: "Quality limited: \(qualitySummary)")
+                    )
+            }
+
+            if !diagnostics.recipientEdges.isEmpty {
+                Divider().opacity(0.55)
+                DisclosureGroup(isExpanded: $recipientsExpanded) {
+                    VStack(spacing: 0) {
+                        ForEach(
+                            Array(diagnostics.recipientEdges.enumerated()),
+                            id: \.element.id
+                        ) { index, recipient in
+                            MeshRoomMediaRecipientDiagnosticsRow(
+                                recipient: recipient
+                            )
+                            if index < diagnostics.recipientEdges.count - 1 {
+                                Divider().opacity(0.45)
+                            }
+                        }
+                    }
+                    .padding(.top, 5)
+                } label: {
+                    Label(recipientCountLabel, systemImage: "person.2")
+                        .font(.caption.weight(.medium))
+                }
+                .accessibilityIdentifier(
+                    "clip.meshRoom.diagnostics.publishing.\(diagnostics.id).recipients"
+                )
+            }
+        }
+        .padding(10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            Color.primary.opacity(0.035),
+            in: RoundedRectangle(cornerRadius: 10)
+        )
+        .overlay {
+            RoundedRectangle(cornerRadius: 10)
+                .stroke(Color.primary.opacity(0.08), lineWidth: 1)
+        }
+        .accessibilityIdentifier(
+            "clip.meshRoom.diagnostics.publishing.\(diagnostics.id)"
+        )
+    }
+
+    private var recipientCountLabel: String {
+        presentation.recipientCount == 1
+            ? String(localized: "1 recipient")
+            : String(localized: "\(presentation.recipientCount) recipients")
+    }
+}
+
+private struct MeshRoomPublishingMetricCell: View {
+    let item: MeshRoomPublishingDiagnosticsPresentation.Item
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 1) {
+            Text(item.value)
+                .font(.caption.monospacedDigit().weight(.medium))
+                .lineLimit(1)
+                .minimumScaleFactor(0.75)
+            Text(item.label)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityElement(children: .combine)
+    }
+}
+
+struct MeshRoomMediaRecipientDiagnosticsPresentation: Equatable {
+    let deliverySummary: String?
+    let telemetrySummary: String
+    let issueSummary: String?
+
+    init(_ recipient: MeshRoomMediaRecipientDiagnosticsSnapshot) {
+        var delivery: [String] = []
+        if let codec = recipient.codec?.nilIfEmpty {
+            delivery.append(codec)
+        }
+        if recipient.width > 0, recipient.height > 0 {
+            delivery.append("\(recipient.width)×\(recipient.height)")
+        }
+        deliverySummary = delivery.nilIfEmpty?.joined(separator: " · ")
+
+        var telemetry = [
+            "\(MeshRoomPublishingDiagnosticsPresentation.formatDecimal(recipient.framesPerSecond)) FPS",
+            formatBitrate(recipient.bitsPerSecond),
+        ]
+        if let target = recipient.targetBitrateBps {
+            telemetry.append(
+                String(localized: "\(formatBitrate(target)) target")
+            )
+        }
+        if let quantizer = recipient.averageQuantizer {
+            telemetry.append(
+                "QP \(MeshRoomPublishingDiagnosticsPresentation.formatDecimal(quantizer))"
+            )
+        }
+        if let encode = recipient.recentEncodeTimeMilliseconds {
+            telemetry.append(
+                String(
+                    localized:
+                        "\(MeshRoomPublishingDiagnosticsPresentation.formatMilliseconds(encode)) encode"
+                )
+            )
+        }
+        if let sendQueue = recipient.recentSendDelayMilliseconds {
+            telemetry.append(
+                String(
+                    localized:
+                        "\(MeshRoomPublishingDiagnosticsPresentation.formatMilliseconds(sendQueue)) send queue"
+                )
+            )
+        }
+        telemetrySummary = telemetry.joined(separator: " · ")
+
+        var issues: [String] = []
+        if recipient.recentDroppedFrames > 0 {
+            issues.append(
+                String(
+                    localized:
+                        "\(recipient.recentDroppedFrames) recent drops"
+                )
+            )
+        }
+        if recipient.recentQueuePressureDrops > 0 {
+            issues.append(
+                String(
+                    localized:
+                        "\(recipient.recentQueuePressureDrops) queue drops"
+                )
+            )
+        }
+        if let reason = recipient.queuePressureReason?.nilIfEmpty,
+           reason.lowercased() != "none" {
+            issues.append(
+                reason.lowercased() == "cpu" ? "CPU" : reason.capitalized
+            )
+        }
+        if recipient.qualityLimitationResolutionChanges > 0 {
+            let changes = recipient.qualityLimitationResolutionChanges
+            issues.append(
+                changes == 1
+                    ? String(localized: "1 resolution change")
+                    : String(localized: "\(changes) resolution changes")
+            )
+        }
+        if recipient.packetsLost > 0 {
+            issues.append(
+                String(localized: "\(recipient.packetsLost) packets lost")
+            )
+        }
+        issueSummary = issues.nilIfEmpty?.joined(separator: " · ")
+    }
+}
+
+private struct MeshRoomMediaRecipientDiagnosticsRow: View {
+    let recipient: MeshRoomMediaRecipientDiagnosticsSnapshot
+
+    private var presentation: MeshRoomMediaRecipientDiagnosticsPresentation {
+        MeshRoomMediaRecipientDiagnosticsPresentation(recipient)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                Text(recipient.recipientName)
+                    .font(.caption.weight(.medium))
+                    .lineLimit(1)
+                Spacer(minLength: 4)
+                if let deliverySummary = presentation.deliverySummary {
+                    Text(deliverySummary)
+                        .font(.caption2.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+            }
+            Text(presentation.telemetrySummary)
+                .font(.caption2.monospacedDigit())
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            if let issueSummary = presentation.issueSummary {
+                Text(issueSummary)
+                    .font(.caption2)
+                    .foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(.vertical, 5)
+        .accessibilityIdentifier(
+            "clip.meshRoom.diagnostics.recipient.\(recipient.id)"
+        )
+    }
+}
+
 private struct MeshRoomMediaDiagnosticsRow: View {
     let diagnostics: MeshRoomMediaDiagnosticsSnapshot
 
@@ -2192,11 +2766,30 @@ private func formatBitrate(_ bitsPerSecond: Int) -> String {
     return "\(bitsPerSecond / 1_000) kbps"
 }
 
+private func formatBitrate(_ bitsPerSecond: Double) -> String {
+    formatBitrate(
+        Int(min(max(0, bitsPerSecond), Double(Int.max)).rounded())
+    )
+}
+
 private func formatByteCount(_ bytes: UInt64) -> String {
     ByteCountFormatter.string(
         fromByteCount: Int64(min(bytes, UInt64(Int64.max))),
         countStyle: .file
     )
+}
+
+private extension String {
+    var nilIfEmpty: String? {
+        let value = trimmingCharacters(in: .whitespacesAndNewlines)
+        return value.isEmpty ? nil : value
+    }
+}
+
+private extension Array {
+    var nilIfEmpty: Self? {
+        isEmpty ? nil : self
+    }
 }
 
 /// Reusable entry point for editing codec-specific sender controls. This is

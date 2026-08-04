@@ -2590,6 +2590,30 @@ enum ClipLiveShareNativeV3WebRTCStatisticsParser {
             ? number(relatedRemoteInbound?.values["packetsLost"])?.int64Value
               ?? 0
             : number(statistic.values["packetsLost"])?.int64Value ?? 0,
+        qpSum:
+          direction == .outgoing
+            ? nonnegativeUInt64(statistic.values["qpSum"])
+            : nil,
+        targetBitrateBps:
+          direction == .outgoing
+            ? finiteNonnegativeDouble(statistic.values["targetBitrate"])
+            : nil,
+        totalEncodeTimeSeconds:
+          direction == .outgoing
+            ? finiteNonnegativeDouble(statistic.values["totalEncodeTime"])
+            : nil,
+        totalPacketSendDelaySeconds:
+          direction == .outgoing
+            ? finiteNonnegativeDouble(
+              statistic.values["totalPacketSendDelay"]
+            )
+            : nil,
+        qualityLimitationResolutionChanges:
+          direction == .outgoing
+            ? nonnegativeUInt64(
+              statistic.values["qualityLimitationResolutionChanges"]
+            )
+            : nil,
         processingLatencyMilliseconds: latency,
         queuePressureReason:
           direction == .outgoing
@@ -2623,6 +2647,21 @@ enum ClipLiveShareNativeV3WebRTCStatisticsParser {
       return nil
     }
     return total * 1_000 / Double(count)
+  }
+
+  private static func finiteNonnegativeDouble(_ value: NSObject?) -> Double? {
+    guard let value = number(value)?.doubleValue,
+      value.isFinite,
+      value >= 0
+    else {
+      return nil
+    }
+    return value
+  }
+
+  private static func nonnegativeUInt64(_ value: NSObject?) -> UInt64? {
+    guard let value = finiteNonnegativeDouble(value) else { return nil }
+    return UInt64(exactly: value)
   }
 
   private static func number(_ value: NSObject?) -> NSNumber? {

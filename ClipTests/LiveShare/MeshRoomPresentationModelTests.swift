@@ -301,6 +301,190 @@ struct MeshRoomPresentationModelTests {
     }
 
     @Test
+    func mediaRateEstimatorDerivesRecentEncoderAndTransportQuality() throws {
+        var estimator = MeshRoomMediaRateEstimator()
+        let start = Date(timeIntervalSince1970: 150)
+        let key = MeshRoomMediaCounterKey(
+            participantID: "anna",
+            trackIdentifier: "screen",
+            sourceIdentifier: "anna-screen",
+            direction: .outgoing
+        )
+        estimator.record([
+            key: .init(
+                capturedAt: start,
+                bytes: 1_000,
+                frames: 10,
+                reportedFramesPerSecond: 0,
+                packets: 20,
+                droppedFrames: 2,
+                queuePressureDrops: 1,
+                qpSum: 250,
+                targetBitrateBps: 4_000_000,
+                totalEncodeTimeSeconds: 0.05,
+                totalPacketSendDelaySeconds: 0.1,
+                qualityLimitationResolutionChanges: 3
+            )
+        ])
+        estimator.record([
+            key: .init(
+                capturedAt: start.addingTimeInterval(2),
+                bytes: 3_000,
+                frames: 70,
+                reportedFramesPerSecond: 0,
+                packets: 50,
+                droppedFrames: 5,
+                queuePressureDrops: 3,
+                qpSum: 1_750,
+                targetBitrateBps: 5_000_000,
+                totalEncodeTimeSeconds: 0.35,
+                totalPacketSendDelaySeconds: 0.25,
+                qualityLimitationResolutionChanges: 5
+            )
+        ])
+
+        let rate = try #require(estimator.rates[key])
+        #expect(rate.bitsPerSecond == 8_000)
+        #expect(rate.framesPerSecond == 30)
+        #expect(rate.targetBitrateBps == 5_000_000)
+        #expect(rate.averageQuantizer == 25)
+        #expect(abs((rate.averageEncodeTimeMilliseconds ?? 0) - 5) < 0.001)
+        #expect(abs((rate.averageSendDelayMilliseconds ?? 0) - 5) < 0.001)
+        #expect(rate.droppedFrames == 3)
+        #expect(rate.queuePressureDrops == 2)
+        #expect(rate.qualityLimitationResolutionChanges == 2)
+    }
+
+    @Test
+    func mediaRateEstimatorDoesNotInventQpWithoutEncodedFrames() throws {
+        var estimator = MeshRoomMediaRateEstimator()
+        let start = Date(timeIntervalSince1970: 175)
+        let key = MeshRoomMediaCounterKey(
+            participantID: "anna",
+            trackIdentifier: "screen",
+            sourceIdentifier: "anna-screen",
+            direction: .outgoing
+        )
+        estimator.record([
+            key: .init(
+                capturedAt: start,
+                bytes: 1_000,
+                frames: 10,
+                reportedFramesPerSecond: 0,
+                qpSum: 250,
+                totalEncodeTimeSeconds: 0.05
+            )
+        ])
+        estimator.record([
+            key: .init(
+                capturedAt: start.addingTimeInterval(1),
+                bytes: 1_500,
+                frames: 10,
+                reportedFramesPerSecond: 0,
+                qpSum: 275,
+                totalEncodeTimeSeconds: 0.06
+            )
+        ])
+
+        let rate = try #require(estimator.rates[key])
+        #expect(rate.bitsPerSecond == 4_000)
+        #expect(rate.framesPerSecond == 0)
+        #expect(rate.averageQuantizer == nil)
+        #expect(rate.averageEncodeTimeMilliseconds == nil)
+    }
+
+    @Test
+    func mediaRateEstimatorIsIndependentOfOptionalCounterResets() throws {
+        var estimator = MeshRoomMediaRateEstimator()
+        let start = Date(timeIntervalSince1970: 185)
+        let key = MeshRoomMediaCounterKey(
+            participantID: "anna",
+            trackIdentifier: "screen",
+            sourceIdentifier: "anna-screen",
+            direction: .outgoing
+        )
+        estimator.record([
+            key: .init(
+                capturedAt: start,
+                bytes: 1_000,
+                frames: 10,
+                reportedFramesPerSecond: 0,
+                droppedFrames: 5,
+                queuePressureDrops: 4,
+                qpSum: 250,
+                totalEncodeTimeSeconds: 0.05
+            )
+        ])
+        estimator.record([
+            key: .init(
+                capturedAt: start.addingTimeInterval(1),
+                bytes: 2_000,
+                frames: 40,
+                reportedFramesPerSecond: 0,
+                droppedFrames: 1,
+                queuePressureDrops: 0,
+                qpSum: 10,
+                totalEncodeTimeSeconds: 0.01
+            )
+        ])
+
+        let rate = try #require(estimator.rates[key])
+        #expect(rate.bitsPerSecond == 8_000)
+        #expect(rate.framesPerSecond == 30)
+        #expect(rate.averageQuantizer == nil)
+        #expect(rate.averageEncodeTimeMilliseconds == nil)
+        #expect(rate.droppedFrames == 0)
+        #expect(rate.queuePressureDrops == 0)
+    }
+
+    @Test
+    func mediaRateEstimatorDoesNotInventResolutionChangesAcrossMissingSamples()
+        throws
+    {
+        var estimator = MeshRoomMediaRateEstimator()
+        let start = Date(timeIntervalSince1970: 190)
+        let key = MeshRoomMediaCounterKey(
+            participantID: "anna",
+            trackIdentifier: "screen",
+            sourceIdentifier: "anna-screen",
+            direction: .outgoing
+        )
+
+        func sample(
+            second: TimeInterval,
+            changeCount: UInt64?
+        ) -> MeshRoomMediaCounterSample {
+            .init(
+                capturedAt: start.addingTimeInterval(second),
+                bytes: 1_000 + UInt64(second) * 1_000,
+                frames: 10 + UInt64(second) * 30,
+                reportedFramesPerSecond: 30,
+                qualityLimitationResolutionChanges: changeCount
+            )
+        }
+
+        estimator.record([key: sample(second: 0, changeCount: nil)])
+        estimator.record([key: sample(second: 1, changeCount: 7)])
+        #expect(
+            try #require(estimator.rates[key])
+                .qualityLimitationResolutionChanges == 0
+        )
+
+        estimator.record([key: sample(second: 2, changeCount: 9)])
+        #expect(
+            try #require(estimator.rates[key])
+                .qualityLimitationResolutionChanges == 2
+        )
+
+        estimator.record([key: sample(second: 3, changeCount: nil)])
+        estimator.record([key: sample(second: 4, changeCount: 12)])
+        #expect(
+            try #require(estimator.rates[key])
+                .qualityLimitationResolutionChanges == 0
+        )
+    }
+
+    @Test
     func mediaRateEstimatorIgnoresDuplicateResetsAndPrunesCounters() {
         var estimator = MeshRoomMediaRateEstimator()
         let start = Date(timeIntervalSince1970: 200)
@@ -482,6 +666,29 @@ struct MeshRoomPresentationModelTests {
     }
 
     @Test
+    func incomingMediaDiagnosticsOmitReceiveOnlyWebViewers() {
+        let impossibleWebPublication = MeshRoomMediaDiagnosticsSnapshot(
+            id: "web-incoming",
+            sourceName: "Stale Web Source",
+            direction: .incoming
+        )
+        let snapshot = makeSnapshot(
+            remoteParticipants: [
+                remoteParticipant(id: "native"),
+                remoteParticipant(
+                    id: "web",
+                    clientKind: .webViewer,
+                    diagnostics: [impossibleWebPublication]
+                ),
+            ]
+        )
+
+        #expect(snapshot.remoteParticipants.map(\.id) == ["native", "web"])
+        #expect(snapshot.remoteParticipants[1].diagnostics.count == 1)
+        #expect(snapshot.diagnosticRemoteParticipants.map(\.id) == ["native"])
+    }
+
+    @Test
     func mediaDiagnosticsRemainDirectionAndParticipantScoped() {
         let outgoing = MeshRoomMediaDiagnosticsSnapshot(
             id: "remote-outgoing-screen",
@@ -541,6 +748,8 @@ struct MeshRoomPresentationModelTests {
             sourceIdentifier: "source-current",
             sourceName: "Design Review",
             direction: .outgoing,
+            recipientID: "peer-a",
+            recipientName: "Anna",
             codec: "H264",
             width: 1_920,
             height: 1_080,
@@ -550,13 +759,22 @@ struct MeshRoomPresentationModelTests {
             queuePressureDrops: 3,
             queuePressureReason: "cpu",
             packetsLost: 4,
-            processingLatencyMilliseconds: 5
+            processingLatencyMilliseconds: 5,
+            targetBitrateBps: 4_500_000,
+            averageQuantizer: 20,
+            recentEncodeTimeMilliseconds: 4,
+            recentSendDelayMilliseconds: 3,
+            recentDroppedFrames: 2,
+            recentQueuePressureDrops: 3,
+            qualityLimitationResolutionChanges: 1
         )
         let secondPeer = MeshRoomMediaDiagnosticsSnapshot(
             id: "peer-b-outgoing-active",
             sourceIdentifier: "source-current",
             sourceName: "Design Review",
             direction: .outgoing,
+            recipientID: "peer-b",
+            recipientName: "Ben",
             codec: "H264",
             width: 1_280,
             height: 720,
@@ -566,7 +784,14 @@ struct MeshRoomPresentationModelTests {
             queuePressureDrops: 1,
             queuePressureReason: "bandwidth",
             packetsLost: 6,
-            processingLatencyMilliseconds: 8
+            processingLatencyMilliseconds: 8,
+            targetBitrateBps: 2_500_000,
+            averageQuantizer: 32,
+            recentEncodeTimeMilliseconds: 9,
+            recentSendDelayMilliseconds: 11,
+            recentDroppedFrames: 6,
+            recentQueuePressureDrops: 1,
+            qualityLimitationResolutionChanges: 4
         )
         let inactiveSlots = ["peer-a", "peer-b"].flatMap { peer in
             (1...3).map { slot in
@@ -616,6 +841,184 @@ struct MeshRoomPresentationModelTests {
         #expect(source.queuePressureReason == "cpu")
         #expect(source.packetsLost == 10)
         #expect(source.processingLatencyMilliseconds == 8)
+        #expect(source.targetBitrateBps == 7_000_000)
+        #expect(source.averageQuantizer == 32)
+        #expect(source.recentEncodeTimeMilliseconds == 9)
+        #expect(source.recentSendDelayMilliseconds == 11)
+        #expect(source.recentDroppedFrames == 6)
+        #expect(source.recentQueuePressureDrops == 3)
+        #expect(source.qualityLimitationResolutionChanges == 4)
+        #expect(source.recipientEdges.map(\.recipientID) == ["peer-a", "peer-b"])
+        #expect(source.recipientEdges.map(\.recipientName) == ["Anna", "Ben"])
+        #expect(source.recipientEdges[0].averageQuantizer == 20)
+        #expect(source.recipientEdges[1].averageQuantizer == 32)
+    }
+
+    @Test
+    func publishingTargetIsUnknownWhenAnyRecipientDoesNotReportOne() throws {
+        let known = MeshRoomMediaDiagnosticsSnapshot(
+            id: "peer-a-source",
+            sourceIdentifier: "source",
+            sourceName: "Design Review",
+            direction: .outgoing,
+            recipientID: "peer-a",
+            recipientName: "Anna",
+            targetBitrateBps: 4_000_000
+        )
+        let unknown = MeshRoomMediaDiagnosticsSnapshot(
+            id: "peer-b-source",
+            sourceIdentifier: "source",
+            sourceName: "Design Review",
+            direction: .outgoing,
+            recipientID: "peer-b",
+            recipientName: "Ben"
+        )
+
+        let source = try #require(
+            MeshRoomMediaDiagnosticsSnapshot.publishingSources(
+                from: [known, unknown],
+                activeSourceIdentifiers: ["source"]
+            ).first
+        )
+        #expect(source.targetBitrateBps == nil)
+        #expect(source.recipientEdges[0].targetBitrateBps == 4_000_000)
+        #expect(source.recipientEdges[1].targetBitrateBps == nil)
+    }
+
+    @Test
+    func publishingDiagnosticsPresentationShowsRichStatsAndOmitsMissingValues() {
+        let recipient = MeshRoomMediaRecipientDiagnosticsSnapshot(
+            recipientID: "anna",
+            recipientName: "Anna"
+        )
+        let diagnostics = MeshRoomMediaDiagnosticsSnapshot(
+            id: "publishing-design",
+            sourceName: "Design Review",
+            direction: .outgoing,
+            codec: "H264",
+            width: 1_280,
+            height: 720,
+            framesPerSecond: 59.9,
+            bitsPerSecond: 5_500_000,
+            queuePressureReason: "cpu",
+            packetsLost: 4,
+            targetBitrateBps: 6_000_000,
+            averageQuantizer: 23.5,
+            recentEncodeTimeMilliseconds: 4.2,
+            recentSendDelayMilliseconds: 1.8,
+            recentDroppedFrames: 2,
+            recentQueuePressureDrops: 3,
+            qualityLimitationResolutionChanges: 2,
+            sourcePointWidth: 1_440,
+            sourcePointHeight: 900,
+            sourcePixelWidth: 2_880,
+            sourcePixelHeight: 1_800,
+            captureWidth: 1_920,
+            captureHeight: 1_080,
+            capturePixelFormat: "BGRA",
+            manifestWidth: 1_920,
+            manifestHeight: 1_080,
+            configuredMinimumBitratePerRecipientBps: 1_000_000,
+            configuredMaximumBitratePerRecipientBps: 8_000_000,
+            bytesSent: 12_000_000,
+            captureDeliveredFrames: 600,
+            captureBackpressureDrops: 5,
+            qualityLimitationReasons: ["cpu", "bandwidth", "none", "CPU"],
+            recipientEdges: [recipient]
+        )
+
+        let presentation = MeshRoomPublishingDiagnosticsPresentation(
+            diagnostics
+        )
+        #expect(presentation.geometry.map(\.label) == [
+            "Source", "Capture", "Encoded",
+        ])
+        #expect(presentation.geometry[0].value.contains("1440×900 pt"))
+        #expect(presentation.geometry[0].value.contains("2880×1800 px"))
+        #expect(presentation.geometry[1].value == "1920×1080 · BGRA")
+        #expect(presentation.geometry[2].value.contains("manifest"))
+        #expect(presentation.geometry[2].value.contains("delivered"))
+        #expect(Set(presentation.headlineMetrics.map(\.label)) == [
+            "Codec", "FPS", "QP", "Actual",
+        ])
+        #expect(Set(presentation.detailMetrics.map(\.label)) == [
+            "Target",
+            "Per Recipient",
+            "Sent",
+            "Captured",
+            "Capture Drops",
+            "Recent Drops",
+            "Recent Queue",
+            "Encode",
+            "Send Queue",
+            "Packets Lost",
+        ])
+        #expect(
+            presentation.qualitySummary
+                == "CPU · Bandwidth · 2 resolution changes"
+        )
+        #expect(presentation.recipientCount == 1)
+
+        let sparse = MeshRoomPublishingDiagnosticsPresentation(
+            MeshRoomMediaDiagnosticsSnapshot(
+                id: "publishing-sparse",
+                sourceName: "Sparse",
+                direction: .outgoing
+            )
+        )
+        #expect(sparse.geometry.isEmpty)
+        #expect(sparse.headlineMetrics.map(\.label) == ["FPS", "Actual"])
+        #expect(sparse.detailMetrics.isEmpty)
+        #expect(sparse.qualitySummary == nil)
+        #expect(sparse.recipientCount == 0)
+    }
+
+    @Test
+    func recipientDiagnosticsPresentationKeepsIssuesInCompactSubrow() {
+        let recipient = MeshRoomMediaRecipientDiagnosticsSnapshot(
+            recipientID: "anna",
+            recipientName: "Anna",
+            codec: "H264",
+            width: 1_280,
+            height: 720,
+            framesPerSecond: 30,
+            bitsPerSecond: 2_000_000,
+            targetBitrateBps: 3_000_000,
+            averageQuantizer: 28,
+            recentEncodeTimeMilliseconds: 6,
+            recentSendDelayMilliseconds: 4,
+            recentDroppedFrames: 2,
+            recentQueuePressureDrops: 3,
+            queuePressureReason: "bandwidth",
+            qualityLimitationResolutionChanges: 1,
+            packetsLost: 4
+        )
+
+        let presentation = MeshRoomMediaRecipientDiagnosticsPresentation(
+            recipient
+        )
+        #expect(presentation.deliverySummary == "H264 · 1280×720")
+        for expected in ["FPS", "target", "QP", "encode", "send queue"] {
+            #expect(presentation.telemetrySummary.contains(expected))
+        }
+        for expected in [
+            "2 recent drops",
+            "3 queue drops",
+            "Bandwidth",
+            "1 resolution change",
+            "4 packets lost",
+        ] {
+            #expect(presentation.issueSummary?.contains(expected) == true)
+        }
+
+        let sparse = MeshRoomMediaRecipientDiagnosticsPresentation(
+            MeshRoomMediaRecipientDiagnosticsSnapshot(
+                recipientID: "ben",
+                recipientName: "Ben"
+            )
+        )
+        #expect(sparse.deliverySummary == nil)
+        #expect(sparse.issueSummary == nil)
     }
 
     @Test

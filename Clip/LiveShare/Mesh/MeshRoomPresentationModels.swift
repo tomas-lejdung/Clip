@@ -97,11 +97,91 @@ struct MeshRoomMediaCounterSample: Equatable, Sendable {
     let bytes: UInt64
     let frames: UInt64
     let reportedFramesPerSecond: Double
+    let packets: UInt64
+    let droppedFrames: UInt64
+    let queuePressureDrops: UInt64
+    let qpSum: UInt64?
+    let targetBitrateBps: Double?
+    let totalEncodeTimeSeconds: Double?
+    let totalPacketSendDelaySeconds: Double?
+    let qualityLimitationResolutionChanges: UInt64?
+
+    init(
+        capturedAt: Date,
+        bytes: UInt64,
+        frames: UInt64,
+        reportedFramesPerSecond: Double,
+        packets: UInt64 = 0,
+        droppedFrames: UInt64 = 0,
+        queuePressureDrops: UInt64 = 0,
+        qpSum: UInt64? = nil,
+        targetBitrateBps: Double? = nil,
+        totalEncodeTimeSeconds: Double? = nil,
+        totalPacketSendDelaySeconds: Double? = nil,
+        qualityLimitationResolutionChanges: UInt64? = nil
+    ) {
+        self.capturedAt = capturedAt
+        self.bytes = bytes
+        self.frames = frames
+        self.reportedFramesPerSecond = reportedFramesPerSecond
+        self.packets = packets
+        self.droppedFrames = droppedFrames
+        self.queuePressureDrops = queuePressureDrops
+        self.qpSum = qpSum
+        self.targetBitrateBps = Self.finiteNonnegative(targetBitrateBps)
+        self.totalEncodeTimeSeconds =
+            Self.finiteNonnegative(totalEncodeTimeSeconds)
+        self.totalPacketSendDelaySeconds =
+            Self.finiteNonnegative(totalPacketSendDelaySeconds)
+        self.qualityLimitationResolutionChanges =
+            qualityLimitationResolutionChanges
+    }
+
+    private static func finiteNonnegative(_ value: Double?) -> Double? {
+        value.flatMap { $0.isFinite ? max(0, $0) : nil }
+    }
 }
 
 struct MeshRoomMediaRate: Equatable, Sendable {
     let bitsPerSecond: Int
     let framesPerSecond: Double
+    let targetBitrateBps: Double?
+    let averageQuantizer: Double?
+    let averageEncodeTimeMilliseconds: Double?
+    let averageSendDelayMilliseconds: Double?
+    let droppedFrames: UInt64
+    let queuePressureDrops: UInt64
+    let qualityLimitationResolutionChanges: UInt64
+
+    init(
+        bitsPerSecond: Int,
+        framesPerSecond: Double,
+        targetBitrateBps: Double? = nil,
+        averageQuantizer: Double? = nil,
+        averageEncodeTimeMilliseconds: Double? = nil,
+        averageSendDelayMilliseconds: Double? = nil,
+        droppedFrames: UInt64 = 0,
+        queuePressureDrops: UInt64 = 0,
+        qualityLimitationResolutionChanges: UInt64 = 0
+    ) {
+        self.bitsPerSecond = max(0, bitsPerSecond)
+        self.framesPerSecond =
+            framesPerSecond.isFinite ? max(0, framesPerSecond) : 0
+        self.targetBitrateBps = Self.finiteNonnegative(targetBitrateBps)
+        self.averageQuantizer = Self.finiteNonnegative(averageQuantizer)
+        self.averageEncodeTimeMilliseconds =
+            Self.finiteNonnegative(averageEncodeTimeMilliseconds)
+        self.averageSendDelayMilliseconds =
+            Self.finiteNonnegative(averageSendDelayMilliseconds)
+        self.droppedFrames = droppedFrames
+        self.queuePressureDrops = queuePressureDrops
+        self.qualityLimitationResolutionChanges =
+            qualityLimitationResolutionChanges
+    }
+
+    private static func finiteNonnegative(_ value: Double?) -> Double? {
+        value.flatMap { $0.isFinite ? max(0, $0) : nil }
+    }
 }
 
 /// Derives per-track rates without ever blending participant pairs or media
@@ -125,7 +205,8 @@ struct MeshRoomMediaRateEstimator: Sendable {
                 rates[key] = MeshRoomMediaRate(
                     bitsPerSecond: 0,
                     framesPerSecond:
-                        Self.validReportedFPS(sample.reportedFramesPerSecond)
+                        Self.validReportedFPS(sample.reportedFramesPerSecond),
+                    targetBitrateBps: sample.targetBitrateBps
                 )
                 continue
             }
@@ -145,6 +226,8 @@ struct MeshRoomMediaRateEstimator: Sendable {
             )
             guard elapsed > 0 else { continue }
             let derivedFPS = Double(sample.frames - prior.frames) / elapsed
+            let frameDelta = sample.frames - prior.frames
+            let packetDelta = Self.delta(sample.packets, prior.packets)
             let reportedFPS = Self.validReportedFPS(
                 sample.reportedFramesPerSecond
             )
@@ -156,9 +239,82 @@ struct MeshRoomMediaRateEstimator: Sendable {
                 framesPerSecond:
                     reportedFPS > 0
                         ? reportedFPS
-                        : max(0, derivedFPS.isFinite ? derivedFPS : 0)
+                        : max(0, derivedFPS.isFinite ? derivedFPS : 0),
+                targetBitrateBps: sample.targetBitrateBps,
+                averageQuantizer: Self.averageDelta(
+                    current: sample.qpSum,
+                    previous: prior.qpSum,
+                    count: frameDelta
+                ),
+                averageEncodeTimeMilliseconds: Self.averageDelta(
+                    current: sample.totalEncodeTimeSeconds,
+                    previous: prior.totalEncodeTimeSeconds,
+                    count: frameDelta,
+                    multiplier: 1_000
+                ),
+                averageSendDelayMilliseconds: Self.averageDelta(
+                    current: sample.totalPacketSendDelaySeconds,
+                    previous: prior.totalPacketSendDelaySeconds,
+                    count: packetDelta,
+                    multiplier: 1_000
+                ),
+                droppedFrames: Self.delta(
+                    sample.droppedFrames,
+                    prior.droppedFrames
+                ),
+                queuePressureDrops: Self.delta(
+                    sample.queuePressureDrops,
+                    prior.queuePressureDrops
+                ),
+                qualityLimitationResolutionChanges: Self.optionalDelta(
+                    sample.qualityLimitationResolutionChanges,
+                    prior.qualityLimitationResolutionChanges
+                ) ?? 0
             )
         }
+    }
+
+    private static func delta(_ current: UInt64, _ previous: UInt64) -> UInt64 {
+        current >= previous ? current - previous : 0
+    }
+
+    /// Optional cumulative counters must remain unknown across a missing
+    /// sample. Treating absence as zero would turn the next reported lifetime
+    /// value into a false one-second spike.
+    private static func optionalDelta(
+        _ current: UInt64?,
+        _ previous: UInt64?
+    ) -> UInt64? {
+        guard let current, let previous, current >= previous else { return nil }
+        return current - previous
+    }
+
+    private static func averageDelta(
+        current: UInt64?,
+        previous: UInt64?,
+        count: UInt64
+    ) -> Double? {
+        guard count > 0,
+              let current,
+              let previous,
+              current >= previous else { return nil }
+        return Double(current - previous) / Double(count)
+    }
+
+    private static func averageDelta(
+        current: Double?,
+        previous: Double?,
+        count: UInt64,
+        multiplier: Double
+    ) -> Double? {
+        guard count > 0,
+              let current,
+              let previous,
+              current.isFinite,
+              previous.isFinite,
+              current >= previous else { return nil }
+        let average = (current - previous) / Double(count) * multiplier
+        return average.isFinite ? max(0, average) : nil
     }
 
     private static func validReportedFPS(_ value: Double) -> Double {
@@ -639,6 +795,82 @@ struct MeshRoomRemoteSourceSnapshot: Equatable, Identifiable, Sendable {
     }
 }
 
+/// One local source's delivery state on one exact peer edge. Keeping these
+/// details underneath the source-level publishing summary makes a stalled or
+/// bandwidth-limited recipient visible without duplicating the source row.
+struct MeshRoomMediaRecipientDiagnosticsSnapshot:
+    Equatable, Identifiable, Sendable
+{
+    var id: String { recipientID }
+
+    let recipientID: String
+    let recipientName: String
+    let codec: String?
+    let width: Int
+    let height: Int
+    let framesPerSecond: Double
+    let bitsPerSecond: Int
+    let bytesSent: UInt64
+    let targetBitrateBps: Double?
+    let averageQuantizer: Double?
+    let recentEncodeTimeMilliseconds: Double?
+    let recentSendDelayMilliseconds: Double?
+    let recentDroppedFrames: UInt64
+    let recentQueuePressureDrops: UInt64
+    let queuePressureReason: String?
+    let qualityLimitationResolutionChanges: UInt64
+    let packetsLost: Int64
+
+    init(
+        recipientID: String,
+        recipientName: String,
+        codec: String? = nil,
+        width: Int = 0,
+        height: Int = 0,
+        framesPerSecond: Double = 0,
+        bitsPerSecond: Int = 0,
+        bytesSent: UInt64 = 0,
+        targetBitrateBps: Double? = nil,
+        averageQuantizer: Double? = nil,
+        recentEncodeTimeMilliseconds: Double? = nil,
+        recentSendDelayMilliseconds: Double? = nil,
+        recentDroppedFrames: UInt64 = 0,
+        recentQueuePressureDrops: UInt64 = 0,
+        queuePressureReason: String? = nil,
+        qualityLimitationResolutionChanges: UInt64 = 0,
+        packetsLost: Int64 = 0
+    ) {
+        self.recipientID = recipientID
+        self.recipientName = recipientName
+        self.codec = codec
+        self.width = max(0, width)
+        self.height = max(0, height)
+        self.framesPerSecond = Self.finiteNonnegative(framesPerSecond)
+        self.bitsPerSecond = max(0, bitsPerSecond)
+        self.bytesSent = bytesSent
+        self.targetBitrateBps = Self.finiteNonnegative(targetBitrateBps)
+        self.averageQuantizer = Self.finiteNonnegative(averageQuantizer)
+        self.recentEncodeTimeMilliseconds =
+            Self.finiteNonnegative(recentEncodeTimeMilliseconds)
+        self.recentSendDelayMilliseconds =
+            Self.finiteNonnegative(recentSendDelayMilliseconds)
+        self.recentDroppedFrames = recentDroppedFrames
+        self.recentQueuePressureDrops = recentQueuePressureDrops
+        self.queuePressureReason = queuePressureReason
+        self.qualityLimitationResolutionChanges =
+            qualityLimitationResolutionChanges
+        self.packetsLost = max(0, packetsLost)
+    }
+
+    private static func finiteNonnegative(_ value: Double) -> Double {
+        value.isFinite ? max(0, value) : 0
+    }
+
+    private static func finiteNonnegative(_ value: Double?) -> Double? {
+        value.flatMap { $0.isFinite ? max(0, $0) : nil }
+    }
+}
+
 struct MeshRoomMediaDiagnosticsSnapshot: Equatable, Identifiable, Sendable {
     enum Direction: Equatable, Hashable, Sendable {
         case outgoing
@@ -654,6 +886,8 @@ struct MeshRoomMediaDiagnosticsSnapshot: Equatable, Identifiable, Sendable {
     let sourceIdentifier: String
     let sourceName: String
     let direction: Direction
+    let recipientID: String?
+    let recipientName: String?
     let codec: String?
     let width: Int
     let height: Int
@@ -664,12 +898,37 @@ struct MeshRoomMediaDiagnosticsSnapshot: Equatable, Identifiable, Sendable {
     let queuePressureReason: String?
     let packetsLost: Int64
     let processingLatencyMilliseconds: Double?
+    let targetBitrateBps: Double?
+    let averageQuantizer: Double?
+    let recentEncodeTimeMilliseconds: Double?
+    let recentSendDelayMilliseconds: Double?
+    let recentDroppedFrames: UInt64
+    let recentQueuePressureDrops: UInt64
+    let qualityLimitationResolutionChanges: UInt64
+    let sourcePointWidth: Int?
+    let sourcePointHeight: Int?
+    let sourcePixelWidth: Int?
+    let sourcePixelHeight: Int?
+    let captureWidth: Int?
+    let captureHeight: Int?
+    let capturePixelFormat: String?
+    let manifestWidth: Int?
+    let manifestHeight: Int?
+    let configuredMinimumBitratePerRecipientBps: Int?
+    let configuredMaximumBitratePerRecipientBps: Int?
+    let bytesSent: UInt64
+    let captureDeliveredFrames: UInt64
+    let captureBackpressureDrops: UInt64
+    let qualityLimitationReasons: [String]
+    let recipientEdges: [MeshRoomMediaRecipientDiagnosticsSnapshot]
 
     init(
         id: String,
         sourceIdentifier: String? = nil,
         sourceName: String,
         direction: Direction,
+        recipientID: String? = nil,
+        recipientName: String? = nil,
         codec: String? = nil,
         width: Int = 0,
         height: Int = 0,
@@ -679,12 +938,37 @@ struct MeshRoomMediaDiagnosticsSnapshot: Equatable, Identifiable, Sendable {
         queuePressureDrops: UInt64 = 0,
         queuePressureReason: String? = nil,
         packetsLost: Int64 = 0,
-        processingLatencyMilliseconds: Double? = nil
+        processingLatencyMilliseconds: Double? = nil,
+        targetBitrateBps: Double? = nil,
+        averageQuantizer: Double? = nil,
+        recentEncodeTimeMilliseconds: Double? = nil,
+        recentSendDelayMilliseconds: Double? = nil,
+        recentDroppedFrames: UInt64 = 0,
+        recentQueuePressureDrops: UInt64 = 0,
+        qualityLimitationResolutionChanges: UInt64 = 0,
+        sourcePointWidth: Int? = nil,
+        sourcePointHeight: Int? = nil,
+        sourcePixelWidth: Int? = nil,
+        sourcePixelHeight: Int? = nil,
+        captureWidth: Int? = nil,
+        captureHeight: Int? = nil,
+        capturePixelFormat: String? = nil,
+        manifestWidth: Int? = nil,
+        manifestHeight: Int? = nil,
+        configuredMinimumBitratePerRecipientBps: Int? = nil,
+        configuredMaximumBitratePerRecipientBps: Int? = nil,
+        bytesSent: UInt64 = 0,
+        captureDeliveredFrames: UInt64 = 0,
+        captureBackpressureDrops: UInt64 = 0,
+        qualityLimitationReasons: [String] = [],
+        recipientEdges: [MeshRoomMediaRecipientDiagnosticsSnapshot] = []
     ) {
         self.id = id
         self.sourceIdentifier = sourceIdentifier ?? id
         self.sourceName = sourceName
         self.direction = direction
+        self.recipientID = recipientID
+        self.recipientName = recipientName
         self.codec = codec
         self.width = max(0, width)
         self.height = max(0, height)
@@ -696,6 +980,38 @@ struct MeshRoomMediaDiagnosticsSnapshot: Equatable, Identifiable, Sendable {
         self.packetsLost = max(0, packetsLost)
         self.processingLatencyMilliseconds =
             processingLatencyMilliseconds.map { max(0, $0) }
+        self.targetBitrateBps = Self.finiteNonnegative(targetBitrateBps)
+        self.averageQuantizer = Self.finiteNonnegative(averageQuantizer)
+        self.recentEncodeTimeMilliseconds =
+            Self.finiteNonnegative(recentEncodeTimeMilliseconds)
+        self.recentSendDelayMilliseconds =
+            Self.finiteNonnegative(recentSendDelayMilliseconds)
+        self.recentDroppedFrames = recentDroppedFrames
+        self.recentQueuePressureDrops = recentQueuePressureDrops
+        self.qualityLimitationResolutionChanges =
+            qualityLimitationResolutionChanges
+        self.sourcePointWidth = sourcePointWidth.map { max(0, $0) }
+        self.sourcePointHeight = sourcePointHeight.map { max(0, $0) }
+        self.sourcePixelWidth = sourcePixelWidth.map { max(0, $0) }
+        self.sourcePixelHeight = sourcePixelHeight.map { max(0, $0) }
+        self.captureWidth = captureWidth.map { max(0, $0) }
+        self.captureHeight = captureHeight.map { max(0, $0) }
+        self.capturePixelFormat = capturePixelFormat
+        self.manifestWidth = manifestWidth.map { max(0, $0) }
+        self.manifestHeight = manifestHeight.map { max(0, $0) }
+        self.configuredMinimumBitratePerRecipientBps =
+            configuredMinimumBitratePerRecipientBps.map { max(0, $0) }
+        self.configuredMaximumBitratePerRecipientBps =
+            configuredMaximumBitratePerRecipientBps.map { max(0, $0) }
+        self.bytesSent = bytesSent
+        self.captureDeliveredFrames = captureDeliveredFrames
+        self.captureBackpressureDrops = captureBackpressureDrops
+        self.qualityLimitationReasons = qualityLimitationReasons
+        self.recipientEdges = recipientEdges
+    }
+
+    private static func finiteNonnegative(_ value: Double?) -> Double? {
+        value.flatMap { $0.isFinite ? max(0, $0) : nil }
     }
 
     /// Presents local publication as sources rather than raw WebRTC senders.
@@ -721,6 +1037,43 @@ struct MeshRoomMediaDiagnosticsSnapshot: Equatable, Identifiable, Sendable {
         .map { sourceIdentifier, rows in
             let ordered = rows.sorted { $0.id < $1.id }
             let canonical = ordered[0]
+            let recipientEdges = ordered.map { row in
+                MeshRoomMediaRecipientDiagnosticsSnapshot(
+                    recipientID: row.recipientID ?? row.id,
+                    recipientName:
+                        row.recipientName
+                            ?? row.recipientID
+                            ?? row.id,
+                    codec: row.codec,
+                    width: row.width,
+                    height: row.height,
+                    framesPerSecond: row.framesPerSecond,
+                    bitsPerSecond: row.bitsPerSecond,
+                    bytesSent: row.bytesSent,
+                    targetBitrateBps: row.targetBitrateBps,
+                    averageQuantizer: row.averageQuantizer,
+                    recentEncodeTimeMilliseconds:
+                        row.recentEncodeTimeMilliseconds,
+                    recentSendDelayMilliseconds:
+                        row.recentSendDelayMilliseconds,
+                    recentDroppedFrames: row.recentDroppedFrames,
+                    recentQueuePressureDrops:
+                        row.recentQueuePressureDrops,
+                    queuePressureReason: row.queuePressureReason,
+                    qualityLimitationResolutionChanges:
+                        row.qualityLimitationResolutionChanges,
+                    packetsLost: row.packetsLost
+                )
+            }
+            .sorted { lhs, rhs in
+                let nameOrder = lhs.recipientName.localizedStandardCompare(
+                    rhs.recipientName
+                )
+                if nameOrder != .orderedSame {
+                    return nameOrder == .orderedAscending
+                }
+                return lhs.recipientID < rhs.recipientID
+            }
             let weakestResolution = ordered
                 .filter { $0.width > 0 && $0.height > 0 }
                 .min {
@@ -782,7 +1135,50 @@ struct MeshRoomMediaDiagnosticsSnapshot: Equatable, Identifiable, Sendable {
                 ),
                 processingLatencyMilliseconds: ordered
                     .compactMap(\.processingLatencyMilliseconds)
-                    .max()
+                    .max(),
+                targetBitrateBps: sumOptional(
+                    ordered.map(\.targetBitrateBps)
+                ),
+                averageQuantizer: ordered
+                    .compactMap(\.averageQuantizer)
+                    .max(),
+                recentEncodeTimeMilliseconds: ordered
+                    .compactMap(\.recentEncodeTimeMilliseconds)
+                    .max(),
+                recentSendDelayMilliseconds: ordered
+                    .compactMap(\.recentSendDelayMilliseconds)
+                    .max(),
+                recentDroppedFrames:
+                    ordered.map(\.recentDroppedFrames).max() ?? 0,
+                recentQueuePressureDrops:
+                    ordered.map(\.recentQueuePressureDrops).max() ?? 0,
+                qualityLimitationResolutionChanges:
+                    ordered.map(\.qualityLimitationResolutionChanges)
+                        .max() ?? 0,
+                sourcePointWidth: canonical.sourcePointWidth,
+                sourcePointHeight: canonical.sourcePointHeight,
+                sourcePixelWidth: canonical.sourcePixelWidth,
+                sourcePixelHeight: canonical.sourcePixelHeight,
+                captureWidth: canonical.captureWidth,
+                captureHeight: canonical.captureHeight,
+                capturePixelFormat: canonical.capturePixelFormat,
+                manifestWidth: canonical.manifestWidth,
+                manifestHeight: canonical.manifestHeight,
+                configuredMinimumBitratePerRecipientBps:
+                    canonical.configuredMinimumBitratePerRecipientBps,
+                configuredMaximumBitratePerRecipientBps:
+                    canonical.configuredMaximumBitratePerRecipientBps,
+                bytesSent: saturatingSum(ordered.map(\.bytesSent)),
+                captureDeliveredFrames: canonical.captureDeliveredFrames,
+                captureBackpressureDrops:
+                    canonical.captureBackpressureDrops,
+                qualityLimitationReasons: Array(
+                    Set(ordered.flatMap { row in
+                        row.qualityLimitationReasons
+                            + [row.queuePressureReason].compactMap { $0 }
+                    })
+                ).sorted(),
+                recipientEdges: recipientEdges
             )
         }
         .sorted { lhs, rhs in
@@ -807,6 +1203,23 @@ struct MeshRoomMediaDiagnosticsSnapshot: Equatable, Identifiable, Sendable {
             let (sum, overflow) = result.addingReportingOverflow(value)
             result = overflow ? Int64.max : sum
         }
+    }
+
+    private static func saturatingSum(_ values: [UInt64]) -> UInt64 {
+        values.reduce(into: 0) { result, value in
+            let (sum, overflow) = result.addingReportingOverflow(value)
+            result = overflow ? UInt64.max : sum
+        }
+    }
+
+    private static func sumOptional(_ values: [Double?]) -> Double? {
+        let present = values.compactMap { $0 }
+        // An aggregate target is meaningful only when every recipient edge
+        // reports one. Summing the known subset would present partial data as
+        // the complete source target.
+        guard !present.isEmpty, present.count == values.count else { return nil }
+        let result = present.reduce(0, +)
+        return result.isFinite ? max(0, result) : Double.greatestFiniteMagnitude
     }
 }
 
@@ -1068,6 +1481,13 @@ struct MeshRoomViewSnapshot: Equatable, Sendable,
 
     var connectedParticipantCount: Int {
         1 + remoteParticipants.count(where: { $0.route.isConnected })
+    }
+
+    /// Web viewers are receive-only, so they can never contribute an incoming
+    /// media stream to native participants. Keep them in connection
+    /// diagnostics, but omit the otherwise-empty per-publisher media section.
+    var diagnosticRemoteParticipants: [MeshRoomRemoteParticipantSnapshot] {
+        remoteParticipants.filter { $0.clientKind == .nativeApp }
     }
 
     var creatorDisplayName: String? {

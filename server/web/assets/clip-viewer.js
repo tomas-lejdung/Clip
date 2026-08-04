@@ -11,12 +11,12 @@ import {
 } from "./clip-viewer-state.js";
 
 const elements = Object.fromEntries([
-  "room-heading", "room-label", "room-status", "top-actions", "controlbar", "participant-count", "audio-unlock", "participants-button", "fullscreen-button", "leave-button",
+  "room-heading", "room-label", "room-status", "top-actions", "controlbar", "participant-count", "participants-button", "fullscreen-button", "leave-button",
   "stage", "focus-view", "focus-surface", "focus-video", "row-view", "source-filmstrip",
   "native-minimap", "native-minimap-image", "native-minimap-viewport", "empty-state", "state-title", "state-message",
-  "access-form", "access-word", "unsupported", "follow-select", "source-summary", "master-mute", "master-volume",
+  "access-form", "access-word", "unsupported", "follow-select", "master-mute", "master-volume",
   "participants-panel", "participants-close", "participants-list", "unsupported-title", "unsupported-message",
-  "diagnostics-button", "diagnostics-panel", "diagnostics-close", "diagnostics-copy", "diagnostics-summary", "diagnostics-list",
+  "diagnostics-button", "diagnostics-panel", "diagnostics-close", "diagnostics-copy", "diagnostics-list",
   "terminal-actions", "rejoin-button",
 ].map((id) => [id.replaceAll("-", "_"), document.getElementById(id)]));
 
@@ -127,10 +127,7 @@ function bindControls() {
   syncFullscreenControl();
   elements.leave_button.addEventListener("click", () => session.close());
   elements.rejoin_button.addEventListener("click", () => window.location.reload());
-  elements.audio_unlock.addEventListener("click", () => {
-    audioUnlocked = true; masterMuted = false; syncAudio();
-  });
-  elements.master_mute.addEventListener("click", () => { masterMuted = !masterMuted; syncAudio(); });
+  elements.master_mute.addEventListener("click", toggleMasterAudio);
   elements.master_volume.addEventListener("input", syncAudio);
   elements.access_form.addEventListener("submit", (event) => {
     event.preventDefault();
@@ -274,7 +271,6 @@ function renderLayout() {
   } else {
     elements.source_filmstrip.hidden = true;
     elements.native_minimap.hidden = true;
-    elements.source_summary.textContent = `${sources.length} shared ${sources.length === 1 ? "window" : "windows"}`;
     elements.row_view.classList.toggle("manual-pan", !media.followEnabled);
     renderRow(sources);
   }
@@ -290,7 +286,6 @@ function renderFocus(source) {
   const track = session.media.trackForSource(source);
   setVideoTrack(elements.focus_video, track);
   applyFocusPresentation(source);
-  elements.source_summary.textContent = source ? sourceLabel(source) : "Waiting for a shared window";
 }
 
 function renderRow(sources) {
@@ -592,7 +587,6 @@ function renderAudio() {
 }
 
 function syncAudio() {
-  elements.audio_unlock.hidden = audioUnlocked;
   setControlIcon(elements.master_mute, masterMuted ? "volume-muted" : "volume");
   setControlLabel(elements.master_mute, masterMuted ? "Unmute all audio" : "Mute all audio");
   elements.master_mute.setAttribute("aria-pressed", String(masterMuted));
@@ -604,8 +598,25 @@ function syncAudio() {
     const state = participantAudio.get(audio.dataset.participant) ?? { muted: false, volume: .8 };
     audio.muted = !audioUnlocked || masterMuted || state.muted;
     audio.volume = Math.max(0, Math.min(1, master * state.volume));
-    if (audioUnlocked && !audio.muted) void audio.play().catch(() => { elements.audio_unlock.hidden = false; });
+    if (audioUnlocked && !audio.muted) void audio.play().catch(() => {
+      audioUnlocked = false;
+      masterMuted = true;
+      syncAudio();
+    });
   });
+}
+
+function toggleMasterAudio() {
+  if (!masterMuted) {
+    masterMuted = true;
+    syncAudio();
+    return;
+  }
+  // Calling play() from this click's user-activation turn unlocks browser
+  // audio. The mute control is therefore the single audio entry point.
+  audioUnlocked = true;
+  masterMuted = false;
+  syncAudio();
 }
 
 function renderUnsupported() {
@@ -688,12 +699,6 @@ async function refreshDiagnostics() {
 }
 
 function renderDiagnostics(snapshot) {
-  elements.diagnostics_summary.replaceChildren(
-    diagnosticMetric("Room", snapshot.roomCode),
-    diagnosticMetric("Participants", snapshot.participantCount),
-    diagnosticMetric("Direct Links", snapshot.directLinkCount),
-    diagnosticMetric("Visible Sources", snapshot.activeSources),
-  );
   if (snapshot.peers.length === 0) {
     const empty = document.createElement("p");
     empty.className = "diagnostics-empty";
@@ -702,14 +707,6 @@ function renderDiagnostics(snapshot) {
     return;
   }
   elements.diagnostics_list.replaceChildren(...snapshot.peers.map(diagnosticPeerCard));
-}
-
-function diagnosticMetric(label, value) {
-  const metric = document.createElement("div");
-  const strong = document.createElement("strong"); strong.textContent = String(value);
-  const span = document.createElement("span"); span.textContent = label;
-  metric.append(strong, span);
-  return metric;
 }
 
 function diagnosticPeerCard(peer) {
@@ -734,24 +731,40 @@ function diagnosticPeerCard(peer) {
     const error = document.createElement("p"); error.className = "diagnostics-error";
     error.textContent = peer.error; card.append(error);
   }
+  const audioTracks = peer.tracks.filter((track) => track.kind === "audio");
+  const videoTracks = peer.tracks.filter((track) => track.kind === "video");
   const tracks = document.createElement("div"); tracks.className = "diagnostics-tracks";
   if (peer.tracks.length === 0) {
     const unavailable = document.createElement("p"); unavailable.textContent = "No incoming media statistics reported.";
     tracks.append(unavailable);
   } else {
-    tracks.append(...peer.tracks.map(diagnosticTrack));
+    tracks.append(
+      ...audioTracks.map(diagnosticAudioTrack),
+      ...videoTracks.map(diagnosticVideoTrack),
+    );
   }
   card.append(tracks);
   return card;
 }
 
 function diagnosticFact(list, label, value) {
+  const item = document.createElement("div"); item.className = "diagnostics-fact";
   const term = document.createElement("dt"); term.textContent = label;
-  const description = document.createElement("dd"); description.textContent = value || "Unavailable";
-  list.append(term, description);
+  const description = document.createElement("dd"); description.textContent = value || "Unavailable"; description.title = description.textContent;
+  item.append(term, description);
+  list.append(item);
 }
 
-function diagnosticTrack(track) {
+function diagnosticAudioTrack(track) {
+  const row = document.createElement("section"); row.className = "diagnostics-audio-track";
+  const name = document.createElement("strong"); name.textContent = track.label;
+  const summary = document.createElement("span");
+  summary.textContent = `${track.codec ?? "Codec unavailable"} · ${diagnosticValue(track.bitrateKbps, "kbps")}`;
+  row.append(name, summary);
+  return row;
+}
+
+function diagnosticVideoTrack(track) {
   const row = document.createElement("section"); row.className = "diagnostics-track";
   const heading = document.createElement("div"); heading.className = "diagnostics-track-heading";
   const name = document.createElement("strong"); name.textContent = track.label;

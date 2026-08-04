@@ -40,8 +40,12 @@ struct ClipLiveShareNativeV3StatisticsTests {
             "framesEncoded": 30,
             "framesDropped": 2,
             "framesDiscardedOnSend": 3,
+            "qpSum": 720,
+            "targetBitrate": 8_000_000,
             "totalEncodeTime": 1.5,
+            "totalPacketSendDelay": 0.75,
             "qualityLimitationReason": "bandwidth",
+            "qualityLimitationResolutionChanges": 4,
           ]
         ),
         sample(
@@ -119,6 +123,11 @@ struct ClipLiveShareNativeV3StatisticsTests {
     #expect(outgoing.droppedFrames == 2)
     #expect(outgoing.queuePressureDrops == 3)
     #expect(outgoing.packetsLost == 4)
+    #expect(outgoing.qpSum == 720)
+    #expect(outgoing.targetBitrateBps == 8_000_000)
+    #expect(outgoing.totalEncodeTimeSeconds == 1.5)
+    #expect(outgoing.totalPacketSendDelaySeconds == 0.75)
+    #expect(outgoing.qualityLimitationResolutionChanges == 4)
     #expect(outgoing.processingLatencyMilliseconds == 50)
     #expect(outgoing.queuePressureReason == "bandwidth")
 
@@ -133,8 +142,70 @@ struct ClipLiveShareNativeV3StatisticsTests {
     #expect(incoming.droppedFrames == 6)
     #expect(incoming.queuePressureDrops == 0)
     #expect(incoming.packetsLost == 5)
+    #expect(incoming.qpSum == nil)
+    #expect(incoming.targetBitrateBps == nil)
+    #expect(incoming.totalEncodeTimeSeconds == nil)
+    #expect(incoming.totalPacketSendDelaySeconds == nil)
+    #expect(incoming.qualityLimitationResolutionChanges == nil)
     #expect(incoming.processingLatencyMilliseconds == 30)
     #expect(incoming.queuePressureReason == nil)
+  }
+
+  @Test("optional outbound measurements reject invalid values")
+  func optionalOutboundMeasurementsAreSafe() throws {
+    let statistics = ClipLiveShareNativeV3WebRTCStatisticsParser.parse(
+      [
+        sample(
+          "missing",
+          "outbound-rtp",
+          [
+            "kind": "video",
+            "trackIdentifier": "missing-values",
+          ]
+        ),
+        sample(
+          "invalid",
+          "outbound-rtp",
+          [
+            "kind": "video",
+            "trackIdentifier": "invalid-values",
+            "qpSum": -1,
+            "targetBitrate": Double.nan,
+            "totalEncodeTime": Double.infinity,
+            "totalPacketSendDelay": -0.1,
+            "qualityLimitationResolutionChanges": 1.5,
+          ]
+        ),
+      ],
+      capturedAt: Date(timeIntervalSince1970: 103)
+    )
+
+    for source in statistics.videoSources {
+      #expect(source.qpSum == nil)
+      #expect(source.targetBitrateBps == nil)
+      #expect(source.totalEncodeTimeSeconds == nil)
+      #expect(source.totalPacketSendDelaySeconds == nil)
+      #expect(source.qualityLimitationResolutionChanges == nil)
+    }
+  }
+
+  @Test("model normalizes invalid optional floating-point measurements")
+  func modelNormalizesInvalidOptionalFloatingPointMeasurements() {
+    let source = ClipLiveShareNativeV3VideoSourceStatistics(
+      direction: .outgoing,
+      trackIdentifier: "outgoing-track",
+      qpSum: 1,
+      targetBitrateBps: -.infinity,
+      totalEncodeTimeSeconds: .nan,
+      totalPacketSendDelaySeconds: -1,
+      qualityLimitationResolutionChanges: 2
+    )
+
+    #expect(source.qpSum == 1)
+    #expect(source.targetBitrateBps == nil)
+    #expect(source.totalEncodeTimeSeconds == nil)
+    #expect(source.totalPacketSendDelaySeconds == nil)
+    #expect(source.qualityLimitationResolutionChanges == 2)
   }
 
   @Test("MID mappings override generated RTP track identifiers")

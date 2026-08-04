@@ -36,6 +36,17 @@ enum MeshParticipantCaptureFailure: Equatable, Sendable {
     case systemAudio(message: String)
 }
 
+/// Participant-local capture information used only by diagnostics. Keeping
+/// this beside the capture publisher makes the source-instance/generation
+/// join authoritative without exposing ScreenCaptureKit sessions to the room
+/// or changing the published media contract.
+struct MeshParticipantCaptureDiagnostics: Equatable, Sendable {
+    let sourceInstanceID: ClipLiveShareSourceInstanceID
+    let capture: LiveShareCaptureDescriptor
+    let deliveredFrames: UInt64
+    let backpressureDrops: UInt64
+}
+
 /// Owns the local participant's transient raw capture pipeline. Raw frames are
 /// submitted to the shared native-v3 factory and are never copied into room
 /// state; only compressed tracks and authenticated source descriptors leave
@@ -90,6 +101,28 @@ actor MeshParticipantCapturePublisher {
 
     var activeSources: [ActiveSource] {
         activeBySource.values.sorted { $0.slot < $1.slot }
+    }
+
+    func diagnostics() async -> [MeshParticipantCaptureDiagnostics] {
+        let delivery = await pipeline.deliveryStatisticsSnapshots()
+        let deliveryBySlot = Dictionary(
+            uniqueKeysWithValues: delivery.map { ($0.slot, $0) }
+        )
+        return activeBySource.compactMap { sourceInstanceID, active in
+            guard let snapshot = deliveryBySlot[active.slot],
+                  snapshot.generation == active.generation else {
+                return nil
+            }
+            return MeshParticipantCaptureDiagnostics(
+                sourceInstanceID: sourceInstanceID,
+                capture: active.capture,
+                deliveredFrames: snapshot.statistics.deliveredFrames,
+                backpressureDrops: snapshot.statistics.backpressureDrops
+            )
+        }
+        .sorted { lhs, rhs in
+            lhs.sourceInstanceID.rawValue < rhs.sourceInstanceID.rawValue
+        }
     }
 
     func failures() -> AsyncStream<MeshParticipantCaptureFailure> {
