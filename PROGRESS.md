@@ -65,7 +65,7 @@ Detailed status and evidence:
 - [Web viewer design](docs/web-viewer-mesh-design.md)
 - [Collaboration/window controls progress](docs/collaboration-window-controls-progress.md)
 
-## Before merging the mesh branch
+## Mesh merge evidence
 
 - [x] Commit the final sender-diagnostics and Web diagnostics cleanup
 - [x] Finish README, architecture, specification, status, and release-doc audit
@@ -79,10 +79,11 @@ Detailed status and evidence:
 - [x] Build the stable-signed repository app
 - [x] Smoke-test two Native participants, the primary use case
 - [x] Smoke-test Native + Web leave/reconnect
-- [ ] Record the exact tested commit and final results in the pull request
+- [x] Record the exact tested commits and final results in pull request #9
 
-When these checks pass, the clean-slate mesh is suitable to replace the old
-networking on `main`.
+The clean-slate mesh replaced the old networking on `main` in merge commit
+`7004195`. Release packaging records the later exact versioned source commit in
+its signed provenance manifest.
 
 The completed smoke rows reflect the stable-signed two-Native and mixed
 Native/Web manual sessions exercised throughout the final branch review. The
