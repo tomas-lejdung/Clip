@@ -38,6 +38,56 @@ struct CaptureDiscoveryTests {
         #expect(fixture.pixelHeight == 1_248)
     }
 
+    @Test("visible inventory keeps current-Space order and excludes retained windows")
+    func visibleWindowInventory() {
+        let front = window(id: 1, processID: 44, title: "Front")
+        let inactiveSpace = window(
+            id: 2,
+            processID: 44,
+            title: "Other Space",
+            isOnScreen: false
+        )
+        let back = window(id: 3, processID: 44, title: "Back")
+
+        let content = ShareableCaptureContent(
+            displays: [],
+            windows: [front, inactiveSpace, back]
+        )
+
+        #expect(content.windows.map(\.id) == [1, 2, 3])
+        #expect(content.visibleWindows.map(\.id) == [1, 3])
+    }
+
+    @Test("scoped discovery keeps visible and all-window inventories explicit")
+    func explicitDiscoveryScopes() async throws {
+        let front = window(id: 1, processID: 44, title: "Front")
+        let inactiveSpace = window(
+            id: 2,
+            processID: 44,
+            title: "Other Space",
+            isOnScreen: false
+        )
+        let discovery = FixedDiscovery(
+            content: ShareableCaptureContent(
+                displays: [],
+                windows: [front, inactiveSpace]
+            )
+        )
+
+        let visible = try await discovery.shareableContent(
+            excludingBundleIdentifier: nil,
+            windowScope: .onScreenOnly
+        )
+        let all = try await discovery.shareableContent(
+            excludingBundleIdentifier: nil,
+            windowScope: .allWindows
+        )
+
+        #expect(visible.windows.map(\.id) == [front.id])
+        #expect(all.windows.map(\.id) == [front.id, inactiveSpace.id])
+        #expect(all.windows.last?.isOnScreen == false)
+    }
+
     @Test("focused selection chooses the frontmost application's first ordered window")
     func focusedSelection() {
         let back = window(id: 2, processID: 44, title: "Back")
@@ -48,6 +98,22 @@ struct CaptureDiscoveryTests {
             frontmostProcessID: 44,
             orderedWindows: [unrelated, front, back]
         )?.id == 1)
+    }
+
+    @Test("focused selection ignores windows retained from another Space")
+    func focusedSelectionSkipsInactiveSpace() {
+        let inactiveSpace = window(
+            id: 1,
+            processID: 44,
+            title: "Other Space",
+            isOnScreen: false
+        )
+        let visible = window(id: 2, processID: 44, title: "Visible")
+
+        #expect(FocusedWindowSelection.eligibleWindow(
+            frontmostProcessID: 44,
+            orderedWindows: [inactiveSpace, visible]
+        )?.id == visible.id)
     }
 
     @Test("no frontmost process has no overlay target")
@@ -103,6 +169,7 @@ struct CaptureDiscoveryTests {
         id: CGWindowID,
         processID: pid_t,
         title: String,
+        isOnScreen: Bool = true,
         frame: CGRect = CGRect(x: 10, y: 10, width: 800, height: 600)
     ) -> ShareableCaptureWindow {
         ShareableCaptureWindow(
@@ -112,8 +179,28 @@ struct CaptureDiscoveryTests {
             applicationName: "Fixture",
             bundleIdentifier: "example.fixture",
             processID: processID,
+            isOnScreen: isOnScreen,
             pixelWidth: 1_600,
             pixelHeight: 1_200
         )
+    }
+}
+
+private struct FixedDiscovery: CaptureContentDiscovering {
+    let content: ShareableCaptureContent
+
+    func shareableContent(
+        excludingBundleIdentifier: String?,
+        windowScope: CaptureWindowDiscoveryScope
+    ) async throws -> ShareableCaptureContent {
+        switch windowScope {
+        case .onScreenOnly:
+            ShareableCaptureContent(
+                displays: content.displays,
+                windows: content.visibleWindows
+            )
+        case .allWindows:
+            content
+        }
     }
 }

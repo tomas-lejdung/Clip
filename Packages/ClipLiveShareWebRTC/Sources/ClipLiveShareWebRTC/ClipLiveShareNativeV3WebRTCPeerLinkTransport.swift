@@ -197,6 +197,10 @@ public final class ClipLiveShareNativeV3WebRTCTransportFactory:
   private let videoCodecCapabilities: [RTCRtpCodecCapability]
   private let audioCodecCapabilities: [RTCRtpCodecCapability]
   private let slots: [ClipLiveShareNativeV3LocalVideoSlot]
+  private let retainedFrameReplayBurst: WebRTCRetainedFrameReplayBurst
+  private let retainedFrameMinimumIdleIntervalNanoseconds: UInt64
+  private let retainedFrameReplayObserver:
+    (@Sendable (_ slot: Int) -> Void)?
   private let systemAudioTrack: RTCAudioTrack
   private let systemAudioTrackID: String
   private let systemAudioStreamID: String
@@ -209,10 +213,30 @@ public final class ClipLiveShareNativeV3WebRTCTransportFactory:
     WebRTCAdvancedVideoConfigurations
   private var isClosed = false
 
-  public init(
+  public convenience init(
     configuration: ClipLiveShareNativeV3WebRTCConfiguration = .clipDefault
   ) throws {
+    try self.init(
+      configuration: configuration,
+      retainedFrameReplayBurst: WebRTCRetainedFrameReplayBurst(),
+      retainedFrameMinimumIdleIntervalNanoseconds:
+        WebRTCRetainedFrameReplayBurst.minimumIdleIntervalNanoseconds,
+      retainedFrameReplayObserver: nil
+    )
+  }
+
+  init(
+    configuration: ClipLiveShareNativeV3WebRTCConfiguration,
+    retainedFrameReplayBurst: WebRTCRetainedFrameReplayBurst,
+    retainedFrameMinimumIdleIntervalNanoseconds: UInt64,
+    retainedFrameReplayObserver:
+      (@Sendable (_ slot: Int) -> Void)?
+  ) throws {
     self.configuration = configuration
+    self.retainedFrameReplayBurst = retainedFrameReplayBurst
+    self.retainedFrameMinimumIdleIntervalNanoseconds =
+      retainedFrameMinimumIdleIntervalNanoseconds
+    self.retainedFrameReplayObserver = retainedFrameReplayObserver
     activeSenderPolicy = configuration.peer.senderPolicy
     activeVideoCodec = configuration.peer.videoCodec
     activeVideoEncodingMode = configuration.peer.videoEncodingMode
@@ -308,7 +332,8 @@ public final class ClipLiveShareNativeV3WebRTCTransportFactory:
   public func makeTransport(
     configuration linkConfiguration: ClipLiveShareNativeV3PeerLinkConfiguration
   ) async throws -> any ClipLiveShareNativeV3PeerLinkTransport {
-    try lock.withLock {
+    let onConnectionBecameReady = retainedFrameReplayRequest
+    return try lock.withLock {
       guard !isClosed else {
         throw ClipLiveShareNativeV3WebRTCPeerLinkError.factoryClosed
       }
@@ -330,12 +355,20 @@ public final class ClipLiveShareNativeV3WebRTCTransportFactory:
         localParticipantAudioStreamID: systemAudioStreamID,
         activeLocalVideoSourceCount: slots.count(where: {
           $0.metadata != nil
-        })
+        }),
+        onConnectionBecameReady: onConnectionBecameReady
       )
       peerTransports.removeAll { $0.value == nil }
       peerTransports.append(.init(transport))
       return transport
     }
+  }
+
+  /// The exact callback supplied to every peer transport. Keeping it as one
+  /// internal value lets package tests exercise the factory side of the
+  /// connection-ready handoff without constructing a second ICE topology.
+  var retainedFrameReplayRequest: @Sendable () -> Void {
+    { [weak self] in self?.scheduleRetainedFrameReplayBurst() }
   }
 
   public var senderPolicy: WebRTCSenderPolicy {
@@ -535,8 +568,8 @@ public final class ClipLiveShareNativeV3WebRTCTransportFactory:
   }
 
   public func close() {
-    lock.withLock {
-      guard !isClosed else { return }
+    let didClose = lock.withLock { () -> Bool in
+      guard !isClosed else { return false }
       isClosed = true
       systemAudioEnabled = false
       systemAudioTrack.isEnabled = false
@@ -547,6 +580,45 @@ public final class ClipLiveShareNativeV3WebRTCTransportFactory:
         slot.captureGeometry = nil
         slot.track.isEnabled = false
         slot.frameSource.clearLatestFrame()
+      }
+      return true
+    }
+    if didClose { retainedFrameReplayBurst.cancel() }
+  }
+
+  /// A connected peer may have joined after ScreenCaptureKit emitted the last
+  /// frame for an unchanged or off-Space window. Re-submit only retained frames
+  /// that have been idle long enough. The shared RTCVideoSource fans that frame
+  /// out to every current encoder, while the finite burst gives the new peer's
+  /// PLI/encoder setup more than one opportunity without becoming a timer.
+  private func scheduleRetainedFrameReplayBurst() {
+    guard lock.withLock({ !isClosed }) else { return }
+    retainedFrameReplayBurst.trigger { [weak self] in
+      self?.replayRetainedFramesIfIdle()
+    }
+  }
+
+  private func replayRetainedFramesIfIdle() {
+    let active = lock.withLock { () -> [(
+      Int,
+      WebRTCFrameSource,
+      WebRTCVideoCaptureGeometry
+    )] in
+      guard !isClosed else { return [] }
+      return slots.compactMap { slot in
+        guard slot.metadata != nil, let geometry = slot.captureGeometry else {
+          return nil
+        }
+        return (slot.index, slot.frameSource, geometry)
+      }
+    }
+    for (slot, source, geometry) in active {
+      if source.replayLatestFrameIfIdle(
+        forAtLeast: retainedFrameMinimumIdleIntervalNanoseconds,
+        expectedWidth: geometry.width,
+        expectedHeight: geometry.height
+      ) {
+        retainedFrameReplayObserver?(slot)
       }
     }
   }
@@ -584,6 +656,7 @@ public final class ClipLiveShareNativeV3WebRTCPeerLinkTransport:
   private let localVideoSlots: [ClipLiveShareNativeV3LocalVideoSlot]
   private let localParticipantAudioTrack: RTCAudioTrack
   private let localParticipantAudioStreamID: String
+  private let onConnectionBecameReady: @Sendable () -> Void
   private let videoCodecCapabilities: [RTCRtpCodecCapability]
   private let audioCodecCapabilities: [RTCRtpCodecCapability]
   private var videoTransceivers: [RTCRtpTransceiver]
@@ -639,13 +712,15 @@ public final class ClipLiveShareNativeV3WebRTCPeerLinkTransport:
     localVideoSlots: [ClipLiveShareNativeV3LocalVideoSlot],
     localParticipantAudioTrack: RTCAudioTrack,
     localParticipantAudioStreamID: String,
-    activeLocalVideoSourceCount: Int
+    activeLocalVideoSourceCount: Int,
+    onConnectionBecameReady: @escaping @Sendable () -> Void
   ) throws {
     self.linkConfiguration = linkConfiguration
     self.webRTCConfiguration = webRTCConfiguration
     self.localVideoSlots = localVideoSlots
     self.localParticipantAudioTrack = localParticipantAudioTrack
     self.localParticipantAudioStreamID = localParticipantAudioStreamID
+    self.onConnectionBecameReady = onConnectionBecameReady
     self.videoCodecCapabilities = videoCodecCapabilities
     self.audioCodecCapabilities = audioCodecCapabilities
     videoTransceivers = []
@@ -983,6 +1058,7 @@ public final class ClipLiveShareNativeV3WebRTCPeerLinkTransport:
   public func setOutboundMediaEnabled(_ enabled: Bool) async {
     onQueue {
       guard !isClosed else { return }
+      let previousValue = outboundMediaEnabled
       outboundMediaEnabled = enabled
       for transceiver in videoTransceivers {
         Self.setSender(transceiver.sender, active: enabled)
@@ -992,6 +1068,15 @@ public final class ClipLiveShareNativeV3WebRTCPeerLinkTransport:
       }
       if enabled {
         applyPeerBandwidthPolicy()
+        if WebRTCRetainedFrameReplayPolicy
+          .shouldTriggerAfterOutboundMediaChange(
+            wasEnabled: previousValue,
+            isEnabled: enabled,
+            connectionState: connectionState
+          )
+        {
+          onConnectionBecameReady()
+        }
       }
     }
   }
@@ -1242,6 +1327,7 @@ public final class ClipLiveShareNativeV3WebRTCPeerLinkTransport:
         connectionState = state
         if state == .connected {
           applyPeerBandwidthPolicy()
+          onConnectionBecameReady()
         }
         emit(.connectionStateChanged(state))
       case let .dataChannelOpened(channel):

@@ -28,6 +28,10 @@ public struct ShareableCaptureWindow: Identifiable, Equatable, Sendable {
     public let applicationName: String
     public let bundleIdentifier: String
     public let processID: pid_t
+    /// Whether WindowServer currently considers this window visible on an
+    /// active Space. A window can remain a valid capture target while this is
+    /// false, so publication liveness must not infer closure from visibility.
+    public let isOnScreen: Bool
     public let capturePointWidth: Int
     public let capturePointHeight: Int
     public let pixelWidth: Int
@@ -40,6 +44,7 @@ public struct ShareableCaptureWindow: Identifiable, Equatable, Sendable {
         applicationName: String,
         bundleIdentifier: String,
         processID: pid_t,
+        isOnScreen: Bool = true,
         capturePointWidth: Int? = nil,
         capturePointHeight: Int? = nil,
         pixelWidth: Int,
@@ -51,6 +56,7 @@ public struct ShareableCaptureWindow: Identifiable, Equatable, Sendable {
         self.applicationName = applicationName
         self.bundleIdentifier = bundleIdentifier
         self.processID = processID
+        self.isOnScreen = isOnScreen
         self.capturePointWidth = max(
             1,
             capturePointWidth ?? Int(frame.width.rounded())
@@ -76,12 +82,44 @@ public struct ShareableCaptureContent: Equatable, Sendable {
         self.displays = displays
         self.windows = windows
     }
+
+    /// Windows suitable for current-Space pickers and focused-window
+    /// resolution. `windows` may also contain retained targets from another
+    /// Space when discovery uses ``CaptureWindowDiscoveryScope/allWindows``.
+    public var visibleWindows: [ShareableCaptureWindow] {
+        windows.filter(\.isOnScreen)
+    }
+}
+
+/// Controls whether discovery describes only the current Space or every
+/// existing capture target. Selection UI should use ``onScreenOnly``; active
+/// publication reconciliation should use ``allWindows`` so changing Spaces is
+/// not mistaken for closing a window.
+public enum CaptureWindowDiscoveryScope: Equatable, Sendable {
+    case onScreenOnly
+    case allWindows
 }
 
 public protocol CaptureContentDiscovering: Sendable {
     func shareableContent(
-        excludingBundleIdentifier: String?
+        excludingBundleIdentifier: String?,
+        windowScope: CaptureWindowDiscoveryScope
     ) async throws -> ShareableCaptureContent
+}
+
+public extension CaptureContentDiscovering {
+    /// Current-Space convenience used by pickers and focus monitoring. Every
+    /// conformer must implement the scoped requirement explicitly so an
+    /// all-window lifecycle request can never silently fall back to a
+    /// visible-only inventory.
+    func shareableContent(
+        excludingBundleIdentifier: String?
+    ) async throws -> ShareableCaptureContent {
+        try await shareableContent(
+            excludingBundleIdentifier: excludingBundleIdentifier,
+            windowScope: .onScreenOnly
+        )
+    }
 }
 
 public struct ScreenCaptureContentDiscovery: CaptureContentDiscovering {
@@ -90,9 +128,19 @@ public struct ScreenCaptureContentDiscovery: CaptureContentDiscovering {
     public func shareableContent(
         excludingBundleIdentifier: String? = nil
     ) async throws -> ShareableCaptureContent {
+        try await shareableContent(
+            excludingBundleIdentifier: excludingBundleIdentifier,
+            windowScope: .onScreenOnly
+        )
+    }
+
+    public func shareableContent(
+        excludingBundleIdentifier: String?,
+        windowScope: CaptureWindowDiscoveryScope
+    ) async throws -> ShareableCaptureContent {
         let content = try await SCShareableContent.excludingDesktopWindows(
             true,
-            onScreenWindowsOnly: true
+            onScreenWindowsOnly: windowScope == .onScreenOnly
         )
         let ordering = Self.frontToBackWindowOrder()
         let displays = content.displays.map {
@@ -104,7 +152,7 @@ public struct ScreenCaptureContentDiscovery: CaptureContentDiscovering {
             )
         }
         let windows = content.windows.compactMap { window -> ShareableCaptureWindow? in
-            guard window.isOnScreen,
+            guard (windowScope == .allWindows || window.isOnScreen),
                   window.windowLayer == 0,
                   window.frame.width >= 2,
                   window.frame.height >= 2,
@@ -125,6 +173,7 @@ public struct ScreenCaptureContentDiscovery: CaptureContentDiscovering {
                 applicationName: application.applicationName,
                 bundleIdentifier: application.bundleIdentifier,
                 processID: application.processID,
+                isOnScreen: window.isOnScreen,
                 capturePointWidth: capturePointWidth,
                 capturePointHeight: capturePointHeight,
                 pixelWidth: pixelWidth,
@@ -180,7 +229,8 @@ public enum FocusedWindowSelection {
     ) -> ShareableCaptureWindow? {
         guard let frontmostProcessID else { return nil }
         return orderedWindows.first {
-            $0.processID == frontmostProcessID
+            $0.isOnScreen
+                && $0.processID == frontmostProcessID
                 && ShareableApplicationWindowEligibility.isEligible(
                     $0,
                     minimumPointSize: minimumPointSize
