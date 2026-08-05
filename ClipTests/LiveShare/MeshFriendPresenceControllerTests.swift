@@ -7,6 +7,48 @@ import Testing
 
 @Suite("Saved-friend encrypted presence controller")
 struct MeshFriendPresenceControllerTests {
+  @Test("friend names resolve by persistent identity and remain local")
+  func friendDisplayNameDirectory() throws {
+    let friend = ClipLiveShareSoftwareIdentitySigner()
+    let stranger = ClipLiveShareSoftwareIdentitySigner()
+    let snapshot = MeshFriendPresenceControllerSnapshot(
+      friends: [
+        MeshFriendPresenceSnapshot(
+          id: friend.publicKey.fingerprint.rawValue,
+          identity: friend.publicKey,
+          displayName: "Jules",
+          deviceName: "Jules's Mac",
+          availability: .offline,
+          verifiedInvite: nil,
+          lastSeenAt: nil,
+          lastCheckedAt: nil,
+          retryAfter: nil,
+          issue: nil
+        )
+      ]
+    )
+
+    let directory = MeshFriendDisplayNameDirectory(snapshot: snapshot)
+    #expect(
+      directory.displayName(
+        for: friend.publicKey,
+        fallback: "Advertised Friend"
+      ) == "Jules"
+    )
+    #expect(
+      directory.displayName(
+        for: stranger.publicKey,
+        fallback: "Web Participant"
+      ) == "Web Participant"
+    )
+    #expect(
+      MeshFriendDisplayNameDirectory.empty.displayName(
+        for: friend.publicKey,
+        fallback: "Advertised Friend"
+      ) == "Advertised Friend"
+    )
+  }
+
   @Test("publishes locally, polls remotely, and preserves the canonical invite")
   func directionalStablePresence() async throws {
     let fixture = try FriendPresenceControllerFixture()

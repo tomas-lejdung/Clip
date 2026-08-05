@@ -1572,6 +1572,9 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
         _ snapshot: MeshFriendPresenceControllerSnapshot
     ) {
         meshFriendPresenceSnapshot = snapshot
+        serverMeshCoordinator?.replaceFriendDisplayNames(
+            MeshFriendDisplayNameDirectory(snapshot: snapshot)
+        )
         menuBarModel.replaceLiveShareFriends(
             MenuBarFriendPresencePolicy.rows(from: snapshot)
         )
@@ -1925,6 +1928,10 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
                         localDeviceName: names.deviceName,
                         session: .init(roomSession),
                         localMedia: mediaBridge.client(),
+                        initialFriendDisplayNames:
+                            MeshFriendDisplayNameDirectory(
+                                snapshot: meshFriendPresenceSnapshot
+                            ),
                         initialSettings: initialSettings,
                         friendshipDependencies: .init(
                             signer: identity.signer,

@@ -60,6 +60,43 @@ struct MeshFriendPresenceControllerSnapshot: Equatable, Sendable,
   }
 }
 
+/// Local presentation names for authenticated friends, indexed by their
+/// persistent identity rather than their room-scoped participant ID.
+///
+/// The directory is deliberately derived from the saved-friend snapshot and
+/// never changes a signed room descriptor or sends a local alias to another
+/// participant. Non-friends (including web participants) continue to use the
+/// name they advertised to the room.
+struct MeshFriendDisplayNameDirectory: Equatable, Sendable {
+  static let empty = Self(namesByIdentity: [:])
+
+  private let namesByIdentity:
+    [ClipLiveShareIdentityPublicKey: String]
+
+  init(snapshot: MeshFriendPresenceControllerSnapshot) {
+    self.init(
+      namesByIdentity: Dictionary(
+        uniqueKeysWithValues: snapshot.friends.map {
+          ($0.identity, $0.displayName)
+        }
+      )
+    )
+  }
+
+  private init(
+    namesByIdentity: [ClipLiveShareIdentityPublicKey: String]
+  ) {
+    self.namesByIdentity = namesByIdentity
+  }
+
+  func displayName(
+    for identity: ClipLiveShareIdentityPublicKey,
+    fallback: String
+  ) -> String {
+    namesByIdentity[identity] ?? fallback
+  }
+}
+
 struct MeshFriendPresenceTiming: Equatable, Sendable {
   static let production = Self(
     presenceLifetime: 45,

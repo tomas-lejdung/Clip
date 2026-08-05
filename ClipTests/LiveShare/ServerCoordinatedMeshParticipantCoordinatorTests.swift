@@ -157,6 +157,45 @@ struct ServerCoordinatedMeshParticipantCoordinatorTests {
         #expect(coordinator.presentationModel.snapshot.statusNotice == nil)
     }
 
+    @Test("friend aliases replace only local participant presentation names")
+    func friendAliasesArePresentationOnlyAndReplaceLive() throws {
+        let friendIdentity = try identity(seed: 0x61)
+        let nonfriendIdentity = try identity(seed: 0x62)
+        let coordinator = makeCoordinator(
+            initialFriendDisplayNames: friendDirectory(
+                identity: friendIdentity,
+                displayName: "Jules"
+            )
+        )
+
+        #expect(
+            coordinator.presentationDisplayName(
+                for: friendIdentity,
+                authenticatedName: "Juliah’s MacBook"
+            ) == "Jules"
+        )
+        #expect(
+            coordinator.presentationDisplayName(
+                for: nonfriendIdentity,
+                authenticatedName: "Authenticated Guest"
+            ) == "Authenticated Guest"
+        )
+
+        coordinator.replaceFriendDisplayNames(
+            friendDirectory(
+                identity: friendIdentity,
+                displayName: "Julia"
+            )
+        )
+
+        #expect(
+            coordinator.presentationDisplayName(
+                for: friendIdentity,
+                authenticatedName: "Juliah’s MacBook"
+            ) == "Julia"
+        )
+    }
+
     @Test("capture recovery remains authoritative beside control retries")
     func captureRecoveryRemainsAuthoritative() {
         let coordinator = makeCoordinator()
@@ -247,7 +286,9 @@ struct ServerCoordinatedMeshParticipantCoordinatorTests {
         )
     }
 
-    private func makeCoordinator()
+    private func makeCoordinator(
+        initialFriendDisplayNames: MeshFriendDisplayNameDirectory = .empty
+    )
         -> ServerCoordinatedMeshParticipantCoordinator
     {
         ServerCoordinatedMeshParticipantCoordinator(
@@ -262,7 +303,40 @@ struct ServerCoordinatedMeshParticipantCoordinatorTests {
                     throw ParticipantCoordinatorTestError.startFailed
                 }
             ),
-            localMedia: .init()
+            localMedia: .init(),
+            initialFriendDisplayNames: initialFriendDisplayNames
+        )
+    }
+
+    private func identity(
+        seed: UInt8
+    ) throws -> ClipLiveShareIdentityPublicKey {
+        try ClipLiveShareSoftwareIdentitySigner(
+            rawRepresentation: Data(repeating: seed, count: 32)
+        ).publicKey
+    }
+
+    private func friendDirectory(
+        identity: ClipLiveShareIdentityPublicKey,
+        displayName: String
+    ) -> MeshFriendDisplayNameDirectory {
+        MeshFriendDisplayNameDirectory(
+            snapshot: .init(
+                friends: [
+                    .init(
+                        id: identity.fingerprint.rawValue,
+                        identity: identity,
+                        displayName: displayName,
+                        deviceName: "Friend Mac",
+                        availability: .offline,
+                        verifiedInvite: nil,
+                        lastSeenAt: nil,
+                        lastCheckedAt: nil,
+                        retryAfter: nil,
+                        issue: nil
+                    )
+                ]
+            )
         )
     }
 }
