@@ -6,7 +6,10 @@ set -euo pipefail
 # signaling, peer capability/UI presentation, and exact codec negotiation. It
 # must not alter the already-verified native capture, display-density, recording
 # media, or Live Share source-geometry pipelines.
-readonly WEB_VIEWER_BASE_COMMIT="${CLIP_WEB_VIEWER_BASE_COMMIT:-dbdb48b}"
+# Advance this only after an intentional native capture change has passed its
+# focused tests and real-Mac acceptance. d55ebe9 is the reviewed Space-safe
+# exact-window capture baseline.
+readonly WEB_VIEWER_BASE_COMMIT="${CLIP_WEB_VIEWER_BASE_COMMIT:-d55ebe9}"
 readonly FORBIDDEN_PATHS=(
   "Packages/ClipCapture"
   "Packages/ClipMedia"
