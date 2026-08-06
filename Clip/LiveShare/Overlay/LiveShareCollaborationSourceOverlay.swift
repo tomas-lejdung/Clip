@@ -967,7 +967,6 @@ private struct MeshFocusedWindowControlView: View {
             Capsule().strokeBorder(.white.opacity(0.16), lineWidth: 1)
         }
         .clipShape(Capsule())
-        .shadow(color: .black.opacity(0.28), radius: 6, y: 2)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("clip.meshRoom.focusedWindow.overlay")
     }
@@ -1285,7 +1284,6 @@ private struct MeshLocalStatusHUDView: View {
                 .strokeBorder(.white.opacity(0.16), lineWidth: 1)
         }
         .clipShape(RoundedRectangle(cornerRadius: 12))
-        .shadow(color: .black.opacity(0.28), radius: 7, y: 2)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("clip.meshRoom.hud")
     }
