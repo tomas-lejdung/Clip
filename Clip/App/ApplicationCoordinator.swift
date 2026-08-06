@@ -275,6 +275,9 @@ private final class ServerCoordinatedMeshLocalMediaBridge {
             setFullscreenEnabled: { [weak self] enabled in
                 self?.publicationController?.setFullscreenEnabled(enabled)
             },
+            bringAllRemoteWindowsToFront: { [callbackRelay] in
+                callbackRelay.bringAllRemoteWindowsToFront()
+            },
             stopAllMedia: { [weak self] in
                 self?.publicationController?.stopAllMedia()
             }
@@ -500,6 +503,7 @@ private final class ServerCoordinatedMeshLocalMediaBridge {
         let visibleFrame = targetScreen.visibleFrame
         let room = await roomSession?.snapshot()
         let participantCount = room?.verifiedRoom?.members.count ?? 1
+        let remoteSharedSourceCount = callbackRelay.remoteSharedSourceCount
         let localStatus = publicationController.localStatusSnapshot
         guard MeshLocalStatusHUDVisibilityPolicy.shouldPresent(
             over: NSApp.windows,
@@ -512,7 +516,8 @@ private final class ServerCoordinatedMeshLocalMediaBridge {
             snapshot: MeshLocalStatusHUDSnapshot(
                 sourceStatuses: localStatus.windowSourceStatuses,
                 participantCount: participantCount,
-                fullscreen: localStatus.fullscreen
+                fullscreen: localStatus.fullscreen,
+                remoteSharedSourceCount: remoteSharedSourceCount
             ),
             visibleScreenFrame: visibleFrame
         )
@@ -1572,6 +1577,9 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
         _ snapshot: MeshFriendPresenceControllerSnapshot
     ) {
         meshFriendPresenceSnapshot = snapshot
+        serverMeshCoordinator?.replaceFriendDisplayNames(
+            MeshFriendDisplayNameDirectory(snapshot: snapshot)
+        )
         menuBarModel.replaceLiveShareFriends(
             MenuBarFriendPresencePolicy.rows(from: snapshot)
         )
@@ -1925,6 +1933,10 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
                         localDeviceName: names.deviceName,
                         session: .init(roomSession),
                         localMedia: mediaBridge.client(),
+                        initialFriendDisplayNames:
+                            MeshFriendDisplayNameDirectory(
+                                snapshot: meshFriendPresenceSnapshot
+                            ),
                         initialSettings: initialSettings,
                         friendshipDependencies: .init(
                             signer: identity.signer,

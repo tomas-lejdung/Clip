@@ -97,6 +97,12 @@ final class MeshParticipantLocalPublicationController {
         var display: ShareableCaptureDisplay?
         var descriptor: LiveShareCaptureDescriptor
         var status: LiveShareSourceViewStatus
+        /// Missing from the complete WindowServer inventory, rather than only
+        /// invisible on the active Space. Several consecutive observations are
+        /// required before treating the target as closed because Space and
+        /// Stage Manager transitions can briefly omit an otherwise live
+        /// window.
+        var consecutiveInventoryMisses = 0
     }
 
     private struct SystemAudioReconciliationOutcome {
@@ -115,6 +121,8 @@ final class MeshParticipantLocalPublicationController {
     private let onChange: (MeshParticipantLocalPublicationSnapshot) -> Void
     private let onFailure: (String) -> Void
     private let observesFocusedWindow: Bool
+    private let refreshInterval: Duration?
+    private let windowClosureConfirmationCount: Int
     private let audioRequestIdentifier = UUID()
     private let maximumActiveSources: Int
 
@@ -154,6 +162,8 @@ final class MeshParticipantLocalPublicationController {
         maximumActiveSources: Int,
         operations: MeshParticipantLocalPublicationOperations,
         observesFocusedWindow: Bool = true,
+        refreshInterval: Duration? = .milliseconds(750),
+        windowClosureConfirmationCount: Int = 3,
         persistSettings: @escaping (LiveShareSettings) -> Void,
         onChange: @escaping (
             MeshParticipantLocalPublicationSnapshot
@@ -165,6 +175,11 @@ final class MeshParticipantLocalPublicationController {
         self.discovery = discovery
         self.operations = operations
         self.observesFocusedWindow = observesFocusedWindow
+        self.refreshInterval = refreshInterval
+        self.windowClosureConfirmationCount = max(
+            1,
+            windowClosureConfirmationCount
+        )
         self.persistSettings = persistSettings
         self.onChange = onChange
         self.onFailure = onFailure
@@ -286,13 +301,15 @@ final class MeshParticipantLocalPublicationController {
         if observesFocusedWindow {
             focusedWindowMonitor.start()
         }
-        refreshTask = Task { @MainActor [weak self] in
-            while let self, !Task.isCancelled, isRunning {
-                await refreshShareableContent()
-                do {
-                    try await Task.sleep(for: .milliseconds(750))
-                } catch {
-                    return
+        if let refreshInterval {
+            refreshTask = Task { @MainActor [weak self] in
+                while let self, !Task.isCancelled, isRunning {
+                    await refreshShareableContent()
+                    do {
+                        try await Task.sleep(for: refreshInterval)
+                    } catch {
+                        return
+                    }
                 }
             }
         }
@@ -749,7 +766,7 @@ final class MeshParticipantLocalPublicationController {
         guard fullscreenActiveSource == nil else { return }
         let focusedWindowID = focusedWindow?.window.id
         for instanceID in Array(activeByInstanceID.keys) {
-            guard var active = activeByInstanceID[instanceID],
+            guard let active = activeByInstanceID[instanceID],
                   case let .window(windowSource) = active.source else {
                 continue
             }
@@ -766,12 +783,11 @@ final class MeshParticipantLocalPublicationController {
                     order: active.descriptor.stream.order,
                     existingStream: active.descriptor.stream
                 )
-                try await operations.update(
+                _ = try await applyDescriptorUpdate(
                     instanceID,
-                    descriptor
+                    expectedDescriptor: active.descriptor,
+                    nextDescriptor: descriptor
                 )
-                active.descriptor = descriptor
-                activeByInstanceID[instanceID] = active
             } catch {
                 report(error)
             }
@@ -779,61 +795,108 @@ final class MeshParticipantLocalPublicationController {
         publish()
     }
 
-    private func refreshShareableContent() async {
+    /// Reconciles both the current-Space selection inventory and the complete
+    /// window lifecycle inventory. Internal visibility makes this directly
+    /// driveable by deterministic tests and future Space-change notifications
+    /// without relying on wall-clock sleeps.
+    func refreshShareableContent() async {
         guard isRunning else { return }
         do {
             let content = try await discovery.shareableContent(
                 excludingBundleIdentifier:
-                    ApplicationDirectories.bundleIdentifier
+                    ApplicationDirectories.bundleIdentifier,
+                windowScope: .allWindows
             )
             guard isRunning, !Task.isCancelled else { return }
-            availableWindows = content.windows.filter {
-                ShareableApplicationWindowEligibility.isEligible(
-                    $0,
-                    minimumPointSize: CGSize(width: 100, height: 100)
-                )
+            let reconciliation = enqueue { controller in
+                await controller.reconcileShareableContent(content)
             }
-            for window in availableWindows {
-                windowsByID[.init(rawValue: window.id)] = window
-            }
-
-            for instanceID in Array(activeByInstanceID.keys) {
-                guard var active = activeByInstanceID[instanceID] else {
-                    continue
-                }
-                switch active.source {
-                case let .window(source):
-                    guard let window = content.windows.first(where: {
-                        $0.id == source.id.rawValue
-                    }) else {
-                        await stopSource(instanceID)
-                        continue
-                    }
-                    active.window = window
-                    activeByInstanceID[instanceID] = active
-                case let .fullscreen(source):
-                    guard let display = content.displays.first(where: {
-                        $0.id == source.id.rawValue
-                    }) else {
-                        await stopSource(instanceID)
-                        continue
-                    }
-                    active.display = display
-                    activeByInstanceID[instanceID] = active
-                }
-            }
-            guard !settingsTransactionInFlight else {
-                publish()
-                return
-            }
-            await refreshActiveDescriptors()
-            await reconcileSystemAudio()
-            publish()
+            await reconciliation.value
         } catch {
             Self.logger.debug(
                 "Could not refresh mesh shareable content: \(error.localizedDescription, privacy: .public)"
             )
         }
+    }
+
+    private func reconcileShareableContent(
+        _ content: ShareableCaptureContent
+    ) async {
+        guard isRunning else { return }
+        let visibleWindows = content.visibleWindows
+        availableWindows = visibleWindows.filter {
+            ShareableApplicationWindowEligibility.isEligible(
+                $0,
+                minimumPointSize: CGSize(width: 100, height: 100)
+            )
+        }
+        for window in availableWindows {
+            windowsByID[.init(rawValue: window.id)] = window
+        }
+
+        for instanceID in Array(activeByInstanceID.keys) {
+            guard var active = activeByInstanceID[instanceID] else {
+                continue
+            }
+            switch active.source {
+            case let .window(source):
+                if let window = visibleWindows.first(where: {
+                    isSameWindowGeneration(
+                        $0,
+                        sourceID: source.id.rawValue,
+                        cachedWindow: active.window
+                    )
+                }) {
+                    // Only visible geometry is authoritative. An inactive
+                    // Space can report compositor-derived dimensions that
+                    // would otherwise disturb the proven 1x/Retina policy.
+                    active.window = window
+                    active.consecutiveInventoryMisses = 0
+                    activeByInstanceID[instanceID] = active
+                    continue
+                }
+                if content.windows.contains(where: {
+                    isSameWindowGeneration(
+                        $0,
+                        sourceID: source.id.rawValue,
+                        cachedWindow: active.window
+                    )
+                }) {
+                    // The target still exists but is minimized or belongs
+                    // to another Space. Preserve the same source, track,
+                    // capture session and last known geometry so receivers
+                    // hold their last decoded frame until it becomes
+                    // visible again.
+                    active.consecutiveInventoryMisses = 0
+                    activeByInstanceID[instanceID] = active
+                    continue
+                }
+                active.consecutiveInventoryMisses += 1
+                if active.consecutiveInventoryMisses
+                    >= windowClosureConfirmationCount {
+                    await stopSource(instanceID)
+                } else {
+                    activeByInstanceID[instanceID] = active
+                }
+            case let .fullscreen(source):
+                guard let display = content.displays.first(where: {
+                    $0.id == source.id.rawValue
+                }) else {
+                    await stopSource(instanceID)
+                    continue
+                }
+                active.display = display
+                activeByInstanceID[instanceID] = active
+            }
+        }
+        guard isRunning, !settingsTransactionInFlight else {
+            publish()
+            return
+        }
+        await refreshActiveDescriptors()
+        guard isRunning else { return }
+        await reconcileSystemAudio()
+        publish()
     }
 
     private func refreshActiveDescriptors() async {
@@ -852,11 +915,15 @@ final class MeshParticipantLocalPublicationController {
         using mediaSettings: LiveShareSettings
     ) async throws {
         var updated: [
-            (ClipLiveShareSourceInstanceID, LiveShareCaptureDescriptor)
+            (
+                instanceID: ClipLiveShareSourceInstanceID,
+                previous: LiveShareCaptureDescriptor,
+                applied: LiveShareCaptureDescriptor
+            )
         ] = []
         do {
             for instanceID in Array(activeByInstanceID.keys) {
-                guard var active = activeByInstanceID[instanceID] else {
+                guard let active = activeByInstanceID[instanceID] else {
                     continue
                 }
                 let previous = active.descriptor
@@ -870,19 +937,22 @@ final class MeshParticipantLocalPublicationController {
                     using: mediaSettings
                 )
                 guard next != active.descriptor else { continue }
-                try await operations.update(
+                if try await applyDescriptorUpdate(
                     instanceID,
-                    next
-                )
-                active.descriptor = next
-                activeByInstanceID[instanceID] = active
-                updated.append((instanceID, previous))
+                    expectedDescriptor: previous,
+                    nextDescriptor: next
+                ) {
+                    updated.append((instanceID, previous, next))
+                }
             }
         } catch {
-            for (instanceID, previous) in updated.reversed() {
+            for update in updated.reversed() {
                 do {
-                    try await operations.update(instanceID, previous)
-                    activeByInstanceID[instanceID]?.descriptor = previous
+                    _ = try await applyDescriptorUpdate(
+                        update.instanceID,
+                        expectedDescriptor: update.applied,
+                        nextDescriptor: update.previous
+                    )
                 } catch {
                     Self.logger.error(
                         "Could not roll back a local mesh capture descriptor: \(error.localizedDescription, privacy: .public)"
@@ -893,6 +963,73 @@ final class MeshParticipantLocalPublicationController {
             throw error
         }
         publish()
+    }
+
+    /// Applies one descriptor transaction to both the media pipeline and the
+    /// matching local source generation. Normal descriptor mutations and
+    /// explicit source stops share `transitionTask`, while these guards also
+    /// cover whole-controller shutdown cancelling an in-flight transition.
+    private func applyDescriptorUpdate(
+        _ instanceID: ClipLiveShareSourceInstanceID,
+        expectedDescriptor: LiveShareCaptureDescriptor,
+        nextDescriptor: LiveShareCaptureDescriptor
+    ) async throws -> Bool {
+        guard isCurrentSource(
+            instanceID,
+            expectedDescriptor: expectedDescriptor
+        ) else { return false }
+        do {
+            try await operations.update(instanceID, nextDescriptor)
+        } catch {
+            guard isCurrentSource(
+                instanceID,
+                expectedDescriptor: expectedDescriptor
+            ) else {
+                await reconcileMediaAfterStaleDescriptorUpdate(instanceID)
+                return false
+            }
+            throw error
+        }
+        guard var current = activeByInstanceID[instanceID],
+              current.status != .stopping,
+              current.descriptor == expectedDescriptor else {
+            await reconcileMediaAfterStaleDescriptorUpdate(instanceID)
+            return false
+        }
+        current.descriptor = nextDescriptor
+        activeByInstanceID[instanceID] = current
+        return true
+    }
+
+    private func reconcileMediaAfterStaleDescriptorUpdate(
+        _ instanceID: ClipLiveShareSourceInstanceID
+    ) async {
+        do {
+            if let current = activeByInstanceID[instanceID],
+               current.status != .stopping {
+                try await operations.update(
+                    instanceID,
+                    current.descriptor
+                )
+            } else {
+                try await operations.stop(instanceID)
+            }
+        } catch {
+            Self.logger.debug(
+                "Could not reconcile a stale local mesh descriptor update: \(error.localizedDescription, privacy: .public)"
+            )
+        }
+    }
+
+    private func isCurrentSource(
+        _ instanceID: ClipLiveShareSourceInstanceID,
+        expectedDescriptor: LiveShareCaptureDescriptor
+    ) -> Bool {
+        guard let current = activeByInstanceID[instanceID] else {
+            return false
+        }
+        return current.status != .stopping
+            && current.descriptor == expectedDescriptor
     }
 
     private func reconcileSystemAudio() async {
@@ -1236,20 +1373,23 @@ final class MeshParticipantLocalPublicationController {
         )
     }
 
+    @discardableResult
     private func enqueue(
         _ operation: @escaping @MainActor (
             MeshParticipantLocalPublicationController
         ) async -> Void
-    ) {
+    ) -> Task<Void, Never> {
         let previous = transitionTask
         let generation = transitionGeneration
-        transitionTask = Task { @MainActor [weak self] in
+        let task = Task { @MainActor [weak self] in
             await previous?.value
             guard let self, !Task.isCancelled,
                   generation == transitionGeneration,
                   isRunning else { return }
             await operation(self)
         }
+        transitionTask = task
+        return task
     }
 
     private func report(_ error: any Error) {
@@ -1286,6 +1426,20 @@ final class MeshParticipantLocalPublicationController {
             }
             return value
         })
+    }
+
+    /// WindowServer can recycle a numeric window ID after a target closes.
+    /// Process and bundle identity distinguish that replacement from the
+    /// original publication while allowing its title and geometry to change.
+    private func isSameWindowGeneration(
+        _ candidate: ShareableCaptureWindow,
+        sourceID: CGWindowID,
+        cachedWindow: ShareableCaptureWindow?
+    ) -> Bool {
+        guard let cachedWindow else { return false }
+        return candidate.id == sourceID
+            && candidate.processID == cachedWindow.processID
+            && candidate.bundleIdentifier == cachedWindow.bundleIdentifier
     }
 
     private func nextFocusOrdinal() -> UInt64 {

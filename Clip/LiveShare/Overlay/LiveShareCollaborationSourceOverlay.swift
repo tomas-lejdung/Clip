@@ -818,6 +818,13 @@ enum MeshOverlayAnchorSide: Equatable, Sendable {
 enum MeshParticipantOverlayGeometry {
     static let focusedControlSize = CGSize(width: 130, height: 32)
     static let statusHUDSize = CGSize(width: 190, height: 66)
+    static let statusHUDSizeWithBringToFront = CGSize(width: 224, height: 66)
+
+    static func statusHUDSize(includesBringToFront: Bool) -> CGSize {
+        includesBringToFront
+            ? statusHUDSizeWithBringToFront
+            : statusHUDSize
+    }
 
     static func focusedControlFrame(
         targetWindowFrame: CGRect,
@@ -960,7 +967,6 @@ private struct MeshFocusedWindowControlView: View {
             Capsule().strokeBorder(.white.opacity(0.16), lineWidth: 1)
         }
         .clipShape(Capsule())
-        .shadow(color: .black.opacity(0.28), radius: 6, y: 2)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("clip.meshRoom.focusedWindow.overlay")
     }
@@ -1091,11 +1097,13 @@ struct MeshLocalStatusHUDSnapshot: Equatable {
     let sourceStatuses: [LiveShareSourceViewStatus?]
     let participantCount: Int
     let fullscreen: LiveShareFullscreenViewSnapshot
+    let remoteSharedSourceCount: Int
 
     init(
         sourceStatuses: [LiveShareSourceViewStatus],
         participantCount: Int,
-        fullscreen: LiveShareFullscreenViewSnapshot
+        fullscreen: LiveShareFullscreenViewSnapshot,
+        remoteSharedSourceCount: Int = 0
     ) {
         self.sourceStatuses = Array(sourceStatuses.prefix(4)).map(Optional.some)
             + Array(
@@ -1104,6 +1112,7 @@ struct MeshLocalStatusHUDSnapshot: Equatable {
             )
         self.participantCount = max(1, participantCount)
         self.fullscreen = fullscreen
+        self.remoteSharedSourceCount = max(0, remoteSharedSourceCount)
     }
 
     var hasActiveMedia: Bool {
@@ -1111,6 +1120,16 @@ struct MeshLocalStatusHUDSnapshot: Equatable {
             || sourceStatuses.contains {
                 $0 == .starting || $0 == .live || $0 == .stopping
             }
+    }
+
+    var canBringRemoteWindowsToFront: Bool {
+        remoteSharedSourceCount > 0
+    }
+
+    var preferredSize: CGSize {
+        MeshParticipantOverlayGeometry.statusHUDSize(
+            includesBringToFront: canBringRemoteWindowsToFront
+        )
     }
 }
 
@@ -1154,13 +1173,16 @@ enum MeshLocalStatusHUDVisibilityPolicy {
 @MainActor
 struct MeshLocalStatusHUDActions {
     var setFullscreenEnabled: (Bool) -> Void
+    var bringAllRemoteWindowsToFront: () -> Void
     var stopAllMedia: () -> Void
 
     init(
         setFullscreenEnabled: @escaping (Bool) -> Void = { _ in },
+        bringAllRemoteWindowsToFront: @escaping () -> Void = {},
         stopAllMedia: @escaping () -> Void = {}
     ) {
         self.setFullscreenEnabled = setFullscreenEnabled
+        self.bringAllRemoteWindowsToFront = bringAllRemoteWindowsToFront
         self.stopAllMedia = stopAllMedia
     }
 }
@@ -1199,6 +1221,23 @@ private struct MeshLocalStatusHUDView: View {
             }
 
             HStack(spacing: 6) {
+                if snapshot.canBringRemoteWindowsToFront {
+                    Button(action: actions.bringAllRemoteWindowsToFront) {
+                        Image(
+                            systemName: "square.3.layers.3d.top.filled"
+                        )
+                        .frame(width: 12)
+                    }
+                    .buttonStyle(MeshOverlayButtonStyle(tint: .secondary))
+                    .help(String(localized: "Bring shared windows to front"))
+                    .accessibilityLabel(
+                        String(localized: "Bring shared windows to front")
+                    )
+                    .accessibilityIdentifier(
+                        "clip.meshRoom.hud.bringAllRemoteWindows"
+                    )
+                }
+
                 Button {
                     actions.setFullscreenEnabled(!snapshot.fullscreen.isOn)
                 } label: {
@@ -1233,8 +1272,8 @@ private struct MeshLocalStatusHUDView: View {
         }
         .padding(9)
         .frame(
-            width: MeshParticipantOverlayGeometry.statusHUDSize.width,
-            height: MeshParticipantOverlayGeometry.statusHUDSize.height
+            width: snapshot.preferredSize.width,
+            height: snapshot.preferredSize.height
         )
         .background(
             .regularMaterial,
@@ -1245,7 +1284,6 @@ private struct MeshLocalStatusHUDView: View {
                 .strokeBorder(.white.opacity(0.16), lineWidth: 1)
         }
         .clipShape(RoundedRectangle(cornerRadius: 12))
-        .shadow(color: .black.opacity(0.28), radius: 7, y: 2)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("clip.meshRoom.hud")
     }
@@ -1294,13 +1332,15 @@ final class MeshLocalStatusHUDCoordinator {
             snapshot: snapshot,
             actions: actions
         )
+        let preferredSize = snapshot.preferredSize
         if let hostingView {
             hostingView.rootView = root
+            hostingView.frame.size = preferredSize
         } else {
             let hostingView = MeshFirstMouseHostingView(rootView: root)
             hostingView.frame = CGRect(
                 origin: .zero,
-                size: MeshParticipantOverlayGeometry.statusHUDSize
+                size: preferredSize
             )
             hostingView.autoresizingMask = [.width, .height]
             panel.contentView = hostingView
@@ -1309,7 +1349,8 @@ final class MeshLocalStatusHUDCoordinator {
         hostingView?.layoutSubtreeIfNeeded()
         panel.setFrame(
             MeshParticipantOverlayGeometry.statusHUDFrame(
-                visibleScreenFrame: visibleScreenFrame
+                visibleScreenFrame: visibleScreenFrame,
+                size: preferredSize
             ),
             display: true,
             animate: false

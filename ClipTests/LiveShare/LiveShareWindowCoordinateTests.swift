@@ -224,11 +224,14 @@ private actor SuspendedFocusedWindowDiscovery: CaptureContentDiscovering {
     }
 
     func shareableContent(
-        excludingBundleIdentifier: String?
+        excludingBundleIdentifier: String?,
+        windowScope: CaptureWindowDiscoveryScope
     ) async throws -> ShareableCaptureContent {
         _ = excludingBundleIdentifier
         requestCount += 1
-        guard requestCount == 1 else { return replacement }
+        guard requestCount == 1 else {
+            return scoped(replacement, to: windowScope)
+        }
         firstRequestArrived = true
         let waiters = firstRequestWaiters
         firstRequestWaiters.removeAll()
@@ -236,7 +239,22 @@ private actor SuspendedFocusedWindowDiscovery: CaptureContentDiscovering {
         await withCheckedContinuation { continuation in
             firstRequestContinuation = continuation
         }
-        return first
+        return scoped(first, to: windowScope)
+    }
+
+    private func scoped(
+        _ content: ShareableCaptureContent,
+        to windowScope: CaptureWindowDiscoveryScope
+    ) -> ShareableCaptureContent {
+        switch windowScope {
+        case .onScreenOnly:
+            ShareableCaptureContent(
+                displays: content.displays,
+                windows: content.visibleWindows
+            )
+        case .allWindows:
+            content
+        }
     }
 
     func waitForFirstRequest() async {

@@ -330,6 +330,28 @@ enum NativeViewerCollaborationGeometry {
 }
 
 @MainActor
+enum NativeViewerCollaborationPointerLabelLayout {
+    static let height: CGFloat = 19
+    static let font = NSFont.systemFont(ofSize: 11, weight: .semibold)
+
+    static func textFrame(
+        in backgroundFrame: CGRect,
+        contentsScale: CGFloat
+    ) -> CGRect {
+        let textHeight = ceil(font.ascender - font.descender)
+        let unalignedY = backgroundFrame.midY - textHeight / 2
+        let scale = max(1, contentsScale)
+        let alignedY = round(unalignedY * scale) / scale
+        return CGRect(
+            x: backgroundFrame.minX,
+            y: alignedY,
+            width: backgroundFrame.width,
+            height: textHeight
+        )
+    }
+}
+
+@MainActor
 final class NativeViewerCollaborationOverlayView: NSView {
     var onPointerChanged: (
         ClipLiveShareNativeV3NormalizedPoint?,
@@ -640,21 +662,44 @@ final class NativeViewerCollaborationOverlayView: NSView {
         pointer.shadowRadius = 2
         container.addSublayer(pointer)
 
+        let contentsScale =
+            window?.backingScaleFactor
+            ?? NSScreen.main?.backingScaleFactor
+            ?? 2
+        let width = min(150, max(44, CGFloat(name.count * 7 + 14)))
+        let backgroundFrame = CGRect(
+            x: min(max(0, point.x + 12), max(0, bounds.width - width)),
+            y: min(
+                max(0, point.y - 32),
+                max(
+                    0,
+                    bounds.height
+                        - NativeViewerCollaborationPointerLabelLayout.height
+                )
+            ),
+            width: width,
+            height: NativeViewerCollaborationPointerLabelLayout.height
+        )
+
+        let labelBackground = CALayer()
+        labelBackground.frame = backgroundFrame
+        labelBackground.backgroundColor = color.withAlphaComponent(0.94).cgColor
+        labelBackground.cornerRadius = 5
+        container.addSublayer(labelBackground)
+
+        // CATextLayer has horizontal alignment but no vertical-alignment API.
+        // Keeping the rounded background on its own layer lets the glyph line
+        // use its natural font height and sit at the label's visual midpoint.
         let label = CATextLayer()
         label.string = name
-        label.font = NSFont.systemFont(ofSize: 11, weight: .semibold)
-        label.fontSize = 11
+        label.font = NativeViewerCollaborationPointerLabelLayout.font
+        label.fontSize = NativeViewerCollaborationPointerLabelLayout.font.pointSize
         label.foregroundColor = NSColor.white.cgColor
-        label.backgroundColor = color.withAlphaComponent(0.94).cgColor
-        label.cornerRadius = 5
-        label.contentsScale = window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2
+        label.contentsScale = contentsScale
         label.alignmentMode = .center
-        let width = min(150, max(44, CGFloat(name.count * 7 + 14)))
-        label.frame = CGRect(
-            x: min(max(0, point.x + 12), max(0, bounds.width - width)),
-            y: min(max(0, point.y - 32), max(0, bounds.height - 19)),
-            width: width,
-            height: 19
+        label.frame = NativeViewerCollaborationPointerLabelLayout.textFrame(
+            in: backgroundFrame,
+            contentsScale: contentsScale
         )
         container.addSublayer(label)
         layer?.addSublayer(container)

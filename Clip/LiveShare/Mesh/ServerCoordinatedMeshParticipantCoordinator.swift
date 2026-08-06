@@ -82,6 +82,11 @@ final class ServerCoordinatedMeshParticipantCoordinator {
         MeshParticipantCollaborationConfiguration
     private var friendshipController: MeshFriendshipHandshakeController?
     private var friendshipSnapshot = MeshFriendshipHandshakeSnapshot()
+    /// Local-only aliases keyed by the friend's persistent, authenticated
+    /// identity. These names never replace signed room descriptors or cross a
+    /// signaling/media boundary; they are applied only while building this
+    /// participant's presentation.
+    private var friendDisplayNames: MeshFriendDisplayNameDirectory
     private var trustedFriendParticipantIDs:
         Set<ClipLiveShareNativeV3ParticipantID> = []
     private var publishedCreatorInviteURL: String?
@@ -161,6 +166,7 @@ final class ServerCoordinatedMeshParticipantCoordinator {
         localSourceOverlays:
             any ServerCoordinatedMeshParticipantSourceOverlayCoordinating =
                 LiveShareCollaborationSourceOverlayCoordinator(),
+        initialFriendDisplayNames: MeshFriendDisplayNameDirectory = .empty,
         initialSettings: LiveShareSettings = .default,
         friendshipDependencies: MeshFriendshipHandshakeDependencies? = nil,
         accessWord: String? = nil,
@@ -196,6 +202,7 @@ final class ServerCoordinatedMeshParticipantCoordinator {
         self.session = session
         self.localMedia = localMedia
         self.localSourceOverlays = localSourceOverlays
+        friendDisplayNames = initialFriendDisplayNames
         self.accessWord = Self.normalizedAccessWord(accessWord)
         self.askBeforeJoining = askBeforeJoining
         self.now = now
@@ -282,6 +289,41 @@ final class ServerCoordinatedMeshParticipantCoordinator {
     }
 
     var isActive: Bool { eventTask != nil && !isEnding }
+
+    /// Replaces this Mac's local friend-name projection without changing any
+    /// authenticated room state. Existing viewer windows and collaboration
+    /// overlays update in place; capture sessions, tracks, and peer links are
+    /// deliberately left untouched.
+    func replaceFriendDisplayNames(
+        _ names: MeshFriendDisplayNameDirectory
+    ) {
+        guard friendDisplayNames != names else { return }
+        friendDisplayNames = names
+
+        guard let snapshot = roomSnapshot,
+              let verified = snapshot.verifiedRoom else {
+            publish()
+            return
+        }
+
+        for member in verified.members where !member.isLocal {
+            remoteWindows[member.descriptor.participantID]?.setOwnerName(
+                displayName(for: member)
+            )
+            applyCollaborationOverlays(
+                for: member.descriptor.participantID,
+                media: snapshot.media,
+                verified: verified
+            )
+        }
+        refreshLocalSourceOverlaySnapshots(
+            media: snapshot.media,
+            verified: verified
+        )
+        pairStatusNotice = pairNotice(snapshot: snapshot)
+        refreshRecoverableStatusNotice()
+        publish()
+    }
 
     func start() {
         guard eventTask == nil, !isEnding else { return }
@@ -723,6 +765,25 @@ final class ServerCoordinatedMeshParticipantCoordinator {
 
     // MARK: - Remote presentation
 
+    func presentationDisplayName(
+        for identity: ClipLiveShareIdentityPublicKey,
+        authenticatedName: String
+    ) -> String {
+        friendDisplayNames.displayName(
+            for: identity,
+            fallback: authenticatedName
+        )
+    }
+
+    private func displayName(
+        for member: ClipLiveShareServerRoomV4ClientVerifiedMember
+    ) -> String {
+        presentationDisplayName(
+            for: member.descriptor.identity,
+            authenticatedName: member.descriptor.displayName
+        )
+    }
+
     private func reconcileRemotePresentations(
         _ sessionSnapshot: ServerCoordinatedMeshRoomSessionSnapshot
     ) async {
@@ -763,7 +824,7 @@ final class ServerCoordinatedMeshParticipantCoordinator {
                 installWindowCoordinator(for: member)
             } else {
                 remoteWindows[participantID]?.setOwnerName(
-                    member.descriptor.displayName
+                    displayName(for: member)
                 )
             }
 
@@ -838,7 +899,7 @@ final class ServerCoordinatedMeshParticipantCoordinator {
     ) {
         let participantID = member.descriptor.participantID
         let coordinator = NativeViewerWindowCoordinator(
-            ownerName: member.descriptor.displayName,
+            ownerName: displayName(for: member),
             ownerPublicIdentity:
                 member.descriptor.identity.x963Representation,
             surfaceFactory: { [weak self] in
@@ -1130,7 +1191,9 @@ final class ServerCoordinatedMeshParticipantCoordinator {
                 .init(
                     participantID: pointer.participantID,
                     participantName:
-                        members[pointer.participantID]?.descriptor.displayName
+                        members[pointer.participantID].map {
+                            displayName(for: $0)
+                        }
                             ?? String(localized: "Participant"),
                     color: collaborationColor(
                         for: pointer.participantID,
@@ -1303,7 +1366,7 @@ final class ServerCoordinatedMeshParticipantCoordinator {
             let stats = snapshot.media?.statistics[id]
             return .init(
                 participantID: id.rawValue,
-                displayName: member.descriptor.displayName,
+                displayName: displayName(for: member),
                 route: route(for: member, media: snapshot.media),
                 roundTripMilliseconds:
                     stats?.transport.currentRoundTripTimeMilliseconds,
@@ -1323,7 +1386,7 @@ final class ServerCoordinatedMeshParticipantCoordinator {
         let windows = remoteWindows[id]?.windowSnapshots ?? []
         return .init(
             id: id.rawValue,
-            displayName: member.descriptor.displayName,
+            displayName: displayName(for: member),
             deviceName: member.descriptor.deviceName,
             clientKind: member.descriptor.clientKind,
             route: route(for: member, media: roomSnapshot?.media),
@@ -1374,7 +1437,7 @@ final class ServerCoordinatedMeshParticipantCoordinator {
                 return .init(
                     participantID: member.descriptor.participantID,
                     identity: member.descriptor.identity,
-                    displayName: member.descriptor.displayName,
+                    displayName: displayName(for: member),
                     deviceName: member.descriptor.deviceName,
                     isConnected: member.connected
                 )
@@ -1516,7 +1579,7 @@ final class ServerCoordinatedMeshParticipantCoordinator {
             }
             let recipientName = roomSnapshot?.verifiedRoom?.members.first {
                 $0.descriptor.participantID == participantID
-            }?.descriptor.displayName
+            }.map { displayName(for: $0) }
             let title = !stream.windowName.isEmpty
                 ? stream.windowName
                 : !stream.appName.isEmpty
@@ -1613,7 +1676,7 @@ final class ServerCoordinatedMeshParticipantCoordinator {
         }).first else { return nil }
         let name = snapshot.verifiedRoom?.members.first {
             $0.descriptor.participantID == failure.key
-        }?.descriptor.displayName ?? String(localized: "Participant")
+        }.map { displayName(for: $0) } ?? String(localized: "Participant")
         return .init(
             title: String(localized: "\(name) is reconnecting"),
             message: failure.value,
@@ -1628,6 +1691,16 @@ final class ServerCoordinatedMeshParticipantCoordinator {
     }
 
     // MARK: - Actions
+
+    var remoteSharedSourceCount: Int {
+        remoteWindows.values.reduce(0) { count, coordinator in
+            count + coordinator.windowSnapshots.count
+        }
+    }
+
+    func bringAllRemoteWindowsToFront() {
+        remoteWindows.values.forEach { $0.bringAllToFront() }
+    }
 
     private func makePresentationActions() -> MeshRoomPresentationActions {
         .init(
@@ -1754,7 +1827,7 @@ final class ServerCoordinatedMeshParticipantCoordinator {
                 self?.remoteWindows[id]?.bringAllToFront()
             },
             bringAllRemoteWindowsToFront: { [weak self] in
-                self?.remoteWindows.values.forEach { $0.bringAllToFront() }
+                self?.bringAllRemoteWindowsToFront()
             },
             setLocalPointerVisible: { [weak self] in
                 self?.setGlobalCollaborationTool(

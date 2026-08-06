@@ -1227,6 +1227,54 @@ struct MeshRoomPresentationModelTests {
     }
 
     @Test
+    func bringAllRemoteWindowsRequiresAtLeastOneSharedSource() {
+        var bringAllCount = 0
+        let model = MeshRoomPresentationModel(
+            snapshot: makeSnapshot(),
+            actions: .init(
+                bringAllRemoteWindowsToFront: { bringAllCount += 1 }
+            )
+        )
+
+        model.bringAllRemoteWindowsToFront()
+        #expect(bringAllCount == 0)
+
+        model.update(
+            makeSnapshot(
+                remoteParticipants: [
+                    remoteParticipant(
+                        id: "audio-only",
+                        systemAudioAvailable: true
+                    )
+                ]
+            )
+        )
+        model.bringAllRemoteWindowsToFront()
+        #expect(bringAllCount == 0)
+
+        model.update(
+            makeSnapshot(
+                remoteParticipants: [
+                    remoteParticipant(
+                        id: "remote",
+                        sources: [remoteSource(id: "shared-window")]
+                    )
+                ]
+            )
+        )
+        model.bringAllRemoteWindowsToFront()
+        #expect(bringAllCount == 1)
+
+        model.update(
+            makeSnapshot(
+                remoteParticipants: [remoteParticipant(id: "remote")]
+            )
+        )
+        model.bringAllRemoteWindowsToFront()
+        #expect(bringAllCount == 1)
+    }
+
+    @Test
     func hiddenOrDisconnectedRemoteSourceCannotEnterFullScreen() {
         let hidden = MeshRoomRemoteSourceSnapshot(
             id: "hidden",

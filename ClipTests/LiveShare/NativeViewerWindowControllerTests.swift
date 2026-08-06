@@ -96,7 +96,8 @@ struct NativeViewerWindowControllerTests {
         content.layoutSubtreeIfNeeded()
 
         #expect(content.videoViewportFrame == CGRect(x: 6, y: 6, width: 1_000, height: 500))
-        #expect(content.headerFrame == CGRect(x: 6, y: 506, width: 1_000, height: 28))
+        #expect(content.headerFrame == CGRect(x: 6, y: 506, width: 1_000, height: 34))
+        #expect(content.headerFrame.maxY == content.bounds.maxY)
         #expect(video.frame == CGRect(x: 0, y: 0, width: 1_000, height: 500))
         #expect(content.headerFrame.minY == content.videoViewportFrame.maxY)
         #expect(
@@ -112,6 +113,13 @@ struct NativeViewerWindowControllerTests {
         #expect(content.collaborationControlFrames.count == 3)
         #expect(content.collaborationControlFrames.values.allSatisfy {
             $0.width == 24 && $0.height == 22
+        })
+        #expect(
+            content.headerControlFrames.zoom.midY
+                == content.headerFrame.height / 2
+        )
+        #expect(content.collaborationControlFrames.values.allSatisfy {
+            $0.midY == content.headerFrame.height / 2
         })
     }
 
@@ -715,15 +723,15 @@ struct NativeViewerWindowControllerTests {
         #expect(ordinary.size == CGSize(width: 500, height: 36))
         #expect(ordinary.midX == bounds.midX)
         #expect(bounds.maxY - ordinary.maxY >= 44)
-        #expect(bounds.maxX - ordinary.maxX >= 200)
+        #expect(bounds.maxX - ordinary.maxX >= 224)
         #expect(bounds.maxY - notched.maxY >= 52)
         #expect(notched.maxY < ordinary.maxY)
-        #expect(narrow.width == 368)
+        #expect(narrow.width == 320)
         #expect(narrow.midX == 400)
-        #expect(800 - narrow.maxX >= 216)
-        #expect(medium.width == 468)
+        #expect(800 - narrow.maxX >= 240)
+        #expect(medium.width == 420)
         #expect(medium.midX == 450)
-        #expect(900 - medium.maxX >= 216)
+        #expect(900 - medium.maxX >= 240)
     }
 
     @Test("Fullscreen callbacks preserve the persistent sizing mode")
