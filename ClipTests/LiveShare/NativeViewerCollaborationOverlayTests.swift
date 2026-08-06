@@ -678,6 +678,26 @@ struct NativeViewerCollaborationOverlayTests {
         #expect(view.hitTest(CGPoint(x: 50, y: 50)) == nil)
     }
 
+    @Test("collaboration pointer names are vertically centered in their label")
+    func pointerLabelVerticalAlignment() {
+        let background = CGRect(
+            x: 24,
+            y: 40,
+            width: 132,
+            height: NativeViewerCollaborationPointerLabelLayout.height
+        )
+
+        for scale in [CGFloat(1), CGFloat(2)] {
+            let text = NativeViewerCollaborationPointerLabelLayout.textFrame(
+                in: background,
+                contentsScale: scale
+            )
+            #expect(text.minY >= background.minY)
+            #expect(text.maxY <= background.maxY)
+            #expect(abs(text.midY - background.midY) <= 0.5 / scale)
+        }
+    }
+
     @Test("overlay renders participant state inside the decoded content rect")
     func rendersParticipantState() throws {
         let participant = try ClipLiveShareNativeV3ParticipantID(
