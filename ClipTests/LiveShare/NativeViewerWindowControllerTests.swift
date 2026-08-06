@@ -96,7 +96,8 @@ struct NativeViewerWindowControllerTests {
         content.layoutSubtreeIfNeeded()
 
         #expect(content.videoViewportFrame == CGRect(x: 6, y: 6, width: 1_000, height: 500))
-        #expect(content.headerFrame == CGRect(x: 6, y: 506, width: 1_000, height: 28))
+        #expect(content.headerFrame == CGRect(x: 6, y: 506, width: 1_000, height: 34))
+        #expect(content.headerFrame.maxY == content.bounds.maxY)
         #expect(video.frame == CGRect(x: 0, y: 0, width: 1_000, height: 500))
         #expect(content.headerFrame.minY == content.videoViewportFrame.maxY)
         #expect(
@@ -112,6 +113,13 @@ struct NativeViewerWindowControllerTests {
         #expect(content.collaborationControlFrames.count == 3)
         #expect(content.collaborationControlFrames.values.allSatisfy {
             $0.width == 24 && $0.height == 22
+        })
+        #expect(
+            content.headerControlFrames.zoom.midY
+                == content.headerFrame.height / 2
+        )
+        #expect(content.collaborationControlFrames.values.allSatisfy {
+            $0.midY == content.headerFrame.height / 2
         })
     }
 

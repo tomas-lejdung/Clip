@@ -887,11 +887,18 @@ final class NativeViewerContentView: NSView {
             return
         }
         let border = Self.identityBorderWidth
+        let headerOriginY = max(
+            border,
+            bounds.height - border - Self.headerHeight
+        )
         headerView.frame = CGRect(
             x: border,
-            y: max(border, bounds.height - border - Self.headerHeight),
+            y: headerOriginY,
             width: max(0, bounds.width - border * 2),
-            height: min(Self.headerHeight, max(0, bounds.height - border * 2))
+            // The top identity border is visually part of the colored header.
+            // Include it in the header view so its controls are centered in
+            // the complete visible bar rather than only the lower 28 points.
+            height: max(0, bounds.height - headerOriginY)
         )
         videoViewport.frame = CGRect(
             x: border,
