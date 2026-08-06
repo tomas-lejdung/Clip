@@ -278,6 +278,10 @@ struct ServerCoordinatedMeshParticipantLocalMediaClient {
 final class ServerCoordinatedMeshParticipantCallbackRelay {
     weak var owner: ServerCoordinatedMeshParticipantCoordinator?
 
+    var remoteSharedSourceCount: Int {
+        owner?.remoteSharedSourceCount ?? 0
+    }
+
     func publicationChanged(
         _ snapshot: MeshParticipantLocalPublicationSnapshot
     ) {
@@ -286,5 +290,9 @@ final class ServerCoordinatedMeshParticipantCallbackRelay {
 
     func publicationFailed(_ message: String) {
         owner?.localPublicationDidFail(message)
+    }
+
+    func bringAllRemoteWindowsToFront() {
+        owner?.bringAllRemoteWindowsToFront()
     }
 }

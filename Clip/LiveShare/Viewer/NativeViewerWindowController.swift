@@ -191,7 +191,8 @@ private final class NativeViewerHeaderView: NSView {
     static let height: CGFloat = 28
     static let fullScreenHeight: CGFloat = 36
     static let preferredFullScreenWidth: CGFloat = 500
-    static let fullScreenHUDReserve: CGFloat = 200
+    static let fullScreenHUDReserve: CGFloat =
+        MeshParticipantOverlayGeometry.statusHUDSizeWithBringToFront.width
     static let fullScreenHUDGap: CGFloat = 16
 
     private let titleLabel = NSTextField(labelWithString: "")

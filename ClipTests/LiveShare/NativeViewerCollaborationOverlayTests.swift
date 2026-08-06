@@ -807,6 +807,11 @@ struct NativeViewerCollaborationOverlayTests {
         #expect(snapshot.sourceStatuses[2] == nil)
         #expect(snapshot.participantCount == 1)
         #expect(snapshot.hasActiveMedia)
+        #expect(!snapshot.canBringRemoteWindowsToFront)
+        #expect(
+            snapshot.preferredSize
+                == MeshParticipantOverlayGeometry.statusHUDSize
+        )
 
         let controller = MeshLocalStatusHUDCoordinator(actions: .init())
         controller.show(
@@ -834,6 +839,48 @@ struct NativeViewerCollaborationOverlayTests {
         controller.tearDown()
         #expect(!controller.isVisible)
         #expect(controller.panel.contentView == nil)
+    }
+
+    @Test("local status HUD exposes and sizes for incoming shared windows")
+    func localStatusHUDBringToFrontPresentation() {
+        let snapshot = MeshLocalStatusHUDSnapshot(
+            sourceStatuses: [],
+            participantCount: 3,
+            fullscreen: .init(isOn: false, displayName: "Main"),
+            remoteSharedSourceCount: 2
+        )
+
+        #expect(snapshot.canBringRemoteWindowsToFront)
+        #expect(snapshot.remoteSharedSourceCount == 2)
+        #expect(
+            snapshot.preferredSize
+                == MeshParticipantOverlayGeometry.statusHUDSizeWithBringToFront
+        )
+
+        let controller = MeshLocalStatusHUDCoordinator(actions: .init())
+        controller.show(
+            snapshot: snapshot,
+            visibleScreenFrame: CGRect(
+                x: 0,
+                y: 0,
+                width: 1_440,
+                height: 900
+            )
+        )
+
+        #expect(
+            controller.panel.frame.size
+                == MeshParticipantOverlayGeometry.statusHUDSizeWithBringToFront
+        )
+        #expect(
+            controller.contentHitTest(
+                at: CGPoint(
+                    x: snapshot.preferredSize.width / 2,
+                    y: snapshot.preferredSize.height / 2
+                )
+            ) != nil
+        )
+        controller.tearDown()
     }
 
     @Test("local status HUD stays hidden over a fullscreen native viewer")
@@ -912,6 +959,21 @@ struct NativeViewerCollaborationOverlayTests {
             )
         )
         #expect(status == CGRect(x: 3_798, y: 1_362, width: 190, height: 66))
+
+        let expandedStatus = MeshParticipantOverlayGeometry.statusHUDFrame(
+            visibleScreenFrame: CGRect(
+                x: 1_440,
+                y: 23,
+                width: 2_560,
+                height: 1_417
+            ),
+            size:
+                MeshParticipantOverlayGeometry.statusHUDSizeWithBringToFront
+        )
+        #expect(
+            expandedStatus
+                == CGRect(x: 3_764, y: 1_362, width: 224, height: 66)
+        )
     }
 
     private func collaborationSnapshot(

@@ -275,6 +275,9 @@ private final class ServerCoordinatedMeshLocalMediaBridge {
             setFullscreenEnabled: { [weak self] enabled in
                 self?.publicationController?.setFullscreenEnabled(enabled)
             },
+            bringAllRemoteWindowsToFront: { [callbackRelay] in
+                callbackRelay.bringAllRemoteWindowsToFront()
+            },
             stopAllMedia: { [weak self] in
                 self?.publicationController?.stopAllMedia()
             }
@@ -500,6 +503,7 @@ private final class ServerCoordinatedMeshLocalMediaBridge {
         let visibleFrame = targetScreen.visibleFrame
         let room = await roomSession?.snapshot()
         let participantCount = room?.verifiedRoom?.members.count ?? 1
+        let remoteSharedSourceCount = callbackRelay.remoteSharedSourceCount
         let localStatus = publicationController.localStatusSnapshot
         guard MeshLocalStatusHUDVisibilityPolicy.shouldPresent(
             over: NSApp.windows,
@@ -512,7 +516,8 @@ private final class ServerCoordinatedMeshLocalMediaBridge {
             snapshot: MeshLocalStatusHUDSnapshot(
                 sourceStatuses: localStatus.windowSourceStatuses,
                 participantCount: participantCount,
-                fullscreen: localStatus.fullscreen
+                fullscreen: localStatus.fullscreen,
+                remoteSharedSourceCount: remoteSharedSourceCount
             ),
             visibleScreenFrame: visibleFrame
         )

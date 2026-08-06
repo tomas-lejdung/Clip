@@ -1692,6 +1692,16 @@ final class ServerCoordinatedMeshParticipantCoordinator {
 
     // MARK: - Actions
 
+    var remoteSharedSourceCount: Int {
+        remoteWindows.values.reduce(0) { count, coordinator in
+            count + coordinator.windowSnapshots.count
+        }
+    }
+
+    func bringAllRemoteWindowsToFront() {
+        remoteWindows.values.forEach { $0.bringAllToFront() }
+    }
+
     private func makePresentationActions() -> MeshRoomPresentationActions {
         .init(
             copyText: { value in
@@ -1817,7 +1827,7 @@ final class ServerCoordinatedMeshParticipantCoordinator {
                 self?.remoteWindows[id]?.bringAllToFront()
             },
             bringAllRemoteWindowsToFront: { [weak self] in
-                self?.remoteWindows.values.forEach { $0.bringAllToFront() }
+                self?.bringAllRemoteWindowsToFront()
             },
             setLocalPointerVisible: { [weak self] in
                 self?.setGlobalCollaborationTool(
