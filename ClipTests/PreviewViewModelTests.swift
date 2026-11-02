@@ -251,7 +251,9 @@ struct PreviewViewModelTests {
         let model = PreviewViewModel(recording: .demo(), actions: makeActions())
         let request = try #require(model.dragItem?.request)
         var sourceLease: PreviewTestSourceLease? = PreviewTestSourceLease()
-        weak var weakLease = sourceLease
+        let isLeaseReleased: @MainActor @Sendable () -> Bool = {
+            [weak sourceLease] in sourceLease == nil
+        }
         var item: PreviewFileDragItem? = PreviewFileDragItem(
             id: request.recordingID, request: request,
             export: { .init(outputURL: $0.sourceURL) },
@@ -261,10 +263,10 @@ struct PreviewViewModelTests {
         sourceLease = nil
         _ = try await item?.resolveExport()
         item = nil
-        #expect(weakLease != nil)
+        #expect(!isLeaseReleased())
         #expect(provider?.suggestedName == request.filename.stem)
         provider = nil
-        try await waitUntil { weakLease == nil }
+        try await waitUntil(isLeaseReleased)
     }
 
     @Test("A failed source lease refuses the drag instead of promising temporary bytes")

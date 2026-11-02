@@ -1670,7 +1670,7 @@ private final class ServerRoomComposedWindowPresentation {
                 ownerName: member.descriptor.displayName,
                 ownerPublicIdentity:
                     member.descriptor.identity.x963Representation,
-                surfaceFactory: {
+                surfaceFactory: { [probe] in
                     NativeViewerVideoSurfaceAdapter(
                         view: NSView(frame: .zero),
                         bind: { [weak probe] source in
