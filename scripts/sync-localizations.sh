@@ -24,9 +24,11 @@ mkdir -p "$MODULE_CACHE" "$STRINGS_DATA"
 export CLANG_MODULE_CACHE_PATH="$MODULE_CACHE"
 export SWIFTPM_MODULECACHE_OVERRIDE="$MODULE_CACHE"
 
-swift build --package-path "$ROOT/Packages/ClipCore" >/dev/null
-swift build --package-path "$ROOT/Packages/ClipMedia" >/dev/null
+# Extraction below imports modules from SwiftPM's native build layout.
+swift build --build-system native --package-path "$ROOT/Packages/ClipCore" >/dev/null
+swift build --build-system native --package-path "$ROOT/Packages/ClipMedia" >/dev/null
 swift build \
+  --build-system native \
   --package-path "$ROOT/Packages/ClipLiveShareWebRTC" \
   --manifest-cache none >/dev/null
 

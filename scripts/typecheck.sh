@@ -37,11 +37,14 @@ while IFS= read -r -d '' source; do
   UI_TEST_SOURCES+=("$source")
 done < <(find "$ROOT/ClipUITests" -type f -name '*.swift' -print0)
 
-swift test --package-path "$ROOT/Packages/ClipCore"
-swift test --package-path "$ROOT/Packages/ClipMedia"
-swift test --package-path "$ROOT/Packages/ClipCapture"
-swift test --package-path "$ROOT/Packages/ClipLiveShare"
+# The manual link below consumes SwiftPM's native per-source objects and Modules
+# layout. Newer toolchains default to Swift Build, whose output layout differs.
+swift test --build-system native --package-path "$ROOT/Packages/ClipCore"
+swift test --build-system native --package-path "$ROOT/Packages/ClipMedia"
+swift test --build-system native --package-path "$ROOT/Packages/ClipCapture"
+swift test --build-system native --package-path "$ROOT/Packages/ClipLiveShare"
 swift test \
+  --build-system native \
   --package-path "$ROOT/Packages/ClipLiveShareWebRTC" \
   --manifest-cache none
 
