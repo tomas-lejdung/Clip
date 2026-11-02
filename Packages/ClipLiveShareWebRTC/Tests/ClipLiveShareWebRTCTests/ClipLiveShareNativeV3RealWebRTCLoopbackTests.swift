@@ -2,6 +2,7 @@ import AudioToolbox
 import ClipCapture
 import ClipLiveShare
 import CoreMedia
+import CoreVideo
 import Foundation
 import Testing
 @preconcurrency import WebRTC
@@ -11,6 +12,195 @@ import Testing
 extension NativeMediaResourceTests {
   @Suite("Native v3 production WebRTC loopback")
   struct ClipLiveShareNativeV3RealWebRTCLoopbackTests {
+    @Test(
+      "resharing a window restarts its failed AV1 encoder without changing codec",
+      .timeLimit(.minutes(1))
+    )
+    func reshareRecoversFailedEncoderInitialization() async throws {
+      let encoderFactory = NativeV3FailOnceEncoderFactory()
+      let first = try NativeV3RealParticipant(
+        byte: 0x10,
+        videoCodec: .av1,
+        encoderFactoryOverride: encoderFactory
+      )
+      let second = try NativeV3RealParticipant(byte: 0x20, videoCodec: .av1)
+      let link = try await NativeV3RealLink(first: first, second: second)
+
+      do {
+        try await link.start()
+        let ready = await link.waitUntilReady()
+        let readySnapshot = await link.snapshot()
+        try #require(
+          ready,
+          Comment(rawValue: "Pair did not become ready: \(readySnapshot)")
+        )
+        let initialNegotiation = await link.snapshot()
+        let slot = try #require(first.factory.slotSnapshots.first)
+        let geometry = WebRTCVideoCaptureGeometry(width: 320, height: 180)
+        let descriptor = ClipLiveShareWebRTCTestFixtures.streamDescriptor(
+          for: slot,
+          width: geometry.width,
+          height: geometry.height
+        )
+        let fixture = try makeRetainedFrameFixture(
+          width: geometry.width,
+          height: geometry.height
+        )
+        try first.factory.activateSlot(
+          slot.index,
+          metadata: descriptor,
+          captureGeometry: geometry
+        )
+        // Deliberately fail the first encoder initialization, then keep
+        // delivering changing capture timestamps as an animated window does.
+        // libwebrtc latches the failed initialization despite fresh input.
+        for index in 1...30 {
+          #expect(first.factory.send(
+            BorrowedCaptureVideoFrame(
+              sampleBuffer: fixture.sampleBuffer,
+              pixelBuffer: fixture.pixelBuffer,
+              presentationTime: CMTime(value: Int64(index), timescale: 30)
+            ),
+            toSlot: slot.index
+          ) == .accepted)
+          try await Task.sleep(for: .milliseconds(35))
+        }
+        #expect(encoderFactory.initializationCount == 1)
+        #expect(encoderFactory.encodedFrameCount == 0)
+
+        // Reuse exactly the same source slot, track, codec, and dimensions.
+        // Merely disabling RTCVideoTrack preserves libwebrtc's failed encoder;
+        // deactivating its RTP encoding must reset that state before reshare.
+        first.factory.deactivateSlot(slot.index)
+        try first.factory.activateSlot(
+          slot.index,
+          metadata: descriptor,
+          captureGeometry: geometry
+        )
+        for index in 31...90 {
+          #expect(first.factory.send(
+            BorrowedCaptureVideoFrame(
+              sampleBuffer: fixture.sampleBuffer,
+              pixelBuffer: fixture.pixelBuffer,
+              presentationTime: CMTime(value: Int64(index), timescale: 30)
+            ),
+            toSlot: slot.index
+          ) == .accepted)
+          if encoderFactory.encodedFrameCount > 0 { break }
+          try await Task.sleep(for: .milliseconds(35))
+        }
+        #expect(encoderFactory.initializationCount >= 2)
+        #expect(encoderFactory.encodedFrameCount > 0)
+        let finalNegotiation = await link.snapshot()
+        #expect(
+          finalNegotiation.first.localDescriptions
+            == initialNegotiation.first.localDescriptions
+        )
+        #expect(
+          finalNegotiation.second.localDescriptions
+            == initialNegotiation.second.localDescriptions
+        )
+        first.factory.deactivateSlot(slot.index)
+      } catch {
+        await link.close()
+        first.factory.close()
+        second.factory.close()
+        throw error
+      }
+
+      await link.close()
+      first.factory.close()
+      second.factory.close()
+    }
+
+    @Test(
+      "native AV1 video decodes before and after resharing the same source slot",
+      .timeLimit(.minutes(1)),
+      arguments: [true, false]
+    )
+    func nativeAV1SameSlotReshare(senderIsOfferer: Bool) async throws {
+      let first = try NativeV3RealParticipant(byte: 0x10, videoCodec: .av1)
+      let second = try NativeV3RealParticipant(byte: 0x20, videoCodec: .av1)
+      let link = try await NativeV3RealLink(first: first, second: second)
+
+      do {
+        try await link.start()
+        let ready = await link.waitUntilReady()
+        let readySnapshot = await link.snapshot()
+        try #require(
+          ready,
+          Comment(rawValue: "Pair did not become ready: \(readySnapshot)")
+        )
+        let sender = senderIsOfferer ? first : second
+        let receivingSide: NativeV3RealLinkSide = senderIsOfferer ? .second : .first
+        let slot = try #require(sender.factory.slotSnapshots.first)
+        let geometry = WebRTCVideoCaptureGeometry(width: 320, height: 180)
+        let descriptor = ClipLiveShareWebRTCTestFixtures.streamDescriptor(
+          for: slot,
+          width: geometry.width,
+          height: geometry.height
+        )
+        let fixture = try makeRetainedFrameFixture(
+          width: geometry.width,
+          height: geometry.height
+        )
+        CVPixelBufferLockBaseAddress(fixture.pixelBuffer, [])
+        if let base = CVPixelBufferGetBaseAddress(fixture.pixelBuffer) {
+          base.initializeMemory(
+            as: UInt8.self,
+            repeating: 255,
+            count: CVPixelBufferGetBytesPerRow(fixture.pixelBuffer) * geometry.height
+          )
+        }
+        CVPixelBufferUnlockBaseAddress(fixture.pixelBuffer, [])
+        let remote = try #require(await link.remoteVideoStream(
+          for: descriptor,
+          on: receivingSide
+        ))
+        let renderer = NativeV3NonBlackFrameRenderer()
+        #expect(remote.track.addRenderer(renderer))
+        defer { remote.track.removeRenderer(renderer) }
+
+        var captureSequence: Int64 = 0
+        for publication in 1...2 {
+          let previousFrameCount = renderer.nonBlackFrameCount
+          try sender.factory.activateSlot(
+            slot.index,
+            metadata: descriptor,
+            captureGeometry: geometry
+          )
+          for _ in 0..<120 {
+            captureSequence += 1
+            #expect(sender.factory.send(
+              BorrowedCaptureVideoFrame(
+                sampleBuffer: fixture.sampleBuffer,
+                pixelBuffer: fixture.pixelBuffer,
+                presentationTime: CMTime(value: captureSequence, timescale: 30)
+              ),
+              toSlot: slot.index
+            ) == .accepted)
+            if renderer.nonBlackFrameCount >= previousFrameCount + 3 { break }
+            try await Task.sleep(for: .milliseconds(35))
+          }
+          #expect(
+            renderer.nonBlackFrameCount >= previousFrameCount + 3,
+            "Publication \(publication) did not decode the nonblack AV1 fixture"
+          )
+          sender.factory.deactivateSlot(slot.index)
+          try await Task.sleep(for: .milliseconds(300))
+        }
+      } catch {
+        await link.close()
+        first.factory.close()
+        second.factory.close()
+        throw error
+      }
+
+      await link.close()
+      first.factory.close()
+      second.factory.close()
+    }
+
     @Test(
       "native offerer interoperates with browser-like receive-only peer",
       .timeLimit(.minutes(1))
@@ -1613,7 +1803,8 @@ private struct NativeV3RealParticipant: Sendable {
   init(
     byte: UInt8,
     remoteAudioPlaybackEnabled: Bool = false,
-    videoCodec: WebRTCVideoCodec = .vp8
+    videoCodec: WebRTCVideoCodec = .vp8,
+    encoderFactoryOverride: (any RTCVideoEncoderFactory)? = nil
   ) throws {
     id = try .init(
       bytes: Data(
@@ -1630,7 +1821,12 @@ private struct NativeV3RealParticipant: Sendable {
         ),
         remoteParticipantAudioPlaybackEnabled:
           remoteAudioPlaybackEnabled
-      )
+      ),
+      retainedFrameReplayBurst: WebRTCRetainedFrameReplayBurst(),
+      retainedFrameMinimumIdleIntervalNanoseconds:
+        WebRTCRetainedFrameReplayBurst.minimumIdleIntervalNanoseconds,
+      retainedFrameReplayObserver: nil,
+      encoderFactoryOverride: encoderFactoryOverride
     )
   }
 }
@@ -1896,6 +2092,14 @@ private final class NativeV3RealLink: @unchecked Sendable {
     await relay.snapshot()
   }
 
+  func remoteVideoStream(
+    for descriptor: ClipLiveShareStreamDescriptor,
+    on side: NativeV3RealLinkSide
+  ) async -> WebRTCRemoteVideoStream? {
+    let transport = side == .first ? firstTransport : secondTransport
+    return await transport.remoteVideoStream(for: descriptor)
+  }
+
   func waitUntilReady() async -> Bool {
     await waitUntil { $0.isReady }
   }
@@ -1942,6 +2146,91 @@ private final class NativeV3RealLink: @unchecked Sendable {
         )
       }
     }
+  }
+}
+
+/// This deliberately emits no bitstream: the assertion is that production
+/// libwebrtc resumes calling its encoder after a latched initialization error.
+/// Advertising only AV1 rules out a fallback codec accidentally hiding it.
+private final class NativeV3FailOnceEncoderFactory:
+  NSObject, RTCVideoEncoderFactory, @unchecked Sendable
+{
+  private let lock = NSLock()
+  private var initializations = 0
+  private var encodedFrames = 0
+
+  var initializationCount: Int { lock.withLock { initializations } }
+  var encodedFrameCount: Int { lock.withLock { encodedFrames } }
+
+  func supportedCodecs() -> [RTCVideoCodecInfo] {
+    RTCVideoEncoderAV1.supportedCodecs()
+  }
+
+  func createEncoder(_ info: RTCVideoCodecInfo) -> (any RTCVideoEncoder)? {
+    guard info.name.caseInsensitiveCompare("AV1") == .orderedSame else {
+      return nil
+    }
+    return NativeV3FailOnceEncoder(owner: self)
+  }
+
+  func initializeEncoder() -> Int {
+    lock.withLock {
+      initializations += 1
+      return initializations == 1 ? -1 : 0
+    }
+  }
+
+  func recordEncodedFrame() {
+    lock.withLock { encodedFrames += 1 }
+  }
+}
+
+private final class NativeV3FailOnceEncoder: NSObject, RTCVideoEncoder {
+  private let owner: NativeV3FailOnceEncoderFactory
+
+  init(owner: NativeV3FailOnceEncoderFactory) {
+    self.owner = owner
+  }
+
+  func setCallback(_ callback: RTCVideoEncoderCallback?) {}
+  func startEncode(
+    with settings: RTCVideoEncoderSettings,
+    numberOfCores: Int32
+  ) -> Int {
+    owner.initializeEncoder()
+  }
+  func release() -> Int { 0 }
+  func encode(
+    _ frame: RTCVideoFrame,
+    codecSpecificInfo: (any RTCCodecSpecificInfo)?,
+    frameTypes: [NSNumber]
+  ) -> Int {
+    owner.recordEncodedFrame()
+    return 0
+  }
+  func setBitrate(_ bitrateKbit: UInt32, framerate: UInt32) -> Int32 { 0 }
+  func implementationName() -> String { "FailOnceAV1Regression" }
+  func scalingSettings() -> RTCVideoEncoderQpThresholds? { nil }
+  var resolutionAlignment: Int { 2 }
+  var applyAlignmentToAllSimulcastLayers: Bool { true }
+  var supportsNativeHandle: Bool { true }
+}
+
+private final class NativeV3NonBlackFrameRenderer:
+  NSObject, RTCVideoRenderer, @unchecked Sendable
+{
+  private let lock = NSLock()
+  private var nonBlackFrames = 0
+
+  var nonBlackFrameCount: Int { lock.withLock { nonBlackFrames } }
+
+  func setSize(_ size: CGSize) {}
+
+  func renderFrame(_ frame: RTCVideoFrame?) {
+    guard let frame, frame.width > 0, frame.height > 0 else { return }
+    let decoded = frame.buffer.toI420()
+    guard decoded.dataY[0] > 200 else { return }
+    lock.withLock { nonBlackFrames += 1 }
   }
 }
 

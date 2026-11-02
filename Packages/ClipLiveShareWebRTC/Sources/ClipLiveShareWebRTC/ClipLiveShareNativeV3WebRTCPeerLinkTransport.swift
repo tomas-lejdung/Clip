@@ -205,6 +205,7 @@ public final class ClipLiveShareNativeV3WebRTCTransportFactory:
   private let systemAudioTrackID: String
   private let systemAudioStreamID: String
   private var peerTransports: [ClipLiveShareNativeV3WeakPeerTransport] = []
+  private var videoSlotActivityRevision: UInt64 = 0
   private var systemAudioEnabled = false
   private var activeSenderPolicy: WebRTCSenderPolicy
   private var activeVideoCodec: WebRTCVideoCodec
@@ -230,7 +231,8 @@ public final class ClipLiveShareNativeV3WebRTCTransportFactory:
     retainedFrameReplayBurst: WebRTCRetainedFrameReplayBurst,
     retainedFrameMinimumIdleIntervalNanoseconds: UInt64,
     retainedFrameReplayObserver:
-      (@Sendable (_ slot: Int) -> Void)?
+      (@Sendable (_ slot: Int) -> Void)?,
+    encoderFactoryOverride: (any RTCVideoEncoderFactory)? = nil
   ) throws {
     self.configuration = configuration
     self.retainedFrameReplayBurst = retainedFrameReplayBurst
@@ -259,7 +261,7 @@ public final class ClipLiveShareNativeV3WebRTCTransportFactory:
     let audioDevice = ClipLiveShareWebRTCSystemAudioDevice()
     systemAudioDevice = audioDevice
     let factory = ClipLiveShareWebRTCCreatePeerConnectionFactory(
-      encoderFactory,
+      encoderFactoryOverride ?? encoderFactory,
       RTCDefaultVideoDecoderFactory(),
       audioDevice
     )
@@ -353,9 +355,10 @@ public final class ClipLiveShareNativeV3WebRTCTransportFactory:
         localVideoSlots: slots,
         localParticipantAudioTrack: systemAudioTrack,
         localParticipantAudioStreamID: systemAudioStreamID,
-        activeLocalVideoSourceCount: slots.count(where: {
-          $0.metadata != nil
+        activeLocalVideoSlots: Set(slots.compactMap {
+          $0.metadata == nil ? nil : $0.index
         }),
+        videoSlotActivityRevision: videoSlotActivityRevision,
         onConnectionBecameReady: onConnectionBecameReady
       )
       peerTransports.removeAll { $0.value == nil }
@@ -485,15 +488,17 @@ public final class ClipLiveShareNativeV3WebRTCTransportFactory:
       target.metadata = metadata
       target.captureGeometry = captureGeometry
       target.track.isEnabled = true
+      videoSlotActivityRevision &+= 1
       peerTransports.removeAll { $0.value == nil }
       return (
         peerTransports.compactMap(\.value),
-        slots.count(where: { $0.metadata != nil })
+        Set(slots.compactMap { $0.metadata == nil ? nil : $0.index }),
+        videoSlotActivityRevision
       )
     }
-    let (transports, count) = update
+    let (transports, activeSlots, revision) = update
     for transport in transports {
-      transport.updateActiveLocalVideoSourceCount(count)
+      transport.updateActiveLocalVideoSlots(activeSlots, revision: revision)
     }
   }
 
@@ -530,23 +535,26 @@ public final class ClipLiveShareNativeV3WebRTCTransportFactory:
 
   public func deactivateSlot(_ slot: Int) {
     let update = lock.withLock { () -> (
-      [ClipLiveShareNativeV3WebRTCPeerLinkTransport], Int
+      [ClipLiveShareNativeV3WebRTCPeerLinkTransport], Set<Int>, UInt64
     )? in
       guard !isClosed, slots.indices.contains(slot) else { return nil }
       let target = slots[slot]
+      guard target.metadata != nil else { return nil }
       target.metadata = nil
       target.captureGeometry = nil
       target.track.isEnabled = false
       target.frameSource.clearLatestFrame()
+      videoSlotActivityRevision &+= 1
       peerTransports.removeAll { $0.value == nil }
       return (
         peerTransports.compactMap(\.value),
-        slots.count(where: { $0.metadata != nil })
+        Set(slots.compactMap { $0.metadata == nil ? nil : $0.index }),
+        videoSlotActivityRevision
       )
     }
-    guard let (transports, count) = update else { return }
+    guard let (transports, activeSlots, revision) = update else { return }
     for transport in transports {
-      transport.updateActiveLocalVideoSourceCount(count)
+      transport.updateActiveLocalVideoSlots(activeSlots, revision: revision)
     }
   }
 
@@ -664,7 +672,9 @@ public final class ClipLiveShareNativeV3WebRTCPeerLinkTransport:
   private var outboundMediaEnabled: Bool
   private var senderPolicy: WebRTCSenderPolicy
   private var videoEncodingMode: LiveShareEncodingMode
-  private var activeLocalVideoSourceCount: Int
+  private var activeLocalVideoSlots: Set<Int>
+  private var videoSlotActivityRevision: UInt64
+  private var activeLocalVideoSourceCount: Int { activeLocalVideoSlots.count }
   private var bandwidthApplicationState =
     NativeV3PeerBandwidthApplicationState()
   private var bandwidthSeedPending: Bool
@@ -712,7 +722,8 @@ public final class ClipLiveShareNativeV3WebRTCPeerLinkTransport:
     localVideoSlots: [ClipLiveShareNativeV3LocalVideoSlot],
     localParticipantAudioTrack: RTCAudioTrack,
     localParticipantAudioStreamID: String,
-    activeLocalVideoSourceCount: Int,
+    activeLocalVideoSlots: Set<Int>,
+    videoSlotActivityRevision: UInt64,
     onConnectionBecameReady: @escaping @Sendable () -> Void
   ) throws {
     self.linkConfiguration = linkConfiguration
@@ -729,8 +740,9 @@ public final class ClipLiveShareNativeV3WebRTCPeerLinkTransport:
       linkConfiguration.outboundMediaInitiallyEnabled
     senderPolicy = webRTCConfiguration.peer.senderPolicy
     videoEncodingMode = webRTCConfiguration.peer.videoEncodingMode
-    self.activeLocalVideoSourceCount = activeLocalVideoSourceCount
-    bandwidthSeedPending = activeLocalVideoSourceCount > 0
+    self.activeLocalVideoSlots = activeLocalVideoSlots
+    self.videoSlotActivityRevision = videoSlotActivityRevision
+    bandwidthSeedPending = !activeLocalVideoSlots.isEmpty
       && webRTCConfiguration.peer.videoEncodingMode == .quality
     videoCodec = webRTCConfiguration.peer.videoCodec
     videoCodecNegotiationPolicy =
@@ -809,6 +821,7 @@ public final class ClipLiveShareNativeV3WebRTCPeerLinkTransport:
           Self.setSender(
             transceiver.sender,
             active: outboundMediaEnabled
+              && activeLocalVideoSlots.contains(slot.index)
           )
           videoTransceivers.append(transceiver)
         }
@@ -1060,8 +1073,11 @@ public final class ClipLiveShareNativeV3WebRTCPeerLinkTransport:
       guard !isClosed else { return }
       let previousValue = outboundMediaEnabled
       outboundMediaEnabled = enabled
-      for transceiver in videoTransceivers {
-        Self.setSender(transceiver.sender, active: enabled)
+      for (slot, transceiver) in zip(localVideoSlots, videoTransceivers) {
+        Self.setSender(
+          transceiver.sender,
+          active: enabled && activeLocalVideoSlots.contains(slot.index)
+        )
       }
       if let audioTransceiver {
         Self.setSender(audioTransceiver.sender, active: enabled)
@@ -1116,11 +1132,25 @@ public final class ClipLiveShareNativeV3WebRTCPeerLinkTransport:
     }
   }
 
-  fileprivate func updateActiveLocalVideoSourceCount(_ count: Int) {
+  /// Track muting only substitutes black frames; it does not retire a sender's
+  /// encoder. Change RTP encoding activity with publication lifetime so a
+  /// reactivation reinitializes the encoder, while preserving its negotiated
+  /// track and transceiver.
+  func updateActiveLocalVideoSlots(_ activeSlots: Set<Int>, revision: UInt64) {
     onQueue {
-      guard !isClosed else { return }
+      // Factory mutations are serialized under its lock, but each peer update
+      // runs outside that lock. A delayed older snapshot must never disable a
+      // slot activated by a later publication or revive a stopped one.
+      guard !isClosed, revision > videoSlotActivityRevision else { return }
+      videoSlotActivityRevision = revision
       let previousCount = activeLocalVideoSourceCount
-      activeLocalVideoSourceCount = max(0, count)
+      activeLocalVideoSlots = activeSlots
+      for (slot, transceiver) in zip(localVideoSlots, videoTransceivers) {
+        Self.setSender(
+          transceiver.sender,
+          active: outboundMediaEnabled && activeSlots.contains(slot.index)
+        )
+      }
       if activeLocalVideoSourceCount == 0 {
         bandwidthSeedPending = false
         clearPeerBandwidthPolicyAfterLastVideo()
@@ -1160,6 +1190,16 @@ public final class ClipLiveShareNativeV3WebRTCPeerLinkTransport:
 
   public func currentVideoCodecPreference() async -> WebRTCVideoCodec? {
     onQueue { isClosed ? nil : videoCodec }
+  }
+
+  /// Actual RTP state, including acceptance of publication and admission
+  /// changes by libwebrtc. Kept internal for lifecycle regression tests.
+  var videoSenderEncodingActivity: [Int: [Bool]] {
+    onQueue {
+      Dictionary(uniqueKeysWithValues: zip(localVideoSlots, videoTransceivers).map { slot, transceiver in
+        (slot.index, transceiver.sender.parameters.encodings.map(\.isActive))
+      })
+    }
   }
 
   private func setVideoCodecPreference(
@@ -1726,7 +1766,11 @@ public final class ClipLiveShareNativeV3WebRTCPeerLinkTransport:
             to: transceiver
           )
           Self.applySenderPolicy(senderPolicy, to: sender)
-          Self.setSender(sender, active: outboundMediaEnabled)
+          Self.setSender(
+            sender,
+            active: outboundMediaEnabled
+              && activeLocalVideoSlots.contains(slot.index)
+          )
           attachedVideoTransceivers.append(transceiver)
         }
 
@@ -2250,6 +2294,9 @@ public final class ClipLiveShareNativeV3WebRTCPeerLinkTransport:
     active: Bool
   ) {
     let parameters = sender.parameters
+    guard parameters.encodings.contains(where: { $0.isActive != active }) else {
+      return
+    }
     for encoding in parameters.encodings {
       encoding.isActive = active
     }
