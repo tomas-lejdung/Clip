@@ -173,6 +173,7 @@ enum CaptureSelectionFocus: Equatable, Sendable {
 }
 
 struct CaptureSelectionConfiguration: Equatable, Sendable {
+    var confirmationTitle = String(localized: "Record")
     var minimumAreaSize = CGSize(width: 96, height: 64)
     var dimmingOpacity: CGFloat = 0.56
     var handleSize: CGFloat = 10

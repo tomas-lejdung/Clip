@@ -1,12 +1,340 @@
+@preconcurrency import AVFoundation
+import AppKit
 import ClipCore
 import Foundation
+import SwiftUI
 import Testing
 import UniformTypeIdentifiers
+import XCTest
 @testable import Clip
 
 @MainActor
 @Suite("Preview action lifetime")
 struct PreviewViewModelTests {
+    @Test("Stop opens an empty-player shell and close waits for its finalized candidate")
+    func processingShellGatesActionsAndWaitsForClose() async throws {
+        let probe = PreviewActionProbe()
+        let provisional = try PreviewRecording(
+            id: .init(UUID()), sourceURL: URL(fileURLWithPath: "/tmp/clip-preparing.hevc"),
+            duration: 1, pixelSize: .init(width: 1440, height: 900),
+            filename: .init(validating: "new-recording.mp4"), trimRange: .full(recordingDuration: 1)
+        )
+        let model = PreviewViewModel(recording: provisional,
+            actions: makeActions(done: { await probe.appendSnapshot($0) }),
+            processingState: .init(options: .defaults, nativePixelSize: provisional.pixelSize))
+        #expect(model.player.currentItem == nil)
+        #expect(model.isBusy && model.canClose && !model.canShare && model.dragItem == nil)
+        model.updateTrimEnd(0.5)
+        model.updateFilename("should-not-change")
+        #expect(model.filenameText == "new-recording" && model.trimEnd == 1)
+
+        model.done()
+        #expect(model.operation == .closing)
+        await Task.yield()
+        #expect(await probe.snapshots.isEmpty)
+        let ready = try PreviewRecording(
+            id: provisional.id, sourceURL: URL(fileURLWithPath: "/tmp/clip-ready.mp4"),
+            duration: 30, pixelSize: provisional.pixelSize,
+            filename: provisional.filename, trimRange: .full(recordingDuration: 30)
+        )
+        model.replaceRecording(ready)
+        model.updateProcessingState(.init(options: .defaults, nativePixelSize: ready.pixelSize, phase: .ready))
+        try await waitUntil { model.operation == nil }
+        let saved = try #require(await probe.snapshots.first)
+        #expect(saved.duration == 30 && saved.trimRange.endTime == 30)
+        #expect(saved.sourceURL == ready.sourceURL)
+    }
+
+    @Test("Resolution reprocessing keeps edits and remembers settings only on success")
+    func processingKeepsEditsAndPersistsSuccessfulRecipe() async throws {
+        let probe = PreviewProcessingProbe()
+        let trimProbe = PreviewActionProbe()
+        let initial = PreviewRecording.demo()
+        let replacement = try PreviewRecording(
+            id: initial.id, sourceURL: URL(fileURLWithPath: "/tmp/clip-processed-half.mp4"),
+            duration: initial.duration, pixelSize: .init(width: 720, height: 450),
+            audioConfiguration: initial.audioConfiguration,
+            filename: initial.filename, trimRange: .full(recordingDuration: initial.duration)
+        )
+        let model = PreviewViewModel(recording: initial, actions: makeActions(
+            process: { options, snapshot, progress in
+                probe.requests.append(options)
+                probe.snapshots.append(snapshot)
+                progress(.processing, 0.5)
+                try await Task.sleep(for: .milliseconds(10))
+                return replacement
+            }, processingOptionsChanged: { probe.remembered.append($0) },
+            prepareExport: { request in
+                await trimProbe.appendRequest(request)
+                try await Task.sleep(for: .milliseconds(20))
+                return request.sourceURL
+            }
+        ), processingState: .init(options: .defaults, nativePixelSize: initial.pixelSize, phase: .ready))
+        model.updateFilename("my-feature")
+        model.beginTrimEditing()
+        model.updateTrimStart(4)
+        model.updateTrimEnd(20)
+        model.saveTrim()
+        try await waitUntil { model.operation == nil }
+        model.setAudioRemoved(true)
+        model.seek(to: 7)
+        #expect(probe.requests.isEmpty)
+        model.selectResolution(.half)
+        #expect(model.isProcessing && !model.canShare && model.dragItem == nil)
+        model.updateTrimStart(8)
+        model.updateFilename("blocked")
+        try await waitUntil { model.processingState?.phase == .finishing }
+        #expect(!model.canShare, "A previous trim is prepared again for the new processed Source")
+        try await waitUntil { model.processingState?.phase == .ready }
+        #expect(model.recording.sourceURL == replacement.sourceURL)
+        #expect(model.trimStart == 4 && model.trimEnd == 20 && model.currentTime == 7)
+        #expect(model.filenameText == "my-feature" && model.isAudioRemoved)
+        #expect(probe.remembered == [.init(scale: .half, crf: 24)])
+        #expect(model.resolutionTitle(.native) == "Native · 1440 × 900")
+        #expect(model.resolutionTitle(.half) == "50% · 720 × 450")
+        #expect(model.dragItem?.request.sourceURL == replacement.sourceURL)
+        #expect(await trimProbe.requests.count == 2)
+        #expect(await trimProbe.requests.last?.sourceURL == replacement.sourceURL)
+        #expect(await trimProbe.requests.last?.trimRange == model.snapshotForPersistence().trimRange)
+    }
+
+    @Test("CRF menu selections process once and failed processing never persists its recipe")
+    func processingSelectionAllowsRetry() async throws {
+        let probe = PreviewProcessingProbe()
+        let initial = PreviewRecording.demo()
+        let model = PreviewViewModel(recording: initial, actions: makeActions(
+            process: { options, _, _ in
+                probe.requests.append(options)
+                if probe.requests.count == 1 { throw UserSafePreviewError.exportUnavailable }
+                return initial
+            }, processingOptionsChanged: { probe.remembered.append($0) }
+        ), processingState: .init(options: .defaults, nativePixelSize: initial.pixelSize, phase: .ready))
+        #expect(model.processingState?.options.crf == 24)
+        #expect(model.availableCRFValues == Array(18...40))
+        model.selectCRF(28)
+        model.selectCRF(28)
+        #expect(model.isProcessing && !model.canShare)
+        try await waitUntil { model.processingState?.phase == .failed }
+        #expect(probe.requests.map(\.crf) == [28])
+        #expect(probe.remembered.isEmpty && !model.canShare && model.canClose)
+        model.retryProcessing()
+        try await waitUntil { model.processingState?.phase == .ready }
+        #expect(probe.requests.map(\.crf) == [28, 28])
+        #expect(probe.remembered.map(\.crf) == [28])
+    }
+
+    @Test("Unavailable working media cannot trap Close")
+    func failedProcessingStillCloses() async throws {
+        let probe = PreviewActionProbe()
+        let initial = PreviewRecording.demo()
+        let model = PreviewViewModel(recording: initial,
+            actions: makeActions(done: { _ in await probe.append("closed") }),
+            processingState: .init(options: .defaults, nativePixelSize: initial.pixelSize,
+                                   phase: .failed, message: "The working files are no longer available."))
+        #expect(!model.canShare)
+        model.done()
+        try await waitUntil { model.operation == nil }
+        #expect(await probe.events == ["closed"])
+        #expect(model.alert == nil)
+    }
+
+    @Test("Reopening a saved Source has no processing controls or processing side effects")
+    func savedSourceDoesNotReprocess() {
+        let probe = PreviewProcessingProbe()
+        let model = PreviewViewModel(recording: .demo(), actions: makeActions(
+            process: { options, recording, _ in probe.requests.append(options); return recording }
+        ))
+        model.selectResolution(.half)
+        model.selectCRF(28)
+        model.retryProcessing()
+        #expect(model.processingState == nil && !model.canEditProcessing)
+        #expect(probe.requests.isEmpty && model.canShare)
+    }
+
+    @Test("Application Quit waits for the selected CRF before persisting the Source")
+    func terminationWaitsForSelectedCRF() async {
+        let probe = PreviewProcessingProbe()
+        let recording = PreviewRecording.demo()
+        let model = PreviewViewModel(recording: recording, actions: makeActions(
+            process: { options, value, _ in probe.requests.append(options); return value },
+            processingOptionsChanged: { probe.remembered.append($0) }
+        ), processingState: .init(options: .defaults, nativePixelSize: recording.pixelSize, phase: .ready))
+        model.selectCRF(20)
+        await model.settleForTermination()
+        #expect(probe.requests.map(\.crf) == [20])
+        #expect(probe.remembered.map(\.crf) == [20])
+        #expect(model.processingState?.options.crf == 20)
+    }
+
+    @Test("CRF menus retain a legacy value until an explicit supported selection")
+    func crfMenuPreservesLegacyValue() async throws {
+        let probe = PreviewProcessingProbe()
+        let recording = PreviewRecording.demo()
+        var options = RecordingProcessingOptions.defaults
+        options.crf = 12
+        let model = PreviewViewModel(recording: recording, actions: makeActions(
+            process: { options, value, _ in probe.requests.append(options); return value },
+            processingOptionsChanged: { probe.remembered.append($0) }
+        ), processingState: .init(options: options, nativePixelSize: recording.pixelSize, phase: .ready))
+        #expect(model.availableCRFValues == [12] + Array(18...40))
+        model.selectCRF(12)
+        model.selectCRF(17)
+        #expect(probe.requests.isEmpty && model.processingState?.options.crf == 12)
+        model.selectCRF(24)
+        try await waitUntil { model.processingState?.phase == .ready }
+        #expect(probe.requests.map(\.crf) == [24] && probe.remembered.map(\.crf) == [24])
+        #expect(model.availableCRFValues == Array(18...40))
+    }
+
+    @Test("Replacing processed media follows a full trim endpoint through clock rounding")
+    func replacementRebasesFullTrimEndpoint() throws {
+        let initial = try PreviewRecording(id: .init(), sourceURL: URL(fileURLWithPath: "/tmp/preview-duration-original.mp4"),
+            duration: 10, pixelSize: .init(width: 1280, height: 720),
+            filename: .init(validating: "duration.mp4"), trimRange: .init(startTime: 2, endTime: 10))
+        for duration in [9.9995, 10.0005] {
+            let replacement = try PreviewRecording(id: initial.id,
+                sourceURL: URL(fileURLWithPath: "/tmp/preview-duration-replacement.mp4"), duration: duration,
+                pixelSize: initial.pixelSize, filename: initial.filename, trimRange: .full(recordingDuration: duration))
+            let model = PreviewViewModel(recording: initial, actions: makeActions())
+            model.replaceRecording(replacement)
+            #expect(model.trimStart == 2 && model.trimEnd == duration)
+            #expect(model.snapshotForPersistence().trimRange.endTime == duration)
+        }
+    }
+
+    @Test("Preview alerts attach to the floating editor and dismiss via the native OK button")
+    func nativeAlertAcceptsButtonClick() async throws {
+        let panel = NSPanel(contentRect: NSRect(x: -10_000, y: -10_000, width: 680, height: 520),
+            styleMask: [.titled, .closable], backing: .buffered, defer: false)
+        panel.isReleasedWhenClosed = false
+        panel.level = .floating
+        let model = PreviewViewModel(recording: .demo(), actions: makeActions())
+        model.editorWindow = panel
+        defer { model.dismissAlert(); panel.orderOut(nil) }
+        model.updateFilename("folder/invalid")
+        model.copy()
+        let sheet = try #require(panel.attachedSheet)
+        #expect(sheet.sheetParent === panel)
+        #expect(sheet.level.rawValue >= panel.level.rawValue)
+        func okButton(in view: NSView) -> NSButton? {
+            if let button = view as? NSButton, button.title == "OK" { return button }
+            return view.subviews.lazy.compactMap { okButton(in: $0) }.first
+        }
+        let content = try #require(sheet.contentView)
+        let button = try #require(okButton(in: content))
+        #expect(button.isEnabled)
+        button.performClick(nil)
+        try await waitUntil { model.alert == nil }
+        #expect(model.operation == nil)
+    }
+
+    @Test("Preview edits a base name and Copy and drag publish one MP4 extension")
+    func filenameStemAndSingleExtensionSharing() async throws {
+        let model = PreviewViewModel(recording: .demo(), actions: makeActions())
+        #expect(model.filenameText == model.recording.filename.stem)
+        model.updateFilename("feature-change.MP4.mp4")
+        let drag = try #require(model.dragItem)
+        #expect(drag.request.filename.fileName == "feature-change.mp4")
+        #expect(drag.makeItemProvider().suggestedName == "feature-change")
+        let dragged = try await drag.resolveExport()
+        #expect(dragged.outputURL.lastPathComponent == "feature-change.mp4")
+        model.copy()
+        try await waitUntil { model.operation == nil }
+        #expect(model.lastSharedFileURL?.lastPathComponent == "feature-change.mp4")
+        let saved = model.snapshotForPersistence()
+        let reopened = PreviewViewModel(recording: saved, actions: makeActions())
+        #expect(reopened.filenameText == "feature-change")
+    }
+
+    @Test("A promised drag pins its candidate until the receiver releases its provider")
+    func dragProviderRetainsSourceLeaseAfterResolution() async throws {
+        let model = PreviewViewModel(recording: .demo(), actions: makeActions())
+        let request = try #require(model.dragItem?.request)
+        var sourceLease: PreviewTestSourceLease? = PreviewTestSourceLease()
+        weak var weakLease = sourceLease
+        var item: PreviewFileDragItem? = PreviewFileDragItem(
+            id: request.recordingID, request: request,
+            export: { .init(outputURL: $0.sourceURL) },
+            reportFailure: { _ in }, reportSuccess: { _ in }, sourceLease: sourceLease
+        )
+        var provider: NSItemProvider? = item?.makeItemProvider()
+        sourceLease = nil
+        _ = try await item?.resolveExport()
+        item = nil
+        #expect(weakLease != nil)
+        #expect(provider?.suggestedName == request.filename.stem)
+        provider = nil
+        try await waitUntil { weakLease == nil }
+    }
+
+    @Test("A failed source lease refuses the drag instead of promising temporary bytes")
+    func failedSourceLeaseBlocksDrag() async {
+        let probe = PreviewActionProbe()
+        let actions = PreviewActions(export: { request in
+            await probe.appendRequest(request)
+            return .init(outputURL: request.sourceURL)
+        }, copy: { .init(outputURL: $0.sourceURL) }, save: { _ in nil },
+            retake: { _ in nil }, done: { _ in }, delete: { _ in },
+            acquireSourceLease: { _ in throw CocoaError(.fileWriteOutOfSpace) })
+        let model = PreviewViewModel(recording: .demo(), actions: actions)
+        #expect(model.dragItem == nil)
+        #expect(model.alert?.title == "Couldn’t Prepare Drag")
+        #expect(model.operation == nil)
+        #expect(await probe.requests.isEmpty)
+    }
+
+    @Test("A leased drag retains the prepared Source identity instead of its temporary path")
+    func leasedDragPreservesPreparedSourceIdentity() throws {
+        let recording = PreviewRecording.demo()
+        let actions = PreviewActions(export: { .init(outputURL: $0.sourceURL) },
+            copy: { .init(outputURL: $0.sourceURL) }, save: { _ in nil },
+            retake: { _ in nil }, done: { _ in }, delete: { _ in },
+            acquireSourceLease: { _ in PreviewTestSourceLease() })
+        let model = PreviewViewModel(recording: recording, actions: actions)
+        let request = try #require(model.dragItem?.request)
+        let original = PreviewExportRequest(recordingID: recording.id, sourceURL: recording.sourceURL,
+            captureFrameRate: recording.frameRate, filename: recording.filename,
+            trimRange: recording.trimRange, audioPreference: recording.exportAudioPreference)
+        #expect(request.sourceURL != recording.sourceURL)
+        #expect(request.sourceCacheIdentity == PreviewExportCoordinator.sourceCacheIdentity(for: original))
+        #expect(PreviewExportCoordinator.sourceCacheIdentity(for: request) == request.sourceCacheIdentity)
+    }
+
+    @Test("Expanded playback hides the floating editor and restores it without replacing the player")
+    func expandedPlaybackOwnsWindowPresentation() async throws {
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent("PreviewExpanded-\(UUID()).mp4")
+        defer { try? FileManager.default.removeItem(at: file) }
+        try await ProcessingVideoFixture.writeHEVC(to: file)
+        let recording = try PreviewRecording(id: .init(), sourceURL: file, duration: 2.037,
+            pixelSize: .init(width: 1280, height: 720), filename: .init(validating: "Feature.mp4"),
+            trimRange: .full(recordingDuration: 2.037))
+        let model = PreviewViewModel(recording: recording, actions: makeActions())
+        let editor = NSPanel(contentRect: NSRect(x: -10_000, y: -10_000, width: 680, height: 520),
+            styleMask: [.titled, .closable], backing: .buffered, defer: false)
+        editor.isReleasedWhenClosed = false
+        editor.level = .floating
+        editor.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+        model.editorWindow = editor
+        defer { model.closeExpandedPreview(restoringEditor: false); editor.orderOut(nil); editor.close() }
+        editor.orderFront(nil)
+        #expect(editor.isVisible)
+        let item = model.player.currentItem
+        model.player.isMuted = true
+        _ = await model.player.seek(to: CMTime(seconds: 0.6, preferredTimescale: 60_000),
+            toleranceBefore: .zero, toleranceAfter: .zero)
+        let position = model.player.currentTime().seconds
+        model.showExpandedPreview()
+        #expect(model.isExpandedPreviewPresented && !editor.isVisible)
+        #expect(model.player.currentItem === item && model.player.isMuted)
+        model.closeExpandedPreview()
+        #expect(!model.isExpandedPreviewPresented && editor.isVisible)
+        #expect(model.player.currentItem === item && model.player.isMuted)
+        #expect(abs(model.player.currentTime().seconds - position) < 0.001)
+        model.showExpandedPreview()
+        model.closeExpandedPreview(restoringEditor: false)
+        #expect(!model.isExpandedPreviewPresented && !editor.isVisible)
+    }
+
     @Test("Done remains busy until durable close completes")
     func doneAwaitsPersistence() async throws {
         let probe = PreviewActionProbe()
@@ -35,8 +363,7 @@ struct PreviewViewModelTests {
             duration: 8,
             pixelSize: PixelSize(width: 1280, height: 720),
             filename: RecordingFilename(validating: "clip-retake.mp4"),
-            trimRange: .full(recordingDuration: 8),
-            exportConfiguration: .crisp
+            trimRange: .full(recordingDuration: 8)
         )
         let actions = makeActions(
             retake: { _ in
@@ -131,16 +458,12 @@ struct PreviewViewModelTests {
             actions: PreviewActions(
                 export: { request in
                     PreviewShareOutcome(
-                        outputURL: request.sourceURL,
-                        historyDisposition: .keepOriginal,
-                        sourceFinalizationDeferred: false
+                        outputURL: request.sourceURL
                     )
                 },
                 copy: { _ in
                     PreviewShareOutcome(
-                        outputURL: outputURL,
-                        historyDisposition: .keepOriginal,
-                        sourceFinalizationDeferred: false
+                        outputURL: outputURL
                     )
                 },
                 save: { _ in nil },
@@ -149,7 +472,7 @@ struct PreviewViewModelTests {
                 delete: { _ in }
             )
         )
-        #expect(model.outputSizeDescription == "Quality based — size varies")
+        #expect(model.outputSizeDescription.hasPrefix("1440 × 900"))
 
         model.copy()
         try await waitUntil { model.operation == nil }
@@ -163,8 +486,9 @@ struct PreviewViewModelTests {
         )
         #expect(model.outputSizeDescription == "Actual output: \(localizedSize)")
 
+        model.beginTrimEditing()
         model.updateTrimEnd(12)
-        #expect(model.outputSizeDescription == "Quality based — size varies")
+        #expect(model.outputSizeDescription.hasPrefix("1440 × 900"))
     }
 
     @Test("Unknown technical errors are hidden while intentional messages remain actionable")
@@ -234,17 +558,19 @@ struct PreviewViewModelTests {
             sharedURL.deletingLastPathComponent()
                 == model.recording.sourceURL.deletingLastPathComponent()
         )
-        #expect(sharedURL.lastPathComponent == model.filenameText)
+        #expect(sharedURL.lastPathComponent == model.filenameText + ".mp4")
     }
 
-    @Test("Trim, rename, and quality preset form one exact drag/export request")
-    func dragRequestUsesCurrentEdits() throws {
+    @Test("Trim and rename form one exact source-preserving drag/export request")
+    func dragRequestUsesCurrentEdits() async throws {
         let model = PreviewViewModel(recording: .demo(), actions: makeActions())
 
         model.updateFilename("  dashboard-filters.MP4  ")
+        model.beginTrimEditing()
         model.updateTrimStart(3.25)
         model.updateTrimEnd(18.5)
-        model.selectPreset(.smallest)
+        model.saveTrim()
+        try await waitUntil { model.operation == nil }
 
         let request = try #require(model.dragItem?.request)
         let expectedTrim = try TrimRange(startTime: 3.25, endTime: 18.5)
@@ -253,37 +579,7 @@ struct PreviewViewModelTests {
         #expect(request.captureFrameRate == .thirty)
         #expect(request.filename.fileName == "dashboard-filters.mp4")
         #expect(request.trimRange == expectedTrim)
-        #expect(request.configuration == ExportConfiguration(preset: .smallest))
-        #expect(request.videoQualityPercent == 70)
-        #expect(request.sourceVideoQualityPercent == 98)
-        #expect(model.outputSizeDescription == "Quality based — size varies")
-    }
-
-    @Test("Every preset uses its independent configured quality")
-    func presetQualityUsesCurrentSettings() throws {
-        let duration: TimeInterval = 12
-        let recording = try PreviewRecording(
-            id: RecordingID(UUID(uuidString: "60606060-6060-6060-6060-606060606060")!),
-            sourceURL: URL(fileURLWithPath: "/tmp/clip-preview-estimate.mp4"),
-            duration: duration,
-            pixelSize: PixelSize(width: 2_222, height: 666),
-            frameRate: .sixty,
-            audioConfiguration: .systemAudioOnly,
-            filename: RecordingFilename(validating: "clip-estimate.mp4"),
-            trimRange: .full(recordingDuration: duration),
-            exportConfiguration: .crisp,
-            exportQualities: ExportQualitySettings(crisp: 99, compact: 72, smallest: 13),
-            sourceVideoQualityPercent: 94
-        )
-        let model = PreviewViewModel(recording: recording, actions: makeActions())
-
-        #expect(model.dragItem?.request.videoQualityPercent == 99)
-        #expect(model.dragItem?.request.captureFrameRate == .sixty)
-        #expect(model.dragItem?.request.sourceVideoQualityPercent == 94)
-        model.selectPreset(.compact)
-        #expect(model.dragItem?.request.videoQualityPercent == 72)
-        model.selectPreset(.smallest)
-        #expect(model.dragItem?.request.videoQualityPercent == 13)
+        #expect(model.outputSizeDescription.hasPrefix("1440 × 900"))
     }
 
     @Test("Remove audio mutes Preview and changes the export request")
@@ -297,8 +593,7 @@ struct PreviewViewModelTests {
             frameRate: .thirty,
             audioConfiguration: .systemAudioOnly,
             filename: RecordingFilename(validating: "clip-audio.mp4"),
-            trimRange: .full(recordingDuration: duration),
-            exportConfiguration: .compact
+            trimRange: .full(recordingDuration: duration)
         )
         let model = PreviewViewModel(recording: recording, actions: makeActions())
 
@@ -329,23 +624,18 @@ struct PreviewViewModelTests {
             pixelSize: PixelSize(width: 1_280, height: 720),
             audioConfiguration: .microphoneAndSystemAudio,
             filename: RecordingFilename(validating: "clip-audio-persist.mp4"),
-            trimRange: .full(recordingDuration: duration),
-            exportConfiguration: .compact
+            trimRange: .full(recordingDuration: duration)
         )
         let actions = PreviewActions(
             export: { request in
                 PreviewShareOutcome(
-                    outputURL: request.sourceURL,
-                    historyDisposition: .keepOriginal,
-                    sourceFinalizationDeferred: false
+                    outputURL: request.sourceURL
                 )
             },
             copy: { request in
                 await probe.appendRequest(request)
                 return PreviewShareOutcome(
-                    outputURL: request.sourceURL,
-                    historyDisposition: .keepOriginal,
-                    sourceFinalizationDeferred: false
+                    outputURL: request.sourceURL
                 )
             },
             save: { _ in nil },
@@ -371,6 +661,7 @@ struct PreviewViewModelTests {
     func trimBoundsAndReset() {
         let model = PreviewViewModel(recording: .demo(), actions: makeActions())
 
+        model.beginTrimEditing()
         model.updateTrimEnd(4)
         model.updateTrimStart(100)
         #expect(model.trimStart == 3.9)
@@ -385,7 +676,116 @@ struct PreviewViewModelTests {
         #expect(model.currentTime == 0)
     }
 
-    @Test("Promised-file drag exports lazily and reports its retention outcome")
+    @Test("Save Trim prepares one export before sharing and keeps the full Source intact")
+    func saveTrimPreparesBeforeEnablingSharing() async throws {
+        let probe = PreviewActionProbe()
+        let original = PreviewRecording.demo()
+        let model = PreviewViewModel(recording: original, actions: makeActions(prepareExport: { request in
+            await probe.appendRequest(request)
+            try await Task.sleep(for: .milliseconds(30))
+            return request.sourceURL
+        }))
+        model.updateTrimStart(3)
+        #expect(model.trimStart == original.trimRange.startTime, "Only the explicit trim editor changes bounds")
+        model.beginTrimEditing()
+        model.updateTrimStart(3)
+        model.updateTrimEnd(18)
+        #expect(model.isEditingTrim && !model.canShare && model.dragItem == nil)
+        #expect(model.snapshotForPersistence().trimRange == original.trimRange)
+        model.copy()
+        model.saveAs()
+        #expect(model.operation == nil)
+        model.seek(to: 0)
+        #expect(model.currentTime == 3)
+        model.seek(to: 99)
+        #expect(model.currentTime == 18)
+        #expect(model.player.currentItem?.reversePlaybackEndTime.seconds == 3)
+        #expect(model.player.currentItem?.forwardPlaybackEndTime.seconds == 18)
+
+        model.saveTrim()
+        model.saveTrim()
+        #expect(model.operation == .savingTrim && model.isEditingTrim && !model.canShare)
+        model.updateTrimStart(9)
+        model.cancelTrimEditing()
+        #expect(model.trimStart == 3 && model.isEditingTrim)
+        try await waitUntil { model.operation == nil }
+
+        let requests = await probe.requests
+        #expect(requests.count == 1)
+        let expected = try TrimRange(startTime: 3, endTime: 18)
+        #expect(requests.first?.trimRange == expected)
+        #expect(!model.isEditingTrim && model.canShare)
+        #expect(model.dragItem?.request.trimRange == expected)
+        #expect(model.snapshotForPersistence().trimRange == expected)
+        #expect(model.recording.sourceURL == original.sourceURL && model.recording.duration == original.duration)
+        #expect(model.lastSharedFileURL == nil, "Preparing a trim does not publish an export")
+        #expect(model.currentTime == 3)
+    }
+
+    @Test("Failed trim preparation preserves the draft for retry; Cancel restores the saved range")
+    func failedTrimPreparationCanRetryOrCancel() async throws {
+        let probe = PreviewActionProbe()
+        let original = PreviewRecording.demo()
+        let model = PreviewViewModel(recording: original, actions: makeActions(prepareExport: { request in
+            await probe.appendRequest(request)
+            if await probe.requests.count == 1 { throw PreviewViewModelTestError.exportFailed }
+            return request.sourceURL
+        }))
+        model.beginTrimEditing()
+        model.updateTrimStart(4)
+        model.updateTrimEnd(19)
+        model.saveTrim()
+        try await waitUntil { model.operation == nil }
+        #expect(model.isEditingTrim && !model.canShare && model.dragItem == nil)
+        #expect(model.alert?.title == "Couldn’t Save Trim")
+        #expect(model.snapshotForPersistence().trimRange == original.trimRange)
+        model.dismissAlert()
+        model.saveTrim()
+        try await waitUntil { model.operation == nil }
+        #expect(model.canShare && !model.isEditingTrim)
+        let saved = model.snapshotForPersistence().trimRange
+
+        model.beginTrimEditing()
+        model.resetTrim()
+        #expect(model.trimStart == 0 && model.trimEnd == original.duration)
+        model.cancelTrimEditing()
+        #expect(model.trimStart == saved.startTime && model.trimEnd == saved.endTime)
+        #expect(model.canShare && model.snapshotForPersistence().trimRange == saved)
+        #expect(await probe.requests.count == 2, "Cancel does not prepare or publish another export")
+    }
+
+    @Test("Closing discards an unsaved trim draft while keeping the last saved selection")
+    func closeDiscardsUnconfirmedTrim() async throws {
+        let probe = PreviewActionProbe()
+        let original = PreviewRecording.demo()
+        let model = PreviewViewModel(recording: original, actions: makeActions(done: { await probe.appendSnapshot($0) }))
+        model.beginTrimEditing()
+        model.updateTrimStart(5)
+        model.done()
+        try await waitUntil { model.operation == nil }
+        #expect(!model.isEditingTrim)
+        #expect(await probe.snapshots.first?.trimRange == original.trimRange)
+        #expect(model.trimStart == original.trimRange.startTime)
+    }
+
+    @Test("Invalid trim export filenames never leave Save Trim busy")
+    func invalidTrimFilenameDoesNotStartPreparation() async {
+        let probe = PreviewActionProbe()
+        let model = PreviewViewModel(recording: .demo(), actions: makeActions(prepareExport: { request in
+            await probe.appendRequest(request)
+            return request.sourceURL
+        }))
+        model.beginTrimEditing()
+        model.updateFilename("folder/invalid.mp4")
+        model.saveTrim()
+        #expect(model.operation == nil && model.isEditingTrim && model.canClose)
+        #expect(model.alert?.title == "Invalid Filename")
+        #expect(await probe.requests.isEmpty)
+        model.cancelTrimEditing()
+        #expect(!model.isEditingTrim)
+    }
+
+    @Test("Promised-file drag exports lazily and reports its independent output")
     func promisedDragIsLazy() async throws {
         let probe = PreviewActionProbe()
         let outputURL = URL(fileURLWithPath: "/tmp/lazy-drag.mp4")
@@ -393,16 +793,12 @@ struct PreviewViewModelTests {
             export: { request in
                 await probe.appendRequest(request)
                 return PreviewShareOutcome(
-                    outputURL: outputURL,
-                    historyDisposition: .replaceOriginalWithExport,
-                    sourceFinalizationDeferred: true
+                    outputURL: outputURL
                 )
             },
             copy: { request in
                 PreviewShareOutcome(
-                    outputURL: request.sourceURL,
-                    historyDisposition: .keepOriginal,
-                    sourceFinalizationDeferred: false
+                    outputURL: request.sourceURL
                 )
             },
             save: { _ in nil },
@@ -420,10 +816,9 @@ struct PreviewViewModelTests {
         #expect(await probe.requests.count == 1)
         #expect(outcome.outputURL == outputURL)
 
-        #expect(model.sourceFinalizationDeferred)
         #expect(
             model.statusMessage
-                == "Shared lazy-drag.mp4 — optimized original will update when Preview closes"
+                == "Shared lazy-drag.mp4"
         )
     }
 
@@ -441,9 +836,7 @@ struct PreviewViewModelTests {
             export: { request in
                 await exportProbe.appendRequest(request)
                 return PreviewShareOutcome(
-                    outputURL: outputURL,
-                    historyDisposition: .keepOriginal,
-                    sourceFinalizationDeferred: false
+                    outputURL: outputURL
                 )
             },
             reportFailure: { details in
@@ -456,7 +849,7 @@ struct PreviewViewModelTests {
         let provider = dragItem.makeItemProvider()
 
         #expect(await exportProbe.requests.isEmpty)
-        #expect(provider.suggestedName == "github-upload.mp4")
+        #expect(provider.suggestedName == "github-upload")
         #expect(provider.registeredTypeIdentifiers.first == UTType.mpeg4Movie.identifier)
         #expect(provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier))
         #expect(provider.hasItemConformingToTypeIdentifier(UTType.url.identifier))
@@ -522,17 +915,13 @@ struct PreviewViewModelTests {
             export: { request in
                 await probe.appendRequest(request)
                 return PreviewShareOutcome(
-                    outputURL: request.sourceURL,
-                    historyDisposition: .keepOriginal,
-                    sourceFinalizationDeferred: false
+                    outputURL: request.sourceURL
                 )
             },
             copy: { request in
                 await probe.appendRequest(request)
                 return PreviewShareOutcome(
-                    outputURL: request.sourceURL,
-                    historyDisposition: .keepOriginal,
-                    sourceFinalizationDeferred: false
+                    outputURL: request.sourceURL
                 )
             },
             save: { _ in nil },
@@ -550,6 +939,10 @@ struct PreviewViewModelTests {
         model.copy()
         #expect(model.operation == nil)
         #expect(model.alert?.title == "Invalid Filename")
+        model.dismissAlert()
+        model.saveAs()
+        #expect(model.operation == nil)
+        #expect(model.alert?.title == "Invalid Filename")
         #expect(await probe.requests.isEmpty)
     }
 
@@ -560,18 +953,14 @@ struct PreviewViewModelTests {
         let actions = PreviewActions(
             export: { request in
                 PreviewShareOutcome(
-                    outputURL: request.sourceURL,
-                    historyDisposition: .keepOriginal,
-                    sourceFinalizationDeferred: false
+                    outputURL: request.sourceURL
                 )
             },
             copy: { request in
                 await probe.appendRequest(request)
                 try await Task.sleep(for: .milliseconds(20))
                 return PreviewShareOutcome(
-                    outputURL: outputURL,
-                    historyDisposition: .replaceOriginalWithExport,
-                    sourceFinalizationDeferred: true
+                    outputURL: outputURL
                 )
             },
             save: { _ in nil },
@@ -581,8 +970,10 @@ struct PreviewViewModelTests {
         )
         let model = PreviewViewModel(recording: .demo(), actions: actions)
         model.updateFilename("renamed-copy")
+        model.beginTrimEditing()
         model.updateTrimStart(5)
-        model.selectPreset(.crisp)
+        model.saveTrim()
+        try await waitUntil { model.operation == nil }
 
         model.copy()
         model.copy()
@@ -594,11 +985,9 @@ struct PreviewViewModelTests {
         let request = try #require(requests.first)
         #expect(request.filename.fileName == "renamed-copy.mp4")
         #expect(request.trimRange.startTime == 5)
-        #expect(request.configuration == .crisp)
-        #expect(model.sourceFinalizationDeferred)
         #expect(
             model.statusMessage
-                == "✓ Video copied — optimized original will update when Preview closes"
+                == "✓ Video copied"
         )
     }
 
@@ -609,16 +998,12 @@ struct PreviewViewModelTests {
         let actions = PreviewActions(
             export: { request in
                 PreviewShareOutcome(
-                    outputURL: request.sourceURL,
-                    historyDisposition: .keepOriginal,
-                    sourceFinalizationDeferred: false
+                    outputURL: request.sourceURL
                 )
             },
             copy: { request in
                 PreviewShareOutcome(
-                    outputURL: request.sourceURL,
-                    historyDisposition: .keepOriginal,
-                    sourceFinalizationDeferred: false
+                    outputURL: request.sourceURL
                 )
             },
             save: { request in
@@ -631,7 +1016,10 @@ struct PreviewViewModelTests {
         )
         let model = PreviewViewModel(recording: original, actions: actions)
         model.updateFilename("save-cancelled")
+        model.beginTrimEditing()
         model.updateTrimEnd(12)
+        model.saveTrim()
+        try await waitUntil { model.operation == nil }
 
         model.saveAs()
         try await waitUntil { model.operation == nil }
@@ -644,7 +1032,7 @@ struct PreviewViewModelTests {
         #expect(model.alert == nil)
     }
 
-    @Test("Done persists the current rename, trim, and export preset snapshot")
+    @Test("Done persists the current rename and reversible trim snapshot")
     func donePersistsCurrentSnapshot() async throws {
         let probe = PreviewActionProbe()
         let actions = makeActions(done: { recording in
@@ -652,9 +1040,11 @@ struct PreviewViewModelTests {
         })
         let model = PreviewViewModel(recording: .demo(), actions: actions)
         model.updateFilename("persisted-edit")
+        model.beginTrimEditing()
         model.updateTrimStart(1.5)
         model.updateTrimEnd(20)
-        model.selectPreset(.crisp)
+        model.saveTrim()
+        try await waitUntil { model.operation == nil }
         // The demo has no audio, so the default keep-audio preference remains stable.
 
         model.done()
@@ -664,7 +1054,6 @@ struct PreviewViewModelTests {
         let expectedTrim = try TrimRange(startTime: 1.5, endTime: 20)
         #expect(snapshot.filename.fileName == "persisted-edit.mp4")
         #expect(snapshot.trimRange == expectedTrim)
-        #expect(snapshot.exportConfiguration == .crisp)
         #expect(snapshot.exportAudioPreference == .keepAudio)
     }
 
@@ -678,8 +1067,7 @@ struct PreviewViewModelTests {
             duration: 7,
             pixelSize: PixelSize(width: 960, height: 540),
             filename: RecordingFilename(validating: "failed-retake.mp4"),
-            trimRange: .full(recordingDuration: 7),
-            exportConfiguration: ExportConfiguration(preset: .smallest)
+            trimRange: .full(recordingDuration: 7)
         )
         let actions = makeActions(retake: { _ in
             PreviewRetakeResult(
@@ -699,7 +1087,7 @@ struct PreviewViewModelTests {
         try await waitUntil { model.operation == nil }
 
         #expect(model.recording == original)
-        #expect(model.filenameText == original.filename.fileName)
+        #expect(model.filenameText == original.filename.stem)
         #expect(await probe.events == ["commit", "discard"])
         #expect(model.alert?.title == "Couldn’t Install Retake")
         #expect(model.alert?.message == UserFacingErrorPresentation.genericMessage)
@@ -715,7 +1103,10 @@ struct PreviewViewModelTests {
         })
         let model = PreviewViewModel(recording: original, actions: actions)
         model.updateFilename("edited-before-retake")
+        model.beginTrimEditing()
         model.updateTrimStart(4)
+        model.saveTrim()
+        try await waitUntil { model.operation == nil }
 
         model.retake()
         try await waitUntil { model.operation == nil }
@@ -813,8 +1204,7 @@ struct PreviewViewModelTests {
             audioConfiguration: snapshot?.audio ?? .systemAudioOnly,
             captureTarget: .fullscreen(try DisplayID("display-stable-1")),
             captureSessionSnapshot: snapshot,
-            trimRange: .full(recordingDuration: duration),
-            exportConfiguration: .compact
+            trimRange: .full(recordingDuration: duration)
         )
     }
 
@@ -824,7 +1214,10 @@ struct PreviewViewModelTests {
         retake: @escaping PreviewRetakeAction = { _ in nil },
         done: @escaping @MainActor @Sendable (PreviewRecording) async throws -> Void = { _ in },
         delete: @escaping @MainActor @Sendable (PreviewRecording) async throws -> Void = { _ in },
-        reveal: @escaping @MainActor @Sendable (URL) -> Void = { _ in }
+        reveal: @escaping @MainActor @Sendable (URL) -> Void = { _ in },
+        process: PreviewProcessAction? = nil,
+        processingOptionsChanged: @escaping @MainActor @Sendable (RecordingProcessingOptions) -> Void = { _ in },
+        prepareExport: PreviewPrepareExportAction? = nil
     ) -> PreviewActions {
         let outcome: @Sendable (PreviewExportRequest, Bool) -> PreviewShareOutcome = { request, close in
             let outputURL = request.sourceURL
@@ -832,8 +1225,6 @@ struct PreviewViewModelTests {
                 .appendingPathComponent(request.filename.fileName)
             return PreviewShareOutcome(
                 outputURL: outputURL,
-                historyDisposition: .keepOriginal,
-                sourceFinalizationDeferred: false,
                 shouldClosePreview: close,
                 postShareWarning: postShareWarning
             )
@@ -845,7 +1236,10 @@ struct PreviewViewModelTests {
             retake: retake,
             done: done,
             delete: delete,
-            reveal: reveal
+            reveal: reveal,
+            process: process,
+            processingOptionsChanged: processingOptionsChanged,
+            prepareExport: prepareExport
         )
     }
 
@@ -924,6 +1318,17 @@ private actor PreviewActionProbe {
 @MainActor
 private final class PreviewRevealProbe {
     var url: URL?
+}
+
+@MainActor
+private final class PreviewProcessingProbe {
+    var requests: [RecordingProcessingOptions] = []
+    var snapshots: [PreviewRecording] = []
+    var remembered: [RecordingProcessingOptions] = []
+}
+
+private final class PreviewTestSourceLease: PreviewSourceLease, @unchecked Sendable {
+    let sourceURL = URL(fileURLWithPath: "/tmp/clip-pinned-source.mp4")
 }
 
 @MainActor
@@ -1463,4 +1868,107 @@ private final class RecordingActionProbe {
 private enum RecordingPresentationTestError: Error {
     case timedOut
     case actionFailed
+}
+
+/// AppKit renders these real production views without ordering a window onscreen,
+/// moving the pointer, or requiring an unlocked session. The movie surface uses
+/// a native AVPlayerLayer, which AppKit's bitmap cache may omit; these artifacts
+/// audit the controls, progress states, text, spacing, and narrow layout.
+final class PreviewProcessingVisualSnapshotTests: XCTestCase {
+    @MainActor
+    func testProcessingReadyFailureAndReopenedLayouts() async throws {
+        let output = ProcessInfo.processInfo.environment["CLIP_PROCESSING_SNAPSHOT_DIRECTORY"].map {
+            URL(fileURLWithPath: $0, isDirectory: true)
+        } ?? FileManager.default.temporaryDirectory.appendingPathComponent("ClipProcessingVisualAudit", isDirectory: true)
+        try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
+        print("Clip processing visual audit: \(output.path)")
+        let media = output.appendingPathComponent("preview-fixture-\(UUID().uuidString).mp4")
+        defer { try? FileManager.default.removeItem(at: media) }
+        try await ProcessingVideoFixture.writeHEVC(to: media)
+        var records: [PreviewProcessingSnapshotRecord] = []
+        for mode in ["processing", "ready", "failed", "reopened", "trim-editing", "trim-saving"] {
+            for size in [CGSize(width: 820, height: 650), CGSize(width: 680, height: 520)] {
+                let recording = try PreviewRecording(id: .init(), sourceURL: media,
+                    duration: 2, pixelSize: .init(width: 1280, height: 720),
+                    filename: .init(validating: "Feature update.mp4"),
+                    trimRange: mode == "ready" || mode == "trim-editing"
+                        ? .init(startTime: 0, endTime: 2)
+                        : .init(startTime: 0.4, endTime: 1.6),
+                    approximateExportByteCount: 2_400_000)
+                let state: PreviewProcessingState?
+                switch mode {
+                case "processing":
+                    state = .init(options: .defaults, nativePixelSize: recording.pixelSize,
+                        phase: .processing, progress: 0.42)
+                case "ready", "trim-editing", "trim-saving":
+                    state = .init(options: .defaults, nativePixelSize: recording.pixelSize, phase: .ready)
+                case "failed":
+                    state = .init(options: .defaults, nativePixelSize: recording.pixelSize,
+                        phase: .failed, message: "The recording could not be processed. Try again or close this preview.")
+                default: state = nil
+                }
+                let actions = PreviewActions(export: { .init(outputURL: $0.sourceURL) },
+                    copy: { .init(outputURL: $0.sourceURL) }, save: { _ in nil }, retake: { _ in nil },
+                    done: { _ in }, delete: { _ in }, process: { _, recording, _ in recording },
+                    prepareExport: { request in
+                        try await Task.sleep(for: .seconds(5))
+                        return request.sourceURL
+                    })
+                let model = PreviewViewModel(recording: recording, actions: actions, processingState: state)
+                if mode.hasPrefix("trim-") { model.beginTrimEditing() }
+                if mode == "trim-saving" { model.saveTrim() }
+                let hosting = NSHostingController(rootView: AnyView(PreviewView(viewModel: model)
+                    .environment(\.colorScheme, .dark).transaction { $0.disablesAnimations = true }))
+                let window = NSWindow(contentRect: NSRect(origin: CGPoint(x: -10_000, y: -10_000), size: size),
+                    styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
+                window.isReleasedWhenClosed = false
+                window.appearance = NSAppearance(named: .darkAqua)
+                window.title = "Preview"
+                window.contentViewController = hosting
+                window.setContentSize(size)
+                defer {
+                    model.player.pause()
+                    window.orderOut(nil)
+                    window.contentViewController = nil
+                }
+                try await Task.sleep(for: .milliseconds(200))
+                hosting.view.layoutSubtreeIfNeeded()
+                hosting.view.displayIfNeeded()
+                let view = hosting.view
+                XCTAssertEqual(view.bounds.width, size.width, accuracy: 1)
+                XCTAssertEqual(view.bounds.height, size.height, accuracy: 1)
+                XCTAssertFalse(window.isVisible, "Visual audit must remain offscreen")
+                XCTAssertEqual(model.isBusy, mode == "processing" || mode == "failed" || mode == "trim-saving")
+                XCTAssertEqual(model.canClose, mode != "trim-saving", "A processing or failed preview must remain closable")
+                XCTAssertEqual(model.isEditingTrim, mode.hasPrefix("trim-"))
+                XCTAssertEqual(model.canShare, mode == "ready" || mode == "reopened")
+                XCTAssertEqual(model.processingState == nil, mode == "reopened")
+                let bitmap = try XCTUnwrap(view.bitmapImageRepForCachingDisplay(in: view.bounds))
+                view.cacheDisplay(in: view.bounds, to: bitmap)
+                let png = try XCTUnwrap(bitmap.representation(using: .png, properties: [:]))
+                XCTAssertGreaterThan(png.count, 10_000, "Preview snapshot is empty")
+                let filename = "preview-\(mode)-\(Int(size.width))x\(Int(size.height)).png"
+                try png.write(to: output.appendingPathComponent(filename), options: .atomic)
+                let attachment = XCTAttachment(data: png, uniformTypeIdentifier: "public.png")
+                attachment.name = filename
+                attachment.lifetime = .keepAlways
+                add(attachment)
+                records.append(.init(mode: mode, filename: filename, width: Int(size.width), height: Int(size.height),
+                    isBusy: model.isBusy, canClose: model.canClose, hasProcessingControls: model.processingState != nil))
+            }
+        }
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        try encoder.encode(records).write(to: output.appendingPathComponent("preview-snapshots.json"), options: .atomic)
+    }
+}
+
+private struct PreviewProcessingSnapshotRecord: Codable {
+    let mode: String
+    let filename: String
+    let width: Int
+    let height: Int
+    let isBusy: Bool
+    let canClose: Bool
+    let hasProcessingControls: Bool
 }

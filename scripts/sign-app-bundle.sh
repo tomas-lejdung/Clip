@@ -23,6 +23,7 @@ WEBRTC_FRAMEWORK="$APP/Contents/Frameworks/WebRTC.framework"
   || fail "Sparkle.framework is missing from the production app"
 [[ -d "$WEBRTC_FRAMEWORK" ]] \
   || fail "WebRTC.framework is missing from the Live Share build"
+"$ROOT/scripts/sign-recording-encoder.sh" "$APP"
 
 # Build a release entitlement plist from the checked-in source instead of
 # preserving Xcode's development signature. Apple Development builds inject
@@ -139,6 +140,7 @@ for COMPONENT in \
   "$AUTOUPDATE" \
   "$UPDATER" \
   "$SPARKLE_FRAMEWORK" \
+  "$APP/Contents/Helpers/ffmpeg" \
   "$APP/Contents/Frameworks/"*.framework \
   "$APP/Contents/Frameworks/"*.dylib; do
   [[ -e "$COMPONENT" ]] || continue

@@ -5,6 +5,7 @@ struct PreviewTimelineView: View {
     let trimStart: TimeInterval
     let trimEnd: TimeInterval
     let currentTime: TimeInterval
+    var isEditingTrim = false
     let onScrub: (TimeInterval) -> Void
     let onChangeTrimStart: (TimeInterval) -> Void
     let onChangeTrimEnd: (TimeInterval) -> Void
@@ -28,9 +29,11 @@ struct PreviewTimelineView: View {
                         .gesture(scrubGesture(width: width))
 
                     Rectangle()
-                        .fill(Color.accentColor.opacity(0.2))
+                        .fill(Color.accentColor.opacity(isEditingTrim ? 0.28 : 0.55))
                         .frame(width: max(0, endX - startX), height: 30)
                         .offset(x: startX)
+                        .frame(width: width, height: 30, alignment: .leading)
+                        .clipShape(Capsule())
                         .allowsHitTesting(false)
 
                     Rectangle()
@@ -40,13 +43,15 @@ struct PreviewTimelineView: View {
                         .position(x: playheadX, y: 15)
                         .allowsHitTesting(false)
 
-                    trimHandle(systemImage: "chevron.right", isLeading: true)
-                        .position(x: startX, y: 15)
-                        .highPriorityGesture(startHandleGesture(width: width))
+                    if isEditingTrim {
+                        trimHandle(systemImage: "chevron.right", isLeading: true)
+                            .position(x: startX, y: 15)
+                            .highPriorityGesture(startHandleGesture(width: width))
 
-                    trimHandle(systemImage: "chevron.left", isLeading: false)
-                        .position(x: endX, y: 15)
-                        .highPriorityGesture(endHandleGesture(width: width))
+                        trimHandle(systemImage: "chevron.left", isLeading: false)
+                            .position(x: endX, y: 15)
+                            .highPriorityGesture(endHandleGesture(width: width))
+                    }
                 }
             }
             .frame(height: 30)
@@ -124,6 +129,7 @@ struct PreviewTimelineView: View {
         .frame(width: 18, height: 34)
         .contentShape(Rectangle())
         .accessibilityLabel(isLeading ? "Trim start" : "Trim end")
+        .accessibilityIdentifier(isLeading ? "clip.preview.trimStart" : "clip.preview.trimEnd")
         .accessibilityValue(
             PreviewTimecodeFormatter.string(from: isLeading ? trimStart : trimEnd)
         )

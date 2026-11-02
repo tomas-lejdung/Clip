@@ -638,15 +638,14 @@ Clip remembers:
 - Audio settings.
 - Click-highlight visibility.
 - Frame-rate preference.
-- Export preset.
+- Last successful first-preview resolution and CRF, plus the next capture bitrate.
 
 The floating Preview remains visible when Clip deactivates or Capture Mode
 starts. A Preview that is already open does not block a new selection or
-recording and is not closed when capture begins. After the new recording has
-been safely imported, Clip persists and replaces the old Preview. If the old
-Preview is still completing Copy, Save As, or another operation, the new
-recording remains safe in History and Clip reports that Preview opening was
-deferred; it must never report that the completed recording failed.
+recording. Completed capture and processing jobs remain durable while Clip
+finishes the previous Preview. Before replacing a first Preview, Clip commits
+its complete processed Source and non-destructive edits. A deferred Preview
+must never be reported as a failed recording.
 
 Choosing **Quit Clip** immediately closes the popover and all Clip-owned
 windows and overlays, removes the menu-bar item, stops UI-producing background
@@ -886,9 +885,10 @@ The MVP uses the current system-default microphone input device. Settings may sh
 
 Explicit microphone-device selection may be added later.
 
-When both microphone and system audio are enabled, the managed recording master
-retains the two source tracks independently. Drag, Copy, and Save As exports mix
-them into one broadly compatible AAC audio track. If an audio source becomes
+When both microphone and system audio are enabled, the temporary HEVC recording
+retains two independent tracks. Initial processing mixes them once into a
+compatible AAC track, preserving delayed starts and gaps as silence. Drag,
+Copy, and Save As preserve that processed audio or remove it without re-encoding video. If an audio source becomes
 unavailable, video recording continues with the remaining sources and Clip
 reports the change.
 
@@ -900,27 +900,21 @@ reports the change.
 
 The default recording configuration is:
 
-- MP4 container.
-- Hardware H.264 video when the selected native dimensions are supported;
-  otherwise an exact-size hardware HEVC managed master. Shared exports remain
-  H.264.
-- 30 frames per second.
-- Native capture dimensions derived from the selected pixel area; there is no
-  fixed 1,080p or 4K capture envelope.
-- Hardware-accelerated encoding.
-- A quality-based master using the current Crisp quality setting. The
-  default user-facing value is `98`, passed to VideoToolbox as `0.98`; Clip
-  does not set an average bitrate or hard data-rate limit.
-- SDR Rec.709 color for predictable sharing compatibility.
-- Cursor visible.
-- No audio unless enabled.
-- No webcam.
-- Click highlights off unless enabled.
-- No keystroke overlay.
+- MP4 container with hardware HEVC Main video at a 10 Mbps average target.
+- 30 frames per second, with optional 60 FPS in Settings.
+- Full captured backing pixels, including the display's macOS HiDPI scaling;
+  no fixed 1,080p or 4K capture envelope and no silent downscale.
+- SDR sRGB transfer with BT.709 primaries and matrix, normalized from the
+  capture buffer's actual color profile.
+- Cursor visible; audio and click highlights disabled unless enabled.
+- No webcam or keystroke overlay.
 
-An optional 60 FPS capture mode is available in settings. Every export preset
-preserves the recording's durable capture cadence and exact eligible sample
-timing; export never interpolates or deliberately decimates frames.
+On Stop, Clip processes the full recording to software x264 H.264 at CRF 24.
+Native resolution is the initial default. First Preview permits 75%, 50%, and
+25% scales and a CRF from 18 to 40; subsequent captures remember the most recent
+successful choices. Recording bitrate in Settings changes the next recording,
+not the already captured original. Processing preserves original frame timing
+rather than interpolating or deliberately decimating frames.
 
 ---
 
@@ -957,19 +951,37 @@ The preview contains:
 - Current time.
 - Total duration.
 - A simple timeline below the video preview.
-- Trim handles for the beginning and end.
-- An editable filename.
-- Quality-based size status.
-- Export preset.
+- **Trim** to reveal the range handles, with **Save Trim**, **Cancel**, and **Reset Trim** while editing.
+- An editable filename stem; Clip supplies the `.mp4` extension once.
+- Actual processed dimensions and size.
+- First-preview Resolution and CRF menus (18–40, default 24), grouped and aligned beneath their labels. Recording bitrate lives in Settings → Recording and applies to new recordings.
+- An enlarged native playback window, with fullscreen support.
 - A **Remove audio** switch when the recording contains audio.
 - Delete, Retake, Save As, and Copy actions below the timeline and export details.
 
 Dragging the video preview drags the current trimmed and exported MP4 as a file. The timeline itself remains dedicated to seeking and trimming and is not the file drag source.
 
-Before export, Preview says `Quality based — size varies` for every preset.
-After a successful Drag, Copy, or Save As operation, it shows the actual output
-size. Changing trim, preset, quality, or Remove audio clears the prior result
-until the next export; Clip does not present a predicted or guaranteed size.
+The window appears immediately after Stop and shows progress while finalizing,
+processing, and validating. Playback, trim, filename/audio edits, drag, Copy,
+Save As, and Retake remain disabled until the requested processed version is
+ready. Resolution and CRF menu selections process the retained HEVC
+original again. Progress uses native materials and honors Reduce Motion.
+
+Closing the first Preview commits the complete processed H.264 Source, then
+removes the temporary HEVC and other candidates. Trim and audio removal remain
+non-destructive metadata. Reopened Sources show their actual resolution and
+support trimming and sharing, with no resolution or CRF controls.
+
+The timeline normally hides the trim handles and shows the saved playable range
+in blue, with excluded portions still visible. Playback and seeking stay within
+that range. **Trim** opens a draft selection. **Save Trim** prepares the trimmed
+MP4 without recompression and shows progress before enabling Copy and drag;
+both reuse that prepared file. **Cancel**, closing Preview, or quitting discards
+an unsaved trim draft. The complete Source stays intact.
+
+The size shown is measured from a complete output. Changing trim or audio
+removal clears the previous export size until preparation completes; no file-size
+ceiling is promised by CRF.
 
 Example:
 
@@ -983,7 +995,7 @@ Example:
 │ 00:02                         00:24  │
 │                                     │
 │ clip-20260717-104218.mp4             │
-│ Crisp · Quality based — size varies │
+│ Native ▾   CRF 24       11.5 MB     │
 │                                     │
 │ Delete   Retake   Save As…   Copy   │
 └─────────────────────────────────────┘
@@ -1037,7 +1049,7 @@ Clip has two equally supported sharing actions: dragging the video preview and s
 ## Drag video
 
 Dragging the top video preview supplies an MP4 file using the current trim,
-export preset, editable filename, and Remove audio choice. The file can be
+editable filename and Remove audio choice. The file can be
 dropped into Finder or another application that accepts file drags. The drag
 payload advertises both the MPEG-4 representation and the resulting local file
 URL so Finder and browser upload targets can consume it directly. Every
@@ -1048,10 +1060,12 @@ generic name such as `MPEG-4 movie.mp4`.
 
 When **Copy** is selected, Clip:
 
-1. Applies the selected trim.
-2. Encodes or remuxes the recording as needed.
-3. Applies the recording's current Remove audio choice and produces a compact
-   MP4, with no audio track when removal is selected.
+1. Reuses the file prepared by **Save Trim** when its source generation, range,
+   filename, and audio choice still match.
+2. Otherwise copies the complete processed H.264 file or remuxes the selection,
+   without another quality-compression pass.
+3. Applies the recording's current Remove audio choice, with no audio track
+   when removal is selected.
 4. Places the resulting file URL on the macOS clipboard.
 5. Shows a completion confirmation.
 
@@ -1079,7 +1093,7 @@ Clip considers the operation successful when it has written a valid, readable MP
 ## Save As
 
 The user can save the exported recording to a chosen location. Save As uses the
-same trim, preset, filename, and Remove audio choice as Drag and Copy.
+same trim, filename, and Remove audio choice as Drag and Copy.
 
 The default filename format is:
 
@@ -1109,89 +1123,41 @@ After export or save, the user can reveal the file in Finder.
 
 ---
 
-# Export presets
+# Recording processing and sharing
 
-Clip exposes three independently configurable quality presets instead of
-bitrate, resolution, frame-rate, or target-size controls. Every preset keeps the
-managed master's native encoded dimensions, aspect ratio, durable capture
-cadence, H.264 High profile, Rec.709 color, and 128 kbps AAC export policy. The
-only user-controlled video-encoding parameter is quality. Hardware H.264
-receives that normalized value directly. For exact dimensions outside Apple's
-hardware H.264 envelope, its native software H.264 encoder does not support a
-quality property, so Clip maps the same value to a resolution/FPS-scaled soft
-average bitrate. It never adds a hard data-rate limit or target file size.
+Capture and sharing have separate jobs. Hardware HEVC records full backing
+pixels efficiently at a default 10 Mbps target. After Stop, software x264
+processes that original once to a compact H.264 MP4 suitable for GitHub, Slack,
+and ordinary native playback. The initial defaults are Native resolution and
+CRF 24. A 30–60-second demo under 25 MB is a goal, not a guaranteed limit;
+content, motion, dimensions, and CRF determine the final size.
 
-Settings presents each value as an independent integer from 1 through 100 and
-passes it to VideoToolbox on its normalized 0 through 1 scale. Clip does not
-reorder or constrain the three values. **Reset Quality Defaults** restores
-Crisp `98`, Compact `90`, and Smallest `70`.
+The first Preview provides a Resolution menu (Native, 75%, 50%, 25%) with pixel
+dimensions, and a CRF menu (18–40, default 24; lower retains more detail). Existing
+saved values outside that menu remain selectable. Native preserves
+all captured pixels; reduced sizes use Lanczos and even dimensions. Every
+reprocessing request reads the retained HEVC original. A prior H.264 candidate
+is never used as the input to another compression pass. Only validated,
+successful choices become the defaults for the next recording.
 
-An unchanged, full-duration Crisp export may atomically reuse the managed
-master byte-for-byte when its recorded quality and audio layout already match
-the requested output. Trimming, changing Crisp quality, audio mixing, or
-removing existing audio requires the native offline transcode path. Compact and
-Smallest are offline quality-based exports rather than source-reuse modes.
+Close commits the latest complete full-duration H.264 as the managed Source.
+The private original is deleted only after the Source and metadata are durable.
+Exports remain independent files in their own locations and never replace a
+Source. Reopening a Source permits restoring its full trim and audio, but
+cannot recover resolution or detail discarded during initial processing.
 
-## Compact
+Full-duration, unchanged exports are independent byte-for-byte copies. Trim
+and audio-removal exports use native compressed passthrough and edit lists;
+they do not encode the video again. A non-keyframe trim must display the
+selected first frame, preserve its pixels, and maintain audio alignment.
+Existing recordings remain readable and use the same copy/remux export path.
+Old Apple 0–100 quality values are not interpreted as CRF.
 
-Middle quality rung for ordinary sharing.
-
-Designed for:
-
-- Slack.
-- GitHub.
-- Linear.
-- Short product demos.
-- Bug reports.
-
-Behavior:
-
-- Preserves the managed master's native dimensions and durable cadence.
-- Uses H.264 High profile at the independently configurable quality value;
-  default `90` (`0.90` internally).
-- Uses direct VideoToolbox quality when hardware H.264 supports the exact
-  dimensions; otherwise uses the native software encoder's derived soft
-  average-bitrate fallback without a hard limit.
-- Uses offline quality-oriented encoding.
-
----
-
-## Crisp
-
-Designed for recordings where fine interface detail matters.
-
-Default preset.
-
-Behavior:
-
-- Preserves the managed master's native dimensions and durable cadence.
-- Uses H.264 High profile at the independently configurable quality value;
-  default `98` (`0.98` internally).
-- Uses direct VideoToolbox quality when hardware H.264 supports the exact
-  dimensions; otherwise uses the native software encoder's derived soft
-  average-bitrate fallback without a hard limit.
-- Reuses a compatible untrimmed master byte-for-byte instead of introducing a
-  second lossy encode.
-- Otherwise uses offline quality-oriented encoding.
-
----
-
-## Smallest
-
-Lowest default quality rung for smaller ordinary sharing files.
-
-Behavior:
-
-- Preserves the managed master's native dimensions and durable cadence.
-- Uses H.264 High profile at the independently configurable quality value;
-  default `70` (`0.70` internally).
-- Uses direct VideoToolbox quality when hardware H.264 supports the exact
-  dimensions; otherwise uses the native software encoder's derived soft
-  average-bitrate fallback without a hard limit or target file size.
-- Uses offline quality-oriented encoding.
-
-Smallest is a relative preset name, not a promise that an export will fit a
-particular upload limit. Content complexity determines the resulting size.
+The temporary original and generation journal survive interrupted processing.
+Failed processing never deletes the previous valid result. Close, Quit, and
+startup recovery share a durable commit boundary. External deletion of a
+session or its journal must not trap the window in a loading state; remaining
+recoverable media is retained and a completely empty session can close.
 
 ---
 
@@ -1224,7 +1190,7 @@ The full History window uses native **Recordings** and **Exports** tabs.
 Recordings show any still-live Copy or drag exports linked to that source as
 compact chips below the row; each chip can be revealed in Finder or deleted.
 The Exports tab inventories every still-live Copy and drag export, shows its
-quality, size, and source relationship, and supports Reveal, individual Delete,
+dimensions, size, and source relationship, and supports Reveal, individual Delete,
 and Delete All. If the source recording has been removed, its export remains in
 the Exports tab with a visible **Source deleted** state and is no longer shown
 under a recording row.
@@ -1243,15 +1209,15 @@ Retention options:
 - 7 days.
 - 30 days.
 - Keep indefinitely.
-- Do not retain recordings after export.
 
 Clip should clearly show how much storage its history is using.
 
 ## History storage model
 
-- A history item is created when a recording successfully stops.
-- Clip keeps the managed original plus non-destructive trim, preset, filename,
-  and per-recording Remove audio metadata.
+- A durable processing session is created after Stop. Closing its first Preview
+  commits the complete processed Source to History.
+- Clip keeps that full Source plus non-destructive trim, filename, audio-removal
+  metadata, and the recorded processing recipe.
 - Copy and drag create managed temporary exports.
 - Save As creates an independent external file that Clip never deletes.
 - Only exports actually published by Copy or drag appear in the Exports tab;
@@ -1262,8 +1228,6 @@ Clip should clearly show how much storage its history is using.
   ownership-aware seven-day cache cleanup.
 - Cleanup age is based on recording creation time.
 - The history location is fixed under Application Support and can be revealed but not relocated.
-- **Keep original recording after export** defaults to On. When Off, Clip replaces the managed master with the trimmed exported result after a successful export and records that replacement's quality separately from the original Retake settings.
-- **Do not retain recordings after export** removes the history item after successful Copy, drag, or Save As while keeping clipboard and drag temporary files available long enough for their receiving application to consume them.
 
 ---
 
@@ -1331,16 +1295,11 @@ retarget an active session.
 
 ## Export
 
-- Default export preset.
-- Independent integer quality values from 1 through 100 for Crisp, Compact,
-  and Smallest, each shown in a clearly bordered single-line numeric field.
-- Reset Quality Defaults, restoring `98`, `90`, and `70` respectively.
 - Default filename format in a clearly bordered editable field. The editor contains only
   the filename template stem; a fixed, non-editable `.mp4` suffix is shown beside it and
   appended automatically. The field's accessible label must not also render as duplicate
   visible prompt text.
 - Automatically close preview after copying.
-- Keep original recording after export.
 - Default Save As location.
 
 ---
@@ -1386,10 +1345,10 @@ Each permission should include a button that opens the relevant macOS System Set
 - Live Share Prioritize Focused Window: On.
 - Live Share Auto-share Focused Windows: Off.
 - History retention: 7 days.
-- Export preset: Crisp.
-- Export qualities: Crisp `98`, Compact `90`, Smallest `70`.
+- First-preview resolution: Native (full captured backing pixels).
+- Initial processing CRF: 24.
+- Capture bitrate: 10 Mbps HEVC.
 - Automatically close preview after Copy: Off.
-- Keep original after export: On.
 - Default Save As location: `~/Movies`.
 - Canonical/output filename format: `clip-YYYYMMDD-HHmmss.mp4`; the Settings editor shows
   `clip-YYYYMMDD-HHmmss` with the protected `.mp4` suffix beside it.
@@ -1459,8 +1418,9 @@ Clip should target:
 - Recording beginning immediately after the countdown.
 - Minimal CPU use while idle.
 - Hardware-accelerated capture and encoding.
-- Preview available in under one second after recording stops.
-- Always-offline Compact-90 exports usually completing in under two seconds for a 30-second, 1440 × 900, 30 FPS fixture on the development Mac.
+- Preview shell visible immediately after Stop, with progress until processing completes.
+- Stop-to-ready processing under ten seconds for the defined 30-second, 1,440 × 900, 30 FPS synthetic fixture on the development Mac.
+- Independent copy export of that processed fixture under two seconds.
 - Trim timing accurate to within one frame.
 - Audio and video synchronization within 50 milliseconds, including across pause and resume.
 - A ten-minute real recording soak test plus longer synthetic state and writer tests.
@@ -1548,57 +1508,61 @@ Used for:
 
 ## Video and audio
 
-- AVFoundation.
-- AVAssetWriter for MP4 muxing and AAC audio encoding.
-- AVPlayer.
-- VideoToolbox for direct hardware H.264/HEVC master encoding and native H.264
-  export controls.
-- Native hardware H.264/HEVC master encoding and H.264/AAC sharing only; Clip
-  does not bundle or invoke FFmpeg or another media binary.
+- AVFoundation and AVPlayer for native inspection, playback, and trim/remux.
+- VideoToolbox for hardware HEVC capture.
+- AVAssetWriter for passthrough HEVC muxing and AAC capture tracks.
+- An app-bundled, signed, standalone FFmpeg 8.0 / x264 r3222 helper for initial
+  H.264 processing. No Homebrew, Python, runtime download, or network protocol
+  is required. The helper inherits the app sandbox and links only system dylibs.
 
-### Capture-quality contract
+### Capture contract
 
-- Capture Area and Capture App rectangles are snapped to the display's physical-pixel grid. One exact even-sized geometry is used for the ScreenCaptureKit source rectangle, stream output, video encoder, History metadata, and MP4 dimensions.
-- Every complete incoming video pixel buffer is checked against the configured width and height before encoding. A mismatch stops with a visible recording error; Clip never silently rescales a capture frame.
-- Raw ScreenCaptureKit pixel buffers are transient. They are submitted directly to a `VTCompressionSession`; Clip retains at most the latest frame in memory for bounded cadence repair and stores only compressed H.264 or HEVC MP4 media.
-- The live master encoder uses H.264 High or HEVC Main profile,
-  `RealTime = true`, the current Crisp quality setting (default `0.98`),
-  quality-over-speed priority, no average bitrate or hard data-rate limit, no
-  frame reordering, and a two-second keyframe interval.
-- Clip requires hardware encoding for live capture. It prefers H.264 when
-  VideoToolbox supports the exact native dimensions and falls back to
-  exact-size hardware HEVC when H.264 rejects an oversized mode such as a
-  5,120-pixel-wide display. Clip never uses a software encoder for real-time
-  capture and never downscales this fallback.
-- AVAssetWriter receives VideoToolbox's compressed H.264 or HEVC samples through a passthrough input and only muxes them with native AAC audio into MP4; it does not perform another video encode.
-- Brief encoder or muxer pressure is bounded and queued. Sustained pressure or a VideoToolbox-dropped frame ends capture with an error instead of silently creating a cadence gap.
-- A short complete-frame delivery gap above two and no more than three nominal frame intervals is bridged with one held copy of the prior frame at the next nominal timestamp. Every original sample timestamp and duration remains unchanged; longer ordinary gaps remain native variable-frame-rate timing, while an excessive first-post-resume gap is a visible error.
+- One exact even-sized geometry derived from the display's ScreenCaptureKit
+  backing scale is used for source rectangle, stream output, encoder, and MP4.
+- Each complete incoming buffer is checked for the configured dimensions.
+  Unexpected geometry fails visibly; capture never silently resizes frames.
+- The buffer's actual color profile is normalized to sRGB without changing
+  dimensions. Unknown color profiles are rejected instead of relabeled.
+- HEVC Main uses hardware acceleration, real-time encoding, a default 10 Mbps
+  average target, no frame reordering, and a two-second keyframe interval.
+  Unsupported hardware geometry fails clearly rather than switching to 1×.
+- VideoToolbox-compressed samples pass through AVAssetWriter unchanged, alongside
+  native AAC tracks. Raw pixel buffers are transient; at most the latest frame
+  is retained for bounded cadence repair and the final static hold.
+- Brief encoder pressure is bounded; sustained pressure or dropped frames fail
+  visibly. Pause time is removed from video and audio. Static content retains
+  its final Stop boundary, including after a pause/resume sequence.
+- A 60,000-tick MP4 clock preserves 30/60 FPS exactly and supports long static
+  sample durations without overflowing the container's sample delta field.
 
-### Export-quality contract
+### Processing and export contract
 
-- An unchanged full-duration Crisp export with compatible audio reuses a
-  compatible H.264 managed master byte-for-byte. An HEVC managed master is
-  transcoded offline so every shared export remains H.264.
-- Crisp, Compact, and Smallest otherwise encode offline with their independent
-  Settings quality values (defaults `0.98`, `0.90`, and `0.70`), frame
-  reordering enabled, and no hard data-rate limit. Hardware-supported H.264
-  uses VideoToolbox quality directly. Exact oversized software H.264 maps the
-  same quality value to a soft average bitrate because Apple's encoder rejects
-  the quality property at those dimensions.
-- All three presets preserve native dimensions and the durable per-recording
-  30/60 FPS cadence ceiling. Exact eligible sample timestamps are preserved; a
-  measured variable rate such as 28.29 FPS is never rounded down into an
-  accidental 28 FPS export.
-- Trim, audio mixing, and audio removal are applied in one export generation.
-- Every transcoded export uses the same 128 kbps AAC policy when audio is kept.
-- Before every export, Preview says `Quality based — size varies`; after a
-  successful share it shows the actual file size.
+- Stop triggers hardware HEVC decode and software x264 encoding with `veryfast`,
+  four threads, CRF 24 by default, no B-frames, one reference frame, High profile,
+  4:2:0 pixels, and MP4 fast start. Native has no resize filter; reduced choices
+  use Lanczos. Original timestamps and the final sample duration are preserved
+  within one output timebase tick.
+- Preserve SDR transfer/primaries/matrix. A single AAC track passes through;
+  multiple tracks are aligned by timestamps and mixed once to 128 kbps AAC.
+- Inspect source and candidate natively, require dimensions, sample count,
+  duration, codec, audio count, and color to match the recipe, and decode the
+  first and last frames before publishing the candidate atomically.
+- Cancellation terminates and waits for the helper before removing partial
+  output. It never removes the original or an already complete result.
+- Closing first Preview persists the full untrimmed processed Source with its
+  recipe and metadata. Only then are its private original and candidates deleted.
+- Full unchanged exports independently copy bytes. Trim or mute uses AVFoundation
+  compressed passthrough with native first-frame and duration validation.
+  Ordinary sharing never changes resolution, CRF, or Source ownership.
+- Reopened Sources have no processing controls. Existing Sources remain readable;
+  no compatibility branch recreates removed quality-preset encoders.
 
 ## Persistence
 
 - Versioned JSON under Application Support for user preferences, with atomic replacement and backward-compatible defaults.
 - Versioned JSON metadata for the initial recording-history index.
-- Managed recording masters and metadata under Application Support.
+- Managed processed Sources, capture staging, unfinished processing jobs, and
+  atomic journals under Application Support.
 - Temporary clipboard, drag, and intermediate export files under Caches.
 
 SQLite is not required for the MVP unless the recording-history model grows significantly.
@@ -1607,8 +1571,7 @@ SQLite is not required for the MVP unless the recording-history model grows sign
 
 - Swift Package Manager.
 
-Runtime dependencies are deliberately limited to two audited Swift Package
-boundaries:
+The two audited Swift Package runtime boundaries are:
 
 - Sparkle 2, pinned exactly for update discovery, download, verification,
   installation, and relaunch.
@@ -1618,10 +1581,12 @@ boundaries:
   congestion control, Opus system-audio transport, and hardware-H.264 plus
   software-VP8/VP9/AV1 native mesh transport.
 
-WebRTC is a media-transport runtime, not Clip's recording/export encoder. Clip
-still bundles no FFmpeg, libx264, or helper media executable. Test-only
-dependencies should be avoided unless they materially improve deterministic
-verification. Publishable DMGs resolve Sparkle and the reviewed WebRTC binary
+WebRTC is a media-transport runtime. Recording processing uses the separate
+static FFmpeg/x264 executable built from pinned, checksummed upstream sources.
+Its exact source archives, build recipe, GPL notices, and licenses ship inside
+the app. Packaging verifies its architecture, inherited sandbox entitlements,
+signature, system-only dependencies, and payload/source provenance. Test-only
+dependencies should be avoided unless they improve deterministic verification. Publishable DMGs resolve Sparkle and the reviewed WebRTC binary
 in a fresh isolated package cache, compare the embedded WebRTC payload with
 that artifact, and include complete third-party notices; ignored development
 package state is not accepted as release provenance.
@@ -1781,12 +1746,14 @@ A separate Homebrew tap can be added later if needed.
 - The owner performs the required one-time Screen Recording, System Audio, and Microphone approvals. Test runs after approval should be unattended.
 - Multi-display topology, display disconnection, and deterministic loopback-audio cases are simulated when the necessary hardware is unavailable.
 - There is no automated Slack, GitHub, Linear, Discord, Messages, or Mail integration suite. A local receiver and Finder validate file drag and clipboard contracts; an agent-driven check in an explicitly authorized application may be performed without sending content.
-- There is no dedicated accessibility or human subjective visual-quality audit for this personal local release. Deterministic screen-content fidelity is automated with small text, one-pixel rules, saturated edges, scrolling, and 30/60 FPS motion.
-- Automated acceptance at the default `98`/`90`/`70` values requires no
-  scaling, master luma SSIM of at least 0.985 with at least 95% edge retention,
-  Crisp SSIM of at least 0.98 with at least 92% edge retention, Compact-90 SSIM
-  of at least 0.96 with at least 85% edge retention, and no video gap beyond
-  two frame intervals.
+- The owner approved the HEVC 10 Mbps → H.264 CRF 24 prototype visually. Automated
+  production tests verify native geometry, timing, color metadata, native
+  decoding, scale choices, long static holds, and delayed/gapped audio content.
+  These tests do not establish a subjective sharpness score for every display.
+- Exports must preserve source bytes for full copies and displayed pixels for
+  non-keyframe/fractional trims. Cancellation, external deletion, atomic commit,
+  startup recovery, and independent clipboard/drag ownership require regression
+  coverage. No old 0–100 preset or SSIM ladder remains as an acceptance gate.
 - A fresh-account privacy grant cannot be automated through supported macOS behavior.
 - Clipboard and drag temporary files must remain available long enough for receiving applications to consume them and therefore cannot be removed immediately after export.
 - The two-second export goal applies only to the defined performance fixture, not arbitrary native-resolution 5K/60 FPS recordings.
@@ -1822,9 +1789,10 @@ A separate Homebrew tap can be added later if needed.
 - Editable timestamp-based filename.
 - Rename in Preview and History.
 - Non-destructive Remove audio in Preview, persisted for History and exports.
-- Compact MP4 export.
-- Crisp export preset.
-- Smallest export preset.
+- Automatic HEVC-to-H.264 processing with progress.
+- Native, 75%, 50%, and 25% first-preview resolution choices and CRF control.
+- Enlarged playback with native fullscreen.
+- Complete processed Sources with reversible trims and audio removal.
 - Drag the exported MP4 from the video preview.
 - Explicit Copy button that places the MP4 file on the clipboard.
 - Save As.
@@ -2029,7 +1997,8 @@ The local release uses free Personal Team ID `FJ2BS65H3F`. It is not a Developer
 - Implement rectangular selection.
 - Implement application selection and all-visible-window application capture.
 - Add Last Area.
-- Write H.264 MP4 output.
+- Capture native pixels to temporary hardware HEVC MP4.
+- Process once to the final H.264 Source with the bundled encoder.
 - Add recording controls.
 
 ## Phase 3 — Preview and sharing
@@ -2042,7 +2011,8 @@ The local release uses free Personal Team ID `FJ2BS65H3F`. It is not a Developer
 - Make the top video preview the exported-file drag source.
 - Add Copy.
 - Add Save As.
-- Add export presets.
+- Add first-preview resolution and CRF, processing progress, and enlarged playback.
+- Commit the full processed Source on Close and recover interrupted sessions.
 
 ## Phase 4 — Audio and history
 

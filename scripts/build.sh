@@ -54,6 +54,8 @@ if [[ -n "$PACKAGE_CACHE" ]]; then
   )
 fi
 
+"$ROOT/scripts/build-recording-encoder.sh"
+
 xcodebuild \
   -project "$ROOT/Clip.xcodeproj" \
   -scheme Clip \
@@ -66,6 +68,9 @@ xcodebuild \
   CURRENT_PROJECT_VERSION="$CLIP_BUILD_VERSION" \
   "${XCODE_SIGNING_ARGUMENTS[@]}" \
   clean build
+
+"$ROOT/scripts/verify-recording-encoder.sh" \
+  "$DERIVED_DATA/Build/Products/$CONFIGURATION/Clip.app"
 
 # Xcode preserves independently signed binary-package frameworks. Under
 # Hardened Runtime that can leave their Team ID different from Clip's and dyld

@@ -359,6 +359,22 @@ struct SettingsView: View {
                 Text("30 FPS").tag(CaptureFrameRate.thirty)
                 Text("60 FPS").tag(CaptureFrameRate.sixty)
             }
+            Section {
+                LabeledContent("Recording bitrate") {
+                    HStack(spacing: 8) {
+                        Text("\(model.settings.recordingProcessing.captureBitrateMbps) Mbps")
+                            .monospacedDigit()
+                        Stepper("Recording bitrate", value: recordingBitrateBinding,
+                                in: RecordingProcessingOptions.captureBitrateRange)
+                            .labelsHidden()
+                            .fixedSize()
+                            .accessibilityValue("\(model.settings.recordingProcessing.captureBitrateMbps) Mbps")
+                            .accessibilityIdentifier("clip.settings.recording.bitrate")
+                    }
+                }
+            } footer: {
+                Text("Target bitrate for new recordings. Higher values preserve more motion detail and use more temporary storage.")
+            }
             Picker("Silent countdown", selection: setting(\.countdown)) {
                 Text("Off").tag(CountdownDuration.off)
                 Text("1 second").tag(CountdownDuration.oneSecond)
@@ -727,39 +743,6 @@ struct SettingsView: View {
 
     private var export: some View {
         Form {
-            Picker("Default preset", selection: exportPresetBinding) {
-                Text("Crisp").tag(ExportPreset.crisp)
-                Text("Compact").tag(ExportPreset.compact)
-                Text("Smallest").tag(ExportPreset.smallest)
-            }
-
-            Section {
-                exportQualityRow(
-                    "Crisp",
-                    preset: .crisp,
-                    accessibilityIdentifier: "clip.settings.export.quality.crisp"
-                )
-                exportQualityRow(
-                    "Compact",
-                    preset: .compact,
-                    accessibilityIdentifier: "clip.settings.export.quality.compact"
-                )
-                exportQualityRow(
-                    "Smallest",
-                    preset: .smallest,
-                    accessibilityIdentifier: "clip.settings.export.quality.smallest"
-                )
-                Button("Reset Quality Defaults") {
-                    Task { @MainActor in
-                        await model.update { $0.exportQualities = .defaults }
-                    }
-                }
-                .accessibilityIdentifier("clip.settings.export.quality.reset")
-            } header: {
-                Text("Video quality")
-            } footer: {
-                Text("Each preset uses its own H.264 quality value from 1 through 100. File size varies with the recording.")
-            }
             Section {
                 LabeledContent("Default filename format") {
                     HStack(spacing: 8) {
@@ -810,7 +793,6 @@ struct SettingsView: View {
                 "Close Preview after explicit Copy",
                 isOn: setting(\.automaticallyClosePreviewAfterCopy)
             )
-            Toggle("Keep original recording after export", isOn: setting(\.keepOriginalAfterExport))
             LabeledContent("Default Save As folder") {
                 HStack {
                     Text(model.settings.defaultSaveDirectory.path(percentEncoded: false))
@@ -847,8 +829,6 @@ struct SettingsView: View {
                 Text("7 days").tag(HistoryRetentionPolicy.sevenDays)
                 Text("30 days").tag(HistoryRetentionPolicy.thirtyDays)
                 Text("Indefinitely").tag(HistoryRetentionPolicy.indefinitely)
-                Text("Remove after export or share")
-                    .tag(HistoryRetentionPolicy.doNotRetainAfterExport)
             }
             LabeledContent("Managed history") {
                 HStack {
@@ -979,6 +959,16 @@ struct SettingsView: View {
                 .accessibilityIdentifier("clip.settings.permission.\(permission.accessibilityName)")
             }
         }
+    }
+
+    private var recordingBitrateBinding: Binding<Int> {
+        Binding(
+            get: { model.settings.recordingProcessing.captureBitrateMbps },
+            set: { value in
+                guard RecordingProcessingOptions.captureBitrateRange.contains(value) else { return }
+                model.updateImmediately { $0.recordingProcessing.captureBitrateMbps = value }
+            }
+        )
     }
 
     private func setting<Value: Sendable>(
@@ -1212,63 +1202,6 @@ struct SettingsView: View {
                 }
             }
         )
-    }
-
-    private var exportPresetBinding: Binding<ExportPreset> {
-        Binding(
-            get: { model.settings.exportConfiguration.preset },
-            set: { preset in
-                Task { @MainActor in
-                    await model.update { $0.exportConfiguration.preset = preset }
-                }
-            }
-        )
-    }
-
-    private func exportQualityBinding(for preset: ExportPreset) -> Binding<Int> {
-        Binding(
-            get: { model.settings.exportQualities.quality(for: preset) },
-            set: { requestedQuality in
-                let quality = requestedQuality.clamped(to: ExportQualitySettings.validRange)
-                Task { @MainActor in
-                    await model.update { settings in
-                        switch preset {
-                        case .crisp:
-                            settings.exportQualities.crisp = quality
-                        case .compact:
-                            settings.exportQualities.compact = quality
-                        case .smallest:
-                            settings.exportQualities.smallest = quality
-                        }
-                    }
-                }
-            }
-        )
-    }
-
-    private func exportQualityRow(
-        _ title: LocalizedStringKey,
-        preset: ExportPreset,
-        accessibilityIdentifier: String
-    ) -> some View {
-        let binding = exportQualityBinding(for: preset)
-        return LabeledContent {
-            HStack(spacing: 8) {
-                TextField("", value: binding, format: .number)
-                    .labelsHidden()
-                    .textFieldStyle(.roundedBorder)
-                    .multilineTextAlignment(.trailing)
-                    .frame(width: 56)
-                    .accessibilityLabel(Text(title))
-                    .accessibilityIdentifier(accessibilityIdentifier)
-                Stepper("", value: binding, in: ExportQualitySettings.validRange)
-                    .labelsHidden()
-            }
-        } label: {
-            Text(title)
-                .lineLimit(1)
-                .fixedSize(horizontal: true, vertical: false)
-        }
     }
 
     private var validatedFilenameTemplate: RecordingFilenameTemplate? {

@@ -224,18 +224,10 @@ final class CaptureSelectionController {
             }
 
             let displayID = CGDirectDisplayID(number.uint32Value)
-            let width = CGFloat(CGDisplayPixelsWide(displayID))
-            let height = CGFloat(CGDisplayPixelsHigh(displayID))
-            let fallbackPixelSize = CGSize(
-                width: screen.frame.width * screen.backingScaleFactor,
-                height: screen.frame.height * screen.backingScaleFactor
-            )
-            let pixelSize = width > 0 && height > 0
-                ? CGSize(width: width, height: height)
-                : fallbackPixelSize
-            let physicalScaleFactor = screen.frame.width > 0
-                ? pixelSize.width / screen.frame.width
-                : screen.backingScaleFactor
+            guard let geometry = CaptureSelectionGeometry.nativeDisplayGeometry(
+                pointSize: screen.frame.size,
+                backingScaleFactor: screen.backingScaleFactor
+            ) else { return nil }
 
             return ScreenContext(
                 screen: screen,
@@ -244,8 +236,8 @@ final class CaptureSelectionController {
                     displayID: displayID,
                     name: screen.localizedName,
                     frameInGlobalPoints: screen.frame,
-                    pixelSize: pixelSize,
-                    scaleFactor: physicalScaleFactor,
+                    pixelSize: geometry.pixelSize,
+                    scaleFactor: geometry.scaleFactor,
                     isMain: screen === NSScreen.main
                 )
             )

@@ -31,6 +31,7 @@ public enum AssetWriterSessionError: Error, Sendable {
     case cannotStartWriting(String)
     case appendFailed(String)
     case finishFailed(String)
+
 }
 
 /// Keeps real-time input backpressure separate from terminal writer failure.
@@ -277,7 +278,8 @@ public final class AssetWriterSession: @unchecked Sendable {
     public let outputURL: URL
 
     private let writer: AVAssetWriter
-    private let encoder: VideoToolboxVideoEncoder
+    private let encoder: VideoToolboxHEVCEncoder
+    private let pixelNormalizer: RecordingPixelNormalizer
     private let systemAudioInput: AVAssetWriterInput?
     private let microphoneInput: AVAssetWriterInput?
     private let defaultFrameDuration: CMTime
@@ -298,13 +300,17 @@ public final class AssetWriterSession: @unchecked Sendable {
     private var isEstablishingWriter = false
     private var firstTimelineTime: CMTime?
     private var pendingVideoResumeSourceTime: CMTime?
+    private var pendingVideoPauseOutputTime: CMTime?
     private var lastAppendedOutputTimes: [CapturedSampleKind: CMTime] = [:]
+    private var lastAudioEndTimes: [CapturedSampleKind: CMTime] = [:]
     /// Exactly one raw frame is retained transiently. It supplies the held
     /// image for a bounded cadence gap (including a resume seam), then is
     /// replaced by the next accepted original frame.
     private var retainedVideoFrame: RetainedVideoFrame?
     private var disabledAudioSources: Set<CapturedAudioSource> = []
     private var finishedAudioSources: Set<CapturedAudioSource> = []
+    private var finalSourceTime: CMTime?
+    private var pausedOutputBoundary: CMTime?
 
     public convenience init(
         outputURL: URL,
@@ -324,12 +330,17 @@ public final class AssetWriterSession: @unchecked Sendable {
     ) throws {
         self.outputURL = outputURL
         self.finalizationBarrier = finalizationBarrier
+        pixelNormalizer = try RecordingPixelNormalizer(width: configuration.width, height: configuration.height)
         do {
             writer = try AVAssetWriter(outputURL: outputURL, fileType: .mp4)
         } catch {
             throw AssetWriterSessionError.cannotCreateWriter(error.localizedDescription)
         }
         writer.shouldOptimizeForNetworkUse = true
+        // MP4 stores each sample delta in 32 bits. A nanosecond timebase
+        // overflows after a four-second static hold; 60 kHz preserves exact
+        // 30/60 Hz cadence and sub-frame capture timing across long gaps.
+        writer.movieTimeScale = 60_000
         defaultFrameDuration = CMTime(
             value: 1,
             timescale: CMTimeScale(configuration.framesPerSecond)
@@ -342,12 +353,12 @@ public final class AssetWriterSession: @unchecked Sendable {
             2.0 / Double(configuration.framesPerSecond)
         )
         do {
-            encoder = try VideoToolboxVideoEncoder(
+            encoder = try VideoToolboxHEVCEncoder(
                 configuration: .liveMaster(recording: configuration)
             )
         } catch {
             throw AssetWriterSessionError.cannotCreateEncoder(
-                Self.encoderErrorDescription(error)
+                "Hardware HEVC could not record \(configuration.width) × \(configuration.height) pixels. \(Self.encoderErrorDescription(error))"
             )
         }
 
@@ -458,7 +469,7 @@ public final class AssetWriterSession: @unchecked Sendable {
                     )
                 }
                 let sourceDuration = CMSampleBufferGetDuration(sampleBuffer)
-                let duration = sourceDuration.isValid && sourceDuration.isNumeric
+                let duration = sourceDuration.isNumeric && sourceDuration > .zero
                     ? sourceDuration
                     : defaultFrameDuration
                 admittedVideoAppendCount += 1
@@ -477,7 +488,7 @@ public final class AssetWriterSession: @unchecked Sendable {
         if let reason = prepared.reason {
             return .intentionallyDropped(reason)
         }
-        guard let pixelBuffer = prepared.pixelBuffer else {
+        guard let capturedPixelBuffer = prepared.pixelBuffer else {
             throw AssetWriterSessionError.appendFailed(
                 "The screen frame did not contain a pixel buffer."
             )
@@ -485,6 +496,7 @@ public final class AssetWriterSession: @unchecked Sendable {
         defer { completeAdmittedVideoAppend() }
 
         do {
+            let pixelBuffer = try pixelNormalizer.normalize(capturedPixelBuffer)
             guard try appendPendingCompressedVideo(), admittedVideoAppendIsPermitted() else {
                 return .intentionallyDropped(.sessionInactive)
             }
@@ -614,7 +626,17 @@ public final class AssetWriterSession: @unchecked Sendable {
                let resumeSourceTime = pendingVideoResumeSourceTime,
                sourceTime >= resumeSourceTime {
                 pendingVideoResumeSourceTime = nil
-                completesResumeCadenceSeam = true
+                // A display that was already static before Pause has a
+                // legitimate sparse gap. Do not misclassify that retained
+                // image's age as a failure to resume a moving capture.
+                if let pauseTime = pendingVideoPauseOutputTime,
+                   let lastVideoTime = lastAppendedOutputTimes[.video],
+                   pauseTime - lastVideoTime > liveVideoCadencePolicy.maximumFrameGap {
+                    completesResumeCadenceSeam = false
+                } else {
+                    completesResumeCadenceSeam = true
+                }
+                pendingVideoPauseOutputTime = nil
             } else {
                 completesResumeCadenceSeam = false
             }
@@ -688,7 +710,12 @@ public final class AssetWriterSession: @unchecked Sendable {
 
     public func pause(at sourceTime: CMTime) throws {
         try lock.withLock {
+            let boundary = timeline.outputTime(for: sourceTime)
             try timeline.pause(at: sourceTime)
+            pausedOutputBoundary = boundary
+            pendingVideoPauseOutputTime = boundary.flatMap { boundary in
+                firstTimelineTime.map { boundary - $0 }
+            }
             // A newer pause supersedes an unconsumed seam from an earlier
             // resume. Only the next successful resume may request completion.
             pendingVideoResumeSourceTime = nil
@@ -698,11 +725,23 @@ public final class AssetWriterSession: @unchecked Sendable {
     public func resume(at sourceTime: CMTime) throws {
         try lock.withLock {
             try timeline.resume(at: sourceTime)
+            pausedOutputBoundary = nil
             pendingVideoResumeSourceTime = sourceTime
         }
     }
 
     public func finish() async throws -> URL {
+        try await finishRecording(endingAt: nil)
+    }
+
+    /// ScreenRecorder passes the instant Stop was requested, before awaiting
+    /// stream teardown, so static content and a paused Stop retain exact time.
+    public func finish(at sourceTime: CMTime) async throws -> URL {
+        guard sourceTime.isNumeric else { throw AssetWriterSessionError.finishFailed("The recording stop time is invalid.") }
+        return try await finishRecording(endingAt: sourceTime)
+    }
+
+    private func finishRecording(endingAt sourceTime: CMTime?) async throws -> URL {
         let task = lock.withLock { () -> Task<URL, any Error>? in
             if let finalizationTask {
                 return finalizationTask
@@ -711,6 +750,7 @@ public final class AssetWriterSession: @unchecked Sendable {
                 return nil
             }
             finalizationState = .finishing
+            finalSourceTime = sourceTime
             lock.broadcast()
             let task = Task.detached { [self] in
                 try await performFinalization()
@@ -760,6 +800,7 @@ public final class AssetWriterSession: @unchecked Sendable {
         do {
             finalizationBarrier?()
             try waitForAdmittedVideoAppends()
+            let endTime = try appendFinalHeldFrameIfNeeded()
             let finalSamples = try encoder.completeFrames()
             guard try appendCompressedVideoSamples(finalSamples) else {
                 throw Self.finalizationCancelledError()
@@ -773,6 +814,7 @@ public final class AssetWriterSession: @unchecked Sendable {
                         "The video encoder produced no video samples."
                     )
                 }
+                if let endTime { writer.endSession(atSourceTime: endTime) }
                 videoInput.markAsFinished()
                 for source in CapturedAudioSource.allCases {
                     markAudioInputAsFinished(source)
@@ -858,6 +900,25 @@ public final class AssetWriterSession: @unchecked Sendable {
         }
     }
 
+    private func appendFinalHeldFrameIfNeeded() throws -> CMTime? {
+        try videoAppendLock.withLock {
+            let boundary = lock.withLock { () -> CMTime? in
+                guard let finalSourceTime, let firstTimelineTime,
+                      let output = timeline.outputTime(for: finalSourceTime) ?? pausedOutputBoundary else { return nil }
+                return output - firstTimelineTime
+            }
+            guard let boundary, let retainedVideoFrame else { return nil }
+            let end = max(boundary, retainedVideoFrame.presentationTime + defaultFrameDuration)
+            let tail = end - defaultFrameDuration
+            if tail > retainedVideoFrame.presentationTime {
+                guard admittedVideoAppendIsPermitted() else { throw Self.finalizationCancelledError() }
+                try encoder.encode(retainedVideoFrame.pixelBuffer, presentationTime: tail, duration: defaultFrameDuration)
+                guard try appendPendingCompressedVideo() else { throw Self.finalizationCancelledError() }
+            }
+            return end
+        }
+    }
+
     private func audioInput(for source: CapturedAudioSource) -> AVAssetWriterInput? {
         switch source {
         case .systemAudio: systemAudioInput
@@ -886,6 +947,10 @@ public final class AssetWriterSession: @unchecked Sendable {
         guard let retimed = try sampleBuffer.retimed(to: relativeOutputTime) else {
             return .intentionallyDropped(.optionalAudioInvalid)
         }
+        guard try appendAudioGapIfNeeded(before: relativeOutputTime, matching: retimed,
+                                         to: input, kind: kind) else {
+            return .intentionallyDropped(.optionalAudioBackpressure)
+        }
         guard try AssetWriterAppendReadiness.permitsAppend(
             writerStatus: writer.status,
             inputIsReady: input.isReadyForMoreMediaData
@@ -898,7 +963,70 @@ public final class AssetWriterSession: @unchecked Sendable {
             )
         }
         lastAppendedOutputTimes[kind] = relativeOutputTime
+        lastAudioEndTimes[kind] = relativeOutputTime + CMSampleBufferGetDuration(retimed)
         return .appended
+    }
+
+    /// AVAssetWriter's AAC encoder concatenates PCM across a timestamp gap.
+    /// Explicit zero samples preserve the missing interval without shifting
+    /// subsequent sound earlier. Initial late audio keeps its original offset.
+    /// Work and memory remain bounded; if the AAC input is pressured, the next
+    /// callback resumes filling from the last accepted silence sample.
+    private func appendAudioGapIfNeeded(before time: CMTime, matching sample: CMSampleBuffer,
+                                        to input: AVAssetWriterInput,
+                                        kind: CapturedSampleKind) throws -> Bool {
+        guard var end = lastAudioEndTimes[kind], end.isNumeric, time > end,
+              let description = sample.formatDescription,
+              let asbd = CMAudioFormatDescriptionGetStreamBasicDescription(description)?.pointee,
+              asbd.mFormatID == kAudioFormatLinearPCM,
+              asbd.mSampleRate.isFinite, asbd.mSampleRate >= 1,
+              asbd.mSampleRate <= Double(Int32.max) else { return true }
+        let rate = CMTimeScale(asbd.mSampleRate.rounded())
+        let frameDuration = CMTime(value: 1, timescale: rate)
+        // At most 64 small buffers per callback, never an allocation sized to
+        // an arbitrarily long interruption or a synchronous readiness wait.
+        for _ in 0..<64 {
+            let gap = CMTimeConvertScale(time - end, timescale: rate, method: .roundHalfAwayFromZero)
+            guard gap.value > 0 else { return true }
+            guard try AssetWriterAppendReadiness.permitsAppend(writerStatus: writer.status,
+                                                               inputIsReady: input.isReadyForMoreMediaData) else { return false }
+            let frames = Int(min(gap.value, 4_096))
+            let silence = try Self.silentAudioSample(format: description, frameCount: frames,
+                                                     time: end, frameDuration: frameDuration)
+            guard input.append(silence) else {
+                throw AssetWriterSessionError.appendFailed(
+                    writer.error?.localizedDescription ?? "The recording writer rejected an audio silence interval.")
+            }
+            lastAppendedOutputTimes[kind] = end
+            end = end + CMTime(value: CMTimeValue(frames), timescale: rate)
+            lastAudioEndTimes[kind] = end
+        }
+        return time - end < frameDuration
+    }
+
+    private static func silentAudioSample(format: CMAudioFormatDescription, frameCount: Int,
+                                          time: CMTime, frameDuration: CMTime) throws -> CMSampleBuffer {
+        let audioFormat = AVAudioFormat(cmAudioFormatDescription: format)
+        guard let buffer = AVAudioPCMBuffer(pcmFormat: audioFormat, frameCapacity: AVAudioFrameCount(frameCount)) else {
+            throw AssetWriterSessionError.appendFailed("The recording could not preserve an empty audio interval.")
+        }
+        buffer.frameLength = AVAudioFrameCount(frameCount)
+        for audioBuffer in UnsafeMutableAudioBufferListPointer(buffer.mutableAudioBufferList) {
+            if let data = audioBuffer.mData { memset(data, 0, Int(audioBuffer.mDataByteSize)) }
+        }
+        var timing = CMSampleTimingInfo(duration: frameDuration, presentationTimeStamp: time, decodeTimeStamp: .invalid)
+        var result: CMSampleBuffer?
+        let status = CMSampleBufferCreate(allocator: kCFAllocatorDefault, dataBuffer: nil, dataReady: false,
+            makeDataReadyCallback: nil, refcon: nil, formatDescription: format, sampleCount: frameCount,
+            sampleTimingEntryCount: 1, sampleTimingArray: &timing, sampleSizeEntryCount: 0,
+            sampleSizeArray: nil, sampleBufferOut: &result)
+        guard status == noErr, let result,
+              CMSampleBufferSetDataBufferFromAudioBufferList(result, blockBufferAllocator: kCFAllocatorDefault,
+                blockBufferMemoryAllocator: kCFAllocatorDefault, flags: 0, bufferList: buffer.audioBufferList) == noErr,
+              CMSampleBufferSetDataReady(result) == noErr else {
+            throw AssetWriterSessionError.appendFailed("The recording could not construct an empty audio interval.")
+        }
+        return result
     }
 
     private func appendPendingCompressedVideo() throws -> Bool {
@@ -963,6 +1091,7 @@ public final class AssetWriterSession: @unchecked Sendable {
                             sourceFormatHint: formatDescription
                         )
                         input.expectsMediaDataInRealTime = true
+                        input.mediaTimeScale = 60_000
                         guard writer.canAdd(input) else {
                             throw AssetWriterSessionError.cannotAddVideoInput
                         }
@@ -1019,7 +1148,7 @@ public final class AssetWriterSession: @unchecked Sendable {
 
     private static func encoderErrorDescription(_ error: Error) -> String {
         switch error {
-        case let error as VideoToolboxVideoEncoder.EncoderError:
+        case let error as VideoToolboxHEVCEncoder.EncoderError:
             switch error {
             case let .cannotCreate(status):
                 return "A hardware video encoder could not be created for this resolution (\(status))."

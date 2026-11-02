@@ -48,6 +48,7 @@ test -L "$MOUNT_ROOT/Applications" || fail "Applications shortcut is missing"
 APP="$MOUNT_ROOT/Clip.app"
 INFO="$APP/Contents/Info.plist"
 EXECUTABLE="$APP/Contents/MacOS/Clip"
+"$ROOT/scripts/verify-recording-encoder.sh" "$APP" "$DMG.provenance"
 
 codesign --verify --deep --strict --verbose=2 "$APP"
 plutil -lint "$INFO"

@@ -25,6 +25,8 @@ public struct ScreenRecordingRequest: Sendable {
     public var captureResolution: CaptureVideoResolution
     public var outputURL: URL
     public var configuration: RecordingConfiguration
+    /// Expected backing scale from capture selection; rejects unexpected resampling.
+    public var requiredNativeScale: Double?
 
     public init(
         sessionIdentifier: UUID = UUID(),
@@ -36,7 +38,8 @@ public struct ScreenRecordingRequest: Sendable {
         excludesCurrentProcessAudio: Bool = true,
         captureResolution: CaptureVideoResolution = .best,
         outputURL: URL,
-        configuration: RecordingConfiguration
+        configuration: RecordingConfiguration,
+        requiredNativeScale: Double? = nil
     ) {
         self.sessionIdentifier = sessionIdentifier
         self.displayID = displayID
@@ -48,6 +51,7 @@ public struct ScreenRecordingRequest: Sendable {
         self.captureResolution = captureResolution
         self.outputURL = outputURL
         self.configuration = configuration
+        self.requiredNativeScale = requiredNativeScale
     }
 }
 
@@ -305,6 +309,22 @@ enum ScreenVideoSampleDimensionError: Error, Equatable, LocalizedError, Sendable
     }
 }
 
+private struct ScreenVideoNativeScaleError: Error, LocalizedError {
+    var errorDescription: String? {
+        "Screen capture changed its native pixel scale. Recording stopped to avoid resampling the captured image."
+    }
+}
+
+enum ScreenVideoNativeScaleValidator {
+    static func validate(scaleFactor: Double?, contentScale: Double?, expected: Double) throws {
+        guard expected.isFinite, expected > 0,
+              let scaleFactor, scaleFactor.isFinite, abs(scaleFactor - expected) <= 0.000_001,
+              let contentScale, contentScale.isFinite, abs(contentScale - 1) <= 0.000_001 else {
+            throw ScreenVideoNativeScaleError()
+        }
+    }
+}
+
 /// ScreenCaptureKit and AVAssetWriter must agree on one exact native-pixel
 /// geometry. Rejecting a mismatch before append prevents AVFoundation from
 /// silently scaling a frame to the writer's configured dimensions.
@@ -393,6 +413,7 @@ private struct ScreenRecorderStopSnapshot {
     let stream: SCStream
     let writer: AssetWriterSession
     let terminationState: ScreenRecorderTerminationState
+    let stoppedAt: CMTime
 }
 
 public final class ScreenRecorder: NSObject, @unchecked Sendable {
@@ -402,7 +423,7 @@ public final class ScreenRecorder: NSObject, @unchecked Sendable {
     private let microphoneQueue = DispatchQueue(label: "com.tomaslejdung.clip.capture.microphone", qos: .userInitiated)
 
     private var stream: SCStream?
-    private var writer: AssetWriterSession?
+    private var writer: (AssetWriterSession)?
     private var request: ScreenRecordingRequest?
     private var terminationState = ScreenRecorderTerminationState()
     private var lifecycle = ScreenRecorderLifecycle()
@@ -425,7 +446,7 @@ public final class ScreenRecorder: NSObject, @unchecked Sendable {
             throw ScreenRecorderError.alreadyRecording
         }
 
-        var createdWriter: AssetWriterSession?
+        var createdWriter: (AssetWriterSession)?
         do {
             let content = try await SCShareableContent.excludingDesktopWindows(
                 false,
@@ -487,10 +508,7 @@ public final class ScreenRecorder: NSObject, @unchecked Sendable {
 
             let streamConfiguration = ScreenStreamConfigurationFactory.make(for: request)
 
-            let writer = try AssetWriterSession(
-                outputURL: request.outputURL,
-                configuration: request.configuration
-            )
+            let writer = try AssetWriterSession(outputURL: request.outputURL, configuration: request.configuration)
             createdWriter = writer
             try writer.start()
 
@@ -581,7 +599,7 @@ public final class ScreenRecorder: NSObject, @unchecked Sendable {
     }
 
     public func pause() throws {
-        guard let writer = lock.withLock({ () -> AssetWriterSession? in
+        guard let writer = lock.withLock({ () -> (AssetWriterSession)? in
             guard let identifier = request?.sessionIdentifier,
                   lifecycle.acceptsSamples(sessionIdentifier: identifier) else {
                 return nil
@@ -594,7 +612,7 @@ public final class ScreenRecorder: NSObject, @unchecked Sendable {
     }
 
     public func resume() throws {
-        guard let writer = lock.withLock({ () -> AssetWriterSession? in
+        guard let writer = lock.withLock({ () -> (AssetWriterSession)? in
             guard let identifier = request?.sessionIdentifier,
                   lifecycle.acceptsSamples(sessionIdentifier: identifier) else {
                 return nil
@@ -618,7 +636,8 @@ public final class ScreenRecorder: NSObject, @unchecked Sendable {
                 sessionIdentifier: identifier,
                 stream: stream,
                 writer: writer,
-                terminationState: self.terminationState
+                terminationState: self.terminationState,
+                stoppedAt: CMClockGetTime(CMClockGetHostTimeClock())
             )
             self.stream = nil
             self.writer = nil
@@ -650,10 +669,11 @@ public final class ScreenRecorder: NSObject, @unchecked Sendable {
             throw ScreenRecorderError.noVideoFrames
 
         case .finalize:
-            return try await snapshot.writer.finish()
+            let outputURL = try await snapshot.writer.finish(at: snapshot.stoppedAt)
+            return outputURL
 
         case let .finalizeRecoverableOutput(message):
-            let outputURL = try await snapshot.writer.finish()
+            let outputURL = try await snapshot.writer.finish(at: snapshot.stoppedAt)
             throw ScreenRecorderError.streamStoppedWithRecoverableOutput(
                 message,
                 outputURL
@@ -699,7 +719,8 @@ public final class ScreenRecorder: NSObject, @unchecked Sendable {
 
     private func reserveStart(sessionIdentifier: UUID) -> Bool {
         lock.withLock {
-            lifecycle.reserveStart(sessionIdentifier: sessionIdentifier)
+            let reserved = lifecycle.reserveStart(sessionIdentifier: sessionIdentifier)
+            return reserved
         }
     }
 
@@ -735,7 +756,7 @@ extension ScreenRecorder: SCStreamOutput {
         @unknown default:
             return
         }
-        let active = lock.withLock { () -> (AssetWriterSession, UUID, Int, Int)? in
+        let active = lock.withLock { () -> (AssetWriterSession, UUID, Int, Int, Double?)? in
             guard self.stream === stream,
                   let writer,
                   let request,
@@ -749,10 +770,11 @@ extension ScreenRecorder: SCStreamOutput {
                 writer,
                 request.sessionIdentifier,
                 request.configuration.width,
-                request.configuration.height
+                request.configuration.height,
+                request.requiredNativeScale
             )
         }
-        guard let (writer, sessionIdentifier, expectedWidth, expectedHeight) = active else {
+        guard let (writer, sessionIdentifier, expectedWidth, expectedHeight, requiredNativeScale) = active else {
             return
         }
         do {
@@ -763,6 +785,15 @@ extension ScreenRecorder: SCStreamOutput {
                     expectedWidth: expectedWidth,
                     expectedHeight: expectedHeight
                 )
+                if let requiredNativeScale {
+                    let attachments = CMSampleBufferGetSampleAttachmentsArray(sampleBuffer, createIfNecessary: false)
+                        as? [[SCStreamFrameInfo: Any]]
+                    try ScreenVideoNativeScaleValidator.validate(
+                        scaleFactor: (attachments?.first?[.scaleFactor] as? NSNumber)?.doubleValue,
+                        contentScale: (attachments?.first?[.contentScale] as? NSNumber)?.doubleValue,
+                        expected: requiredNativeScale
+                    )
+                }
             }
             let appendOutcome = try writer.appendClassified(sampleBuffer, kind: kind)
             let didAppend: Bool

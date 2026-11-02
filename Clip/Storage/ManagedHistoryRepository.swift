@@ -3,16 +3,13 @@ import ClipMedia
 import Foundation
 
 enum ManagedHistoryRepositoryError: Error, Equatable, Sendable {
+    case invalidRecoveredMedia(URL)
     case sourceIsNotARegularMP4(URL)
     case recordingAlreadyExists(RecordingID)
     case recordingNotFound(RecordingID)
     case managedDestinationAlreadyExists(URL)
     case unsupportedHistorySchema(found: Int, expected: Int)
-    case exportedFileRequiredToReplaceOriginal
-    case exportedVideoQualityRequiredToReplaceOriginal
-    case exportedMediaMetadataInvalid(URL)
     case managedPathEscapedRecordingsDirectory(String)
-    case managedMasterRollbackFailed(URL)
 }
 
 struct FinalizedRecordingImport: Sendable {
@@ -27,7 +24,9 @@ struct FinalizedRecordingImport: Sendable {
     let audioConfiguration: AudioConfiguration
     let captureTarget: ClipCore.CaptureTarget
     let captureSessionSnapshot: CaptureSessionSnapshot?
-    let exportConfiguration: ExportConfiguration
+    let processing: RecordingProcessingMetadata?
+    let trimRange: TrimRange?
+    let exportAudioPreference: ExportAudioPreference
 
     init(
         id: RecordingID = RecordingID(),
@@ -41,7 +40,9 @@ struct FinalizedRecordingImport: Sendable {
         audioConfiguration: AudioConfiguration,
         captureTarget: ClipCore.CaptureTarget,
         captureSessionSnapshot: CaptureSessionSnapshot? = nil,
-        exportConfiguration: ExportConfiguration = .crisp
+        processing: RecordingProcessingMetadata? = nil,
+        trimRange: TrimRange? = nil,
+        exportAudioPreference: ExportAudioPreference = .keepAudio
     ) {
         self.id = id
         self.sourceURL = sourceURL
@@ -54,7 +55,9 @@ struct FinalizedRecordingImport: Sendable {
         self.audioConfiguration = audioConfiguration
         self.captureTarget = captureTarget
         self.captureSessionSnapshot = captureSessionSnapshot
-        self.exportConfiguration = exportConfiguration
+        self.processing = processing
+        self.trimRange = trimRange
+        self.exportAudioPreference = exportAudioPreference
     }
 }
 
@@ -73,24 +76,13 @@ struct ManagedHistoryCleanupResult: Sendable {
     let cleanupFailures: [ManagedFileCleanupFailure]
 }
 
-struct ManagedHistoryExportResult: Sendable {
-    let disposition: HistoryPostExportDisposition
-    let retainedItem: RecordingHistoryItem?
-    let removedItem: RecordingHistoryItem?
-    let cleanupFailure: ManagedFileCleanupFailure?
-    /// True when an open Preview still owns the current master. The index has
-    /// already been updated as required, but destructive file work is delayed
-    /// until the last matching Preview session ends.
-    let finalizationDeferred: Bool
-}
-
 struct ManagedHistoryPreviewSession: Hashable, Sendable {
     let id: UUID
     let recordingID: RecordingID
 }
 
 struct ManagedHistoryPreviewCloseResult: Sendable {
-    let finalizedDisposition: HistoryPostExportDisposition?
+    let didFinalizeDeletion: Bool
     let retainedItem: RecordingHistoryItem?
     let cleanupFailure: ManagedFileCleanupFailure?
 }
@@ -150,16 +142,10 @@ actor ManagedHistoryRepository {
     private var cachedIndex: RecordingHistoryIndex?
     private var previewSessionIDsByRecording: [RecordingID: Set<UUID>] = [:]
     private var deferredFinalizations: [RecordingID: DeferredFinalization] = [:]
-    private var deferredStageSequence: UInt64 = 0
 
     private enum DeferredFinalization: Sendable {
         case remove(item: RecordingHistoryItem, masterURL: URL)
-        case replace(
-            stagedURL: URL,
-            metadata: RecordingMediaMetadata,
-            videoQualityPercent: Int,
-            exportedAt: Date
-        )
+
     }
 
     init(
@@ -207,9 +193,8 @@ actor ManagedHistoryRepository {
         return try managedURL(for: item.managedMaster)
     }
 
-    /// Pins a managed master for the lifetime of one Preview window. Export
-    /// policy can still remove its history row immediately; only destructive
-    /// file cleanup/replacement waits for the last session to close.
+    /// Pins a managed Source while Preview uses it. Explicit deletion and
+    /// retention cleanup wait for readers; sharing never replaces the Source.
     func beginPreviewSession(id: RecordingID) throws -> ManagedHistoryPreviewSession {
         guard try loadedIndex().item(id: id) != nil else {
             throw ManagedHistoryRepositoryError.recordingNotFound(id)
@@ -219,15 +204,13 @@ actor ManagedHistoryRepository {
         return session
     }
 
-    /// Atomically persists every editable Preview field. Removed-after-export
-    /// items remain editable only inside their pinned session and are never
-    /// accidentally reinserted into history.
+    /// Atomically persists every editable Preview field. Explicitly deleted
+    /// items are never reinserted by a late callback from their pinned session.
     @discardableResult
     func updatePreviewMetadata(
         session: ManagedHistoryPreviewSession,
         filename: RecordingFilename,
         trimRange: TrimRange,
-        configuration: ExportConfiguration,
         audioPreference: ExportAudioPreference
     ) throws -> RecordingHistoryItem {
         try validateActivePreviewSession(session)
@@ -236,7 +219,6 @@ actor ManagedHistoryRepository {
         if var item = candidate.item(id: session.recordingID) {
             try item.rename(to: filename.fileName, at: updateDate)
             try item.setTrimRange(trimRange, at: updateDate)
-            try item.setExportConfiguration(configuration, at: updateDate)
             try item.setExportAudioPreference(audioPreference, at: updateDate)
             candidate.upsert(item)
             try persist(candidate)
@@ -252,7 +234,6 @@ actor ManagedHistoryRepository {
         var updatedItem = removedItem
         try updatedItem.rename(to: filename.fileName, at: updateDate)
         try updatedItem.setTrimRange(trimRange, at: updateDate)
-        try updatedItem.setExportConfiguration(configuration, at: updateDate)
         try updatedItem.setExportAudioPreference(audioPreference, at: updateDate)
         deferredFinalizations[session.recordingID] = .remove(
             item: updatedItem,
@@ -261,18 +242,28 @@ actor ManagedHistoryRepository {
         return updatedItem
     }
 
-    /// Releases a Preview pin. Replacement is transactional and retryable; a
-    /// failed physical deletion is reported but is also recoverable by the next
+    /// Releases a Preview pin. A failed physical deletion is reported and
+    /// recoverable by the next
     /// startup reconciliation because its index row was durably removed first.
     @discardableResult
     func endPreviewSession(
         _ session: ManagedHistoryPreviewSession
     ) throws -> ManagedHistoryPreviewCloseResult {
         try validateActivePreviewSession(session)
-        guard previewSessionIDsByRecording[session.recordingID]?.count == 1 else {
-            previewSessionIDsByRecording[session.recordingID]?.remove(session.id)
+        let isLastReader = previewSessionIDsByRecording[session.recordingID]?.count == 1
+        // Closing ends this reader even if the index has become unreadable.
+        // Keeping a failed metadata write pinned would block later cleanup.
+        defer {
+            if isLastReader {
+                deferredFinalizations[session.recordingID] = nil
+                previewSessionIDsByRecording[session.recordingID] = nil
+            } else {
+                previewSessionIDsByRecording[session.recordingID]?.remove(session.id)
+            }
+        }
+        guard isLastReader else {
             return ManagedHistoryPreviewCloseResult(
-                finalizedDisposition: nil,
+                didFinalizeDeletion: false,
                 retainedItem: try loadedIndex().item(id: session.recordingID),
                 cleanupFailure: nil
             )
@@ -282,35 +273,18 @@ actor ManagedHistoryRepository {
         switch deferredFinalizations[session.recordingID] {
         case nil:
             result = ManagedHistoryPreviewCloseResult(
-                finalizedDisposition: nil,
+                didFinalizeDeletion: false,
                 retainedItem: try loadedIndex().item(id: session.recordingID),
                 cleanupFailure: nil
             )
 
         case let .remove(_, masterURL):
             result = ManagedHistoryPreviewCloseResult(
-                finalizedDisposition: .removeHistoryItem,
+                didFinalizeDeletion: true,
                 retainedItem: nil,
                 cleanupFailure: removeManagedFileIfPresent(at: masterURL)
             )
-
-        case let .replace(stagedURL, metadata, videoQualityPercent, exportedAt):
-            let item = try finalizeDeferredReplacement(
-                id: session.recordingID,
-                stagedURL: stagedURL,
-                metadata: metadata,
-                videoQualityPercent: videoQualityPercent,
-                exportedAt: exportedAt
-            )
-            result = ManagedHistoryPreviewCloseResult(
-                finalizedDisposition: .replaceOriginalWithExport,
-                retainedItem: item,
-                cleanupFailure: nil
-            )
         }
-
-        deferredFinalizations[session.recordingID] = nil
-        previewSessionIDsByRecording[session.recordingID] = nil
         return result
     }
 
@@ -365,11 +339,12 @@ actor ManagedHistoryRepository {
                 recordingDuration: request.duration,
                 pixelSize: request.pixelSize,
                 frameRate: request.frameRate,
+                processing: request.processing,
                 audioConfiguration: request.audioConfiguration,
                 captureTarget: request.captureTarget,
                 captureSessionSnapshot: request.captureSessionSnapshot,
-                trimRange: TrimRange.full(recordingDuration: request.duration),
-                exportConfiguration: request.exportConfiguration
+                trimRange: request.trimRange ?? TrimRange.full(recordingDuration: request.duration),
+                exportAudioPreference: request.exportAudioPreference
             )
             candidate.upsert(item)
             try persist(candidate)
@@ -412,16 +387,6 @@ actor ManagedHistoryRepository {
     }
 
     @discardableResult
-    func updateExportConfiguration(
-        id: RecordingID,
-        configuration: ExportConfiguration
-    ) throws -> RecordingHistoryItem {
-        try mutateItem(id: id) { item in
-            try item.setExportConfiguration(configuration, at: now())
-        }
-    }
-
-    @discardableResult
     func updateExportAudioPreference(
         id: RecordingID,
         preference: ExportAudioPreference
@@ -460,9 +425,6 @@ actor ManagedHistoryRepository {
             cachedIndex = candidate
         }
         if hasActivePreview {
-            if case let .replace(stagedURL, _, _, _) = deferredFinalizations[id] {
-                _ = removeManagedFileIfPresent(at: stagedURL)
-            }
             deferredFinalizations[id] = .remove(item: removedItem, masterURL: masterURL)
         }
         return ManagedHistoryDeletionResult(
@@ -505,193 +467,18 @@ actor ManagedHistoryRepository {
     @discardableResult
     func registerSuccessfulExport(
         id: RecordingID,
-        exportedFileURL: URL?,
-        retentionPolicy: HistoryRetentionPolicy,
-        keepOriginalAfterExport: Bool,
-        exportedVideoQualityPercent: Int? = nil,
-        exportedMediaMetadata: RecordingMediaMetadata? = nil,
         previewSession: ManagedHistoryPreviewSession? = nil
-    ) async throws -> ManagedHistoryExportResult {
+    ) throws -> RecordingHistoryItem {
         if let previewSession {
             guard previewSession.recordingID == id else {
                 throw ManagedHistoryRepositoryError.recordingNotFound(id)
             }
             try validateActivePreviewSession(previewSession)
         }
-        let disposition = retentionPolicy.postExportDisposition(
-            keepOriginalAfterExport: keepOriginalAfterExport
-        )
-        let replacementMetadata: RecordingMediaMetadata?
-        if disposition == .replaceOriginalWithExport {
-            guard let exportedFileURL,
-                  exportedFileURL.pathExtension.lowercased() == "mp4",
-                  fileSystem.isRegularFile(at: exportedFileURL) else {
-                throw ManagedHistoryRepositoryError.exportedFileRequiredToReplaceOriginal
-            }
-            replacementMetadata = try await resolveExportedMediaMetadata(
-                exportedMediaMetadata,
-                at: exportedFileURL
-            )
-        } else {
-            replacementMetadata = nil
+        let item = try mutateItem(id: id) { item in
+            try item.registerSuccessfulExport(at: now())
         }
-
-        // Media inspection suspends outside the actor. Preview may have closed
-        // while it ran, so never enqueue destructive work against an expired pin.
-        if let previewSession {
-            try validateActivePreviewSession(previewSession)
-        }
-
-        // Resolve media metadata before reading actor state. Media inspection
-        // suspends, so doing it first prevents a concurrent history mutation
-        // from being overwritten by a stale index snapshot.
-        var candidate = try loadedIndex()
-        var item: RecordingHistoryItem
-        if let indexedItem = candidate.item(id: id) {
-            item = indexedItem
-        } else if previewSession != nil,
-                  case let .remove(item: removedItem, _) = deferredFinalizations[id] {
-            item = removedItem
-        } else {
-            throw ManagedHistoryRepositoryError.recordingNotFound(id)
-        }
-        let exportDate = now()
-        let shouldDefer = previewSessionIDsByRecording[id]?.isEmpty == false
-
-        switch disposition {
-        case .keepOriginal:
-            try item.registerSuccessfulExport(at: exportDate)
-            candidate.upsert(item)
-            try persist(candidate)
-            cachedIndex = candidate
-            return ManagedHistoryExportResult(
-                disposition: disposition,
-                retainedItem: item,
-                removedItem: nil,
-                cleanupFailure: nil,
-                finalizationDeferred: false
-            )
-
-        case .removeHistoryItem:
-            try item.registerSuccessfulExport(at: exportDate)
-            let oldMasterURL = try managedURL(for: item.managedMaster)
-            if candidate.item(id: id) != nil {
-                _ = candidate.remove(id: id)
-                try persist(candidate)
-                cachedIndex = candidate
-            }
-            if shouldDefer {
-                if case let .replace(stagedURL, _, _, _) = deferredFinalizations[id] {
-                    _ = removeManagedFileIfPresent(at: stagedURL)
-                }
-                deferredFinalizations[id] = .remove(item: item, masterURL: oldMasterURL)
-            }
-            return ManagedHistoryExportResult(
-                disposition: disposition,
-                retainedItem: nil,
-                removedItem: item,
-                cleanupFailure: shouldDefer ? nil : removeManagedFileIfPresent(at: oldMasterURL),
-                finalizationDeferred: shouldDefer
-            )
-
-        case .replaceOriginalWithExport:
-            guard let exportedFileURL, let replacementMetadata else {
-                throw ManagedHistoryRepositoryError.exportedFileRequiredToReplaceOriginal
-            }
-            guard let exportedVideoQualityPercent else {
-                throw ManagedHistoryRepositoryError
-                    .exportedVideoQualityRequiredToReplaceOriginal
-            }
-            if shouldDefer {
-                let stagedURL = try stageDeferredReplacement(
-                    id: id,
-                    exportedFileURL: exportedFileURL
-                )
-                if case let .replace(previousStagedURL, _, _, _) = deferredFinalizations[id] {
-                    _ = removeManagedFileIfPresent(at: previousStagedURL)
-                }
-                deferredFinalizations[id] = .replace(
-                    stagedURL: stagedURL,
-                    metadata: replacementMetadata,
-                    videoQualityPercent: exportedVideoQualityPercent,
-                    exportedAt: exportDate
-                )
-                return ManagedHistoryExportResult(
-                    disposition: disposition,
-                    retainedItem: item,
-                    removedItem: nil,
-                    cleanupFailure: nil,
-                    finalizationDeferred: true
-                )
-            }
-            let masterURL = try managedURL(for: item.managedMaster)
-            let sourceIsMaster = AtomicFileReplacement.sameResolvedPath(
-                exportedFileURL,
-                masterURL
-            )
-            let exportedByteCount = try fileSystem.byteCount(of: exportedFileURL)
-            try item.replaceManagedMaster(
-                with: item.managedMaster,
-                byteCount: exportedByteCount,
-                mediaMetadata: replacementMetadata,
-                videoQualityPercent: exportedVideoQualityPercent,
-                at: exportDate
-            )
-            candidate.upsert(item)
-
-            var backupURL: URL?
-            var didReplaceMaster = false
-            if !sourceIsMaster {
-                let proposedBackupURL = masterURL.deletingLastPathComponent().appendingPathComponent(
-                    ".\(masterURL.lastPathComponent).\(tokenGenerator().uuidString.lowercased()).rollback"
-                )
-                guard !fileSystem.itemExists(at: proposedBackupURL) else {
-                    throw ManagedHistoryRepositoryError.managedDestinationAlreadyExists(
-                        proposedBackupURL
-                    )
-                }
-                backupURL = proposedBackupURL
-            }
-
-            do {
-                if let backupURL {
-                    try fileSystem.replaceItemAtomically(
-                        from: exportedFileURL,
-                        to: masterURL,
-                        preservingOriginalAt: backupURL
-                    )
-                    didReplaceMaster = true
-                }
-                try persist(candidate)
-                cachedIndex = candidate
-            } catch {
-                let transactionError = error
-                if didReplaceMaster, let backupURL {
-                    do {
-                        try fileSystem.replaceItemAtomically(
-                            from: backupURL,
-                            to: masterURL,
-                            preservingOriginalAt: nil
-                        )
-                    } catch {
-                        throw ManagedHistoryRepositoryError.managedMasterRollbackFailed(masterURL)
-                    }
-                }
-                if let backupURL, fileSystem.itemExists(at: backupURL) {
-                    try? fileSystem.removeItem(at: backupURL)
-                }
-                throw transactionError
-            }
-
-            let cleanupFailure = backupURL.flatMap(removeFileIfPresent)
-            return ManagedHistoryExportResult(
-                disposition: disposition,
-                retainedItem: item,
-                removedItem: nil,
-                cleanupFailure: cleanupFailure,
-                finalizationDeferred: false
-            )
-        }
+        return item
     }
 
     private func validateActivePreviewSession(
@@ -700,90 +487,6 @@ actor ManagedHistoryRepository {
         guard previewSessionIDsByRecording[session.recordingID]?.contains(session.id) == true else {
             throw ManagedHistoryRepositoryError.recordingNotFound(session.recordingID)
         }
-    }
-
-    private func stageDeferredReplacement(
-        id: RecordingID,
-        exportedFileURL: URL
-    ) throws -> URL {
-        deferredStageSequence &+= 1
-        let stagedURL = recordingsDirectory.appendingPathComponent(
-            "\(id.description)-export-\(tokenGenerator().uuidString.lowercased())-\(deferredStageSequence).mp4"
-        )
-        guard !fileSystem.itemExists(at: stagedURL) else {
-            throw ManagedHistoryRepositoryError.managedDestinationAlreadyExists(stagedURL)
-        }
-        do {
-            try fileSystem.copyItemAtomically(from: exportedFileURL, to: stagedURL)
-            try markAsManaged(stagedURL)
-            return stagedURL
-        } catch {
-            _ = removeManagedFileIfPresent(at: stagedURL)
-            throw error
-        }
-    }
-
-    private func finalizeDeferredReplacement(
-        id: RecordingID,
-        stagedURL: URL,
-        metadata: RecordingMediaMetadata,
-        videoQualityPercent: Int,
-        exportedAt: Date
-    ) throws -> RecordingHistoryItem {
-        var candidate = try loadedIndex()
-        guard var item = candidate.item(id: id) else {
-            throw ManagedHistoryRepositoryError.recordingNotFound(id)
-        }
-        let masterURL = try managedURL(for: item.managedMaster)
-        let exportedByteCount = try fileSystem.byteCount(of: stagedURL)
-        try item.replaceManagedMaster(
-            with: item.managedMaster,
-            byteCount: exportedByteCount,
-            mediaMetadata: metadata,
-            videoQualityPercent: videoQualityPercent,
-            at: exportedAt
-        )
-        candidate.upsert(item)
-
-        let backupURL = masterURL.deletingLastPathComponent().appendingPathComponent(
-            ".\(masterURL.lastPathComponent).\(tokenGenerator().uuidString.lowercased()).rollback"
-        )
-        guard !fileSystem.itemExists(at: backupURL) else {
-            throw ManagedHistoryRepositoryError.managedDestinationAlreadyExists(backupURL)
-        }
-
-        var didReplaceMaster = false
-        do {
-            try fileSystem.replaceItemAtomically(
-                from: stagedURL,
-                to: masterURL,
-                preservingOriginalAt: backupURL
-            )
-            didReplaceMaster = true
-            try persist(candidate)
-            cachedIndex = candidate
-        } catch {
-            let transactionError = error
-            if didReplaceMaster {
-                do {
-                    try fileSystem.replaceItemAtomically(
-                        from: backupURL,
-                        to: masterURL,
-                        preservingOriginalAt: nil
-                    )
-                } catch {
-                    throw ManagedHistoryRepositoryError.managedMasterRollbackFailed(masterURL)
-                }
-            }
-            if fileSystem.itemExists(at: backupURL) {
-                try? fileSystem.removeItem(at: backupURL)
-            }
-            throw transactionError
-        }
-
-        _ = removeFileIfPresent(at: backupURL)
-        _ = removeManagedFileIfPresent(at: stagedURL)
-        return item
     }
 
     func storageUsage() throws -> ManagedHistoryStorageUsage {
@@ -900,7 +603,7 @@ actor ManagedHistoryRepository {
                       inspection.duration > 0,
                       inspection.width > 0,
                       inspection.height > 0 else {
-                    throw ManagedHistoryRepositoryError.exportedMediaMetadataInvalid(candidate.url)
+                    throw ManagedHistoryRepositoryError.invalidRecoveredMedia(candidate.url)
                 }
                 let item = try importFinalizedRecording(
                     FinalizedRecordingImport(
@@ -922,7 +625,6 @@ actor ManagedHistoryRepository {
                         captureSessionSnapshot: CaptureSessionSnapshot(
                             settings: recoveryRecord.settings
                         ),
-                        exportConfiguration: recoveryRecord.settings.exportConfiguration
                     )
                 )
                 recovered.append(
@@ -1084,33 +786,6 @@ actor ManagedHistoryRepository {
         } catch {
             return ManagedFileCleanupFailure(url: url, reason: error.localizedDescription)
         }
-    }
-
-    private func resolveExportedMediaMetadata(
-        _ providedMetadata: RecordingMediaMetadata?,
-        at exportedFileURL: URL
-    ) async throws -> RecordingMediaMetadata {
-        if let providedMetadata {
-            return providedMetadata
-        }
-
-        let inspection = try await mediaInspector(exportedFileURL)
-        guard inspection.videoTrackCount > 0,
-              inspection.duration.isFinite,
-              inspection.duration > 0,
-              inspection.width > 0,
-              inspection.height > 0 else {
-            throw ManagedHistoryRepositoryError.exportedMediaMetadataInvalid(exportedFileURL)
-        }
-        let pixelSize = try PixelSize(width: inspection.width, height: inspection.height)
-        return try RecordingMediaMetadata(
-            duration: inspection.duration,
-            pixelSize: pixelSize,
-            frameRate: representedFrameRate(
-                inspection.nominalFramesPerSecond,
-                fallback: .thirty
-            )
-        )
     }
 
     private func representedFrameRate(

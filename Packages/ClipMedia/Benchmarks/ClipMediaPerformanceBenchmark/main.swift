@@ -10,13 +10,17 @@ private let fixtureHeight = 900
 private let fixtureFramesPerSecond = 30
 private let fixtureDurationSeconds = 30
 private let fixtureFrameCount = fixtureFramesPerSecond * fixtureDurationSeconds
-private let previewTargetMilliseconds = 1_000.0
-private let compactExportTargetMilliseconds = 2_000.0
+private let previewTargetMilliseconds = 10_000.0
+private let copyExportTargetMilliseconds = 2_000.0
 
 @main
 private enum ClipMediaPerformanceBenchmark {
     static func main() async throws {
         let options = try BenchmarkOptions(arguments: Array(CommandLine.arguments.dropFirst()))
+        guard let encoderPath = ProcessInfo.processInfo.environment["CLIP_RECORDING_ENCODER"] else {
+            throw BenchmarkError.missingReferenceFixture
+        }
+        let processor = RecordingProcessor(executableURL: URL(fileURLWithPath: encoderPath))
         let workingDirectory = FileManager.default.temporaryDirectory
             .appendingPathComponent("clip-performance-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(
@@ -57,51 +61,50 @@ private enum ClipMediaPerformanceBenchmark {
             // Capture frames are encoded as they arrive. This interval starts at
             // the same native boundary as the user's Finish action: no more
             // samples remain to be submitted. It ends only once the MP4 is
-            // finalized and AVFoundation can load the metadata Preview needs.
+            // finalized, processed at CRF 24, and validated for Preview.
             let start = DispatchTime.now().uptimeNanoseconds
             _ = try await writer.finish()
-            let inspection = try await MediaInspector.inspect(candidateURL)
+            let processedURL = workingDirectory.appendingPathComponent("processed-\(iteration).mp4")
+            let result = try await processor.process(sourceURL: candidateURL, destinationURL: processedURL)
+            let inspection = result.inspection
             let elapsed = milliseconds(since: start)
-            try validate(inspection, expectedPreset: nil)
+            try validate(inspection, expectedExport: nil)
             previewSamples.append(elapsed)
-            sourceURL = candidateURL
+            sourceURL = processedURL
             sourceInspection = inspection
         }
 
         guard let sourceURL, let sourceInspection else {
             throw BenchmarkError.missingReferenceFixture
         }
-        let compactConfiguration = MediaExportConfigurationFactory.make(
-            preset: .compact,
-            sourceWidth: sourceInspection.width,
-            sourceHeight: sourceInspection.height,
-            sourceFramesPerSecond: Int(sourceInspection.nominalFramesPerSecond.rounded()),
-            videoQuality: 0.90,
-            sourceVideoQuality: 0.98
+        let exportConfiguration = MediaExportConfiguration(
+            width: sourceInspection.width,
+            height: sourceInspection.height,
+            framesPerSecond: Int(sourceInspection.nominalFramesPerSecond.rounded())
         )
 
         var exportSamples: [Double] = []
         var exportByteCounts: [Int64] = []
         for iteration in 0..<options.exportIterations {
             let outputURL = workingDirectory
-                .appendingPathComponent("compact-\(iteration)")
+                .appendingPathComponent("copy-\(iteration)")
                 .appendingPathExtension("mp4")
             let start = DispatchTime.now().uptimeNanoseconds
             _ = try await NativeAssetExporter().export(
                 sourceURL: sourceURL,
                 destinationURL: outputURL,
                 timeRange: nil,
-                configuration: compactConfiguration
+                configuration: exportConfiguration
             )
             let elapsed = milliseconds(since: start)
             let inspection = try await MediaInspector.inspect(outputURL)
-            try validate(inspection, expectedPreset: compactConfiguration)
+            try validate(inspection, expectedExport: exportConfiguration)
             exportSamples.append(elapsed)
             exportByteCounts.append(inspection.fileSize)
         }
 
         let summary = BenchmarkSummary(
-            schemaVersion: 1,
+            schemaVersion: 2,
             generatedAt: ISO8601DateFormatter().string(from: Date()),
             environment: .init(
                 operatingSystem: ProcessInfo.processInfo.operatingSystemVersionString,
@@ -122,11 +125,11 @@ private enum ClipMediaPerformanceBenchmark {
                 samplesMilliseconds: previewSamples,
                 targetMilliseconds: previewTargetMilliseconds
             ),
-            compactExport: MetricSummary(
+            copyExport: MetricSummary(
                 samplesMilliseconds: exportSamples,
-                targetMilliseconds: compactExportTargetMilliseconds
+                targetMilliseconds: copyExportTargetMilliseconds
             ),
-            compactOutputByteCounts: exportByteCounts
+            copyOutputByteCounts: exportByteCounts
         )
 
         printSummary(summary)
@@ -203,11 +206,11 @@ private struct BenchmarkSummary: Codable {
     let environment: Environment
     let fixture: Fixture
     let previewMediaReadiness: MetricSummary
-    let compactExport: MetricSummary
-    let compactOutputByteCounts: [Int64]
+    let copyExport: MetricSummary
+    let copyOutputByteCounts: [Int64]
 
     var passed: Bool {
-        previewMediaReadiness.passesTarget && compactExport.passesTarget
+        previewMediaReadiness.passesTarget && copyExport.passesTarget
     }
 
     struct Environment: Codable {
@@ -276,6 +279,10 @@ private final class SyntheticScreenFrames {
                 phaseCount: count
             ))
         }
+        for buffer in generated {
+            CVBufferSetAttachment(buffer, kCVImageBufferCGColorSpaceKey,
+                CGColorSpace(name: CGColorSpace.sRGB)!, .shouldPropagate)
+        }
         buffers = generated
 
         var description: CMVideoFormatDescription?
@@ -338,6 +345,8 @@ private final class SyntheticScreenFrames {
             throw BenchmarkError.cannotCreatePixelBuffer(status)
         }
 
+        CVBufferSetAttachment(buffer, kCVImageBufferCGColorSpaceKey,
+            CGColorSpace(name: CGColorSpace.sRGB)!, .shouldPropagate)
         CVPixelBufferLockBaseAddress(buffer, [])
         defer { CVPixelBufferUnlockBaseAddress(buffer, []) }
         guard let baseAddress = CVPixelBufferGetBaseAddress(buffer) else {
@@ -401,11 +410,11 @@ private func appendWithRetry(
 
 private func validate(
     _ inspection: MediaInspection,
-    expectedPreset: MediaExportConfiguration?
+    expectedExport: MediaExportConfiguration?
 ) throws {
-    let expectedWidth = expectedPreset?.width ?? fixtureWidth
-    let expectedHeight = expectedPreset?.height ?? fixtureHeight
-    let expectedFPS = expectedPreset?.framesPerSecond ?? fixtureFramesPerSecond
+    let expectedWidth = expectedExport?.width ?? fixtureWidth
+    let expectedHeight = expectedExport?.height ?? fixtureHeight
+    let expectedFPS = expectedExport?.framesPerSecond ?? fixtureFramesPerSecond
     guard inspection.fileSize > 0,
           inspection.videoTrackCount == 1,
           inspection.audioTrackCount == 0,
@@ -441,7 +450,7 @@ private func printSummary(_ summary: BenchmarkSummary) {
             + "\(summary.fixture.framesPerSecond), H.264, audio off"
     )
     printMetric("Preview media readiness", summary.previewMediaReadiness)
-    printMetric("Compact export", summary.compactExport)
+    printMetric("Copy export", summary.copyExport)
     print("Result: \(summary.passed ? "PASS" : "FAIL")")
 }
 

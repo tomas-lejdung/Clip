@@ -13,7 +13,7 @@ explicitly start Live Share.
 - Captures the cursor, optional click highlights, microphone, and system audio.
 - Pauses and resumes without leaving a timing gap in the result.
 - Opens a Preview for playback, trimming, renaming, and removing audio.
-- Exports native-resolution Crisp, Compact, or Smallest MP4 files.
+- Processes recordings into crisp H.264 MP4 files, with Native, 75%, 50%, and 25% resolution choices and an adjustable CRF in the first Preview.
 - Shares through drag, Copy, or Save As.
 - Keeps a local, automatically cleaned recording history.
 - Runs from the menu bar and can hide its Dock icon.
@@ -125,6 +125,16 @@ The complete Live Share acceptance lane is:
 Some real ScreenCaptureKit and UI tests need existing macOS privacy grants and
 explicitly move the visible pointer. They are never started by the ordinary
 test command. See [ACCEPTANCE.md](docs/ACCEPTANCE.md) before running them.
+
+The [recording pipeline](docs/recording-processing-integration-plan.md) captures
+full backing pixels with hardware HEVC, then processes once to H.264. Native
+resolution, CRF 24, and 10 Mbps capture are the initial defaults. Closing the
+first Preview saves the full processed Source; later trims and shares preserve
+its video encoding. Choose **Trim**, adjust the handles, then **Save Trim** to
+prepare a reusable export. CRF uses an 18–40 menu in first Preview. Clicking the
+menu-bar icon during recording stops capture and opens Preview directly.
+The app bundles its encoder and needs no Homebrew or Python.
+See [PERFORMANCE.md](docs/PERFORMANCE.md) for the reproducible timing benchmark.
 
 ## Self-host Live Share
 

@@ -99,12 +99,14 @@ struct LivePlatformServicesTests {
             LiveDisplayService.AppKitDisplaySnapshot(
                 id: 11,
                 name: "Built-in Display",
-                frame: CGRect(x: 0, y: 0, width: 1_920, height: 1_080)
+                frame: CGRect(x: 0, y: 0, width: 1_920, height: 1_080),
+                backingScaleFactor: 2
             ),
             LiveDisplayService.AppKitDisplaySnapshot(
                 id: 22,
                 name: "Studio Display",
-                frame: CGRect(x: 1_920, y: -180, width: 2_048, height: 1_152)
+                frame: CGRect(x: 1_920, y: -180, width: 2_048, height: 1_152),
+                backingScaleFactor: 2
             ),
         ]
         let service = LiveDisplayService(
@@ -119,14 +121,31 @@ struct LivePlatformServicesTests {
         #expect(displays.map(\.name) == ["Studio Display", "Built-in Display"])
         #expect(displays.map(\.stableIdentifier) == ["stable-22", "stable-11"])
         #expect(displays[0].frame == appKitDisplays[1].frame)
-        #expect(displays[0].scaleFactor == 2.5)
-        #expect(displays[0].frame.width * displays[0].scaleFactor == 5_120)
+        #expect(displays[0].scaleFactor == 2)
+        #expect(displays[0].frame.width * displays[0].scaleFactor == 4_096)
         #expect(displays[1].scaleFactor == 2)
     }
 
     @MainActor
-    @Test("A temporarily unmatched ScreenCaptureKit display remains selectable")
-    func displayDiscoveryFallsBackWhenAppKitScreenIsUnavailable() async throws {
+    @Test("Retake keeps the 2× backing scale when ScreenCaptureKit reports logical display dimensions")
+    func scaledExternalDisplayUsesBackingScale() async throws {
+        let frame = CGRect(x: 0, y: 0, width: 3_840, height: 1_620)
+        let service = LiveDisplayService(
+            discovery: FixtureDisplayDiscovery(fixtures: [CaptureDisplay(
+                id: 42, frame: frame, pixelWidth: 3_840, pixelHeight: 1_620
+            )]),
+            appKitDisplays: { [.init(id: 42, name: "Scaled External", frame: frame, backingScaleFactor: 2)] },
+            stableIdentifier: { "external-\($0)" }
+        )
+        let display = try #require(try await service.availableDisplays().first)
+        #expect(display.scaleFactor == 2)
+        #expect(display.frame.width * display.scaleFactor == 7_680)
+        #expect(display.frame.height * display.scaleFactor == 3_240)
+    }
+
+    @MainActor
+    @Test("A hotplug display waits for AppKit backing geometry before it becomes selectable")
+    func displayDiscoveryRejectsUnknownBackingGeometry() async throws {
         let captureFrame = CGRect(x: -1_280, y: 0, width: 1_280, height: 720)
         let service = LiveDisplayService(
             discovery: FixtureDisplayDiscovery(
@@ -143,13 +162,7 @@ struct LivePlatformServicesTests {
             stableIdentifier: { "detached-\($0)" }
         )
 
-        let display = try #require(try await service.availableDisplays().first)
-
-        #expect(display.id == 77)
-        #expect(display.stableIdentifier == "detached-77")
-        #expect(display.name == "Display")
-        #expect(display.frame == captureFrame)
-        #expect(display.scaleFactor == 2)
+        #expect(try await service.availableDisplays().isEmpty)
     }
 
     @MainActor
@@ -356,8 +369,8 @@ struct LivePlatformServicesTests {
     }
 
     @MainActor
-    @Test("Capture master uses the configured Crisp quality")
-    func captureUsesConfiguredCrispQuality() async throws {
+    @Test("Capture freezes bitrate and keeps the full backing raster without a 16-megapixel cap")
+    func captureUsesConfiguredBitrateAndNativeScale() async throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -373,15 +386,25 @@ struct LivePlatformServicesTests {
             }
         )
         var settings = ClipSettings.defaults(homeDirectory: directory)
-        settings.exportQualities.crisp = 73
+        settings.recordingProcessing.captureBitrateMbps = 20
         settings.showClickHighlights = true
+        settings.frameRate = .sixty
 
-        try await service.prepare(try captureTarget(named: "quality-display"))
+        try await service.prepare(PreparedCaptureTarget(
+            domainTarget: .fullscreen(try DisplayID("native-backing-display")),
+            displayID: 1, sourceRect: nil, outputWidth: 7_680, outputHeight: 3_240,
+            requiredNativeScale: 2
+        ))
         try await service.start(recordingID: RecordingID(), settings: settings)
+        settings.recordingProcessing.captureBitrateMbps = 40
 
-        #expect(recorder.lastRequest?.configuration.videoQuality == 0.73)
+        #expect(recorder.lastRequest?.configuration.targetAverageBitRate == 20_000_000)
+        #expect(recorder.lastRequest?.configuration.width == 7_680)
+        #expect(recorder.lastRequest?.configuration.height == 3_240)
+        #expect(recorder.lastRequest?.configuration.framesPerSecond == 60)
         #expect(recorder.lastRequest?.configuration.showsClickHighlights == true)
         #expect(recorder.lastRequest?.captureResolution == .best)
+        #expect(recorder.lastRequest?.requiredNativeScale == 2)
         await service.cancel()
     }
 

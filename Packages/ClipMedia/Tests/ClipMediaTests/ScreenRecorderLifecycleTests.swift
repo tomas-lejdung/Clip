@@ -7,6 +7,44 @@ import Testing
 
 @Suite("Screen recorder session lifecycle")
 struct ScreenRecorderLifecycleTests {
+    @Test("Large backing rasters pass through capture planning without scaling or a pixel cap")
+    func largeNativeCapturePlan() {
+        let request = ScreenRecordingRequest(displayID: 42,
+            outputURL: URL(fileURLWithPath: "/tmp/clip-native-capture-plan.mp4"),
+            configuration: RecordingConfiguration(width: 7_680, height: 3_240, framesPerSecond: 60),
+            requiredNativeScale: 2)
+        let stream = ScreenStreamConfigurationFactory.make(for: request)
+        #expect(stream.width == 7_680 && stream.height == 3_240)
+        #expect(stream.captureResolution == .best)
+        #expect(!stream.scalesToFit && stream.preservesAspectRatio)
+        #expect(stream.minimumFrameInterval == CMTime(value: 1, timescale: 60))
+        let encoder = VideoToolboxHEVCEncoder.Configuration.liveMaster(recording: request.configuration)
+        #expect(encoder.width == 7_680 && encoder.height == 3_240)
+    }
+
+    @Test("Native capture rejects missing scale evidence and unexpected compositor resizing")
+    func nativeScaleMustMatch() throws {
+        for scale in [1.0, 2.0] {
+            try ScreenVideoNativeScaleValidator.validate(scaleFactor: scale, contentScale: 1, expected: scale)
+        }
+        for (actual, content, expected) in [
+            (Optional(2.0), Optional(0.5), 1.0),
+            (Optional(1.0), Optional(2.0), 2.0),
+            (nil, Optional(1.0), 2.0),
+            (Optional(2.0), nil, 2.0),
+        ] {
+            #expect(throws: (any Error).self) {
+                try ScreenVideoNativeScaleValidator.validate(scaleFactor: actual, contentScale: content, expected: expected)
+            }
+        }
+    }
+
+    @Test("Hardware capture failures retain their actionable reason")
+    func encoderFailureIsReadable() {
+        let reason = "Hardware HEVC could not record 7680 × 3240 pixels."
+        #expect(AssetWriterSessionError.cannotCreateEncoder(reason).localizedDescription == reason)
+    }
+
     @Test("Only complete screen samples with image buffers reach the video writer")
     func screenVideoSampleEligibility() {
         #expect(

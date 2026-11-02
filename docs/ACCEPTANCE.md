@@ -245,28 +245,28 @@ exact dimensions/sample count, and a maximum two-frame timestamp gap. It never
 launches Clip or calls ScreenCaptureKit,
 `AVCaptureDevice`, Accessibility, Automation, or another application.
 
-The objective, permission-free quality gate is separate and can be run alone:
+The permission-free production recording gate can also run alone:
 
 ```sh
 ./scripts/run-quality-acceptance.sh
 ```
 
-It renders deterministic small bitmap text, physical one-pixel lines,
-saturated edges, scrolling, and cadence-relative 30/60 FPS motion. At the
-default quality settings, it decodes the real quality-98 master, a forced
-quality-98 Crisp transcode, and Compact-90 H.264 outputs and enforces luma SSIM/edge-retention floors of
-0.985/95%, 0.98/92%, and 0.96/85% respectively. It also requires native
-dimensions, durable cadence, High-profile Rec.709 video, bounded timestamps,
-Compact output distinct from its source, and byte-identical eligible Crisp
-reuse. Policy tests cover the Smallest-70 rung, independent 1–100 settings and
-the `98`/`90`/`70` reset values, while inspecting encoder properties to ensure
-hardware quality paths omit bitrate limits and the exact oversized native
-software-H.264 fallback uses only its quality-derived soft average bitrate,
-never a hard data-rate limit.
-A test-only A/B baseline still requires the quality-0.98 master to materially
-outperform the former ABR-only settings. The native writer tests also prove
-that bounded held-frame cadence repair keeps all original timestamps as an
-exact subsequence while leaving long sparse VFR timelines untouched.
+It builds the pinned encoder and runs the complete ClipMedia suite. Synthetic
+frames exercise hardware HEVC capture, explicit native geometry and SDR color,
+30/60 FPS cadence, variable timing, pause/resume, static Stop boundaries, and
+long timestamps. The actual bundled x264 recipe is tested at Native, 75%, 50%,
+and 25% resolution with CRF 24. Assertions cover codec, sample count, timestamps,
+final duration, native decoding, and unchanged input bytes. These checks bypass
+ScreenCaptureKit and do not substitute for visual review of a real display.
+
+Audio tests decode the result to check delayed microphone content and missing
+buffer gaps after mixing. Export tests require byte-identical full copies,
+non-keyframe and fractional-frame trims with identical first displayed pixels,
+correct end boundaries, and audio removal without changing the Source.
+Cancellation must terminate the child encoder and retain both the original and
+any previous complete candidate. No obsolete quality-percentage or preset SSIM
+thresholds are used. See the [recording pipeline](recording-processing-integration-plan.md)
+and [performance benchmark](PERFORMANCE.md) for architecture and timing boundaries.
 
 The complete permission-free release gate is `./scripts/verify-release.sh`.
 It includes the local Live Share lane above before packaging the app.
@@ -293,7 +293,8 @@ guard then creates one pointer-inert, app-owned synthetic window and a quiet
 997 Hz app-owned tone. ScreenCaptureKit targets that exact window ID, includes
 the current process's audio only for this lane, waits for a complete first
 frame, records, pauses and resumes once, and finalizes through the production
-`ScreenRecorder`.
+`ScreenRecorder`, then processes the temporary HEVC recording through the
+production Native / CRF 24 pipeline.
 
 Validation requires H.264 video, AAC system audio, expected native dimensions,
 decoded fixture colors and motion, requested cadence, strictly increasing

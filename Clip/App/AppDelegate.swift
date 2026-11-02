@@ -33,24 +33,22 @@ enum ApplicationTerminationReply: Equatable, Sendable {
 
 @MainActor
 protocol ApplicationTerminationHandling: AnyObject {
-    /// Hides and releases app-owned UI synchronously. This operation must be
-    /// idempotent because it runs both when Quit begins and immediately before
-    /// AppKit receives the final termination reply.
+    /// Begins shutdown and, on its second call, releases app-owned UI.
+    /// The first call can retain Preview progress until finalization settles.
     func closeForTermination()
 
-    /// Performs best-effort recording finalization and persistence after the UI
-    /// has already disappeared.
+    /// Settles recording finalization and persistence before the final reply.
     func prepareForTermination() async
 }
 
-/// Owns AppKit's `terminateLater` reply contract. Cleanup gets a short grace
-/// period, but an uncooperative media or filesystem operation can never leave a
-/// visible, unresponsive Clip process behind indefinitely.
+/// Owns AppKit’s `terminateLater` contract. Native recording processing may
+/// finish while Preview shows progress; a bounded timeout leaves its durable
+/// original/journal available for recovery instead of trapping Quit forever.
 @MainActor
 final class ApplicationTerminationCoordinator {
     typealias Sleep = @Sendable (Duration) async throws -> Void
 
-    static let defaultTimeout: Duration = .seconds(8)
+    static let defaultTimeout: Duration = .seconds(300)
 
     private enum Phase: Equatable {
         case idle
@@ -224,7 +222,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             break
         case .invalid:
             finishUnattendedCaptureSmoke(UnattendedCaptureSmokeReport(
-                protocolVersion: 3,
+                protocolVersion: 4,
                 status: "failed",
                 scope: "none; launch guard rejected the request",
                 requestedDurationSeconds: 0,

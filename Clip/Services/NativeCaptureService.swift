@@ -214,7 +214,7 @@ final class NativeCaptureService: CaptureServicing {
             width: preparedTarget.outputWidth,
             height: preparedTarget.outputHeight,
             framesPerSecond: settings.frameRate.framesPerSecond,
-            videoQualityPercent: settings.exportQualities.crisp,
+            targetAverageBitRate: settings.recordingProcessing.targetAverageBitRate,
             showsCursor: settings.showCursor,
             showsClickHighlights: settings.showClickHighlights,
             audioMode: Self.audioMode(for: settings.audio)
@@ -237,7 +237,8 @@ final class NativeCaptureService: CaptureServicing {
             includedApplicationBundleIdentifier: preparedTarget.includedApplicationBundleIdentifier,
             captureResolution: preparedTarget.captureResolution,
             outputURL: outputURL,
-            configuration: configuration
+            configuration: configuration,
+            requiredNativeScale: preparedTarget.requiredNativeScale
         )
         let recorder = recorder
         let startTask = Task {

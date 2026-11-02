@@ -16,7 +16,9 @@ Usage: scripts/run-unattended-capture-smoke.sh --allow-controlled-self-capture [
 This opt-in lane runs the stable-signed Clip executable without XCTest UI
 automation. It never moves the pointer, types, uses Accessibility/Automation,
 or controls another app. Clip records only its own synthetic window and quiet
-synthetic tone, pauses/resumes once, validates H.264/AAC pixels, cadence,
+synthetic tone in native HEVC at 10 Mbps, pauses/resumes once, processes through
+Clip's bundled H.264 encoder at native resolution and CRF 24, then validates
+H.264/AAC pixels, sRGB color, cadence,
 timestamps, and signal, generates a decoded Preview frame, exercises an
 isolated file-URL Copy, decodes the copy, then deletes all artifacts. Screen Recording access must
 already be granted; the lane never requests or resets permission.
@@ -61,7 +63,7 @@ done
 TIMEOUT_SECONDS="$(awk -v duration="$DURATION" '
   BEGIN {
     if (duration < 3 || duration > 600) exit 1
-    print int(duration + 30.999)
+    print int(duration * 2 + 30.999)
   }
 ')" || usage
 [[ "$FPS" == "30" || "$FPS" == "60" ]] || usage
@@ -120,9 +122,10 @@ cleanup_preserved_work_directory() {
     return 0
   fi
   # Never recursively delete a report-supplied path. The guarded app creates
-  # exactly these three artifacts; unexpected contents make rmdir fail closed.
+  # only these known artifacts; unexpected contents make rmdir fail closed.
   rm -f \
     "$PRESERVED_WORK_DIRECTORY/synthetic-capture.mp4" \
+    "$PRESERVED_WORK_DIRECTORY/synthetic-hevc-capture.mp4" \
     "$PRESERVED_WORK_DIRECTORY/preview-copy.mp4" \
     "$PRESERVED_WORK_DIRECTORY/preview-frame.png"
   rmdir "$PRESERVED_WORK_DIRECTORY" 2>/dev/null || true
@@ -235,13 +238,17 @@ COPY_IDENTICAL="$(plutil -extract copyWasByteIdentical raw -o - "$REPORT")"
 COPY_RESOLVED="$(plutil -extract copyPasteboardResolvedFileURL raw -o - "$REPORT")"
 COPY_EVALUATED="$(plutil -extract copiedFileWasDecodedAndEvaluated raw -o - "$REPORT")"
 PROFILE="$(plutil -extract metrics.h264ProfileIDC raw -o - "$REPORT")"
-REC709="$(plutil -extract metrics.hasRec709ColorDescription raw -o - "$REPORT")"
+SRGB="$(plutil -extract metrics.hasSRGBColorDescription raw -o - "$REPORT")"
+CAPTURE_CODEC="$(plutil -extract processing.captureCodec raw -o - "$REPORT")"
+OUTPUT_CODEC="$(plutil -extract processing.outputCodec raw -o - "$REPORT")"
+RAW_DELETED="$(plutil -extract processing.temporaryCaptureWasDeleted raw -o - "$REPORT")"
 TWO_FRAME_GAP="$(plutil -extract metrics.metTwoFrameVideoGapTarget raw -o - "$REPORT")"
 EDGE_RETENTION="$(plutil -extract metrics.maximumFineDetailEdgeRetention raw -o - "$REPORT")"
 if [[ "$STATUS" != "passed" || "$PREAUTHORIZED" != "true" ]] ||
    [[ "$PREVIEW_GENERATED" != "true" || "$COPY_IDENTICAL" != "true" ]] ||
    [[ "$COPY_RESOLVED" != "true" || "$COPY_EVALUATED" != "true" ]] ||
-   [[ "$PROFILE" != "100" || "$REC709" != "true" ]]; then
+   [[ "$PROFILE" != "100" || "$SRGB" != "true" ]] ||
+   [[ "$CAPTURE_CODEC" != "hevc" || "$OUTPUT_CODEC" != "h264" || "$RAW_DELETED" != "true" ]]; then
   KEEP_DIAGNOSTICS=1
   cat "$REPORT" >&2
   cat "$ERRORS" >&2

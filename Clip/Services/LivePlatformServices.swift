@@ -195,6 +195,7 @@ final class LiveDisplayService: DisplayServicing {
         let id: CGDirectDisplayID
         let name: String
         let frame: CGRect
+        let backingScaleFactor: CGFloat
     }
 
     typealias AppKitDisplayProvider = @MainActor () -> [AppKitDisplaySnapshot]
@@ -212,7 +213,8 @@ final class LiveDisplayService: DisplayServicing {
                 return AppKitDisplaySnapshot(
                     id: id,
                     name: screen.localizedName,
-                    frame: screen.frame
+                    frame: screen.frame,
+                    backingScaleFactor: screen.backingScaleFactor
                 )
             }
         },
@@ -232,16 +234,24 @@ final class LiveDisplayService: DisplayServicing {
             uniquingKeysWith: { first, _ in first }
         )
 
-        return captureDisplays.map { display in
-            let screen = screensByID[display.id]
-            let resolvedFrame = screen?.frame ?? display.frame
-            let pointWidth = max(resolvedFrame.width, 1)
+        return captureDisplays.compactMap { display -> ClipDisplay? in
+            // ScreenCaptureKit and AppKit can briefly disagree during hotplug.
+            // Without AppKit's backing scale the native raster is unknown, so
+            // wait for the next discovery instead of silently recording at 1×.
+            guard let screen = screensByID[display.id],
+                  let geometry = CaptureSelectionGeometry.nativeDisplayGeometry(
+                    pointSize: screen.frame.size,
+                    backingScaleFactor: screen.backingScaleFactor
+                  ) else { return nil }
             return ClipDisplay(
                 id: display.id,
                 stableIdentifier: stableIdentifier(display.id),
-                name: screen?.name ?? String(localized: "Display"),
-                frame: resolvedFrame,
-                scaleFactor: CGFloat(max(display.pixelWidth, 1)) / pointWidth
+                name: screen.name,
+                frame: screen.frame,
+                // SCDisplay.width can describe the logical display mode,
+                // rather than its HiDPI compositor surface. Retake must use
+                // the same NSScreen backing scale as a fresh selection.
+                scaleFactor: geometry.scaleFactor
             )
         }
     }

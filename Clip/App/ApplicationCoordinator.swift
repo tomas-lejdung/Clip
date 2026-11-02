@@ -109,16 +109,19 @@ enum RecordingTerminationPolicy {
     }
 }
 
-enum RecordingCompletionFailureDisposition: Equatable {
-    case recordingFailed
-    case recordingSavedPreviewDeferred
-}
+/// A recording's status item is its direct Stop control. Other app roles retain
+/// their popover, while finalization ignores repeated clicks.
+enum RecordingStatusItemAction: Equatable {
+    case stopRecording
+    case togglePopover
+    case ignore
 
-enum RecordingCompletionPolicy {
-    static func failureDisposition(
-        recordingWasImported: Bool
-    ) -> RecordingCompletionFailureDisposition {
-        recordingWasImported ? .recordingSavedPreviewDeferred : .recordingFailed
+    static func resolve(recordingPhase: RecordingPhase) -> Self {
+        switch recordingPhase {
+        case .recording, .paused: .stopRecording
+        case .finishing: .ignore
+        default: .togglePopover
+        }
     }
 }
 
@@ -917,11 +920,18 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
     private var isPreparingCapture = false
     private var startupTask: Task<Void, Never>?
     private var captureEventTask: Task<Void, Never>?
+    /// A failed stream can still be finalizing playable media. Own that handoff
+    /// independently of the state machine's `.failed` presentation phase.
+    private var unexpectedStopRecoveryTask: Task<Void, Never>?
     private var maintenanceTask: Task<Void, Never>?
     private var settingsObservation: AnyCancellable?
     private var recordingState = RecordingStateMachine()
+    private var isStoppingFromStatusItem = false
     private var activeRecordingID: RecordingID?
     private var activeCaptureSettings: ClipSettings?
+    private var activePreparedCaptureTarget: PreparedCaptureTarget?
+    private var terminationUIWasRequested = false
+    private var retakeCleanupTask: Task<Void, Never>?
     private var unavailableRecordingAudioSources: Set<CapturedAudioSource> = []
     private var recordingAudioNotice: String?
     private var sessionSettingsByRecordingID: [RecordingID: ClipSettings] = [:]
@@ -998,9 +1008,17 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
             observeSettings()
             await applySettings(dependencies.settings.settings)
             guard !Task.isCancelled, !isPreparingForTermination else { return }
-            statusItem?.button?.isEnabled = true
-            presentMeshAcceptancePopoverIfNeeded()
             do {
+                let processingRecovery = await RecordingProcessingRecovery.recover(
+                    directories: dependencies.directories, history: dependencies.history)
+                for item in processingRecovery.recovered {
+                    sessionSettingsByRecordingID[item.id] = item.captureSessionSnapshot?
+                        .applying(to: dependencies.settings.settings)
+                }
+                for failure in processingRecovery.failures {
+                    ClipLog.storage.error("Unfinished recording retained for recovery: \(failure.reason, privacy: .public)")
+                }
+                guard !Task.isCancelled, !isPreparingForTermination else { return }
                 let recovery = try await dependencies.history.recoverInterruptedRecordings()
                 for recovered in recovery.recovered {
                     sessionSettingsByRecordingID[recovered.item.id] = recovered.settings
@@ -1030,6 +1048,8 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
                 )
             }
             guard !Task.isCancelled, !isPreparingForTermination else { return }
+            statusItem?.button?.isEnabled = true
+            presentMeshAcceptancePopoverIfNeeded()
             await refreshMenuBarModel()
             presentOnboardingIfNeeded()
             startMaintenanceLoop()
@@ -1088,6 +1108,7 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
         settingsWindowController = nil
         onboardingWindowController?.close()
         onboardingWindowController = nil
+        previewViewModel?.closeExpandedPreview(restoringEditor: false)
         previewWindowDelegate?.allowClose = true
         previewWindowController?.window?.orderOut(nil)
         previewWindowController?.close()
@@ -1106,7 +1127,8 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
 
     func closeForTermination() {
         isPreparingForTermination = true
-        stop(preservingLiveShareForTermination: true)
+        if terminationUIWasRequested { stop(preservingLiveShareForTermination: true) }
+        terminationUIWasRequested = true
     }
 
     /// Flushes user-visible state before AppKit allows process termination.
@@ -1116,6 +1138,11 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
     /// in-progress Retake is canceled so its original draft stays authoritative.
     func prepareForTermination() async {
         isPreparingForTermination = true
+        // Startup recovery owns the old working files and reader links. Settle
+        // that owner before any current Preview or settings are finalized.
+        let pendingStartup = startupTask
+        pendingStartup?.cancel()
+        await pendingStartup?.value
         maintenanceTask?.cancel()
         maintenanceTask = nil
 
@@ -1135,9 +1162,8 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
         friendJoinTimeoutTask = nil
         await meshFriendPresenceController?.stop()
         if pendingRetake != nil, recordingState.phase == .finishing {
-            // The in-flight replacement may still finish into History, but the
-            // original Preview remains authoritative when Quit interrupts the
-            // Retake handoff.
+            // The original Preview remains authoritative when Quit
+            // interrupts the temporary replacement's Retake handoff.
             cancelPendingRetake()
         }
 
@@ -1178,7 +1204,12 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
             }
         }
 
+        // Stream failure changes the state machine to `.failed` before its
+        // writer has finalized. Join the actual owner rather than treating
+        // that phase as proof that all capture work is already finished.
+        await unexpectedStopRecoveryTask?.value
         await waitForTerminalOperationHandoff()
+        await retakeCleanupTask?.value
         await persistAndReleasePreviewForTermination()
         await dependencies.settings.flushPendingPersistence()
         await dependencies.liveSharePreferences.flushPendingPersistence()
@@ -1197,28 +1228,10 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
     }
 
     private func persistAndReleasePreviewForTermination() async {
-        guard let viewModel = previewViewModel,
-              let context = previewLifecycleContext else {
-            return
-        }
-
+        guard let viewModel = previewViewModel, let context = previewLifecycleContext else { return }
         await viewModel.settleForTermination()
         guard previewLifecycleContext === context else { return }
-        do {
-            let session = await context.currentSession()
-            try await Self.persist(
-                viewModel.snapshotForPersistence(),
-                session: session,
-                in: dependencies.history
-            )
-            let closeResult = try await dependencies.history.endPreviewSession(session)
-            logPreviewCleanupFailure(closeResult.cleanupFailure)
-            closePreviewWindow(context: context)
-        } catch {
-            ClipLog.storage.error(
-                "Could not flush Preview during termination: \(error.localizedDescription, privacy: .public)"
-            )
-        }
+        await finishPreview(viewModel.snapshotForPersistence(), context: context)
     }
 
     private func installStatusItem() {
@@ -1480,7 +1493,24 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
 
     @objc
     private func togglePopover(_ sender: NSStatusBarButton) {
-        guard !isPreparingForTermination, dependencies.settings.isLoaded else { return }
+        guard !isPreparingForTermination, dependencies.settings.isLoaded,
+              !isStoppingFromStatusItem else { return }
+        switch RecordingStatusItemAction.resolve(recordingPhase: recordingState.phase) {
+        case .stopRecording:
+            popover.performClose(sender)
+            isStoppingFromStatusItem = true
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                defer { isStoppingFromStatusItem = false }
+                do { try await finishRecording() }
+                catch { /* finishRecording presents the actionable error. */ }
+            }
+            return
+        case .ignore:
+            return
+        case .togglePopover:
+            break
+        }
         if usesMeshAcceptanceWindow {
             presentMeshAcceptancePopoverIfNeeded()
             return
@@ -1751,6 +1781,7 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
     ) {
         guard !isStartingLiveShare,
               !isPreparingCapture,
+              unexpectedStopRecoveryTask == nil,
               !hasActiveLiveShareRole,
               recordingPresentationModel == nil,
               [.idle, .canceled, .failed, .preview].contains(
@@ -2361,7 +2392,8 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
     private func recordPreparedDisplay(_ displayID: CGDirectDisplayID) {
         guard !hasActiveLiveShareRole,
               !isStartingLiveShare,
-              !isPreparingCapture else {
+              !isPreparingCapture,
+              unexpectedStopRecoveryTask == nil else {
             NSSound.beep()
             return
         }
@@ -2371,7 +2403,8 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
             guard let self else { return }
             defer { isPreparingCapture = false }
             guard !hasActiveLiveShareRole,
-                  !isStartingLiveShare else {
+                  !isStartingLiveShare,
+                  unexpectedStopRecoveryTask == nil else {
                 NSSound.beep()
                 return
             }
@@ -2387,6 +2420,14 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
                 await refreshMenuBarModel()
                 return
             }
+            if let existing = previewViewModel, let context = previewLifecycleContext {
+                guard !existing.isBusy else { NSSound.beep(); return }
+                await existing.settleForTermination()
+                guard !isPreparingForTermination, previewLifecycleContext === context else { return }
+                await finishPreview(existing.snapshotForPersistence(), context: context)
+                guard previewLifecycleContext == nil else { return }
+            }
+            guard !isPreparingForTermination else { return }
 
             do {
                 let displays = try await dependencies.displays.availableDisplays()
@@ -2482,17 +2523,15 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
                 return nil
             }
             let displayID = CGDirectDisplayID(number.uint32Value)
-            let nativeWidth = Int(CGDisplayPixelsWide(displayID))
-            let nativeHeight = Int(CGDisplayPixelsHigh(displayID))
+            guard let geometry = CaptureSelectionGeometry.nativeDisplayGeometry(
+                pointSize: screen.frame.size,
+                backingScaleFactor: screen.backingScaleFactor
+            ) else { return nil }
             return MenuBarDisplayRow(
                 id: displayID,
                 name: screen.localizedName,
-                pixelWidth: nativeWidth > 0
-                    ? nativeWidth
-                    : Int((screen.frame.width * screen.backingScaleFactor).rounded()),
-                pixelHeight: nativeHeight > 0
-                    ? nativeHeight
-                    : Int((screen.frame.height * screen.backingScaleFactor).rounded())
+                pixelWidth: Int(geometry.pixelSize.width),
+                pixelHeight: Int(geometry.pixelSize.height)
             )
         }
         menuBarModel.replaceDisplays(displayRows)
@@ -2601,7 +2640,8 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
     private func requestSelection(mode: CaptureMode) {
         guard !hasActiveLiveShareRole,
               !isStartingLiveShare,
-              !isPreparingCapture else {
+              !isPreparingCapture,
+              unexpectedStopRecoveryTask == nil else {
             NSSound.beep()
             return
         }
@@ -2623,7 +2663,9 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
     }
 
     private func handleGlobalShortcut(_ action: GlobalShortcutAction) {
-        guard !hasActiveLiveShareRole,
+        guard startupTask == nil,
+              !isPreparingForTermination,
+              !hasActiveLiveShareRole,
               !isStartingLiveShare else {
             NSSound.beep()
             return
@@ -2685,7 +2727,8 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
     }
 
     private func presentSelection(mode: CaptureMode) async {
-        guard CaptureSelectionPresentationPolicy.permitsSelection(
+        guard unexpectedStopRecoveryTask == nil,
+              CaptureSelectionPresentationPolicy.permitsSelection(
             recordingPhase: recordingState.phase,
             hasVisiblePreview: previewWindowController?.window?.isVisible == true
         ) else {
@@ -2693,6 +2736,14 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
             return
         }
         guard await ensureScreenRecordingPermission() else { return }
+        if let viewModel = previewViewModel, let context = previewLifecycleContext {
+            guard !viewModel.isBusy else { NSSound.beep(); return }
+            await viewModel.settleForTermination()
+            guard !isPreparingForTermination, previewLifecycleContext === context else { return }
+            await finishPreview(viewModel.snapshotForPersistence(), context: context)
+            guard previewLifecycleContext == nil else { return }
+        }
+        guard !isPreparingForTermination else { return }
 
         do {
             try recordingState.beginSelection(mode: mode)
@@ -2786,6 +2837,7 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
                     mode: .captureApplication
                 )
                 try await dependencies.capture.prepare(preparedTarget)
+                activePreparedCaptureTarget = preparedTarget
                 activeCaptureSettings = captureSettings
                 _ = try recordingState.start(
                     countdown: captureSettings.countdown,
@@ -2842,6 +2894,7 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
                 }
                 try recordingState.prepare(target: preparedTarget.domainTarget, mode: mode)
                 try await dependencies.capture.prepare(preparedTarget)
+                activePreparedCaptureTarget = preparedTarget
                 activeCaptureSettings = captureSettings
                 _ = try recordingState.start(
                     countdown: activeCaptureSettings?.countdown ?? .off,
@@ -2981,83 +3034,133 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
         }
         regionOutlineController.hide()
         updateRecordingPresentation()
-
-        var completedItem: RecordingHistoryItem?
+        let settings = activeCaptureSettings ?? dependencies.settings.settings
+        let retake = pendingRetake
+        var context: PreviewLifecycleContext?
         do {
-            let completedCaptureSettings = activeCaptureSettings ?? dependencies.settings.settings
-            defer {
-                activeRecordingID = nil
-                activeCaptureSettings = nil
-                unavailableRecordingAudioSources.removeAll()
-                recordingAudioNotice = nil
+            // The shell appears before AVAssetWriter finalization, inspection,
+            // or compression. It has no player until a valid candidate exists.
+            if retake == nil, let id = activeRecordingID, let target = activePreparedCaptureTarget {
+                let duration = max(0.1, (try? recordingState.timeline.activeDuration(at: currentInstant())) ?? 0.1)
+                let size = try PixelSize(width: target.outputWidth, height: target.outputHeight)
+                let recording = try PreviewRecording(id: id,
+                    sourceURL: dependencies.directories.captureStaging.appendingPathComponent("\(id.description).mp4"),
+                    duration: duration, pixelSize: size, frameRate: settings.frameRate,
+                    audioConfiguration: settings.audio,
+                    filename: settings.defaultFilenameTemplate.filename(at: Date(), timeZone: .current),
+                    trimRange: .full(recordingDuration: duration),
+                    retakePlan: .init(target: target.domainTarget, settings: settings, usesExactSessionSettings: true))
+                let prepared = PreviewLifecycleContext()
+                context = prepared
+                showPreview(recording, context: prepared,
+                    processing: .init(options: settings.recordingProcessing, nativePixelSize: size))
+            } else if retake != nil, let target = activePreparedCaptureTarget {
+                previewViewModel?.updateProcessingState(.init(options: settings.recordingProcessing,
+                    nativePixelSize: try PixelSize(width: target.outputWidth, height: target.outputHeight)))
+                previewWindowController?.window?.makeKeyAndOrderFront(nil)
             }
             let artifact = try await dependencies.capture.finish()
-            let item = try await importArtifact(
-                artifact,
-                captureSettings: completedCaptureSettings
-            )
-            completedItem = item
-            sessionSettingsByRecordingID[item.id] = completedCaptureSettings
-            _ = try recordingState.completeFinish(recordingID: item.id)
-        } catch {
-            let recordingWasImported = completedItem != nil
-            handleRecordingCompletionFailure(
-                error,
-                recordingWasImported: recordingWasImported
-            )
-            guard !recordingWasImported else { return }
-            throw error
-        }
+            activeRecordingID = nil
+            activeCaptureSettings = nil
+            activePreparedCaptureTarget = nil
+            unavailableRecordingAudioSources.removeAll()
+            recordingAudioNotice = nil
+            let session = try await RecordingProcessingSession.create(artifact: artifact,
+                captureSettings: settings, directories: dependencies.directories)
+            _ = try recordingState.completeFinish(recordingID: artifact.id)
+            sessionSettingsByRecordingID[artifact.id] = settings
+            recordingPresentationModel = nil
+            installIdlePopover()
+            updateStatusIcon(symbol: "record.circle", description: String(localized: "Clip"))
 
-        guard let item = completedItem else { return }
-
-        recordingPresentationModel = nil
-        guard !isPreparingForTermination else { return }
-        installIdlePopover()
-        await refreshMenuBarModel()
-        updateStatusIcon(symbol: "record.circle", description: String(localized: "Clip"))
-
-        do {
-            if pendingRetake != nil {
-                try await completePendingRetake(with: item)
+            if let retake {
+                guard pendingRetake === retake else { await session.discard(); return }
+                do {
+                    let replacement = try await processSession(session, context: nil, retake: retake)
+                    guard pendingRetake === retake else { await session.discard(); return }
+                    try await completePendingRetake(with: session, recording: replacement)
+                } catch {
+                    if pendingRetake !== retake { await session.discard(); return }
+                    failPendingRetake(error)
+                    throw error
+                }
             } else {
-                try await presentPreview(item)
+                let targetContext = context ?? PreviewLifecycleContext()
+                targetContext.processingSession = session
+                if context == nil {
+                    showPreview(try session.previewRecording(), context: targetContext,
+                        processing: .init(options: session.options, nativePixelSize: session.nativePixelSize))
+                }
+                do {
+                    let recording = try await processSession(session, context: targetContext)
+                    if previewLifecycleContext === targetContext {
+                        previewViewModel?.replaceRecording(recording, preservingEdits: false)
+                        previewViewModel?.updateProcessingState(.init(options: session.options,
+                            nativePixelSize: session.nativePixelSize, phase: .ready))
+                    }
+                    rememberProcessingOptions(session.options)
+                    if isPreparingForTermination {
+                        await finishPreview(recording, context: targetContext)
+                    }
+                } catch {
+                    if previewLifecycleContext === targetContext {
+                        previewViewModel?.updateProcessingState(.init(options: session.options,
+                            nativePixelSize: session.nativePixelSize, phase: .failed,
+                            message: UserFacingErrorPresentation.details(for: error).message))
+                    }
+                    // The persistent session owns the original and can retry.
+                    // A processing failure is not a capture failure or deletion.
+                    ClipLog.capture.error("Recording processing failed: \(error.localizedDescription, privacy: .public)")
+                }
             }
+            await refreshMenuBarModel()
         } catch {
-            handleRecordingCompletionFailure(
-                error,
-                recordingWasImported: true
-            )
-        }
-    }
-
-    private func handleRecordingCompletionFailure(
-        _ error: any Error,
-        recordingWasImported: Bool
-    ) {
-        switch RecordingCompletionPolicy.failureDisposition(
-            recordingWasImported: recordingWasImported
-        ) {
-        case .recordingFailed:
-            try? failRecording(code: .encodingFailed, error: error)
-            resetAfterTerminalState()
+            activeRecordingID = nil
+            activeCaptureSettings = nil
+            activePreparedCaptureTarget = nil
+            if let context, previewLifecycleContext === context {
+                if var state = previewViewModel?.processingState {
+                    state.phase = .failed
+                    state.message = UserFacingErrorPresentation.details(for: error).message
+                    previewViewModel?.updateProcessingState(state)
+                }
+            }
             failPendingRetake(error)
-            presentError(title: "Recording Couldn’t Finish", error: error)
-
-        case .recordingSavedPreviewDeferred:
             if recordingState.phase == .finishing {
-                // The MP4 is already durable in History. Recover coordinator
-                // bookkeeping without reclassifying that recording as failed.
                 try? failRecording(code: .encodingFailed, error: error)
                 resetAfterTerminalState()
             }
-            failPendingRetake(error)
-            presentError(
-                title: "Recording Saved",
-                error: RecordingSavedPreviewDeferredError(
-                    technicalDescription: error.localizedDescription
-                )
-            )
+            throw error
+        }
+    }
+
+    private func processSession(_ session: RecordingProcessingSession,
+                                context: PreviewLifecycleContext?,
+                                retake: PendingRetake? = nil) async throws -> PreviewRecording {
+        let task = Task { @MainActor [weak self] in
+            try await session.process(options: session.options) { [weak self] phase, fraction in
+                guard let self else { return }
+                if let context, self.previewLifecycleContext !== context { return }
+                if let retake, self.pendingRetake !== retake { return }
+                self.previewViewModel?.updateProcessingState(.init(options: session.options,
+                    nativePixelSize: session.nativePixelSize, phase: phase, progress: fraction))
+            }
+        }
+        context?.initialProcessingTask = task
+        retake?.processingSession = session
+        retake?.processingTask = task
+        defer {
+            context?.initialProcessingTask = nil
+            retake?.processingTask = nil
+        }
+        return try await task.value
+    }
+
+    private func rememberProcessingOptions(_ options: RecordingProcessingOptions) {
+        guard options.isValid else { return }
+        dependencies.settings.updateImmediately {
+            $0.recordingProcessing.scale = options.scale
+            $0.recordingProcessing.crf = options.crf
         }
     }
 
@@ -3167,6 +3270,7 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
 
         case let .failure(sessionIdentifier, message):
             guard activeRecordingID?.rawValue == sessionIdentifier else { return }
+            guard unexpectedStopRecoveryTask == nil else { return }
             guard recordingState.phase == .recording || recordingState.phase == .paused else { return }
             let failure = RecordingFailure(code: .streamFailed, technicalDescription: message)
             let presentationError = CaptureStoppedError(message: message)
@@ -3179,8 +3283,12 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
                 )
                 return
             }
-            Task { @MainActor [weak self] in
+            // Capture this before scheduling: Quit may cancel the Retake
+            // continuation before the recovery task gets its first turn.
+            let interruptedRetake = pendingRetake
+            unexpectedStopRecoveryTask = Task { @MainActor [weak self] in
                 guard let self else { return }
+                defer { unexpectedStopRecoveryTask = nil }
                 // The event matched when it was dequeued, but this task may run
                 // after cancellation and a later capture have replaced it.
                 guard activeRecordingID?.rawValue == sessionIdentifier else { return }
@@ -3195,26 +3303,20 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
                 do {
                     let completedCaptureSettings = activeCaptureSettings
                         ?? dependencies.settings.settings
-                    defer {
-                        activeRecordingID = nil
-                        activeCaptureSettings = nil
-                    }
+                    regionOutlineController.hide()
                     let artifact = try await dependencies.capture.finish()
-                    let item = try await importArtifact(
-                        artifact,
-                        captureSettings: completedCaptureSettings
-                    )
-                    sessionSettingsByRecordingID[item.id] = completedCaptureSettings
-                    _ = try recordingState.recoverPlayableOutput(recordingID: item.id)
+                    activeRecordingID = nil
+                    activeCaptureSettings = nil
+                    activePreparedCaptureTarget = nil
+                    unavailableRecordingAudioSources.removeAll()
+                    recordingAudioNotice = nil
+                    _ = try recordingState.recoverPlayableOutput(recordingID: artifact.id)
                     recordingPresentationModel = nil
                     installIdlePopover()
-                    await refreshMenuBarModel()
                     updateStatusIcon(symbol: "record.circle", description: String(localized: "Clip"))
-                    if pendingRetake != nil {
-                        try await completePendingRetake(with: item)
-                    } else {
-                        try await presentPreview(item)
-                    }
+                    try await presentRecoveredArtifact(artifact,
+                        captureSettings: completedCaptureSettings, retake: interruptedRetake)
+                    await refreshMenuBarModel()
                     presentError(title: "Recording Ended Early", error: presentationError)
                 } catch {
                     failPendingRetake(error)
@@ -3225,109 +3327,108 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
         }
     }
 
-    private func importArtifact(
-        _ artifact: RecordingArtifact,
-        captureSettings: ClipSettings
-    ) async throws -> RecordingHistoryItem {
-        let createdAt = Date()
-        return try await dependencies.history.importFinalizedRecording(
-            FinalizedRecordingImport(
-                id: artifact.id,
-                sourceURL: artifact.fileURL,
-                createdAt: createdAt,
-                filenameTemplate: captureSettings.defaultFilenameTemplate,
-                duration: artifact.duration,
-                pixelSize: artifact.pixelSize,
-                frameRate: artifact.frameRate,
-                audioConfiguration: artifact.audioConfiguration,
-                captureTarget: artifact.captureTarget,
-                captureSessionSnapshot: CaptureSessionSnapshot(settings: captureSettings),
-                exportConfiguration: dependencies.settings.settings.exportConfiguration
-            )
-        )
+    /// An early-ended recording still gets the editable first-preview session.
+    /// Its raw capture is retained until the selected processed Source is saved
+    /// on Close, exactly as for an ordinary Stop.
+    private func presentRecoveredArtifact(_ artifact: RecordingArtifact,
+                                          captureSettings: ClipSettings,
+                                          retake: PendingRetake?) async throws {
+        let session = try await RecordingProcessingSession.create(artifact: artifact,
+            captureSettings: captureSettings, directories: dependencies.directories)
+        sessionSettingsByRecordingID[artifact.id] = captureSettings
+        if let retake {
+            guard pendingRetake === retake else { await session.discard(); return }
+            previewViewModel?.updateProcessingState(.init(options: session.options,
+                nativePixelSize: session.nativePixelSize))
+            do {
+                let replacement = try await processSession(session, context: nil, retake: retake)
+                guard pendingRetake === retake else { await session.discard(); return }
+                try await completePendingRetake(with: session, recording: replacement)
+            } catch {
+                if pendingRetake !== retake { await session.discard(); return }
+                // Keep a failed replacement's journal and original for recovery;
+                // the previous Preview remains the authoritative recording.
+                failPendingRetake(error)
+                throw error
+            }
+            return
+        }
+
+        let context = PreviewLifecycleContext()
+        context.processingSession = session
+        showPreview(try session.previewRecording(), context: context,
+            processing: .init(options: session.options, nativePixelSize: session.nativePixelSize))
+        do {
+            let recording = try await processSession(session, context: context)
+            if previewLifecycleContext === context {
+                previewViewModel?.replaceRecording(recording, preservingEdits: false)
+                previewViewModel?.updateProcessingState(.init(options: session.options,
+                    nativePixelSize: session.nativePixelSize, phase: .ready))
+            }
+            rememberProcessingOptions(session.options)
+            if isPreparingForTermination { await finishPreview(recording, context: context) }
+        } catch {
+            if previewLifecycleContext === context {
+                previewViewModel?.updateProcessingState(.init(options: session.options,
+                    nativePixelSize: session.nativePixelSize, phase: .failed,
+                    message: UserFacingErrorPresentation.details(for: error).message))
+            }
+            ClipLog.capture.error("Recovered recording processing failed; original retained: \(error.localizedDescription, privacy: .public)")
+        }
     }
 
     private func presentPreview(_ item: RecordingHistoryItem) async throws {
         guard !isPreparingForTermination else { return }
-        if let existingWindow = previewWindowController?.window {
-            guard let existingViewModel = previewViewModel,
-                  let existingContext = previewLifecycleContext else {
-                existingWindow.close()
-                previewWindowController = nil
-                previewWindowDelegate = nil
-                previewViewModel = nil
-                previewLifecycleContext = nil
-                return try await presentPreview(item)
-            }
-            if existingViewModel.recording.id == item.id {
-                existingWindow.makeKeyAndOrderFront(nil)
+        if let existing = previewViewModel, let context = previewLifecycleContext {
+            if existing.recording.id == item.id {
+                previewWindowController?.window?.makeKeyAndOrderFront(nil)
                 NSApp.activate(ignoringOtherApps: true)
                 return
             }
-            guard !existingViewModel.isBusy else {
-                throw PreviewPresentationError.operationInProgress
-            }
-
-            let existingSession = await existingContext.currentSession()
-            try await Self.persist(
-                existingViewModel.snapshotForPersistence(),
-                session: existingSession,
-                in: dependencies.history
-            )
-            let closeResult = try await dependencies.history.endPreviewSession(existingSession)
-            logPreviewCleanupFailure(closeResult.cleanupFailure)
-            closePreviewWindow(context: existingContext)
+            guard !existing.isBusy else { throw PreviewPresentationError.operationInProgress }
+            await existing.settleForTermination()
+            guard !isPreparingForTermination, previewLifecycleContext === context else { return }
+            await finishPreview(existing.snapshotForPersistence(), context: context)
+            guard previewLifecycleContext == nil else { throw PreviewPresentationError.operationInProgress }
         }
-        let sourceURL = try await dependencies.history.masterURL(for: item.id)
-        let retakePlan = PreviewRetakePlan(
-            historyItem: item,
-            currentSettings: dependencies.settings.settings,
-            inMemorySessionSettings: sessionSettingsByRecordingID[item.id]
-        )
-        let recording = try PreviewRecording(
-            id: item.id,
-            sourceURL: sourceURL,
-            duration: item.recordingDuration,
-            pixelSize: item.pixelSize,
-            frameRate: item.frameRate,
-            audioConfiguration: item.audioConfiguration,
-            filename: item.filename,
-            trimRange: item.trimRange,
-            exportConfiguration: item.exportConfiguration,
-            exportQualities: dependencies.settings.settings.exportQualities,
-            sourceVideoQualityPercent: item.managedMasterVideoQualityPercent,
-            exportAudioPreference: item.exportAudioPreference,
-            approximateExportByteCount: item.managedByteCount,
-            retakePlan: retakePlan
-        )
-        let previewSession = try await dependencies.history.beginPreviewSession(id: item.id)
-        let lifecycleContext = PreviewLifecycleContext(session: previewSession)
-        let actions = makePreviewActions(context: lifecycleContext)
-        let viewModel = PreviewViewModel(recording: recording, actions: actions)
-        let panel = NSPanel(
-            contentRect: CGRect(x: 0, y: 0, width: 820, height: 650),
-            styleMask: [.titled, .closable, .miniaturizable, .resizable],
-            backing: .buffered,
-            defer: false
-        )
-        panel.title = item.filename.fileName
+        guard !isPreparingForTermination else { return }
+        let recording = try await previewRecording(for: item)
+        let session = try await dependencies.history.beginPreviewSession(id: item.id)
+        showPreview(recording, context: PreviewLifecycleContext(session: session), processing: nil)
+    }
+
+    private func previewRecording(for item: RecordingHistoryItem) async throws -> PreviewRecording {
+        try PreviewRecording(id: item.id, sourceURL: await dependencies.history.masterURL(for: item.id),
+            duration: item.recordingDuration, pixelSize: item.pixelSize, frameRate: item.frameRate,
+            audioConfiguration: item.audioConfiguration, filename: item.filename, trimRange: item.trimRange,
+            exportAudioPreference: item.exportAudioPreference, approximateExportByteCount: item.managedByteCount,
+            retakePlan: .init(historyItem: item, currentSettings: dependencies.settings.settings,
+                inMemorySessionSettings: sessionSettingsByRecordingID[item.id]))
+    }
+
+    private func showPreview(_ recording: PreviewRecording, context: PreviewLifecycleContext,
+                             processing: PreviewProcessingState?) {
+        let viewModel = PreviewViewModel(recording: recording,
+            actions: makePreviewActions(context: context), processingState: processing)
+        let panel = NSPanel(contentRect: CGRect(x: 0, y: 0, width: 820, height: 650),
+            styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
+        panel.title = recording.filename.fileName
         panel.isReleasedWhenClosed = false
         panel.hidesOnDeactivate = false
         panel.level = .floating
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
-        panel.contentViewController = NSHostingController(
-            rootView: PreviewView(viewModel: viewModel)
-        )
+        panel.contentViewController = NSHostingController(rootView: PreviewView(viewModel: viewModel))
+        viewModel.editorWindow = panel
         let controller = NSWindowController(window: panel)
-        let windowDelegate = PreviewWindowDelegate(viewModel: viewModel)
-        panel.delegate = windowDelegate
+        let delegate = PreviewWindowDelegate(viewModel: viewModel)
+        panel.delegate = delegate
         previewWindowController = controller
-        previewWindowDelegate = windowDelegate
+        previewWindowDelegate = delegate
         previewViewModel = viewModel
-        previewLifecycleContext = lifecycleContext
+        previewLifecycleContext = context
         controller.showWindow(nil)
         panel.center()
-        NSApp.activate(ignoringOtherApps: true)
+        if !isPreparingForTermination { NSApp.activate(ignoringOtherApps: true) }
     }
 
     private func makePreviewActions(context: PreviewLifecycleContext) -> PreviewActions {
@@ -3336,98 +3437,94 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
         let pasteboard = dependencies.pasteboard
         let sharing = dependencies.sharing
         let settingsModel = dependencies.settings
-        let currentSharePreferences: @MainActor @Sendable () -> SharePreferences = {
-            SharePreferences(settings: settingsModel.settings)
-        }
-
+        let exportsDirectory = dependencies.directories.exports
         return PreviewActions(
             export: { request in
-                let preferences = await currentSharePreferences()
-                let session = await context.currentSession()
-                try await Self.persist(request, session: session, in: history)
+                try await Self.persist(request, context: context, in: history)
                 let publication = try await exports.exportForPublication(request)
-                let outputURL = publication.outputURL
-                let publicationWarning = await Self.publishManagedExport(
-                    request,
-                    lease: publication,
-                    through: exports
-                )
-                return await Self.registerPreviewShare(
-                    id: request.recordingID,
-                    outputURL: outputURL,
-                    videoQualityPercent: request.videoQualityPercent,
-                    preferences: preferences,
-                    previewSession: session,
-                    history: history,
-                    priorWarning: publicationWarning
-                )
+                let warning = await Self.publishManagedExport(request, lease: publication, through: exports)
+                return await Self.registerPreviewShare(id: request.recordingID, outputURL: publication.outputURL,
+                    previewSession: await context.currentSession(for: request.recordingID), history: history,
+                    priorWarning: warning)
             },
             copy: { request in
-                let preferences = currentSharePreferences()
-                let session = await context.currentSession()
-                try await Self.persist(request, session: session, in: history)
+                try await Self.persist(request, context: context, in: history)
                 let publication = try await exports.exportForPublication(request)
-                let outputURL = publication.outputURL
-                do {
-                    try pasteboard.placeFile(at: outputURL)
-                } catch {
-                    await exports.cancelPublication(publication)
-                    throw error
-                }
-                let publicationWarning = await Self.publishManagedExport(
-                    request,
-                    lease: publication,
-                    through: exports
-                )
-                return await Self.registerPreviewShare(
-                    id: request.recordingID,
-                    outputURL: outputURL,
-                    videoQualityPercent: request.videoQualityPercent,
-                    preferences: preferences,
-                    previewSession: session,
-                    history: history,
-                    shouldClosePreview: preferences.closePreviewAfterCopy,
-                    priorWarning: publicationWarning
-                )
+                do { try pasteboard.placeFile(at: publication.outputURL) }
+                catch { await exports.cancelPublication(publication); throw error }
+                let warning = await Self.publishManagedExport(request, lease: publication, through: exports)
+                return await Self.registerPreviewShare(id: request.recordingID, outputURL: publication.outputURL,
+                    previewSession: context.currentSession(for: request.recordingID), history: history,
+                    shouldClosePreview: settingsModel.settings.automaticallyClosePreviewAfterCopy,
+                    priorWarning: warning)
             },
             save: { request in
-                let preferences = currentSharePreferences()
-                let session = await context.currentSession()
-                try await Self.persist(request, session: session, in: history)
+                try await Self.persist(request, context: context, in: history)
                 guard let outputURL = try await sharing.saveAs(request) else { return nil }
-                return await Self.registerPreviewShare(
-                    id: request.recordingID,
-                    outputURL: outputURL,
-                    videoQualityPercent: request.videoQualityPercent,
-                    preferences: preferences,
-                    previewSession: session,
-                    history: history
-                )
+                return await Self.registerPreviewShare(id: request.recordingID, outputURL: outputURL,
+                    previewSession: context.currentSession(for: request.recordingID), history: history)
             },
-            retake: { [weak self] recording in
-                try await self?.beginRetake(recording, context: context)
-            },
-            done: { [weak self] recording in
-                let session = await context.currentSession()
-                try await Self.persist(recording, session: session, in: history)
-                let closeResult = try await history.endPreviewSession(session)
-                self?.logPreviewCleanupFailure(closeResult.cleanupFailure)
-                self?.closePreviewWindow(context: context)
-            },
+            retake: { [weak self] recording in try await self?.beginRetake(recording, context: context) },
+            done: { [weak self] recording in await self?.finishPreview(recording, context: context) },
             delete: { [weak self] recording in
-                let session = await context.currentSession()
-                _ = try await history.delete(
-                    id: recording.id,
-                    previewSession: session
-                )
-                let closeResult = try await history.endPreviewSession(session)
-                self?.logPreviewCleanupFailure(closeResult.cleanupFailure)
+                if let pending = context.processingSession { await pending.discard() }
+                else if let session = context.currentSession(for: recording.id) {
+                    _ = try await history.delete(id: recording.id, previewSession: session)
+                    let result = try await history.endPreviewSession(session)
+                    self?.logPreviewCleanupFailure(result.cleanupFailure)
+                }
+                context.isClosed = true
                 self?.closePreviewWindow(context: context)
             },
-            reveal: { url in
-                NSWorkspace.shared.activateFileViewerSelecting([url])
+            reveal: { NSWorkspace.shared.activateFileViewerSelecting([$0]) },
+            process: { options, snapshot, progress in
+                guard !context.isClosed, let session = context.processingSession, session.id == snapshot.id else {
+                    throw ProcessingSessionFailure("This Source has already been saved.")
+                }
+                try session.updateMetadata(snapshot)
+                return try await session.process(options: options, progress: progress)
+            },
+            processingOptionsChanged: { [weak self] options in self?.rememberProcessingOptions(options) },
+            acquireSourceLease: { request in
+                try RecordingDragSourceLease(source: request.sourceURL, exportsDirectory: exportsDirectory)
+            },
+            prepareExport: { request in
+                let output = try await exports.export(request)
+                try await Self.persist(request, context: context, in: history)
+                return output
             }
         )
+    }
+
+    /// All window, Done, Copy-auto-close, replacement, and Quit paths converge
+    /// here. A failed encode retains the journal/original for recovery and never
+    /// traps the rest of the app behind an uncloseable Preview.
+    private func finishPreview(_ recording: PreviewRecording, context: PreviewLifecycleContext) async {
+        guard !context.isClosed, !context.isClosing else { return }
+        context.isClosing = true
+        defer { context.isClosing = false }
+        var finalRecording = recording
+        if let task = context.initialProcessingTask, let ready = try? await task.value {
+            finalRecording = ready
+        }
+        do {
+            if let pending = context.processingSession {
+                _ = try await pending.commit(recording: finalRecording, history: dependencies.history)
+            } else if let session = context.currentSession(for: recording.id) {
+                do {
+                    try await Self.persist(recording, session: session, in: dependencies.history)
+                } catch {
+                    ClipLog.storage.error("Preview changes could not be saved; releasing its reader: \(error.localizedDescription, privacy: .public)")
+                }
+                let result = try await dependencies.history.endPreviewSession(session)
+                logPreviewCleanupFailure(result.cleanupFailure)
+            }
+        } catch {
+            ClipLog.storage.error("Preview closed with original retained for recovery: \(error.localizedDescription, privacy: .public)")
+        }
+        context.isClosed = true
+        closePreviewWindow(context: context)
+        await refreshMenuBarModel()
     }
 
     private func beginRetake(
@@ -3438,7 +3535,7 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
               !isStartingLiveShare else {
             throw PreviewRetakeCoordinatorError.liveShareActive
         }
-        guard !isPreparingCapture else {
+        guard !isPreparingCapture, unexpectedStopRecoveryTask == nil else {
             throw PreviewRetakeCoordinatorError.retakeAlreadyActive
         }
         isPreparingCapture = true
@@ -3456,7 +3553,9 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
         }
 
         let prepared = try await preparedRetakeTarget(for: plan.target)
-        let retakeSettings = await resolvedCaptureSettings(plan.settings)
+        var requestedSettings = plan.settings
+        requestedSettings.recordingProcessing = dependencies.settings.settings.recordingProcessing
+        let retakeSettings = await resolvedCaptureSettings(requestedSettings)
         let mode: CaptureMode
         switch plan.target {
         case .fullscreen:
@@ -3471,6 +3570,7 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
 
         try recordingState.prepare(target: prepared.domainTarget, mode: mode)
         try await dependencies.capture.prepare(prepared)
+        activePreparedCaptureTarget = prepared
         activeCaptureSettings = retakeSettings
         _ = try recordingState.start(
             countdown: retakeSettings.countdown,
@@ -3481,6 +3581,7 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
             pendingRetake = PendingRetake(
                 originalRecording: recording,
                 context: context,
+                originalProcessingState: previewViewModel?.processingState,
                 continuation: continuation
             )
             previewWindowController?.window?.orderBack(nil)
@@ -3603,79 +3704,45 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
         )
     }
 
-    private func completePendingRetake(with item: RecordingHistoryItem) async throws {
-        guard let pendingRetake else {
-            throw PreviewRetakeCoordinatorError.missingPendingRetake
-        }
-        let sourceURL = try await dependencies.history.masterURL(for: item.id)
-        let inMemorySettings = sessionSettingsByRecordingID[item.id]
-            ?? activeCaptureSettings
-        let retakePlan = PreviewRetakePlan(
-            historyItem: item,
-            currentSettings: dependencies.settings.settings,
-            inMemorySessionSettings: inMemorySettings
-        )
-        let replacement = try PreviewRecording(
-            id: item.id,
-            sourceURL: sourceURL,
-            duration: item.recordingDuration,
-            pixelSize: item.pixelSize,
-            frameRate: item.frameRate,
-            audioConfiguration: item.audioConfiguration,
-            filename: item.filename,
-            trimRange: item.trimRange,
-            exportConfiguration: item.exportConfiguration,
-            exportQualities: dependencies.settings.settings.exportQualities,
-            sourceVideoQualityPercent: item.managedMasterVideoQualityPercent,
-            exportAudioPreference: item.exportAudioPreference,
-            approximateExportByteCount: item.managedByteCount,
-            retakePlan: retakePlan
-        )
-        let replacementSession = try await dependencies.history.beginPreviewSession(id: item.id)
+    private func completePendingRetake(with session: RecordingProcessingSession,
+                                      recording replacement: PreviewRecording) async throws {
+        guard let pendingRetake else { await session.discard(); return }
+        let context = pendingRetake.context
         let history = dependencies.history
         let originalID = pendingRetake.originalRecording.id
-        let context = pendingRetake.context
-        let result = PreviewRetakeResult(
-            recording: replacement,
+        let originalState = pendingRetake.originalProcessingState
+        let result = PreviewRetakeResult(recording: replacement,
             commitInstallation: { [weak self] in
-                let originalSession = await context.currentSession()
-                _ = try await history.delete(
-                    id: originalID,
-                    previewSession: originalSession
-                )
-                let closeResult = try await history.endPreviewSession(originalSession)
-                await context.install(session: replacementSession)
+                if let original = context.processingSession { await original.discard() }
+                else if let originalSession = context.currentSession(for: originalID) {
+                    _ = try await history.delete(id: originalID, previewSession: originalSession)
+                    let result = try await history.endPreviewSession(originalSession)
+                    self?.logPreviewCleanupFailure(result.cleanupFailure)
+                }
+                context.install(processing: session)
                 self?.sessionSettingsByRecordingID[originalID] = nil
-                self?.logPreviewCleanupFailure(closeResult.cleanupFailure)
+                self?.previewViewModel?.updateProcessingState(.init(options: session.options,
+                    nativePixelSize: session.nativePixelSize, phase: .ready))
+                self?.rememberProcessingOptions(session.options)
             },
             discardReplacement: { [weak self] in
-                do {
-                    _ = try await history.delete(
-                        id: item.id,
-                        previewSession: replacementSession
-                    )
-                    let closeResult = try await history.endPreviewSession(replacementSession)
-                    self?.logPreviewCleanupFailure(closeResult.cleanupFailure)
-                } catch {
-                    ClipLog.storage.error(
-                        "Could not discard an uninstalled retake: \(error.localizedDescription, privacy: .public)"
-                    )
-                }
-                self?.sessionSettingsByRecordingID[item.id] = nil
-            }
-        )
-
+                await session.discard()
+                self?.previewViewModel?.updateProcessingState(originalState)
+                self?.sessionSettingsByRecordingID[session.id] = nil
+            })
         self.pendingRetake = nil
-        if !isPreparingForTermination {
-            previewWindowController?.window?.makeKeyAndOrderFront(nil)
-            NSApp.activate(ignoringOtherApps: true)
-        }
+        if !isPreparingForTermination { previewWindowController?.window?.makeKeyAndOrderFront(nil) }
         pendingRetake.succeed(result)
     }
 
     private func cancelPendingRetake() {
         guard let pendingRetake else { return }
         self.pendingRetake = nil
+        pendingRetake.processingTask?.cancel()
+        if let session = pendingRetake.processingSession {
+            retakeCleanupTask = Task { await session.discard() }
+        }
+        previewViewModel?.updateProcessingState(pendingRetake.originalProcessingState)
         if !isPreparingForTermination {
             previewWindowController?.window?.makeKeyAndOrderFront(nil)
             NSApp.activate(ignoringOtherApps: true)
@@ -3686,6 +3753,7 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
     private func failPendingRetake(_ error: any Error) {
         guard let pendingRetake else { return }
         self.pendingRetake = nil
+        previewViewModel?.updateProcessingState(pendingRetake.originalProcessingState)
         if !isPreparingForTermination {
             previewWindowController?.window?.makeKeyAndOrderFront(nil)
             NSApp.activate(ignoringOtherApps: true)
@@ -3698,66 +3766,33 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
     /// keeps the managed original and becomes an inline warning, never a false
     /// report that the external operation failed.
     private nonisolated static func registerPreviewShare(
-        id: RecordingID,
-        outputURL: URL,
-        videoQualityPercent: Int,
-        preferences: SharePreferences,
-        previewSession: ManagedHistoryPreviewSession,
-        history: ManagedHistoryRepository,
-        shouldClosePreview: Bool = false,
-        priorWarning: String? = nil
+        id: RecordingID, outputURL: URL, previewSession: ManagedHistoryPreviewSession?,
+        history: ManagedHistoryRepository, shouldClosePreview: Bool = false, priorWarning: String? = nil
     ) async -> PreviewShareOutcome {
         do {
-            let result = try await history.registerSuccessfulExport(
-                id: id,
-                exportedFileURL: outputURL,
-                retentionPolicy: preferences.retentionPolicy,
-                keepOriginalAfterExport: preferences.keepOriginalAfterExport,
-                exportedVideoQualityPercent: videoQualityPercent,
-                previewSession: previewSession
-            )
-            return PreviewShareOutcome(
-                outputURL: outputURL,
-                historyDisposition: result.disposition,
-                sourceFinalizationDeferred: result.finalizationDeferred,
-                shouldClosePreview: shouldClosePreview,
-                postShareWarning: priorWarning
-            )
+            // First-preview candidates enter History only on close. Delayed
+            // promised drags can publish after that commit, using their own link.
+            if try await history.item(id: id) != nil {
+                _ = try await history.registerSuccessfulExport(id: id, previewSession: previewSession)
+            }
+            return PreviewShareOutcome(outputURL: outputURL, shouldClosePreview: shouldClosePreview,
+                postShareWarning: priorWarning)
         } catch {
-            ClipLog.storage.error(
-                "Post-share History registration failed; the managed original was retained"
-            )
-            return PreviewShareOutcome(
-                outputURL: outputURL,
-                historyDisposition: .keepOriginal,
-                sourceFinalizationDeferred: false,
-                shouldClosePreview: shouldClosePreview,
-                postShareWarning: combinedPostShareWarning(
-                    priorWarning,
-                    postShareHistoryWarning()
-                )
-            )
+            return PreviewShareOutcome(outputURL: outputURL, shouldClosePreview: shouldClosePreview,
+                postShareWarning: combinedPostShareWarning(priorWarning, postShareHistoryWarning()))
         }
     }
 
     private nonisolated static func registerHistoryShare(
         id: RecordingID,
         outputURL: URL,
-        videoQualityPercent: Int,
-        preferences: SharePreferences,
         history: ManagedHistoryRepository,
         exportInventory: ManagedExportInventory? = nil,
         priorWarning: String? = nil
     ) async -> HistoryShareOutcome {
         let outputByteCount = ShareCompletionFormatting.fileByteCount(at: outputURL)
         do {
-            _ = try await history.registerSuccessfulExport(
-                id: id,
-                exportedFileURL: outputURL,
-                retentionPolicy: preferences.retentionPolicy,
-                keepOriginalAfterExport: preferences.keepOriginalAfterExport,
-                exportedVideoQualityPercent: videoQualityPercent
-            )
+            _ = try await history.registerSuccessfulExport(id: id)
             return HistoryShareOutcome(
                 refreshedIndex: try await history.load(),
                 exportInventory: exportInventory,
@@ -3821,18 +3856,16 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
         String(localized: "Clip couldn’t update History. The shared MP4 is still available.")
     }
 
-    private nonisolated static func persist(
-        _ request: PreviewExportRequest,
-        session: ManagedHistoryPreviewSession,
-        in history: ManagedHistoryRepository
-    ) async throws {
-        _ = try await history.updatePreviewMetadata(
-            session: session,
-            filename: request.filename,
-            trimRange: request.trimRange,
-            configuration: request.configuration,
-            audioPreference: request.audioPreference
-        )
+    private static func persist(_ request: PreviewExportRequest,
+                                context: PreviewLifecycleContext,
+                                in history: ManagedHistoryRepository) async throws {
+        guard !context.isClosed else { return }
+        if let pending = context.processingSession, pending.id == request.recordingID {
+            try pending.updateMetadata(request)
+        } else if let session = context.currentSession(for: request.recordingID) {
+            _ = try await history.updatePreviewMetadata(session: session, filename: request.filename,
+                trimRange: request.trimRange, audioPreference: request.audioPreference)
+        }
     }
 
     private nonisolated static func persist(
@@ -3844,13 +3877,13 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
             session: session,
             filename: recording.filename,
             trimRange: recording.trimRange,
-            configuration: recording.exportConfiguration,
             audioPreference: recording.exportAudioPreference
         )
     }
 
     private func closePreviewWindow(context: PreviewLifecycleContext) {
         guard previewLifecycleContext === context else { return }
+        previewViewModel?.closeExpandedPreview(restoringEditor: false)
         previewWindowDelegate?.allowClose = true
         previewWindowController?.close()
         previewWindowController = nil
@@ -3927,17 +3960,13 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
         let exports = dependencies.exports
         let pasteboard = dependencies.pasteboard
         let sharing = dependencies.sharing
-        let settingsModel = dependencies.settings
-
         return HistoryActions(
             refresh: { try await history.reloadFromDisk() },
             preview: { [weak self] item in try await self?.presentPreview(item) },
             copy: { item in
-                let preferences = SharePreferences(settings: settingsModel.settings)
                 let request = try await Self.exportRequest(
                     for: item,
-                    history: history,
-                    exportQualities: settingsModel.settings.exportQualities
+                    history: history
                 )
                 let publication = try await exports.exportForPublication(request)
                 let outputURL = publication.outputURL
@@ -3955,26 +3984,20 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
                 return await Self.registerHistoryShare(
                     id: item.id,
                     outputURL: outputURL,
-                    videoQualityPercent: request.videoQualityPercent,
-                    preferences: preferences,
                     history: history,
                     exportInventory: try? await exports.inventory(),
                     priorWarning: publicationWarning
                 )
             },
             save: { item in
-                let preferences = SharePreferences(settings: settingsModel.settings)
                 let request = try await Self.exportRequest(
                     for: item,
-                    history: history,
-                    exportQualities: settingsModel.settings.exportQualities
+                    history: history
                 )
                 guard let outputURL = try await sharing.saveAs(request) else { return nil }
                 return await Self.registerHistoryShare(
                     id: item.id,
                     outputURL: outputURL,
-                    videoQualityPercent: request.videoQualityPercent,
-                    preferences: preferences,
                     history: history
                 )
             },
@@ -4015,8 +4038,7 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
 
     private nonisolated static func exportRequest(
         for item: RecordingHistoryItem,
-        history: ManagedHistoryRepository,
-        exportQualities: ExportQualitySettings
+        history: ManagedHistoryRepository
     ) async throws -> PreviewExportRequest {
         PreviewExportRequest(
             recordingID: item.id,
@@ -4024,9 +4046,6 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
             captureFrameRate: item.frameRate,
             filename: item.filename,
             trimRange: item.trimRange,
-            configuration: item.exportConfiguration,
-            videoQualityPercent: exportQualities.quality(for: item.exportConfiguration.preset),
-            sourceVideoQualityPercent: item.managedMasterVideoQualityPercent,
             audioPreference: item.exportAudioPreference
         )
     }
@@ -4393,18 +4412,6 @@ final class ApplicationCoordinator: NSObject, NSPopoverDelegate, ApplicationTerm
     }
 }
 
-private struct SharePreferences: Sendable {
-    let retentionPolicy: HistoryRetentionPolicy
-    let keepOriginalAfterExport: Bool
-    let closePreviewAfterCopy: Bool
-
-    init(settings: ClipSettings) {
-        retentionPolicy = settings.historyRetention
-        keepOriginalAfterExport = settings.keepOriginalAfterExport
-        closePreviewAfterCopy = settings.automaticallyClosePreviewAfterCopy
-    }
-}
-
 private struct CaptureStoppedError: LocalizedError, Sendable, TechnicalErrorDescriptionProviding {
     let message: String
 
@@ -4414,21 +4421,6 @@ private struct CaptureStoppedError: LocalizedError, Sendable, TechnicalErrorDesc
 
     var technicalDescriptionForLogging: String {
         message.isEmpty ? "Screen capture stream stopped without a reason." : message
-    }
-}
-
-private struct RecordingSavedPreviewDeferredError: LocalizedError, Sendable,
-    TechnicalErrorDescriptionProviding {
-    let technicalDescription: String
-
-    var errorDescription: String? {
-        String(
-            localized: "The recording is safe in History. Finish the current Preview operation, then open the recording from History."
-        )
-    }
-
-    var technicalDescriptionForLogging: String {
-        "Recording import completed, but Preview presentation was deferred: \(technicalDescription)"
     }
 }
 
@@ -4462,19 +4454,23 @@ private enum PreviewPresentationError: LocalizedError, Sendable {
     }
 }
 
-private actor PreviewLifecycleContext {
-    private var session: ManagedHistoryPreviewSession
+@MainActor
+private final class PreviewLifecycleContext {
+    private var historySession: ManagedHistoryPreviewSession?
+    var processingSession: RecordingProcessingSession?
+    var initialProcessingTask: Task<PreviewRecording, any Error>?
+    var isClosed = false
+    var isClosing = false
 
-    init(session: ManagedHistoryPreviewSession) {
-        self.session = session
+    init(session: ManagedHistoryPreviewSession? = nil) { historySession = session }
+    func currentSession(for recordingID: RecordingID) -> ManagedHistoryPreviewSession? {
+        guard !isClosed, historySession?.recordingID == recordingID else { return nil }
+        return historySession
     }
-
-    func currentSession() -> ManagedHistoryPreviewSession {
-        session
-    }
-
-    func install(session: ManagedHistoryPreviewSession) {
-        self.session = session
+    func install(processing: RecordingProcessingSession) {
+        historySession = nil
+        processingSession = processing
+        initialProcessingTask = nil
     }
 }
 
@@ -4498,15 +4494,20 @@ private final class PreviewWindowDelegate: NSObject, NSWindowDelegate {
 private final class PendingRetake {
     let originalRecording: PreviewRecording
     let context: PreviewLifecycleContext
+    let originalProcessingState: PreviewProcessingState?
+    var processingSession: RecordingProcessingSession?
+    var processingTask: Task<PreviewRecording, any Error>?
     private var continuation: CheckedContinuation<PreviewRetakeResult?, any Error>?
 
     init(
         originalRecording: PreviewRecording,
         context: PreviewLifecycleContext,
+        originalProcessingState: PreviewProcessingState?,
         continuation: CheckedContinuation<PreviewRetakeResult?, any Error>
     ) {
         self.originalRecording = originalRecording
         self.context = context
+        self.originalProcessingState = originalProcessingState
         self.continuation = continuation
     }
 

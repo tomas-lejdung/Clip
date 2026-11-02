@@ -70,7 +70,9 @@ struct CaptureRecoveryTests {
         settings.audio = .microphoneAndSystemAudio
         settings.countdown = .fiveSeconds
         settings.showCursor = false
-        settings.exportConfiguration = .crisp
+        settings.recordingProcessing = RecordingProcessingOptions(
+            scale: .half, crf: 24, captureBitrateMbps: 20
+        )
         let createdAt = Date(timeIntervalSince1970: 1_800_000_000)
         let recoveryRecord = try makeRecoveryRecord(
             id: id,
@@ -93,7 +95,7 @@ struct CaptureRecoveryTests {
         #expect(recovered.item.pixelSize == (try PixelSize(width: 1280, height: 720)))
         #expect(recovered.item.frameRate == .sixty)
         #expect(recovered.item.audioConfiguration == .microphoneAndSystemAudio)
-        #expect(recovered.item.exportConfiguration == .crisp)
+        #expect(recovered.item.captureSessionSnapshot?.captureBitrateMbps == 20)
         #expect(recovered.settings == settings)
         #expect(!FileManager.default.fileExists(atPath: recoveryURL.path))
         #expect(FileManager.default.fileExists(atPath: videoURL.path))

@@ -148,3 +148,8 @@ Clip patch SHA-256: e58f6bc5f0dda361000081d6868ca1cf0a791a48576f92b850a1f5df6820
 The complete WebRTC and bundled third-party license text generated from this
 source revision is distributed alongside this file as
 WebRTCThirdPartyNotices.txt.
+
+Clip recording encoder (FFmpeg 8.0 and x264 r3222)
+The standalone recording processor is distributed under GPL version 2 or later.
+See RecordingEncoderNotices.txt and the complete corresponding source, build
+instructions, and license texts in Contents/Resources/RecordingEncoderSources.

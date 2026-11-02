@@ -226,6 +226,81 @@ struct CaptureSelectionAdapterTests {
 
         #expect(externalTarget.captureResolution == .nominal)
         #expect(retinaTarget.captureResolution == .best)
+        #expect(externalTarget.requiredNativeScale == 1)
+        #expect(retinaTarget.requiredNativeScale == 2)
+    }
+
+    @Test("Measured external HiDPI mode preserves backing pixels for Area and Full Screen")
+    func externalHiDPIModeUsesBackingRaster() throws {
+        // AW3926QW evidence: CGDisplayPixelsWide/High and display-mode size
+        // report 3840×1620, while NSScreen is 2× and mode.pixelWidth/Height is
+        // 7680×3240. The old derivation recorded a 640×400 area at half scale.
+        let pointSize = CGSize(width: 3_840, height: 1_620)
+        let reportedDisplayPixels = CGSize(width: 3_840, height: 1_620)
+        let observedModePixels = CGSize(width: 7_680, height: 3_240)
+        let geometry = try #require(CaptureSelectionGeometry.nativeDisplayGeometry(
+            pointSize: pointSize, backingScaleFactor: 2
+        ))
+        #expect(geometry.pixelSize == observedModePixels)
+        #expect(geometry.pixelSize != reportedDisplayPixels)
+        #expect(geometry.scaleFactor == 2)
+        let display = makeDisplay(pointSize: pointSize, pixelSize: geometry.pixelSize)
+        let rectangle = CGRect(x: 32, y: 32, width: 640, height: 400)
+        let area = SelectedCaptureArea(
+            display: display,
+            rectangleInDisplayPoints: rectangle,
+            normalizedRectangle: .init(rect: rectangle, in: display.localBounds),
+            outputPixelSize: CaptureSelectionGeometry.pixelSize(for: rectangle, scaleFactor: geometry.scaleFactor)
+        )
+        let target = try CaptureSelectionAdapter.preparedTarget(from: .area(area))
+        #expect(target.outputWidth == 1_280)
+        #expect(target.outputHeight == 800)
+        #expect(target.sourceRect == CGRect(x: 32, y: 1_188, width: 640, height: 400))
+        #expect(target.captureResolution == .best)
+        #expect(target.requiredNativeScale == 2)
+        let fullscreen = try CaptureSelectionAdapter.preparedTarget(from: .fullscreen(display))
+        #expect(fullscreen.outputWidth == 7_680)
+        #expect(fullscreen.outputHeight == 3_240)
+        #expect(fullscreen.captureResolution == .best)
+        #expect(fullscreen.requiredNativeScale == 2)
+    }
+
+    @Test("Backing geometry preserves 1×, Retina, scaled and rotated display rasters")
+    func nativeBackingGeometryAcrossDisplayModes() throws {
+        let cases: [(CGSize, CGFloat, CGSize)] = [
+            (CGSize(width: 1_920, height: 1_080), 1, CGSize(width: 1_920, height: 1_080)),
+            (CGSize(width: 1_512, height: 982), 2, CGSize(width: 3_024, height: 1_964)),
+            // A scaled 'looks like 2560×1440' HiDPI desktop renders at 5120×2880,
+            // even when the physical panel has a different pixel count.
+            (CGSize(width: 2_560, height: 1_440), 2, CGSize(width: 5_120, height: 2_880)),
+            // NSScreen's dimensions already follow rotation; don't substitute
+            // a landscape mode/panel size or swap these dimensions again.
+            (CGSize(width: 1_080, height: 1_920), 1, CGSize(width: 1_080, height: 1_920)),
+            (CGSize(width: 1_440, height: 2_560), 2, CGSize(width: 2_880, height: 5_120)),
+        ]
+        for (points, scale, expected) in cases {
+            let geometry = try #require(CaptureSelectionGeometry.nativeDisplayGeometry(
+                pointSize: points, backingScaleFactor: scale
+            ))
+            #expect(geometry.pixelSize == expected)
+            #expect(geometry.scaleFactor == scale)
+        }
+    }
+
+    @Test("Backing geometry rejects unusable screen snapshots instead of guessing a scale")
+    func invalidNativeBackingGeometry() {
+        for size in [CGSize.zero, CGSize(width: -1, height: 400),
+                     CGSize(width: CGFloat.nan, height: 400),
+                     CGSize(width: CGFloat.infinity, height: 400)] {
+            #expect(CaptureSelectionGeometry.nativeDisplayGeometry(
+                pointSize: size, backingScaleFactor: 2
+            ) == nil)
+        }
+        for scale in [CGFloat.zero, -1, .nan, .infinity] {
+            #expect(CaptureSelectionGeometry.nativeDisplayGeometry(
+                pointSize: CGSize(width: 640, height: 400), backingScaleFactor: scale
+            ) == nil)
+        }
     }
 
     @Test("Adapter rejects empty display bounds and non-positive output pixels")
@@ -242,6 +317,9 @@ struct CaptureSelectionAdapterTests {
         )
         #expect(throws: CaptureSelectionAdapterError.invalidDisplayBounds) {
             try CaptureSelectionAdapter.preparedTarget(from: .area(emptyArea))
+        }
+        #expect(throws: CaptureSelectionAdapterError.invalidDisplayBounds) {
+            try CaptureSelectionAdapter.preparedTarget(from: .fullscreen(emptyDisplay))
         }
 
         let invalidPixels = makeDisplay(pixelSize: CGSize(width: 0, height: 1_080))

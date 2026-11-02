@@ -4,99 +4,27 @@ import Testing
 
 @Suite("Media export configuration")
 struct MediaConfigurationTests {
-    @Test("Recording preserves pixel-aligned dimensions and caller quality")
+    @Test("Recording preserves even native dimensions, cadence, audio and bitrate")
     func recordingConfiguration() {
-        let configuration = RecordingConfiguration(
-            width: 1_441,
-            height: 901,
-            framesPerSecond: 60,
-            videoQuality: 0.93
-        )
-
-        #expect(configuration.width == 1_440)
-        #expect(configuration.height == 900)
+        let configuration = RecordingConfiguration(width: 1919, height: 1079,
+            framesPerSecond: 60, targetAverageBitRate: 20_000_000, audioMode: .microphoneAndSystem)
+        #expect(configuration.width == 1918 && configuration.height == 1078)
         #expect(configuration.framesPerSecond == 60)
-        #expect(configuration.videoQuality == 0.93)
-        #expect(!configuration.showsClickHighlights)
+        #expect(configuration.targetAverageBitRate == 20_000_000)
+        #expect(configuration.audioMode == .microphoneAndSystem)
+        #expect(RecordingConfiguration(width: 320, height: 180).targetAverageBitRate == 10_000_000)
     }
 
-    @Test("Percent quality conversion is exact on the settings scale")
-    func qualityPercentConversion() {
-        #expect(MediaVideoQuality.normalized(percent: 98) == 0.98)
-        #expect(MediaVideoQuality.normalized(percent: 90) == 0.90)
-        #expect(MediaVideoQuality.normalized(percent: 70) == 0.70)
-        #expect(MediaVideoQuality.percent(normalized: 0.98) == 98)
-
-        let recording = RecordingConfiguration(
-            width: 1_920,
-            height: 1_080,
-            videoQualityPercent: 91,
-            showsClickHighlights: true
-        )
-        #expect(recording.videoQuality == 0.91)
-        #expect(recording.showsClickHighlights)
-    }
-
-    @Test("Every preset preserves native geometry and durable cadence")
-    func presetsPreserveSourceFormat() {
-        for preset in MediaExportPreset.allCases {
-            let configuration = MediaExportConfigurationFactory.make(
-                preset: preset,
-                sourceWidth: 5_120,
-                sourceHeight: 2_880,
-                sourceFramesPerSecond: 60,
-                videoQuality: 0.87,
-                sourceVideoQuality: 0.98
-            )
-
-            #expect(configuration.width == 5_120)
-            #expect(configuration.height == 2_880)
-            #expect(configuration.framesPerSecond == 60)
-            #expect(configuration.videoQuality == 0.87)
-            #expect(configuration.sourceVideoQuality == 0.98)
-            #expect(configuration.audioBitRate == 128_000)
-        }
-    }
-
-    @Test("Factory does not impose preset quality values")
-    func qualityIsCallerProvided() {
-        let requestedQualities: [(MediaExportPreset, Int)] = [
-            (.crisp, 98),
-            (.compact, 90),
-            (.smallest, 70),
-        ]
-
-        for (preset, percent) in requestedQualities {
-            let configuration = MediaExportConfigurationFactory.make(
-                preset: preset,
-                sourceWidth: 2_560,
-                sourceHeight: 1_440,
-                sourceFramesPerSecond: 30,
-                videoQualityPercent: percent,
-                sourceVideoQualityPercent: 98
-            )
-            #expect(configuration.videoQuality == Double(percent) / 100)
-            #expect(configuration.width == 2_560)
-            #expect(configuration.height == 1_440)
-            #expect(configuration.framesPerSecond == 30)
-            #expect(configuration.audioBitRate == 128_000)
-        }
-    }
-
-    @Test("Direct export configuration never silently rounds geometry")
-    func directConfigurationKeepsExactGeometry() {
-        let configuration = MediaExportConfiguration(
-            preset: .compact,
-            width: 1_441,
-            height: 901,
-            framesPerSecond: 29,
-            videoQuality: 0.90
-        )
-
-        #expect(configuration.width == 1_441)
+    @Test("Export keeps exact geometry without a quality encoder")
+    func exportsPreserveFormat() {
+        let configuration = MediaExportConfiguration(width: 1441, height: 901,
+            framesPerSecond: 60, includesAudio: false)
+        #expect(configuration.width == 1441)
         #expect(configuration.height == 901)
-        #expect(configuration.framesPerSecond == 29)
+        #expect(configuration.framesPerSecond == 60)
+        #expect(!configuration.includesAudio)
     }
+
 }
 
 @Suite("Sample timeline")

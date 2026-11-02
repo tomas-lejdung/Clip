@@ -11,7 +11,9 @@ CLIP_WEBRTC_UPSTREAM_REVISION="1f975dfd761af6e5d76d28333191973b258d82a8"
 CLIP_WEBRTC_PATCH_SHA256="e58f6bc5f0dda361000081d6868ca1cf0a791a48576f92b850a1f5df6820cb6a"
 CLIP_WEBRTC_ARTIFACT_CHECKSUM="07807d9d8f246da5b6eebbb62cc1acfeb594b2974c62e47cb36bdd03f5256d5a"
 CLIP_WEBRTC_MACOS_EXECUTABLE_SHA256="99312b0656b329102d17fde07f2934ef03ea6bd906fbc61025a9c92e2e6b137a"
-CLIP_WEBRTC_NORMALIZED_ARM64_SHA256="b84186f57c0dbefb04e1bbb3da43fe5f8eb4871c03c1342ad8d9333ba3e695df"
+# Derived only from the exact whole-file hash above using the canonical signing
+# parameters below. codesign's default page size changed across macOS releases.
+CLIP_WEBRTC_NORMALIZED_ARM64_SHA256="48746de5f0187849333a5cf5ef36796645755d91dd507a293e6b5cfd13cc3911"
 CLIP_WEBRTC_LICENSE_SHA256="5b08f62df6d3d7cf1191586b30386055596a1971d4d5fad8974e496096ff4e07"
 
 # Xcode re-signs embedded dynamic frameworks, so their whole-file hashes no
@@ -46,6 +48,10 @@ clip_webrtc_normalized_payload_sha256() {
       --force \
       --sign - \
       --identifier org.webrtc.WebRTC \
+      --pagesize 4096 \
+      --digest-algorithm sha256 \
+      --options=0 \
+      --requirements '=designated => identifier "org.webrtc.WebRTC"' \
       --timestamp=none \
       "$thin_executable" >/dev/null 2>&1; then
     rm -f "$thin_executable"
