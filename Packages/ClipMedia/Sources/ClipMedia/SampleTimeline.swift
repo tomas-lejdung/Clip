@@ -102,7 +102,4 @@ public struct SampleTimeline: Sendable {
         return sourceTime - pause.accumulatedDurationAtEnd
     }
 
-    public func outputDuration(for sourceDuration: CMTime) -> CMTime {
-        sourceDuration
-    }
 }

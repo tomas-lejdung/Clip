@@ -12,9 +12,12 @@ export SWIFTPM_MODULECACHE_OVERRIDE="$MODULE_CACHE"
 
 cat <<'EOF'
 Running Clip's permission-free native performance benchmark in Release mode.
-This command generates local synthetic H.264 media. It does not launch Clip,
+This command records synthetic HEVC and processes it to H.264 CRF 24. It does not launch Clip,
 request privacy permissions, run UI automation, or move the pointer.
 EOF
+
+"$ROOT/scripts/build-recording-encoder.sh"
+export CLIP_RECORDING_ENCODER="$ROOT/.build/recording-encoder/install/bin/ffmpeg"
 
 exec swift run \
   --package-path "$ROOT/Packages/ClipMedia" \

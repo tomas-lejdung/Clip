@@ -64,7 +64,6 @@ func makeHistoryItem(
         audioConfiguration: .none,
         captureTarget: .region(makeSelection()),
         captureSessionSnapshot: captureSessionSnapshot,
-        trimRange: TrimRange.full(recordingDuration: duration),
-        exportConfiguration: .compact
+        trimRange: TrimRange.full(recordingDuration: duration)
     )
 }

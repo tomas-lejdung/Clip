@@ -295,20 +295,7 @@ final class ApplicationTerminationCoordinatorTests: XCTestCase {
         }
     }
 
-    func testPreviewPresentationFailureCannotReclassifyAnImportedRecordingAsFailed() {
-        XCTAssertEqual(
-            RecordingCompletionPolicy.failureDisposition(
-                recordingWasImported: false
-            ),
-            .recordingFailed
-        )
-        XCTAssertEqual(
-            RecordingCompletionPolicy.failureDisposition(
-                recordingWasImported: true
-            ),
-            .recordingSavedPreviewDeferred
-        )
-    }
+
 }
 
 @MainActor

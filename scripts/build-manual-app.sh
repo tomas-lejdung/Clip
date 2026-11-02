@@ -50,6 +50,7 @@ ditto \
   "$ROOT/Clip/Resources/WebRTCThirdPartyNotices.txt" \
   "$RESOURCES/WebRTCThirdPartyNotices.txt"
 ditto "$WEBRTC_FRAMEWORK" "$FRAMEWORKS/WebRTC.framework"
+"$ROOT/scripts/bundle-recording-encoder.sh" "$APP"
 
 /usr/libexec/PlistBuddy -c "Set :CFBundleDevelopmentRegion en" "$CONTENTS/Info.plist"
 /usr/libexec/PlistBuddy -c "Set :CFBundleExecutable Clip" "$CONTENTS/Info.plist"
@@ -94,6 +95,8 @@ codesign \
   --options runtime \
   --timestamp=none \
   "$FRAMEWORKS/WebRTC.framework"
+
+"$ROOT/scripts/sign-recording-encoder.sh" "$APP"
 
 codesign \
   --force \

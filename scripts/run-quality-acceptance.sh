@@ -9,13 +9,9 @@ mkdir -p "$MODULE_CACHE"
 export CLANG_MODULE_CACHE_PATH="$MODULE_CACHE"
 export SWIFTPM_MODULECACHE_OVERRIDE="$MODULE_CACHE"
 
-# Permission-free, deterministic fidelity gate. The code-rendered source has
-# one-pixel rules, tiny bitmap text, color edges, scrolling content and motion
-# at 30/60 FPS. Tests decode real H.264 outputs and enforce master, Crisp and
-# Compact SSIM/edge floors, timestamps, profile/color metadata, trim, native
-# dimensions, and byte-identical eligible Crisp reuse.
-swift test \
-  --package-path "$ROOT/Packages/ClipMedia" \
-  --filter NativeQualityPipelineTests
+# Production media regression gate. Synthetic frames bypass screen capture and
+# privacy APIs; hardware HEVC and the shipped x264 recipe are exercised directly.
+"$ROOT/scripts/build-recording-encoder.sh"
+swift test --package-path "$ROOT/Packages/ClipMedia"
 
-echo "Deterministic native VideoToolbox quality acceptance passed."
+echo "Production recording, processing, and passthrough export acceptance passed."

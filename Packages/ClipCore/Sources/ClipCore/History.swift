@@ -126,57 +126,6 @@ public struct TrimRange: Codable, Equatable, Hashable, Sendable {
     }
 }
 
-/// The intrinsic media properties of a finalized recording file.
-///
-/// History keeps edit state separately from these properties. Replacing a
-/// managed master therefore rebases its edit state onto the replacement's
-/// inspected media properties instead of retaining a trim range that belonged
-/// to the previous file.
-public struct RecordingMediaMetadata: Codable, Equatable, Hashable, Sendable {
-    public let duration: TimeInterval
-    public let pixelSize: PixelSize
-    public let frameRate: CaptureFrameRate
-
-    public init(
-        duration: TimeInterval,
-        pixelSize: PixelSize,
-        frameRate: CaptureFrameRate
-    ) throws {
-        guard duration.isFinite, duration > 0 else {
-            throw HistoryMetadataError.invalidDuration(duration)
-        }
-        self.duration = duration
-        self.pixelSize = pixelSize
-        self.frameRate = frameRate
-    }
-
-    private enum CodingKeys: CodingKey {
-        case duration
-        case pixelSize
-        case frameRate
-    }
-
-    public init(from decoder: any Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        do {
-            try self.init(
-                duration: container.decode(TimeInterval.self, forKey: .duration),
-                pixelSize: container.decode(PixelSize.self, forKey: .pixelSize),
-                frameRate: container.decode(CaptureFrameRate.self, forKey: .frameRate)
-            )
-        } catch let error as DecodingError {
-            throw error
-        } catch {
-            throw DecodingError.dataCorrupted(
-                .init(
-                    codingPath: decoder.codingPath,
-                    debugDescription: "Invalid recording media metadata: \(error)"
-                )
-            )
-        }
-    }
-}
-
 public enum ExportAudioPreference: String, Codable, CaseIterable, Equatable, Sendable {
     case keepAudio
     case removeAudio
@@ -196,17 +145,13 @@ public struct RecordingHistoryItem: Codable, Equatable, Sendable, Identifiable {
     public private(set) var recordingDuration: TimeInterval
     public private(set) var pixelSize: PixelSize
     public private(set) var frameRate: CaptureFrameRate
-    /// Quality used to encode the MP4 currently owned as the managed master.
-    /// This is separate from `captureSessionSnapshot`, which must continue to
-    /// describe the original capture inputs used by Retake.
-    public private(set) var managedMasterVideoQualityPercent: Int
+    public let processing: RecordingProcessingMetadata?
     public let audioConfiguration: AudioConfiguration
     public let captureTarget: CaptureTarget
     /// Exact capture inputs for Retake. Older history files decode this as nil
     /// and retain the legacy current-settings fallback.
     public let captureSessionSnapshot: CaptureSessionSnapshot?
     public private(set) var trimRange: TrimRange
-    public private(set) var exportConfiguration: ExportConfiguration
     public private(set) var exportAudioPreference: ExportAudioPreference
     public private(set) var lastExportedAt: Date?
 
@@ -220,12 +165,11 @@ public struct RecordingHistoryItem: Codable, Equatable, Sendable, Identifiable {
         recordingDuration: TimeInterval,
         pixelSize: PixelSize,
         frameRate: CaptureFrameRate,
-        managedMasterVideoQualityPercent: Int? = nil,
+        processing: RecordingProcessingMetadata? = nil,
         audioConfiguration: AudioConfiguration,
         captureTarget: CaptureTarget,
         captureSessionSnapshot: CaptureSessionSnapshot? = nil,
         trimRange: TrimRange,
-        exportConfiguration: ExportConfiguration,
         exportAudioPreference: ExportAudioPreference = .keepAudio,
         lastExportedAt: Date? = nil
     ) throws {
@@ -250,14 +194,11 @@ public struct RecordingHistoryItem: Codable, Equatable, Sendable, Identifiable {
         self.recordingDuration = recordingDuration
         self.pixelSize = pixelSize
         self.frameRate = frameRate
-        self.managedMasterVideoQualityPercent = managedMasterVideoQualityPercent
-            ?? captureSessionSnapshot?.crispQuality
-            ?? ExportQualitySettings.defaults.crisp
+        self.processing = processing
         self.audioConfiguration = audioConfiguration
         self.captureTarget = captureTarget
         self.captureSessionSnapshot = captureSessionSnapshot
         self.trimRange = trimRange
-        self.exportConfiguration = exportConfiguration
         self.exportAudioPreference = exportAudioPreference
         self.lastExportedAt = lastExportedAt
     }
@@ -272,15 +213,6 @@ public struct RecordingHistoryItem: Codable, Equatable, Sendable, Identifiable {
         try validateUpdateDate(date)
         try trimRange.validate(recordingDuration: recordingDuration)
         self.trimRange = trimRange
-        updatedAt = date
-    }
-
-    public mutating func setExportConfiguration(
-        _ exportConfiguration: ExportConfiguration,
-        at date: Date
-    ) throws {
-        try validateUpdateDate(date)
-        self.exportConfiguration = exportConfiguration
         updatedAt = date
     }
 
@@ -299,29 +231,6 @@ public struct RecordingHistoryItem: Codable, Equatable, Sendable, Identifiable {
         updatedAt = date
     }
 
-    public mutating func replaceManagedMaster(
-        with managedMaster: ManagedRecordingFile,
-        byteCount: Int64,
-        mediaMetadata: RecordingMediaMetadata,
-        videoQualityPercent: Int,
-        at date: Date
-    ) throws {
-        try validateUpdateDate(date)
-        guard byteCount >= 0 else {
-            throw HistoryMetadataError.negativeByteCount(byteCount)
-        }
-        let fullTrimRange = try TrimRange.full(recordingDuration: mediaMetadata.duration)
-        self.managedMaster = managedMaster
-        managedByteCount = byteCount
-        recordingDuration = mediaMetadata.duration
-        pixelSize = mediaMetadata.pixelSize
-        frameRate = mediaMetadata.frameRate
-        managedMasterVideoQualityPercent = videoQualityPercent
-        trimRange = fullTrimRange
-        updatedAt = date
-        lastExportedAt = date
-    }
-
     private func validateUpdateDate(_ date: Date) throws {
         guard date >= createdAt else {
             throw HistoryMetadataError.updatePredatesCreation
@@ -338,12 +247,11 @@ public struct RecordingHistoryItem: Codable, Equatable, Sendable, Identifiable {
         case recordingDuration
         case pixelSize
         case frameRate
-        case managedMasterVideoQualityPercent
+        case processing
         case audioConfiguration
         case captureTarget
         case captureSessionSnapshot
         case trimRange
-        case exportConfiguration
         case exportAudioPreference
         case lastExportedAt
     }
@@ -361,10 +269,7 @@ public struct RecordingHistoryItem: Codable, Equatable, Sendable, Identifiable {
                 recordingDuration: container.decode(TimeInterval.self, forKey: .recordingDuration),
                 pixelSize: container.decode(PixelSize.self, forKey: .pixelSize),
                 frameRate: container.decode(CaptureFrameRate.self, forKey: .frameRate),
-                managedMasterVideoQualityPercent: container.decodeIfPresent(
-                    Int.self,
-                    forKey: .managedMasterVideoQualityPercent
-                ),
+                processing: container.decodeIfPresent(RecordingProcessingMetadata.self, forKey: .processing),
                 audioConfiguration: container.decode(AudioConfiguration.self, forKey: .audioConfiguration),
                 captureTarget: container.decode(CaptureTarget.self, forKey: .captureTarget),
                 captureSessionSnapshot: container.decodeIfPresent(
@@ -372,7 +277,6 @@ public struct RecordingHistoryItem: Codable, Equatable, Sendable, Identifiable {
                     forKey: .captureSessionSnapshot
                 ),
                 trimRange: container.decode(TrimRange.self, forKey: .trimRange),
-                exportConfiguration: container.decode(ExportConfiguration.self, forKey: .exportConfiguration),
                 exportAudioPreference: container.decodeIfPresent(
                     ExportAudioPreference.self,
                     forKey: .exportAudioPreference
@@ -397,7 +301,6 @@ public enum HistoryRetentionPolicy: String, CaseIterable, Codable, Hashable, Sen
     case sevenDays
     case thirtyDays
     case indefinitely
-    case doNotRetainAfterExport
 
     public var retentionInterval: TimeInterval? {
         switch self {
@@ -407,7 +310,7 @@ public enum HistoryRetentionPolicy: String, CaseIterable, Codable, Hashable, Sen
             7 * 24 * 60 * 60
         case .thirtyDays:
             30 * 24 * 60 * 60
-        case .indefinitely, .doNotRetainAfterExport:
+        case .indefinitely:
             nil
         }
     }
@@ -417,22 +320,16 @@ public enum HistoryRetentionPolicy: String, CaseIterable, Codable, Hashable, Sen
         return now.timeIntervalSince(createdAt) >= retentionInterval
     }
 
-    public var removesAfterSuccessfulExport: Bool {
-        self == .doNotRetainAfterExport
-    }
-
-    public func postExportDisposition(keepOriginalAfterExport: Bool) -> HistoryPostExportDisposition {
-        if removesAfterSuccessfulExport {
-            return .removeHistoryItem
+    public init(from decoder: any Decoder) throws {
+        let value = try decoder.singleValueContainer().decode(String.self)
+        // The old export-triggered deletion option no longer applies: exporting
+        // must preserve the full Source. Migrate it to the standard retention.
+        if value == "doNotRetainAfterExport" { self = .sevenDays; return }
+        guard let policy = Self(rawValue: value) else {
+            throw DecodingError.dataCorrupted(.init(codingPath: decoder.codingPath, debugDescription: "Unknown history retention policy"))
         }
-        return keepOriginalAfterExport ? .keepOriginal : .replaceOriginalWithExport
+        self = policy
     }
-}
-
-public enum HistoryPostExportDisposition: String, Codable, Equatable, Hashable, Sendable {
-    case keepOriginal
-    case replaceOriginalWithExport
-    case removeHistoryItem
 }
 
 public struct HistoryCleanupPlan: Codable, Equatable, Sendable {

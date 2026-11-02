@@ -2,6 +2,7 @@ import AppKit
 import ClipCore
 import ClipMedia
 import CoreMedia
+import CryptoKit
 import Foundation
 import UniformTypeIdentifiers
 
@@ -53,8 +54,6 @@ struct ManagedExportRecord: Identifiable, Equatable, Sendable {
     /// First time this physical cache file was successfully published by Copy
     /// or an accepted file drag. Reusing the same cache entry preserves it.
     let createdAt: Date
-    let preset: ExportPreset
-    let qualityPercent: Int
 }
 
 struct ManagedExportInventory: Equatable, Sendable {
@@ -81,24 +80,18 @@ private struct ManagedExportPublicationMarker: Codable, Equatable, Sendable {
     let recordingID: RecordingID
     let filename: RecordingFilename
     let createdAt: Date
-    let preset: ExportPreset
-    let qualityPercent: Int
 
     init(
         id: ManagedExportID,
         recordingID: RecordingID,
         filename: RecordingFilename,
-        createdAt: Date,
-        preset: ExportPreset,
-        qualityPercent: Int
+        createdAt: Date
     ) {
         schemaVersion = Self.currentSchemaVersion
         self.id = id
         self.recordingID = recordingID
         self.filename = filename
         self.createdAt = createdAt
-        self.preset = preset
-        self.qualityPercent = qualityPercent
     }
 }
 
@@ -131,7 +124,7 @@ actor PreviewExportCoordinator {
     static let publicationLeaseLifetime: TimeInterval = 5 * 60
     /// Bump whenever encoding or reuse semantics change so an export created by
     /// an older build cannot mask a fidelity/cadence fix in a newer build.
-    static let cacheSchemaVersion = 4
+    static let cacheSchemaVersion = 6
 
     private let exportsDirectory: URL
     private let exporter: any MediaExporting
@@ -311,25 +304,54 @@ actor PreviewExportCoordinator {
             at: plan.outputDirectory,
             withIntermediateDirectories: true
         )
+        // Older Clip builds stored HEVC for capture areas too large for their
+        // H.264 encoder. Those existing Sources still need a shareable H.264
+        // export; newly processed H.264 Sources keep the byte-copy path.
+        let needsLegacyHEVCNormalization = inspection.videoCodec == kCMVideoCodecType_HEVC
         let expectedAudioTrackCount = request.audioPreference.includesAudio
-            && inspection.audioTrackCount > 0 ? 1 : 0
+            ? (needsLegacyHEVCNormalization ? min(1, inspection.audioTrackCount) : inspection.audioTrackCount)
+            : 0
 
         if FileManager.default.isReadableFile(atPath: plan.outputURL.path),
            let existing = try? await MediaInspector.inspect(plan.outputURL),
            existing.videoTrackCount > 0,
+           (!needsLegacyHEVCNormalization || existing.videoCodec == kCMVideoCodecType_H264),
            existing.audioTrackCount == expectedAudioTrackCount,
            abs(existing.duration - request.trimRange.duration) <= (1.0 / 24.0) {
             return plan.outputURL
         }
 
-        let mediaConfiguration = mediaConfiguration(for: request, inspection: inspection)
-        let range = CMTimeRange(
-            start: CMTime(seconds: request.trimRange.startTime, preferredTimescale: 600),
-            duration: CMTime(seconds: request.trimRange.duration, preferredTimescale: 600)
+        var exportSourceURL = request.sourceURL
+        var exportInspection = inspection
+        var temporaryNormalizedURL: URL?
+        defer {
+            if let temporaryNormalizedURL {
+                try? FileManager.default.removeItem(at: temporaryNormalizedURL)
+            }
+        }
+        if needsLegacyHEVCNormalization {
+            let temporary = plan.outputDirectory
+                .appendingPathComponent(".legacy-hevc-\(UUID().uuidString).mp4")
+            temporaryNormalizedURL = temporary
+            let processed = try await RecordingProcessor().process(
+                sourceURL: request.sourceURL, destinationURL: temporary,
+                configuration: .init(scalePercent: 100, crf: 24))
+            exportSourceURL = temporary
+            exportInspection = processed.inspection
+        }
+        let mediaConfiguration = mediaConfiguration(for: request, inspection: exportInspection)
+        // Preserve the original rational duration for an untrimmed copy. A
+        // coarse 600-Hz conversion can round a VFR tail beyond the actual file
+        // or needlessly turn an untouched recording into a remux.
+        let isFullRecording = request.trimRange.startTime == 0
+            && abs(request.trimRange.endTime - inspection.duration) < 0.000_001
+        let range: CMTimeRange? = isFullRecording ? nil : CMTimeRange(
+            start: CMTime(seconds: request.trimRange.startTime, preferredTimescale: 60_000),
+            end: CMTime(seconds: request.trimRange.endTime, preferredTimescale: 60_000)
         )
 
         return try await exporter.export(
-            sourceURL: request.sourceURL,
+            sourceURL: exportSourceURL,
             destinationURL: plan.outputURL,
             timeRange: range,
             configuration: mediaConfiguration
@@ -378,9 +400,6 @@ actor PreviewExportCoordinator {
         outputURL: URL,
         expectedID: ManagedExportID
     ) throws -> ManagedExportRecord {
-        guard ExportQualitySettings.validRange.contains(request.videoQualityPercent) else {
-            throw PreviewExportCoordinatorError.invalidManagedExport(outputURL)
-        }
         let location = try managedLocation(for: expectedID)
         guard sameResolvedPath(location.fileURL, outputURL),
               let values = regularFileValues(at: location.fileURL) else {
@@ -393,9 +412,7 @@ actor PreviewExportCoordinator {
             id: expectedID,
             recordingID: request.recordingID,
             filename: request.filename,
-            createdAt: existing?.createdAt ?? now(),
-            preset: request.configuration.preset,
-            qualityPercent: request.videoQualityPercent
+            createdAt: existing?.createdAt ?? now()
         )
         manifest.records.removeAll { $0.id == expectedID }
         manifest.records.append(marker)
@@ -449,7 +466,6 @@ actor PreviewExportCoordinator {
 
                 for marker in manifest.records {
                     guard marker.schemaVersion == ManagedExportPublicationMarker.currentSchemaVersion,
-                          ExportQualitySettings.validRange.contains(marker.qualityPercent),
                           let location = try? managedLocation(for: marker.id),
                           sameResolvedPath(location.cacheDirectory, cacheDirectory),
                           marker.recordingID == location.recordingID,
@@ -561,14 +577,6 @@ actor PreviewExportCoordinator {
         return removedCount
     }
 
-    private func mediaPreset(for preset: ExportPreset) -> MediaExportPreset {
-        switch preset {
-        case .compact: .compact
-        case .crisp: .crisp
-        case .smallest: .smallest
-        }
-    }
-
     /// Uses durable capture metadata for the cadence ceiling rather than
     /// rounding `nominalFramesPerSecond`. Screen-content samples are commonly
     /// variable-rate, so a 30 FPS capture may legitimately inspect as 28.29.
@@ -576,15 +584,9 @@ actor PreviewExportCoordinator {
         for request: PreviewExportRequest,
         inspection: MediaInspection
     ) -> MediaExportConfiguration {
-        return MediaExportConfigurationFactory.make(
-            preset: mediaPreset(for: request.configuration.preset),
-            sourceWidth: inspection.width,
-            sourceHeight: inspection.height,
-            sourceFramesPerSecond: request.captureFrameRate.framesPerSecond,
-            videoQualityPercent: request.videoQualityPercent,
-            sourceVideoQualityPercent: request.sourceVideoQualityPercent,
-            includesAudio: request.audioPreference.includesAudio
-        )
+        MediaExportConfiguration(width: inspection.width, height: inspection.height,
+            framesPerSecond: request.captureFrameRate.framesPerSecond,
+            includesAudio: request.audioPreference.includesAudio)
     }
 
     func cacheKey(for request: PreviewExportRequest) -> String {
@@ -592,10 +594,20 @@ actor PreviewExportCoordinator {
         let end = Int64((request.trimRange.endTime * 1_000).rounded())
         let audio = request.audioPreference.includesAudio ? "audio" : "silent"
         let frameRate = request.captureFrameRate.framesPerSecond
-        return "v\(Self.cacheSchemaVersion)-\(start)-\(end)"
-            + "-\(request.configuration.preset.rawValue)-q\(request.videoQualityPercent)"
-            + "-sourceq\(request.sourceVideoQualityPercent)"
-            + "-\(frameRate)fps-\(audio)"
+        let identity = Self.sourceCacheIdentity(for: request)
+        let fingerprint = SHA256.hash(data: Data(identity.utf8)).prefix(12)
+            .map { String(format: "%02x", $0) }.joined()
+        return "v\(Self.cacheSchemaVersion)-\(fingerprint)-\(start)-\(end)-\(frameRate)fps-\(audio)"
+    }
+
+    /// A drag reads a private link so closing Preview cannot delete its media.
+    /// Freeze the original generation's identity before making that link, so a
+    /// prepared trim is reused by Copy and every drag of the same selection.
+    nonisolated static func sourceCacheIdentity(for request: PreviewExportRequest) -> String {
+        if let identity = request.sourceCacheIdentity { return identity }
+        let source = request.sourceURL.standardizedFileURL
+        let values = try? source.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey])
+        return "\(source.path)|\(values?.fileSize ?? -1)|\(values?.contentModificationDate?.timeIntervalSince1970 ?? 0)"
     }
 
     private func makeExportID(
@@ -622,7 +634,7 @@ actor PreviewExportCoordinator {
               !cacheKey.isEmpty,
               cacheKey != ".",
               cacheKey != "..",
-              !cacheKey.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains),
+              Self.isValidCacheKey(cacheKey),
               let filename = try? RecordingFilename(validating: filenameComponent),
               filename.fileName == filenameComponent else {
             throw PreviewExportCoordinatorError.managedExportNotFound(id)
@@ -654,6 +666,18 @@ actor PreviewExportCoordinator {
             cacheDirectory: cacheDirectory,
             fileURL: fileURL
         )
+    }
+
+    /// Cache keys are generated ASCII tokens, never user-entered filenames.
+    /// Validate that grammar directly. The bound CharacterSet predicate used
+    /// here previously rejected valid ASCII keys in optimized Release builds.
+    private nonisolated static func isValidCacheKey(_ key: String) -> Bool {
+        key.unicodeScalars.allSatisfy { scalar in
+            switch scalar.value {
+            case 0x30...0x39, 0x41...0x5A, 0x61...0x7A, 0x2D, 0x2E, 0x5F: true
+            default: false
+            }
+        }
     }
 
     private func regularFileValues(at url: URL) -> RegularFileValues? {
@@ -726,9 +750,7 @@ actor PreviewExportCoordinator {
             url: location.fileURL.standardizedFileURL,
             filename: marker.filename,
             byteCount: fileSize,
-            createdAt: marker.createdAt,
-            preset: marker.preset,
-            qualityPercent: marker.qualityPercent
+            createdAt: marker.createdAt
         )
     }
 

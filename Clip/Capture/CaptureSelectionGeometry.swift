@@ -6,8 +6,44 @@ struct PixelAlignedCaptureGeometry: Equatable, Sendable {
     let pixelHeight: Int
 }
 
+struct CaptureDisplayPixelGeometry: Equatable, Sendable {
+    let pixelSize: CGSize
+    let scaleFactor: CGFloat
+}
+
 /// Pure selection math shared by pointer, keyboard, persistence, and tests.
 enum CaptureSelectionGeometry {
+    /// ScreenCaptureKit's native raster is the WindowServer backing surface,
+    /// which can be larger than the monitor's scan-out resolution. In a scaled
+    /// HiDPI mode, CGDisplayPixelsWide/High can report the logical mode size:
+    /// the measured external 3840 × 1620 point display has a 2× backing surface
+    /// of 7680 × 3240 pixels. Using its reported 3840 × 1620 display dimensions
+    /// silently downsamples captured content before it reaches the encoder.
+    ///
+    /// NSScreen's oriented point size and backing scale describe that surface
+    /// directly, including rotated displays. Keep the same derivation for Area,
+    /// Full Screen, Application capture, and Retake.
+    static func nativeDisplayGeometry(
+        pointSize: CGSize,
+        backingScaleFactor: CGFloat
+    ) -> CaptureDisplayPixelGeometry? {
+        guard pointSize.width.isFinite, pointSize.height.isFinite,
+              pointSize.width > 0, pointSize.height > 0,
+              backingScaleFactor.isFinite, backingScaleFactor > 0 else {
+            return nil
+        }
+        let width = (pointSize.width * backingScaleFactor).rounded()
+        let height = (pointSize.height * backingScaleFactor).rounded()
+        guard width.isFinite, height.isFinite, width >= 2, height >= 2,
+              width < CGFloat(Int.max), height < CGFloat(Int.max) else {
+            return nil
+        }
+        return CaptureDisplayPixelGeometry(
+            pixelSize: CGSize(width: width, height: height),
+            scaleFactor: backingScaleFactor
+        )
+    }
+
     /// Returns the exact pointer-drag rectangle without applying the product's
     /// minimum capture size. This keeps creation anchored under the pointer;
     /// the minimum is applied once the gesture ends.
@@ -239,7 +275,7 @@ enum CaptureSelectionGeometry {
     }
 
     /// Returns the physical-pixel extent covered by a point rectangle. Each
-    /// dimension is even so the selection UI reports the same H.264-safe size
+    /// dimension is even so the selection UI reports the same encoder-safe size
     /// that capture preparation will use.
     static func pixelSize(for rectangle: CGRect, scaleFactor: CGFloat) -> CGSize {
         guard scaleFactor.isFinite, scaleFactor > 0,

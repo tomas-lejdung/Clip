@@ -152,6 +152,21 @@ struct RecordingFilenameTests {
         #expect(renamed.fileName == "Dashboard Filters.mp4")
     }
 
+    @Test("Repeated MP4 extensions are canonicalized at the input boundary")
+    func repeatedExtensionsNeverReachExports() throws {
+        for input in ["Feature.mp4.mp4", "Feature.MP4.mp4", " Feature.mp4 .MP4 "] {
+            let filename = try RecordingFilename(validating: input)
+            #expect(filename.stem == "Feature")
+            #expect(filename.fileName == "Feature.mp4")
+            #expect(try jsonRoundTrip(filename) == filename)
+        }
+        let template = try RecordingFilenameTemplate(validating: "clip-YYYY.mp4.mp4")
+        #expect(template.format == "clip-YYYY.mp4")
+        #expect(throws: RecordingFilenameError.empty) {
+            try RecordingFilename(validating: ".mp4.mp4")
+        }
+    }
+
     @Test("Filename validation rejects empty and reserved names")
     func emptyAndReserved() {
         #expect(throws: RecordingFilenameError.empty) {

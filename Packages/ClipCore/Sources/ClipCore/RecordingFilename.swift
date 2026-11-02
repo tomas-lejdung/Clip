@@ -16,7 +16,7 @@ public struct RecordingFilename: Codable, Equatable, Hashable, Sendable, CustomS
 
     public init(validating userInput: String) throws {
         var candidate = userInput.trimmingCharacters(in: .whitespacesAndNewlines)
-        if candidate.lowercased().hasSuffix(".mp4") {
+        while candidate.lowercased().hasSuffix(".mp4") {
             candidate.removeLast(4)
             candidate = candidate.trimmingCharacters(in: .whitespacesAndNewlines)
         }
@@ -96,7 +96,7 @@ public struct RecordingFilenameTemplate: Codable, Equatable, Hashable, Sendable,
 
     public init(validating userInput: String) throws {
         var candidate = userInput.trimmingCharacters(in: .whitespacesAndNewlines)
-        if candidate.lowercased().hasSuffix(".mp4") {
+        while candidate.lowercased().hasSuffix(".mp4") {
             candidate.removeLast(4)
             candidate = candidate.trimmingCharacters(in: .whitespacesAndNewlines)
         }

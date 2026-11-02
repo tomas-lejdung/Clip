@@ -1,4 +1,5 @@
 @preconcurrency import AVFoundation
+import AppKit
 import ClipCore
 import Combine
 import Foundation
@@ -7,6 +8,7 @@ import OSLog
 enum PreviewOperation: Equatable, Sendable {
     case copying
     case saving
+    case savingTrim
     case retaking
     case closing
     case deleting
@@ -17,6 +19,8 @@ enum PreviewOperation: Equatable, Sendable {
             "Preparing Copy…"
         case .saving:
             "Saving…"
+        case .savingTrim:
+            "Preparing Trim…"
         case .retaking:
             "Waiting for Retake…"
         case .closing:
@@ -40,7 +44,9 @@ final class PreviewViewModel: ObservableObject {
     @Published private(set) var trimStart: TimeInterval
     @Published private(set) var trimEnd: TimeInterval
     @Published private(set) var currentTime: TimeInterval
-    @Published private(set) var selectedPreset: ExportPreset
+    @Published private(set) var isEditingTrim = false
+    @Published private(set) var processingState: PreviewProcessingState?
+    @Published private(set) var isExpandedPreviewPresented = false
     @Published private(set) var exportAudioPreference: ExportAudioPreference
     @Published private(set) var operation: PreviewOperation?
     @Published private(set) var statusMessage: String?
@@ -48,38 +54,55 @@ final class PreviewViewModel: ObservableObject {
     @Published private(set) var lastExportedByteCount: Int64?
     @Published var alert: PreviewAlert?
     @Published var isDeleteConfirmationPresented = false
-    @Published private(set) var sourceFinalizationDeferred = false
 
     let player: AVPlayer
+    weak var editorWindow: NSWindow?
 
     private let actions: PreviewActions
     private var operationTask: Task<Void, Never>?
+    private var processingTask: Task<Void, Never>?
+    private var nativeErrorAlert: NSAlert?
+    private var expandedPlayer: PreviewExpandedPlayerController?
+    private var processingGeneration = UUID()
+    private var savedTrimRange: TrimRange
 
-    init(recording: PreviewRecording, actions: PreviewActions) {
+    init(recording: PreviewRecording, actions: PreviewActions, processingState: PreviewProcessingState? = nil) {
         self.recording = recording
         self.actions = actions
-        filenameText = recording.filename.fileName
+        self.processingState = processingState
+        filenameText = recording.filename.stem
         trimStart = recording.trimRange.startTime
         trimEnd = recording.trimRange.endTime
+        savedTrimRange = recording.trimRange
         currentTime = recording.trimRange.startTime
-        selectedPreset = recording.exportConfiguration.preset
         exportAudioPreference = recording.exportAudioPreference
 
-        player = AVPlayer(url: recording.sourceURL)
+        player = processingState?.phase.isBusy == true ? AVPlayer() : AVPlayer(url: recording.sourceURL)
         player.actionAtItemEnd = .pause
         player.isMuted = !recording.exportAudioPreference.includesAudio
         player.seek(to: CMTime(seconds: recording.trimRange.startTime, preferredTimescale: 600))
+        updatePlaybackRange()
     }
 
     deinit {
         operationTask?.cancel()
+        processingTask?.cancel()
     }
 
     var duration: TimeInterval { recording.duration }
     var aspectRatio: CGFloat { recording.aspectRatio }
-    var isBusy: Bool { operation != nil }
+    var isBusy: Bool { operation != nil || (processingState != nil && processingState?.phase != .ready) }
+    var isProcessing: Bool { processingState?.phase.isBusy == true }
+    var canEditProcessing: Bool { operation == nil && !isEditingTrim && processingState != nil && !isProcessing }
     var isPlaying: Bool { player.timeControlStatus == .playing }
-    var canShare: Bool { !isBusy && validatedFilename != nil }
+    var canShare: Bool { !isBusy && !isEditingTrim && validatedFilename != nil }
+    var canEditTrim: Bool { !isBusy }
+    var canSaveTrim: Bool { isEditingTrim && canEditTrim && validatedFilename != nil }
+    var canClose: Bool { operation == nil }
+    var availableCRFValues: [Int] {
+        let current = processingState?.options.crf ?? 24
+        return Array(Set(Array(18...40) + [current])).sorted()
+    }
     var hasRecordedAudio: Bool {
         recording.audioConfiguration.microphoneEnabled
             || recording.audioConfiguration.systemAudioEnabled
@@ -93,7 +116,9 @@ final class PreviewViewModel: ObservableObject {
 
     var outputSizeDescription: String {
         guard let lastExportedByteCount else {
-            return "Quality based — size varies"
+            let dimensions = "\(recording.pixelSize.width) × \(recording.pixelSize.height)"
+            guard let bytes = recording.approximateExportByteCount else { return dimensions }
+            return "\(dimensions) · \(ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file))"
         }
         let size = ByteCountFormatter.string(
             fromByteCount: lastExportedByteCount,
@@ -103,7 +128,20 @@ final class PreviewViewModel: ObservableObject {
     }
 
     var dragItem: PreviewFileDragItem? {
-        guard canShare, let request = makeExportRequest() else { return nil }
+        guard canShare, let original = makeExportRequest() else { return nil }
+        let lease: (any PreviewSourceLease)?
+        do { lease = try actions.acquireSourceLease(original) }
+        catch {
+            let details = UserFacingErrorPresentation.details(for: error)
+            ClipLog.export.error("Could not retain video for a promised drag: \(details.technicalDescription, privacy: .private)")
+            presentError(title: "Couldn’t Prepare Drag", message: details.message)
+            return nil
+        }
+        let request = PreviewExportRequest(recordingID: original.recordingID,
+            sourceURL: lease?.sourceURL ?? original.sourceURL,
+            captureFrameRate: original.captureFrameRate, filename: original.filename,
+            trimRange: original.trimRange, audioPreference: original.audioPreference,
+            sourceCacheIdentity: PreviewExportCoordinator.sourceCacheIdentity(for: original))
         return PreviewFileDragItem(
             id: recording.id,
             request: request,
@@ -120,24 +158,20 @@ final class PreviewViewModel: ObservableObject {
                     verb: "Shared",
                     defaultStatus: "Shared \(outcome.outputURL.lastPathComponent)"
                 )
-            }
+            },
+            sourceLease: lease
         )
     }
 
     func updateFilename(_ text: String) {
+        guard !isBusy else { return }
         filenameText = text
         lastExportedByteCount = nil
         statusMessage = nil
     }
 
-    func selectPreset(_ preset: ExportPreset) {
-        selectedPreset = preset
-        lastExportedByteCount = nil
-        statusMessage = nil
-    }
-
     func setAudioRemoved(_ removed: Bool) {
-        guard hasRecordedAudio else { return }
+        guard !isBusy, hasRecordedAudio else { return }
         exportAudioPreference = removed ? .removeAudio : .keepAudio
         player.isMuted = removed
         lastExportedByteCount = nil
@@ -145,8 +179,10 @@ final class PreviewViewModel: ObservableObject {
     }
 
     func updateTrimStart(_ proposedTime: TimeInterval) {
+        guard !isBusy, isEditingTrim else { return }
         let maximum = max(0, trimEnd - minimumTrimDuration)
         trimStart = min(max(proposedTime, 0), maximum)
+        updatePlaybackRange()
         lastExportedByteCount = nil
         statusMessage = nil
         if currentTime < trimStart {
@@ -155,8 +191,10 @@ final class PreviewViewModel: ObservableObject {
     }
 
     func updateTrimEnd(_ proposedTime: TimeInterval) {
+        guard !isBusy, isEditingTrim else { return }
         let minimum = min(duration, trimStart + minimumTrimDuration)
         trimEnd = min(max(proposedTime, minimum), duration)
+        updatePlaybackRange()
         lastExportedByteCount = nil
         statusMessage = nil
         if currentTime > trimEnd {
@@ -165,14 +203,77 @@ final class PreviewViewModel: ObservableObject {
     }
 
     func resetTrim() {
+        guard !isBusy, isEditingTrim else { return }
         trimStart = 0
         trimEnd = duration
+        updatePlaybackRange()
         lastExportedByteCount = nil
         seek(to: 0)
         statusMessage = nil
     }
 
+    func beginTrimEditing() {
+        guard canEditTrim, !isEditingTrim else { return }
+        player.pause()
+        isEditingTrim = true
+        statusMessage = nil
+    }
+
+    func cancelTrimEditing() {
+        guard !isBusy, isEditingTrim else { return }
+        restoreSavedTrim()
+    }
+
+    func saveTrim() {
+        guard isEditingTrim, !isBusy else { return }
+        guard let request = makeExportRequest() else {
+            presentError(title: validatedFilename == nil ? "Invalid Filename" : "Couldn’t Save Trim",
+                         message: filenameErrorMessage ?? "Select a valid trim range.")
+            return
+        }
+        guard begin(.savingTrim) else { return }
+        player.pause()
+        let prepareExport = actions.prepareExport
+        operationTask = Task { [weak self] in
+            do {
+                let preparedURL = try await prepareExport?(request)
+                try Task.checkCancellation()
+                guard let self else { return }
+                self.savedTrimRange = request.trimRange
+                self.isEditingTrim = false
+                self.lastExportedByteCount = preparedURL.flatMap(ShareCompletionFormatting.fileByteCount(at:))
+                self.completeOperation(status: "Trim saved. Ready to share.")
+                self.seekPlayer(to: request.trimRange.startTime)
+            } catch is CancellationError {
+                self?.completeOperation(status: nil)
+            } catch {
+                self?.failOperation(title: "Couldn’t Save Trim", error: error)
+            }
+        }
+    }
+
+    private func restoreSavedTrim() {
+        player.pause()
+        trimStart = savedTrimRange.startTime
+        trimEnd = savedTrimRange.endTime
+        updatePlaybackRange()
+        isEditingTrim = false
+        lastExportedByteCount = nil
+        statusMessage = nil
+        seekPlayer(to: currentTime)
+    }
+
+    private func updatePlaybackRange() {
+        player.currentItem?.reversePlaybackEndTime = CMTime(seconds: trimStart, preferredTimescale: 600)
+        player.currentItem?.forwardPlaybackEndTime = CMTime(seconds: trimEnd, preferredTimescale: 600)
+    }
+
     func seek(to proposedTime: TimeInterval) {
+        guard !isBusy else { return }
+        seekPlayer(to: proposedTime)
+    }
+
+    private func seekPlayer(to proposedTime: TimeInterval) {
         let boundedTime = min(max(proposedTime, trimStart), trimEnd)
         currentTime = boundedTime
         player.seek(
@@ -183,6 +284,7 @@ final class PreviewViewModel: ObservableObject {
     }
 
     func togglePlayback() {
+        guard !isBusy else { return }
         if isPlaying {
             player.pause()
             objectWillChange.send()
@@ -202,10 +304,10 @@ final class PreviewViewModel: ObservableObject {
         while !Task.isCancelled {
             let observedTime = player.currentTime().seconds
             if observedTime.isFinite {
-                currentTime = min(max(observedTime, 0), duration)
-                if isPlaying, observedTime >= trimEnd {
+                currentTime = min(max(observedTime, trimStart), trimEnd)
+                if observedTime < trimStart || observedTime > trimEnd || (isPlaying && observedTime >= trimEnd) {
                     player.pause()
-                    seek(to: trimStart)
+                    seekPlayer(to: trimStart)
                 }
             }
 
@@ -217,8 +319,138 @@ final class PreviewViewModel: ObservableObject {
         }
     }
 
+    /// Initial capture finalization and processing update the same visible shell.
+    func updateProcessingState(_ state: PreviewProcessingState?) {
+        let previousPhase = processingState?.phase
+        processingState = state
+        if let state {
+            if state.phase.isBusy {
+                closeExpandedPreview()
+                player.pause()
+            }
+        }
+        if state?.phase != previousPhase, let title = state?.phase.title, let application = NSApp {
+            NSAccessibility.post(element: application, notification: .announcementRequested,
+                                 userInfo: [.announcement: title, .priority: NSAccessibilityPriorityLevel.medium.rawValue])
+        }
+    }
+
+    func replaceRecording(_ replacement: PreviewRecording, preservingEdits: Bool = true) {
+        closeExpandedPreview()
+        let priorTime = currentTime
+        let edited = currentRecordingSnapshot()
+        var value = replacement
+        if preservingEdits {
+            value.filename = edited.filename
+            value.exportAudioPreference = edited.exportAudioPreference
+            // A provisional shell has no playable timeline; its estimated
+            // duration must never become a real trim on the finalized video.
+            if player.currentItem != nil {
+                let start = min(edited.trimRange.startTime, max(0, value.duration - 0.1))
+                let requestedEnd = abs(edited.trimRange.endTime - recording.duration) < 0.000_001
+                    ? value.duration : edited.trimRange.endTime
+                let end = min(max(requestedEnd, start + min(0.1, value.duration)), value.duration)
+                if let trim = try? TrimRange(startTime: start, endTime: end) { value.trimRange = trim }
+            }
+        }
+        install(value)
+        seekPlayer(to: preservingEdits ? priorTime : value.trimRange.startTime)
+    }
+
+    func resolutionTitle(_ scale: RecordingResolutionScale) -> String {
+        let native = processingState?.nativePixelSize ?? recording.pixelSize
+        let dimensions = (try? scale.pixelSize(from: native)) ?? native
+        let name = scale == .native ? "Native" : "\(scale.percent)%"
+        return "\(name) · \(dimensions.width) × \(dimensions.height)"
+    }
+
+    func selectResolution(_ scale: RecordingResolutionScale) {
+        guard canEditProcessing, var options = processingState?.options else { return }
+        options.scale = scale
+        requestProcessing(options)
+    }
+
+    func selectCRF(_ value: Int) {
+        guard canEditProcessing, var options = processingState?.options,
+              availableCRFValues.contains(value), value != options.crf else { return }
+        options.crf = value
+        requestProcessing(options)
+    }
+
+    func retryProcessing() {
+        guard canEditProcessing, let options = processingState?.options else { return }
+        requestProcessing(options, force: true)
+    }
+
+    private func requestProcessing(_ options: RecordingProcessingOptions, force: Bool = false) {
+        guard canEditProcessing, let process = actions.process, let state = processingState,
+              force || options != state.options else { return }
+        closeExpandedPreview()
+        player.pause()
+        let snapshot = currentRecordingSnapshot()
+        let generation = UUID()
+        processingGeneration = generation
+        var preparing = state
+        preparing.options = options; preparing.phase = .preparing; preparing.progress = nil; preparing.message = nil
+        updateProcessingState(preparing)
+        statusMessage = nil
+        processingTask = Task { [weak self] in
+            do {
+                let replacement = try await process(options, snapshot) { [weak self] phase, progress in
+                    guard let self, self.processingGeneration == generation, var current = self.processingState else { return }
+                    current.phase = phase; current.progress = progress.flatMap { $0.isFinite ? min(max($0, 0), 1) : nil }
+                    self.updateProcessingState(current)
+                }
+                guard let self, self.processingGeneration == generation else { return }
+                self.replaceRecording(replacement)
+                if let prepareExport = self.actions.prepareExport,
+                   self.trimStart > 0 || self.trimEnd < self.duration,
+                   let request = self.makeExportRequest() {
+                    var finishing = preparing
+                    finishing.phase = .finishing; finishing.progress = nil
+                    self.updateProcessingState(finishing)
+                    let preparedURL = try await prepareExport(request)
+                    try Task.checkCancellation()
+                    guard self.processingGeneration == generation else { return }
+                    self.lastExportedByteCount = ShareCompletionFormatting.fileByteCount(at: preparedURL)
+                }
+                var ready = preparing
+                ready.phase = .ready; ready.progress = 1
+                self.updateProcessingState(ready)
+                self.actions.processingOptionsChanged(options)
+                self.processingTask = nil
+            } catch {
+                guard let self, self.processingGeneration == generation else { return }
+                var failed = preparing
+                failed.phase = .failed; failed.progress = nil
+                failed.message = UserFacingErrorPresentation.details(for: error).message
+                self.updateProcessingState(failed)
+                self.processingTask = nil
+            }
+        }
+    }
+
+    func showExpandedPreview() {
+        guard !isBusy, player.currentItem != nil else { return }
+        if let expandedPlayer { expandedPlayer.show(); return }
+        let controller = PreviewExpandedPlayerController(player: player, title: filenameText,
+                                                        editorWindow: editorWindow) { [weak self] in
+            self?.expandedPlayer = nil
+            self?.isExpandedPreviewPresented = false
+        }
+        expandedPlayer = controller
+        isExpandedPreviewPresented = true
+        controller.show()
+    }
+
+    func closeExpandedPreview(restoringEditor: Bool = true) {
+        expandedPlayer?.close(restoringEditor: restoringEditor)
+        expandedPlayer = nil
+        isExpandedPreviewPresented = false
+    }
+
     func copy() {
-        guard begin(.copying), let request = makeExportRequest() else { return }
+        guard !isBusy, !isEditingTrim, begin(.copying), let request = makeExportRequest() else { return }
         let copy = actions.copy
         operationTask = Task { [weak self] in
             do {
@@ -247,7 +479,7 @@ final class PreviewViewModel: ObservableObject {
     }
 
     func saveAs() {
-        guard begin(.saving), let request = makeExportRequest() else { return }
+        guard !isBusy, !isEditingTrim, begin(.saving), let request = makeExportRequest() else { return }
         let save = actions.save
         operationTask = Task { [weak self] in
             do {
@@ -284,7 +516,11 @@ final class PreviewViewModel: ObservableObject {
         operationTask = Task { [weak self] in
             do {
                 let result = try await retake(previousRecording)
-                guard !Task.isCancelled else { return }
+                guard !Task.isCancelled else {
+                    if let result { await result.discardReplacement() }
+                    self?.completeOperation(status: nil)
+                    return
+                }
                 guard let result else {
                     self?.completeOperation(status: nil)
                     return
@@ -296,7 +532,6 @@ final class PreviewViewModel: ObservableObject {
                 self.install(result.recording)
                 do {
                     try await result.commitInstallation()
-                    self.sourceFinalizationDeferred = false
                     self.completeOperation(status: "Retake ready")
                 } catch {
                     self.install(previousRecording)
@@ -313,15 +548,26 @@ final class PreviewViewModel: ObservableObject {
     }
 
     func done() {
-        guard begin(.closing) else { return }
+        guard canClose else { return }
+        if isEditingTrim { restoreSavedTrim() }
+        dismissAlert()
+        operation = .closing
+        statusMessage = nil
+        closeExpandedPreview(restoringEditor: false)
         player.pause()
-        let snapshot = currentRecordingSnapshot()
         let done = actions.done
         operationTask = Task { [weak self] in
             do {
-                try await done(snapshot)
+                guard let self else { return }
+                await self.processingTask?.value
+                // Initial processing belongs to the coordinator, whereas later
+                // requests belong to this model. Both settle before close.
+                while self.isProcessing {
+                    try await Task.sleep(for: .milliseconds(40))
+                }
+                try await done(self.currentRecordingSnapshot())
                 guard !Task.isCancelled else { return }
-                self?.completeOperation(status: nil)
+                self.completeOperation(status: nil)
             } catch is CancellationError {
                 self?.completeOperation(status: nil)
             } catch {
@@ -360,18 +606,26 @@ final class PreviewViewModel: ObservableObject {
 
     func dismissAlert() {
         alert = nil
+        if let nativeErrorAlert {
+            self.nativeErrorAlert = nil
+            nativeErrorAlert.window.sheetParent?.endSheet(nativeErrorAlert.window)
+            nativeErrorAlert.window.orderOut(nil)
+        }
     }
 
     /// Gives application termination a bounded ownership handoff point. The
     /// caller first resolves any coordinator-owned Retake continuation, then
     /// waits for in-flight Preview work before persisting this final snapshot.
     func settleForTermination() async {
+        closeExpandedPreview(restoringEditor: false)
         player.pause()
+        dismissAlert()
+        await processingTask?.value
         let pendingTask = operationTask
-        pendingTask?.cancel()
         await pendingTask?.value
         operationTask = nil
         operation = nil
+        if isEditingTrim { restoreSavedTrim() }
     }
 
     func snapshotForPersistence() -> PreviewRecording {
@@ -397,9 +651,6 @@ final class PreviewViewModel: ObservableObject {
             captureFrameRate: recording.frameRate,
             filename: filename,
             trimRange: trimRange,
-            configuration: ExportConfiguration(preset: selectedPreset),
-            videoQualityPercent: recording.exportQualities.quality(for: selectedPreset),
-            sourceVideoQualityPercent: recording.sourceVideoQualityPercent,
             audioPreference: exportAudioPreference
         )
     }
@@ -408,8 +659,7 @@ final class PreviewViewModel: ObservableObject {
         guard let request = makeExportRequest() else { return recording }
         var snapshot = recording
         snapshot.filename = request.filename
-        snapshot.trimRange = request.trimRange
-        snapshot.exportConfiguration = request.configuration
+        snapshot.trimRange = isEditingTrim ? savedTrimRange : request.trimRange
         snapshot.exportAudioPreference = request.audioPreference
         return snapshot
     }
@@ -441,6 +691,8 @@ final class PreviewViewModel: ObservableObject {
         operation = nil
         operationTask = nil
         let details = UserFacingErrorPresentation.details(for: error)
+        let diagnosticError = error as NSError
+        ClipLog.lifecycle.error("Preview error type=\(String(reflecting: type(of: error)), privacy: .public) code=\(diagnosticError.code, privacy: .public)")
         ClipLog.lifecycle.error(
             "Preview operation failed (\(title, privacy: .public)): \(details.technicalDescription, privacy: .private)"
         )
@@ -448,7 +700,23 @@ final class PreviewViewModel: ObservableObject {
     }
 
     private func presentError(title: String, message: String) {
-        alert = PreviewAlert(title: title, message: message)
+        dismissAlert()
+        let presentation = PreviewAlert(title: title, message: message)
+        alert = presentation
+        guard let editorWindow else { return }
+        let sheet = NSAlert()
+        sheet.alertStyle = .warning
+        sheet.messageText = title
+        sheet.informativeText = message
+        sheet.addButton(withTitle: "OK")
+        // AppKit keeps an attached sheet in its floating parent's window group,
+        // so the alert receives mouse events without a separate SwiftUI overlay.
+        nativeErrorAlert = sheet
+        sheet.beginSheetModal(for: editorWindow) { [weak self] _ in
+            guard let self, self.alert?.id == presentation.id else { return }
+            self.nativeErrorAlert = nil
+            self.alert = nil
+        }
     }
 
     @discardableResult
@@ -459,16 +727,10 @@ final class PreviewViewModel: ObservableObject {
     ) -> String? {
         lastSharedFileURL = outcome.outputURL
         lastExportedByteCount = ShareCompletionFormatting.fileByteCount(at: outcome.outputURL)
-        sourceFinalizationDeferred = outcome.sourceFinalizationDeferred
         let success = defaultStatus ?? "\(verb) \(outcome.outputURL.lastPathComponent)"
         let resolvedStatus: String?
         if let warning = outcome.postShareWarning {
             resolvedStatus = "\(success) — \(warning)"
-        } else if outcome.historyDisposition == .removeHistoryItem {
-            resolvedStatus = "\(success) — removed from History when Preview closes"
-        } else if outcome.historyDisposition == .replaceOriginalWithExport,
-                  outcome.sourceFinalizationDeferred {
-            resolvedStatus = "\(success) — optimized original will update when Preview closes"
         } else {
             resolvedStatus = success
         }
@@ -477,6 +739,7 @@ final class PreviewViewModel: ObservableObject {
     }
 
     private func install(_ replacement: PreviewRecording) {
+        closeExpandedPreview()
         player.pause()
         player.replaceCurrentItem(with: AVPlayerItem(url: replacement.sourceURL))
         player.actionAtItemEnd = .pause
@@ -484,14 +747,16 @@ final class PreviewViewModel: ObservableObject {
         recording = replacement
         lastSharedFileURL = nil
         lastExportedByteCount = nil
-        filenameText = replacement.filename.fileName
+        filenameText = replacement.filename.stem
         trimStart = replacement.trimRange.startTime
         trimEnd = replacement.trimRange.endTime
+        savedTrimRange = replacement.trimRange
+        isEditingTrim = false
         currentTime = replacement.trimRange.startTime
-        selectedPreset = replacement.exportConfiguration.preset
         exportAudioPreference = replacement.exportAudioPreference
         player.isMuted = !replacement.exportAudioPreference.includesAudio
+        updatePlaybackRange()
 
-        seek(to: replacement.trimRange.startTime)
+        seekPlayer(to: replacement.trimRange.startTime)
     }
 }

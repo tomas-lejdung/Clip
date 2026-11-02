@@ -18,6 +18,7 @@ source "$ROOT/scripts/signing-config.sh"
 source "$ROOT/scripts/version-config.sh"
 source "$ROOT/scripts/sparkle-config.sh"
 source "$ROOT/scripts/webrtc-config.sh"
+source "$ROOT/scripts/recording-encoder-config.sh"
 clip_warn_if_ad_hoc_signing
 
 WEBRTC_PACKAGE_MANIFEST="$ROOT/Packages/ClipLiveShareWebRTC/Package.swift"
@@ -189,6 +190,7 @@ WEBRTC_EMBEDDED_NORMALIZED_ARM64_SHA256="$(
 # Re-sign Sparkle's helpers, framework, and host from the inside out. Sparkle
 # explicitly forbids deep signing for this sandboxed integration.
 "$ROOT/scripts/sign-app-bundle.sh" "$APP"
+"$ROOT/scripts/verify-recording-encoder.sh" "$APP"
 
 DESIGNATED_REQUIREMENT="$(clip_designated_requirement "$APP")"
 if [[ -z "$DESIGNATED_REQUIREMENT" ]]; then
@@ -273,6 +275,9 @@ for MARKER in '# webrtc' '# libaom' '# libvpx' '# opus'; do
     || { echo "Packaged official WebRTC third-party notices are missing: $MARKER" >&2; exit 1; }
 done
 DMG_SHA256="$(shasum -a 256 "$OUTPUT" | awk '{print $1}')"
+RECORDING_ENCODER_SHA256="$(shasum -a 256 "$APP/Contents/Helpers/ffmpeg" | awk '{print $1}')"
+RECORDING_ENCODER_NORMALIZED_SHA256="$(clip_recording_encoder_payload_sha256 "$APP/Contents/Helpers/ffmpeg")"
+RECORDING_ENCODER_MANIFEST_SHA256="$(shasum -a 256 "$APP/Contents/Resources/RecordingEncoderSources/manifest.txt" | awk '{print $1}')"
 PROVENANCE_TEMP="$(mktemp "$(dirname "$OUTPUT")/.clip-provenance.XXXXXX")"
 cat >"$PROVENANCE_TEMP" <<EOF
 schema=4
@@ -303,6 +308,11 @@ webrtc_executable_sha256=$WEBRTC_EXECUTABLE_SHA256
 webrtc_executable_normalized_arm64_sha256=$WEBRTC_EXECUTABLE_NORMALIZED_ARM64_SHA256
 third_party_notices_sha256=$THIRD_PARTY_NOTICES_SHA256
 webrtc_third_party_notices_sha256=$WEBRTC_THIRD_PARTY_NOTICES_SHA256
+recording_encoder_sha256=$RECORDING_ENCODER_SHA256
+recording_encoder_normalized_sha256=$RECORDING_ENCODER_NORMALIZED_SHA256
+recording_encoder_manifest_sha256=$RECORDING_ENCODER_MANIFEST_SHA256
+ffmpeg_source_sha256=$CLIP_FFMPEG_SOURCE_SHA256
+x264_source_sha256=$CLIP_X264_SOURCE_SHA256
 swift_package_resolution=fresh
 app_executable_sha256=$APP_EXECUTABLE_SHA256
 dmg_sha256=$DMG_SHA256

@@ -20,16 +20,29 @@ enum CaptureSelectionAdapter {
             )
 
         case let .fullscreen(display):
+            guard display.localBounds.width.isFinite,
+                  display.localBounds.height.isFinite,
+                  display.localBounds.width > 0,
+                  display.localBounds.height > 0,
+                  display.localBounds.width < CGFloat(Int.max),
+                  display.localBounds.height < CGFloat(Int.max) else {
+                throw CaptureSelectionAdapterError.invalidDisplayBounds
+            }
             guard display.pixelSize.width.isFinite,
                   display.pixelSize.height.isFinite,
-                  display.pixelSize.width <= CGFloat(Int.max - 1),
-                  display.pixelSize.height <= CGFloat(Int.max - 1) else {
+                  display.pixelSize.width >= 2,
+                  display.pixelSize.height >= 2,
+                  display.pixelSize.width < CGFloat(Int.max),
+                  display.pixelSize.height < CGFloat(Int.max) else {
                 throw CaptureSelectionAdapterError.invalidPixelSize
             }
             let nominalWidth = Int(display.pixelSize.width.rounded())
             let nominalHeight = Int(display.pixelSize.height.rounded())
             guard nominalWidth >= 2, nominalHeight >= 2 else {
                 throw CaptureSelectionAdapterError.invalidPixelSize
+            }
+            guard display.scaleFactor.isFinite, display.scaleFactor > 0 else {
+                throw CaptureSelectionAdapterError.invalidDisplayBounds
             }
             let outputWidth = nominalWidth.isMultiple(of: 2)
                 ? nominalWidth
@@ -49,7 +62,8 @@ enum CaptureSelectionAdapter {
                     pixelHeight: nominalHeight,
                     pointWidth: display.localBounds.width,
                     pointHeight: display.localBounds.height
-                )
+                ),
+                requiredNativeScale: Double(display.scaleFactor)
             )
         }
     }
@@ -109,7 +123,8 @@ enum CaptureSelectionAdapter {
                 pointWidth: pixelGeometry.sourceRectangle.width,
                 pointHeight: pixelGeometry.sourceRectangle.height
             ),
-            includedApplicationBundleIdentifier: target.bundleIdentifier
+            includedApplicationBundleIdentifier: target.bundleIdentifier,
+            requiredNativeScale: Double(application.display.scaleFactor)
         )
     }
 
@@ -152,7 +167,8 @@ enum CaptureSelectionAdapter {
                 pixelHeight: pixelGeometry.pixelHeight,
                 pointWidth: sourceRect.width,
                 pointHeight: sourceRect.height
-            )
+            ),
+            requiredNativeScale: Double(display.scaleFactor)
         )
     }
 

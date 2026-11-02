@@ -275,15 +275,10 @@ final class ApplicationCaptureSelectionController {
                 return nil
             }
             let displayID = CGDirectDisplayID(number.uint32Value)
-            let pixelWidth = CGFloat(CGDisplayPixelsWide(displayID))
-            let pixelHeight = CGFloat(CGDisplayPixelsHigh(displayID))
-            let pixelSize = CGSize(
-                width: pixelWidth > 0 ? pixelWidth : screen.frame.width * screen.backingScaleFactor,
-                height: pixelHeight > 0 ? pixelHeight : screen.frame.height * screen.backingScaleFactor
-            )
-            let scaleFactor = screen.frame.width > 0
-                ? pixelSize.width / screen.frame.width
-                : screen.backingScaleFactor
+            guard let geometry = CaptureSelectionGeometry.nativeDisplayGeometry(
+                pointSize: screen.frame.size,
+                backingScaleFactor: screen.backingScaleFactor
+            ) else { return nil }
             return ScreenContext(
                 screen: screen,
                 display: CaptureSelectionDisplay(
@@ -291,8 +286,8 @@ final class ApplicationCaptureSelectionController {
                     displayID: displayID,
                     name: screen.localizedName,
                     frameInGlobalPoints: screen.frame,
-                    pixelSize: pixelSize,
-                    scaleFactor: scaleFactor,
+                    pixelSize: geometry.pixelSize,
+                    scaleFactor: geometry.scaleFactor,
                     isMain: screen === NSScreen.main
                 ),
                 quartzFrame: CGDisplayBounds(displayID)

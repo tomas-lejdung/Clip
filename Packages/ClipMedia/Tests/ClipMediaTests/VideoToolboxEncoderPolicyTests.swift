@@ -6,76 +6,26 @@ import Testing
 
 @Suite("VideoToolbox master policy")
 struct VideoToolboxEncoderPolicyTests {
-    @Test("Live masters use quality-first real-time video without a hard rate limit")
+    @Test("Recording uses fixed native hardware HEVC with the selected average bitrate")
     func liveMasterPolicy() {
-        let recording = RecordingConfiguration(
-            width: 2_560,
-            height: 1_440,
-            framesPerSecond: 60,
-            videoQuality: 0.91,
-            showsCursor: true,
-            audioMode: .system
-        )
-
-        let policy = VideoToolboxVideoEncoder.Configuration.liveMaster(
-            recording: recording
-        )
-
-        #expect(policy.width == recording.width)
-        #expect(policy.height == recording.height)
-        #expect(policy.framesPerSecond == 60)
-        #expect(policy.quality == 0.91)
-        #expect(policy.isRealTime)
-        #expect(!policy.allowsFrameReordering)
-        #expect(!policy.prioritizesEncodingSpeedOverQuality)
-        #expect(policy.maximumKeyFrameInterval == 120)
+        let recording = RecordingConfiguration(width: 2_560, height: 1_440,
+            framesPerSecond: 60, targetAverageBitRate: 20_000_000, audioMode: .system)
+        let policy = VideoToolboxHEVCEncoder.Configuration.liveMaster(recording: recording)
+        #expect(policy.width == recording.width && policy.height == recording.height)
+        #expect(policy.framesPerSecond == 60 && policy.averageBitRate == 20_000_000)
+        #expect(policy.isRealTime && !policy.allowsFrameReordering)
+        #expect(!policy.prioritizesEncodingSpeedOverQuality && policy.maximumKeyFrameInterval == 120)
+        let defaults = VideoToolboxHEVCEncoder.Configuration.liveMaster(
+            recording: RecordingConfiguration(width: 4478, height: 3048))
+        #expect(defaults.averageBitRate == 10_000_000)
+        #expect(defaults.width == 4478 && defaults.height == 3048)
     }
 
-    @Test("Live hardware encoding prefers H.264 and falls back to HEVC")
-    func liveHardwareCodecPreference() {
-        #expect(VideoToolboxVideoCodec.liveHardwarePreference == [.h264, .hevc])
-        #expect(VideoToolboxVideoCodec.h264.codecType == kCMVideoCodecType_H264)
-        #expect(VideoToolboxVideoCodec.hevc.codecType == kCMVideoCodecType_HEVC)
-        #expect(VideoToolboxVideoCodec.h264.profileLevel == kVTProfileLevel_H264_High_AutoLevel)
-        #expect(VideoToolboxVideoCodec.hevc.profileLevel == kVTProfileLevel_HEVC_Main_AutoLevel)
-    }
-
-    @Test("Hardware codec selection retains the first successful exact-size session")
-    func selectsHEVCAfterH264RejectsExactSize() {
-        var attempts: [VideoToolboxVideoCodec] = []
-        let selection: VideoToolboxHardwareCodecSelection<String> =
-            VideoToolboxHardwareCodecSelector.select { codec in
-                attempts.append(codec)
-                switch codec {
-                case .h264:
-                    return (OSStatus(-12_903), nil)
-                case .hevc:
-                    return (noErr, "exact-size-hevc-session")
-                }
-            }
-
-        #expect(attempts == [.h264, .hevc])
-        switch selection {
-        case let .selected(codec, value):
-            #expect(codec == .hevc)
-            #expect(value == "exact-size-hevc-session")
-        case .unavailable:
-            Issue.record("Expected the HEVC hardware fallback to be selected")
-        }
-    }
-
-    @Test("Live codec attempts require rather than merely prefer hardware")
+    @Test("Recording requires hardware HEVC without software or codec fallback")
     func requiresHardwareEncoder() {
-        let specification = VideoToolboxHardwareCodecSelector
-            .hardwareOnlyEncoderSpecification
-        #expect(
-            specification[kVTVideoEncoderSpecification_EnableHardwareAcceleratedVideoEncoder]
-                as? Bool == true
-        )
-        #expect(
-            specification[kVTVideoEncoderSpecification_RequireHardwareAcceleratedVideoEncoder]
-                as? Bool == true
-        )
+        let specification = VideoToolboxHEVCEncoder.Configuration.hardwareOnlyEncoderSpecification
+        #expect(specification[kVTVideoEncoderSpecification_EnableHardwareAcceleratedVideoEncoder] as? Bool == true)
+        #expect(specification[kVTVideoEncoderSpecification_RequireHardwareAcceleratedVideoEncoder] as? Bool == true)
     }
 
     @Test("Bounded VideoToolbox operation returns a completed status")

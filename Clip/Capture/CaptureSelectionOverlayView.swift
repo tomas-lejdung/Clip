@@ -293,7 +293,7 @@ final class CaptureSelectionOverlayView: NSView {
         statusLabel.alignment = .center
         statusLabel.maximumNumberOfLines = 2
 
-        recordButton.title = String(localized: "Record")
+        recordButton.title = configuration.confirmationTitle
         recordButton.bezelStyle = .rounded
         recordButton.controlSize = .large
         recordButton.target = self
@@ -338,7 +338,7 @@ final class CaptureSelectionOverlayView: NSView {
             )
             dimensionsLabel.stringValue = "\(Int(pixels.width)) × \(Int(pixels.height))"
             statusLabel.stringValue = "\(configuration.microphoneStatus)  •  \(configuration.systemAudioStatus)"
-            recordButton.title = String(localized: "Record")
+            recordButton.title = configuration.confirmationTitle
             toolbar.isHidden = !isActiveDisplay || isCreatingSelection
         } else if mode == .area {
             dimensionsLabel.stringValue = String(localized: "Draw an area")
@@ -350,7 +350,7 @@ final class CaptureSelectionOverlayView: NSView {
                 ? String(localized: "Fullscreen selected")
                 : String(localized: "Choose this display")
             recordButton.title = isActiveDisplay
-                ? String(localized: "Record")
+                ? configuration.confirmationTitle
                 : String(localized: "Select Display")
             toolbar.isHidden = false
         }

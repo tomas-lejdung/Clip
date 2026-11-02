@@ -81,13 +81,6 @@ struct PreviewRecording: Equatable, Sendable, Identifiable {
     let audioConfiguration: AudioConfiguration
     var filename: RecordingFilename
     var trimRange: TrimRange
-    var exportConfiguration: ExportConfiguration
-    /// The current user-selected quality ladder used when Preview creates an
-    /// export request. These values are intentionally independent.
-    let exportQualities: ExportQualitySettings
-    /// The Crisp quality used to encode the managed master. Crisp source reuse
-    /// is valid only when the requested quality still matches this value.
-    let sourceVideoQualityPercent: Int
     var exportAudioPreference: ExportAudioPreference
     var approximateExportByteCount: Int64?
     let retakePlan: PreviewRetakePlan?
@@ -101,9 +94,6 @@ struct PreviewRecording: Equatable, Sendable, Identifiable {
         audioConfiguration: AudioConfiguration = .none,
         filename: RecordingFilename,
         trimRange: TrimRange,
-        exportConfiguration: ExportConfiguration,
-        exportQualities: ExportQualitySettings = .defaults,
-        sourceVideoQualityPercent: Int = ExportQualitySettings.defaults.crisp,
         exportAudioPreference: ExportAudioPreference = .keepAudio,
         approximateExportByteCount: Int64? = nil,
         retakePlan: PreviewRetakePlan? = nil
@@ -124,9 +114,6 @@ struct PreviewRecording: Equatable, Sendable, Identifiable {
         self.audioConfiguration = audioConfiguration
         self.filename = filename
         self.trimRange = trimRange
-        self.exportConfiguration = exportConfiguration
-        self.exportQualities = exportQualities
-        self.sourceVideoQualityPercent = sourceVideoQualityPercent
         self.exportAudioPreference = exportAudioPreference
         self.approximateExportByteCount = approximateExportByteCount
         self.retakePlan = retakePlan
@@ -138,23 +125,17 @@ struct PreviewRecording: Equatable, Sendable, Identifiable {
 }
 
 /// A complete, validated description of what the user currently sees in Preview.
-/// Every share path uses this same request so trim, preset, and filename cannot drift.
+/// Every share path uses this same request so trim, audio, and filename cannot drift.
 struct PreviewExportRequest: Equatable, Sendable {
     let recordingID: RecordingID
     let sourceURL: URL
-    /// The capture setting is the authoritative cadence ceiling. A screen
-    /// recording can inspect as 28.29 FPS even though it was captured on a
-    /// 30 FPS timeline; rounding that observation down would spuriously turn
-    /// an unchanged Crisp export into a 28 FPS conversion.
+    /// The original capture cadence, retained when remuxing shared files.
     let captureFrameRate: CaptureFrameRate
     let filename: RecordingFilename
     let trimRange: TrimRange
-    let configuration: ExportConfiguration
-    /// User-facing whole-number quality (1...100) selected for this export.
-    let videoQualityPercent: Int
-    /// Whole-number quality used for the managed master, when it was captured.
-    let sourceVideoQualityPercent: Int
     let audioPreference: ExportAudioPreference
+    /// Retains the original source identity when a promised drag uses a lease URL.
+    let sourceCacheIdentity: String?
 
     init(
         recordingID: RecordingID,
@@ -162,27 +143,21 @@ struct PreviewExportRequest: Equatable, Sendable {
         captureFrameRate: CaptureFrameRate,
         filename: RecordingFilename,
         trimRange: TrimRange,
-        configuration: ExportConfiguration,
-        videoQualityPercent: Int,
-        sourceVideoQualityPercent: Int,
-        audioPreference: ExportAudioPreference
+        audioPreference: ExportAudioPreference,
+        sourceCacheIdentity: String? = nil
     ) {
         self.recordingID = recordingID
         self.sourceURL = sourceURL
         self.captureFrameRate = captureFrameRate
         self.filename = filename
         self.trimRange = trimRange
-        self.configuration = configuration
-        self.videoQualityPercent = videoQualityPercent
-        self.sourceVideoQualityPercent = sourceVideoQualityPercent
         self.audioPreference = audioPreference
+        self.sourceCacheIdentity = sourceCacheIdentity
     }
 }
 
 struct PreviewShareOutcome: Sendable {
     let outputURL: URL
-    let historyDisposition: HistoryPostExportDisposition
-    let sourceFinalizationDeferred: Bool
     let shouldClosePreview: Bool
     /// A successful Copy, Save As, or drag must remain successful when only the
     /// subsequent History bookkeeping fails. This warning is shown inline so
@@ -191,14 +166,10 @@ struct PreviewShareOutcome: Sendable {
 
     init(
         outputURL: URL,
-        historyDisposition: HistoryPostExportDisposition,
-        sourceFinalizationDeferred: Bool,
         shouldClosePreview: Bool = false,
         postShareWarning: String? = nil
     ) {
         self.outputURL = outputURL
-        self.historyDisposition = historyDisposition
-        self.sourceFinalizationDeferred = sourceFinalizationDeferred
         self.shouldClosePreview = shouldClosePreview
         self.postShareWarning = postShareWarning
     }
@@ -217,6 +188,55 @@ typealias PreviewExportAction = @Sendable (PreviewExportRequest) async throws ->
 typealias PreviewCopyAction = @MainActor @Sendable (PreviewExportRequest) async throws -> PreviewShareOutcome
 typealias PreviewSaveAction = @MainActor @Sendable (PreviewExportRequest) async throws -> PreviewShareOutcome?
 typealias PreviewRetakeAction = @MainActor @Sendable (PreviewRecording) async throws -> PreviewRetakeResult?
+typealias PreviewPrepareExportAction = @MainActor @Sendable (PreviewExportRequest) async throws -> URL
+
+enum PreviewProcessingPhase: Equatable, Sendable {
+    case preparing, processing, finishing, ready, failed
+
+    var title: String {
+        switch self {
+        case .preparing: "Preparing video"
+        case .processing: "Processing video"
+        case .finishing: "Finishing"
+        case .ready: "Ready"
+        case .failed: "Couldn’t process video"
+        }
+    }
+
+    var isBusy: Bool { self == .preparing || self == .processing || self == .finishing }
+}
+
+/// Exists only while the original capture is retained for processing choices.
+/// Saved Sources are presented without this state and cannot be recompressed.
+struct PreviewProcessingState: Equatable, Sendable {
+    var options: RecordingProcessingOptions
+    var nativePixelSize: PixelSize
+    var phase: PreviewProcessingPhase
+    var progress: Double?
+    var message: String?
+
+    init(options: RecordingProcessingOptions, nativePixelSize: PixelSize,
+         phase: PreviewProcessingPhase = .preparing, progress: Double? = nil,
+         message: String? = nil) {
+        self.options = options
+        self.nativePixelSize = nativePixelSize
+        self.phase = phase
+        self.progress = progress.flatMap { $0.isFinite ? min(max($0, 0), 1) : nil }
+        self.message = message
+    }
+}
+
+typealias PreviewProcessingProgress = @MainActor @Sendable (PreviewProcessingPhase, Double?) -> Void
+typealias PreviewProcessAction = @MainActor @Sendable (
+    RecordingProcessingOptions, PreviewRecording, @escaping PreviewProcessingProgress
+) async throws -> PreviewRecording
+
+/// Pins a candidate for a promised export, even if the receiver asks for its
+/// bytes only after Preview has reprocessed or closed. Releasing the object
+/// releases the pin; the recording owner decides when retired files are safe.
+protocol PreviewSourceLease: AnyObject, Sendable {
+    var sourceURL: URL { get }
+}
 
 /// Integration boundary between Preview and the export/history coordinators.
 ///
@@ -232,6 +252,11 @@ struct PreviewActions: Sendable {
     let done: @MainActor @Sendable (PreviewRecording) async throws -> Void
     let delete: @MainActor @Sendable (PreviewRecording) async throws -> Void
     let reveal: @MainActor @Sendable (URL) -> Void
+    let process: PreviewProcessAction?
+    let processingOptionsChanged: @MainActor @Sendable (RecordingProcessingOptions) -> Void
+    let acquireSourceLease: @MainActor @Sendable (PreviewExportRequest) throws -> (any PreviewSourceLease)?
+    /// Prepares a reusable, unpublished export before accepting an edited trim.
+    let prepareExport: PreviewPrepareExportAction?
 
     init(
         export: @escaping PreviewExportAction,
@@ -240,7 +265,11 @@ struct PreviewActions: Sendable {
         retake: @escaping PreviewRetakeAction,
         done: @escaping @MainActor @Sendable (PreviewRecording) async throws -> Void,
         delete: @escaping @MainActor @Sendable (PreviewRecording) async throws -> Void,
-        reveal: @escaping @MainActor @Sendable (URL) -> Void = { _ in }
+        reveal: @escaping @MainActor @Sendable (URL) -> Void = { _ in },
+        process: PreviewProcessAction? = nil,
+        processingOptionsChanged: @escaping @MainActor @Sendable (RecordingProcessingOptions) -> Void = { _ in },
+        acquireSourceLease: @escaping @MainActor @Sendable (PreviewExportRequest) throws -> (any PreviewSourceLease)? = { _ in nil },
+        prepareExport: PreviewPrepareExportAction? = nil
     ) {
         self.export = export
         self.copy = copy
@@ -249,6 +278,10 @@ struct PreviewActions: Sendable {
         self.done = done
         self.delete = delete
         self.reveal = reveal
+        self.process = process
+        self.processingOptionsChanged = processingOptionsChanged
+        self.acquireSourceLease = acquireSourceLease
+        self.prepareExport = prepareExport
     }
 }
 
@@ -273,7 +306,8 @@ struct PreviewFileDragItem: Identifiable, Sendable {
         request: PreviewExportRequest,
         export: @escaping PreviewExportAction,
         reportFailure: @escaping FailureReporter,
-        reportSuccess: @escaping SuccessReporter
+        reportSuccess: @escaping SuccessReporter,
+        sourceLease: (any PreviewSourceLease)? = nil
     ) {
         self.id = id
         self.request = request
@@ -281,13 +315,17 @@ struct PreviewFileDragItem: Identifiable, Sendable {
             request: request,
             export: export,
             reportFailure: reportFailure,
-            reportSuccess: reportSuccess
+            reportSuccess: reportSuccess,
+            sourceLease: sourceLease
         )
     }
 
     func makeItemProvider() -> NSItemProvider {
         let provider = NSItemProvider()
-        provider.suggestedName = request.filename.fileName
+        // The representation's MPEG-4 type supplies the extension. Giving the
+        // base name avoids receivers appending a second .mp4; the URL/object
+        // representations still use the complete canonical filename.
+        provider.suggestedName = request.filename.stem
 
         // Register the native MP4 file representation first so Finder and
         // media-aware apps receive the highest-fidelity representation they
@@ -372,17 +410,20 @@ private actor PreviewFileDragExportPromise {
     private let reportSuccess: PreviewFileDragItem.SuccessReporter
     private var resolutionTask: Task<PreviewShareOutcome, any Error>?
     private var didReportResolution = false
+    private let sourceLease: (any PreviewSourceLease)?
 
     init(
         request: PreviewExportRequest,
         export: @escaping PreviewExportAction,
         reportFailure: @escaping PreviewFileDragItem.FailureReporter,
-        reportSuccess: @escaping PreviewFileDragItem.SuccessReporter
+        reportSuccess: @escaping PreviewFileDragItem.SuccessReporter,
+        sourceLease: (any PreviewSourceLease)?
     ) {
         self.request = request
         self.export = export
         self.reportFailure = reportFailure
         self.reportSuccess = reportSuccess
+        self.sourceLease = sourceLease
     }
 
     func resolve() async throws -> PreviewShareOutcome {
@@ -416,21 +457,6 @@ private actor PreviewFileDragExportPromise {
     }
 }
 
-extension ExportPreset {
-    static let previewOrder: [Self] = [.crisp, .compact, .smallest]
-
-    var previewTitle: String {
-        switch self {
-        case .compact:
-            "Compact"
-        case .crisp:
-            "Crisp"
-        case .smallest:
-            "Smallest"
-        }
-    }
-}
-
 enum PreviewTimecodeFormatter {
     static func string(from seconds: TimeInterval) -> String {
         let wholeSeconds = max(0, Int(seconds.rounded(.down)))
@@ -458,7 +484,6 @@ extension PreviewRecording {
                 audioConfiguration: .systemAudioOnly,
                 filename: RecordingFilename(validating: "clip-20260717-104218.mp4"),
                 trimRange: TrimRange(startTime: 2, endTime: duration),
-                exportConfiguration: .crisp,
                 approximateExportByteCount: 5_800_000
             )
         } catch {
@@ -471,16 +496,12 @@ extension PreviewActions {
     static let demo = Self(
         export: {
             PreviewShareOutcome(
-                outputURL: $0.sourceURL,
-                historyDisposition: .keepOriginal,
-                sourceFinalizationDeferred: false
+                outputURL: $0.sourceURL
             )
         },
         copy: {
             PreviewShareOutcome(
-                outputURL: $0.sourceURL,
-                historyDisposition: .keepOriginal,
-                sourceFinalizationDeferred: false
+                outputURL: $0.sourceURL
             )
         },
         save: { _ in nil },

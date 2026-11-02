@@ -2,14 +2,14 @@ import Foundation
 import Testing
 @testable import ClipCore
 
-@Suite("Settings and export domain")
+@Suite("Settings and recording processing")
 struct SettingsAndExportTests {
     @Test("Product defaults exactly match the specification")
     func productDefaults() throws {
         let home = URL(fileURLWithPath: "/Users/tester", isDirectory: true)
         let settings = ClipSettings.defaults(homeDirectory: home)
 
-        #expect(settings.schemaVersion == 2)
+        #expect(settings.schemaVersion == ClipSettings.currentSchemaVersion)
         #expect(!settings.launchAtLogin)
         #expect(!settings.showInDock)
         #expect(settings.defaultCaptureMode == .captureArea)
@@ -22,14 +22,12 @@ struct SettingsAndExportTests {
         #expect(settings.audio == .none)
         #expect(settings.countdown == .threeSeconds)
         #expect(settings.historyRetention == .sevenDays)
-        #expect(settings.exportConfiguration == .crisp)
-        #expect(settings.exportQualities == .defaults)
-        #expect(settings.exportQualities.crisp == 98)
-        #expect(settings.exportQualities.compact == 90)
-        #expect(settings.exportQualities.smallest == 70)
+        #expect(settings.recordingProcessing == .defaults)
+        #expect(settings.recordingProcessing.crf == 24)
+        #expect(settings.recordingProcessing.captureBitrateMbps == 10)
+        #expect(settings.recordingProcessing.scale == .native)
         #expect(settings.defaultFilenameTemplate == .default)
         #expect(!settings.automaticallyClosePreviewAfterCopy)
-        #expect(settings.keepOriginalAfterExport)
         #expect(settings.defaultSaveDirectory.path == "/Users/tester/Movies")
         #expect(settings.shortcuts.conflicts.isEmpty)
         #expect(settings.shortcuts.capture.key == "r")
@@ -47,7 +45,7 @@ struct SettingsAndExportTests {
             .fullscreen,
             .captureApplication,
         ])
-        #expect(ExportPreset.allCases == [.compact, .crisp, .smallest])
+        #expect(RecordingResolutionScale.allCases.map(\.percent) == [100, 75, 50, 25])
     }
 
     @Test("The four audio combinations remain distinct and Codable")
@@ -111,12 +109,7 @@ struct SettingsAndExportTests {
         var settings = ClipSettings.defaults(
             homeDirectory: URL(fileURLWithPath: "/tmp/home", isDirectory: true)
         )
-        settings.exportConfiguration = .smallest
-        settings.exportQualities = ExportQualitySettings(
-            crisp: 97,
-            compact: 88,
-            smallest: 72
-        )
+        settings.recordingProcessing = .init(scale: .half, crf: 28, captureBitrateMbps: 20)
         settings.audio = .microphoneAndSystemAudio
         settings.frameRate = .sixty
         settings.showClickHighlights = true
@@ -170,7 +163,7 @@ struct SettingsAndExportTests {
             JSONSerialization.jsonObject(with: JSONEncoder().encode(migrated))
                 as? [String: Any]
         )
-        #expect(migratedObject["schemaVersion"] as? Int == 2)
+        #expect(migratedObject["schemaVersion"] as? Int == ClipSettings.currentSchemaVersion)
         #expect(
             migratedObject["defaultFilenameTemplate"] as? String
                 == "clip-YYYYMMDD-HHmmss.mp4"
@@ -223,74 +216,58 @@ struct SettingsAndExportTests {
         #expect(decoded.captureModeForNextInvocation == .lastArea)
     }
 
-    @Test("Settings without export qualities use the product defaults")
-    func settingsWithoutExportQualitiesUseDefaults() throws {
-        let settings = ClipSettings.defaults(
-            homeDirectory: URL(fileURLWithPath: "/tmp/home", isDirectory: true)
-        )
-        let encoded = try JSONEncoder().encode(settings)
-        var object = try #require(
-            JSONSerialization.jsonObject(with: encoded) as? [String: Any]
-        )
-        object.removeValue(forKey: "exportQualities")
-
-        let decoded = try JSONDecoder().decode(
-            ClipSettings.self,
-            from: JSONSerialization.data(withJSONObject: object)
-        )
-
-        #expect(decoded.exportQualities == .defaults)
+    @Test("Legacy settings ignore old quality ladders and preserve safe processing defaults")
+    func legacyProcessingDefaults() throws {
+        let settings = ClipSettings.defaults(homeDirectory: URL(fileURLWithPath: "/tmp/home"))
+        var object = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(settings)) as? [String: Any])
+        object.removeValue(forKey: "recordingProcessing")
+        object["exportConfiguration"] = ["preset": "smallest"]
+        object["exportQualities"] = ["crisp": 100, "compact": 90, "smallest": 70]
+        object["keepOriginalAfterExport"] = false
+        object["historyRetention"] = "doNotRetainAfterExport"
+        let decoded = try JSONDecoder().decode(ClipSettings.self, from: JSONSerialization.data(withJSONObject: object))
+        #expect(decoded.recordingProcessing == .defaults)
+        #expect(decoded.historyRetention == .sevenDays)
+        let saved = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(decoded)) as? [String: Any])
+        #expect(saved["exportConfiguration"] == nil && saved["exportQualities"] == nil)
+        #expect(saved["keepOriginalAfterExport"] == nil)
     }
 
-    @Test("Export qualities are independent whole-number settings")
-    func independentExportQualities() throws {
-        let qualities = ExportQualitySettings(crisp: 42, compact: 99, smallest: 17)
-
-        #expect(ExportQualitySettings.validRange == 1...100)
-        #expect(qualities.quality(for: .crisp) == 42)
-        #expect(qualities.quality(for: .compact) == 99)
-        #expect(qualities.quality(for: .smallest) == 17)
-        #expect(qualities.normalizedQuality(for: .crisp) == 0.42)
-        #expect(qualities.normalizedQuality(for: .compact) == 0.99)
-        #expect(qualities.normalizedQuality(for: .smallest) == 0.17)
-        #expect(try jsonRoundTrip(qualities) == qualities)
-    }
-
-    @Test("Legacy capture snapshots use safe quality and click-highlight defaults")
-    func legacyCaptureSnapshotDefaults() throws {
-        let snapshot = CaptureSessionSnapshot(
-            frameRate: .thirty,
-            showCursor: true,
-            showClickHighlights: true,
-            audio: .none,
-            countdown: .off,
-            crispQuality: 73
-        )
-        let encoded = try JSONEncoder().encode(snapshot)
-        var object = try #require(
-            JSONSerialization.jsonObject(with: encoded) as? [String: Any]
-        )
-        object.removeValue(forKey: "crispQuality")
-        object.removeValue(forKey: "showClickHighlights")
-
-        let decoded = try JSONDecoder().decode(
-            CaptureSessionSnapshot.self,
-            from: JSONSerialization.data(withJSONObject: object)
-        )
-
-        #expect(decoded.crispQuality == ExportQualitySettings.defaults.crisp)
-        #expect(!decoded.showClickHighlights)
-    }
-
-    @Test("Every export configuration is Codable")
-    func exportRoundTrips() throws {
-        let configurations: [ExportConfiguration] = [
-            .compact,
-            .crisp,
-            .smallest,
-        ]
-        for configuration in configurations {
-            #expect(try jsonRoundTrip(configuration) == configuration)
+    @Test("Processing settings validate CRF, capture bitrate, and native percentage dimensions")
+    func processingOptionsValidation() throws {
+        let dimensions = try PixelSize(width: 4454, height: 3156)
+        #expect(try RecordingResolutionScale.native.pixelSize(from: dimensions) == dimensions)
+        #expect(try RecordingResolutionScale.half.pixelSize(from: dimensions) == PixelSize(width: 2226, height: 1578))
+        for scale in RecordingResolutionScale.allCases {
+            let options = RecordingProcessingOptions(scale: scale, crf: 24, captureBitrateMbps: 10)
+            #expect(try jsonRoundTrip(options) == options)
+            #expect(options.targetAverageBitRate == 10_000_000)
         }
+        for value in [0, 52] {
+            #expect(throws: RecordingProcessingOptionsError.invalidCRF) {
+                try RecordingProcessingOptions(crf: value).validate()
+            }
+        }
+        for value in [0, 101] {
+            #expect(throws: RecordingProcessingOptionsError.invalidCaptureBitrate) {
+                try RecordingProcessingOptions(captureBitrateMbps: value).validate()
+            }
+        }
+        #expect(throws: DecodingError.self) {
+            try JSONDecoder().decode(RecordingProcessingOptions.self, from: Data(#"{"scale":100,"crf":0,"captureBitrateMbps":10}"#.utf8))
+        }
+    }
+
+    @Test("Legacy capture snapshots ignore Apple quality and restore capture defaults")
+    func legacyCaptureSnapshotDefaults() throws {
+        let snapshot = CaptureSessionSnapshot(frameRate: .thirty, showCursor: true,
+            showClickHighlights: true, audio: .none, countdown: .off, captureBitrateMbps: 20)
+        var object = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(snapshot)) as? [String: Any])
+        object.removeValue(forKey: "captureBitrateMbps")
+        object.removeValue(forKey: "showClickHighlights")
+        object["crispQuality"] = 98
+        let decoded = try JSONDecoder().decode(CaptureSessionSnapshot.self, from: JSONSerialization.data(withJSONObject: object))
+        #expect(decoded.captureBitrateMbps == 10)
+        #expect(!decoded.showClickHighlights)
     }
 }

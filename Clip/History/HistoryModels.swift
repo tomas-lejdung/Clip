@@ -204,17 +204,6 @@ enum HistoryFormatting {
         ByteCountFormatter.string(fromByteCount: byteCount, countStyle: .file)
     }
 
-    static func preset(_ preset: ExportPreset) -> String {
-        switch preset {
-        case .crisp:
-            "Crisp"
-        case .compact:
-            "Compact"
-        case .smallest:
-            "Smallest"
-        }
-    }
-
     static func audio(
         _ configuration: AudioConfiguration,
         exportPreference: ExportAudioPreference = .keepAudio
@@ -266,8 +255,7 @@ enum HistoryDemoData {
                                 height: 0.7
                             )
                         )
-                    ),
-                    preset: .compact
+                    )
                 ),
                 makeItem(
                     id: "B07D5DF4-CE93-4E76-A64C-6F7F8241789C",
@@ -279,8 +267,7 @@ enum HistoryDemoData {
                     pixelSize: PixelSize(width: 2_560, height: 1_440),
                     frameRate: .sixty,
                     audio: .microphoneOnly,
-                    target: .fullscreen(displayID),
-                    preset: .crisp
+                    target: .fullscreen(displayID)
                 ),
                 makeItem(
                     id: "D8E04743-C590-4EC7-B5D3-986F0FA4F5E4",
@@ -292,8 +279,7 @@ enum HistoryDemoData {
                     pixelSize: PixelSize(width: 1_080, height: 1_920),
                     frameRate: .thirty,
                     audio: .systemAudioOnly,
-                    target: .fullscreen(displayID),
-                    preset: .smallest
+                    target: .fullscreen(displayID)
                 ),
             ]
             return try RecordingHistoryIndex(items: items)
@@ -312,23 +298,21 @@ enum HistoryDemoData {
                 throw DemoDataError.invalidRecordingID("History export fixture")
             }
             let baseDate = Date(timeIntervalSince1970: 1_784_270_538)
-            let specifications: [(RecordingID, String, Int64, TimeInterval, ExportPreset, Int)] = [
-                (index.items[0].id, "clip-20260717-104218.mp4", 4_500_000, 7_500, .crisp, 98),
-                (index.items[0].id, "clip-20260717-104218.mp4", 2_800_000, 7_200, .compact, 90),
-                (index.items[0].id, "clip-20260717-104218.mp4", 1_500_000, 6_900, .smallest, 70),
-                (index.items[1].id, "dashboard-filters.mp4", 8_100_000, 3_900, .crisp, 98),
+            let specifications: [(RecordingID, String, Int64, TimeInterval)] = [
+                (index.items[0].id, "clip-20260717-104218.mp4", 4_500_000, 7_500),
+                (index.items[0].id, "clip-20260717-104218.mp4", 2_800_000, 7_200),
+                (index.items[0].id, "clip-20260717-104218.mp4", 1_500_000, 6_900),
+                (index.items[1].id, "dashboard-filters.mp4", 8_100_000, 3_900),
                 (
                     RecordingID(deletedSourceUUID),
                     "deleted-source-demo.mp4",
                     3_200_000,
-                    900,
-                    .compact,
-                    90
+                    900
                 ),
             ]
             let items = try specifications.enumerated().map { offset, specification in
-                let (recordingID, filename, byteCount, age, preset, quality) = specification
-                let cacheKey = "demo-\(offset)-\(preset.rawValue)-q\(quality)"
+                let (recordingID, filename, byteCount, age) = specification
+                let cacheKey = "demo-\(offset)"
                 let relativePath = "\(recordingID.description)/\(cacheKey)/\(filename)"
                 return ManagedExportRecord(
                     id: ManagedExportID(rawValue: relativePath),
@@ -336,9 +320,7 @@ enum HistoryDemoData {
                     url: URL(fileURLWithPath: "/tmp/ClipDemo/Exports/\(relativePath)"),
                     filename: try RecordingFilename(validating: filename),
                     byteCount: byteCount,
-                    createdAt: baseDate.addingTimeInterval(age),
-                    preset: preset,
-                    qualityPercent: quality
+                    createdAt: baseDate.addingTimeInterval(age)
                 )
             }
             return ManagedExportInventory(
@@ -360,8 +342,7 @@ enum HistoryDemoData {
         pixelSize: PixelSize,
         frameRate: CaptureFrameRate,
         audio: AudioConfiguration,
-        target: CaptureTarget,
-        preset: ExportPreset
+        target: CaptureTarget
     ) throws -> RecordingHistoryItem {
         guard let uuid = UUID(uuidString: id) else {
             throw DemoDataError.invalidRecordingID(id)
@@ -377,8 +358,7 @@ enum HistoryDemoData {
             frameRate: frameRate,
             audioConfiguration: audio,
             captureTarget: target,
-            trimRange: TrimRange.full(recordingDuration: duration),
-            exportConfiguration: ExportConfiguration(preset: preset)
+            trimRange: TrimRange.full(recordingDuration: duration)
         )
     }
 }

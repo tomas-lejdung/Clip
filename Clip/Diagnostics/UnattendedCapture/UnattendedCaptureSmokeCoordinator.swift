@@ -1,6 +1,7 @@
 // App-target diagnostic entry point; see ../README.md.
 @preconcurrency import AVFoundation
 import AppKit
+import ClipCapture
 import ClipMedia
 import CoreGraphics
 import CoreMedia
@@ -99,7 +100,7 @@ struct UnattendedCaptureSmokeMetrics: Codable, Equatable, Sendable {
     let maximumVideoTimestampGapEndSeconds: Double
     let metTwoFrameVideoGapTarget: Bool
     let h264ProfileIDC: Int
-    let hasRec709ColorDescription: Bool
+    let hasSRGBColorDescription: Bool
     /// Decoded frames inspected for visual fixture evidence (currently capped
     /// at 12); this is deliberately not an animation- or capture-frame count.
     let fixtureFrameCount: Int
@@ -112,6 +113,18 @@ struct UnattendedCaptureSmokeMetrics: Codable, Equatable, Sendable {
     let maximumAudioTimestampGapSeconds: Double
     let audioVideoStartOffsetSeconds: Double
     let audioVideoEndOffsetSeconds: Double
+}
+
+struct UnattendedCaptureSmokeProcessingEvidence: Codable, Equatable, Sendable {
+    let captureCodec: String
+    let captureBitrateMbps: Int
+    let captureFileSizeBytes: Int64
+    let outputCodec: String
+    let scalePercent: Int
+    let crf: Int
+    let encodingSeconds: TimeInterval
+    let processingSeconds: TimeInterval
+    let temporaryCaptureWasDeleted: Bool
 }
 
 struct UnattendedCaptureSmokeReport: Codable, Equatable, Sendable {
@@ -129,6 +142,7 @@ struct UnattendedCaptureSmokeReport: Codable, Equatable, Sendable {
     let outputWasDeleted: Bool
     let preservedOutputPath: String?
     let metrics: UnattendedCaptureSmokeMetrics?
+    var processing: UnattendedCaptureSmokeProcessingEvidence? = nil
     let failure: String?
 
     var passed: Bool { status == "passed" }
@@ -284,6 +298,7 @@ final class UnattendedCaptureSmokeCoordinator {
     private func execute() async -> UnattendedCaptureSmokeReport {
         let permissionWasPreauthorized = CaptureAuthorization.screenRecordingStatus == .authorized
         var metrics: UnattendedCaptureSmokeMetrics?
+        var processing: UnattendedCaptureSmokeProcessingEvidence?
         var failure: String?
         var previewFrameWasGenerated = false
         var copyWasByteIdentical = false
@@ -311,6 +326,7 @@ final class UnattendedCaptureSmokeCoordinator {
                 width: target.width,
                 height: target.height,
                 framesPerSecond: request.framesPerSecond,
+                targetAverageBitRate: 10_000_000,
                 showsCursor: false,
                 audioMode: .system
             )
@@ -318,8 +334,12 @@ final class UnattendedCaptureSmokeCoordinator {
                 displayID: target.displayID,
                 includedWindowID: target.windowID,
                 excludesCurrentProcessAudio: false,
+                captureResolution: CaptureVideoResolutionPolicy.nativeScale(
+                    sourcePixelWidth: target.width, sourcePixelHeight: target.height,
+                    sourcePointWidth: 640, sourcePointHeight: 360),
                 outputURL: outputURL,
-                configuration: configuration
+                configuration: configuration,
+                requiredNativeScale: target.nativeScale
             ))
             try await waitForFirstVideoFrame(in: ledger)
 
@@ -338,10 +358,32 @@ final class UnattendedCaptureSmokeCoordinator {
                     ledger.snapshot.audioFailures.joined(separator: "; ")
                 )
             }
-            let finalizedURL = try await recorder.finish()
-            finalizedOutputURL = finalizedURL
+            let capturedURL = try await recorder.finish()
             self.recorder = nil
             stopFixture()
+            let captureInspection = try await MediaInspector.inspect(capturedURL)
+            guard captureInspection.videoCodec == kCMVideoCodecType_HEVC,
+                  captureInspection.width == target.width,
+                  captureInspection.height == target.height,
+                  captureInspection.audioTrackCount == 1 else {
+                throw UnattendedCaptureSmokeError.invalidMedia(
+                    "The recorder did not preserve native HEVC and system audio."
+                )
+            }
+            let finalizedURL = capturedURL.deletingLastPathComponent()
+                .appendingPathComponent("synthetic-capture.mp4")
+            let processed = try await RecordingProcessor().process(
+                sourceURL: capturedURL, destinationURL: finalizedURL,
+                configuration: .init(scalePercent: 100, crf: 24))
+            try FileManager.default.removeItem(at: capturedURL)
+            finalizedOutputURL = finalizedURL
+            processing = UnattendedCaptureSmokeProcessingEvidence(
+                captureCodec: "hevc", captureBitrateMbps: 10,
+                captureFileSizeBytes: captureInspection.fileSize,
+                outputCodec: "h264", scalePercent: 100, crf: 24,
+                encodingSeconds: processed.encodingSeconds,
+                processingSeconds: processed.processingSeconds,
+                temporaryCaptureWasDeleted: !FileManager.default.fileExists(atPath: capturedURL.path))
             metrics = try await UnattendedCaptureSmokeMediaValidator.validate(
                 finalizedURL,
                 expectedWidth: target.width,
@@ -381,7 +423,7 @@ final class UnattendedCaptureSmokeCoordinator {
         }
 
         stopFixture()
-        let runSucceeded = failure == nil && metrics != nil
+        let runSucceeded = failure == nil && metrics != nil && processing != nil
         let outputWasPreserved = UnattendedCaptureSmokeArtifactPolicy.shouldPreserveOutput(
             requested: request.preservesOutputForReview,
             runSucceeded: runSucceeded,
@@ -396,7 +438,7 @@ final class UnattendedCaptureSmokeCoordinator {
             ? preservedOutputPath != nil
             : outputWasDeleted
         return UnattendedCaptureSmokeReport(
-            protocolVersion: 3,
+            protocolVersion: 4,
             status: runSucceeded && outputDispositionSucceeded ? "passed" : "failed",
             scope: "single app-owned synthetic window and app-owned synthetic tone",
             requestedDurationSeconds: request.durationSeconds,
@@ -410,6 +452,7 @@ final class UnattendedCaptureSmokeCoordinator {
             outputWasDeleted: outputWasDeleted,
             preservedOutputPath: preservedOutputPath,
             metrics: metrics,
+            processing: processing,
             failure: failure ?? (outputDispositionSucceeded
                 ? nil
                 : "Temporary output could not be finalized using the requested artifact policy.")
@@ -421,6 +464,7 @@ final class UnattendedCaptureSmokeCoordinator {
         let windowID: CGWindowID
         let width: Int
         let height: Int
+        let nativeScale: Double
     }
 
     private struct CopyEvidence {
@@ -494,14 +538,13 @@ final class UnattendedCaptureSmokeCoordinator {
               }) else {
             throw UnattendedCaptureSmokeError.fixtureWindowUnavailable
         }
-        let scale = display.frame.width > 0
-            ? Double(display.width) / display.frame.width
-            : screen.backingScaleFactor
+        let scale = Double(screen.backingScaleFactor)
         return CaptureTarget(
             displayID: display.displayID,
             windowID: windowID,
             width: evenPixelCount(contentSize.width * scale),
-            height: evenPixelCount(contentSize.height * scale)
+            height: evenPixelCount(contentSize.height * scale),
+            nativeScale: scale
         )
     }
 
@@ -522,7 +565,7 @@ final class UnattendedCaptureSmokeCoordinator {
             attributes: [.posixPermissions: 0o700]
         )
         workDirectory = directory
-        return directory.appendingPathComponent("synthetic-capture.mp4")
+        return directory.appendingPathComponent("synthetic-hevc-capture.mp4")
     }
 
     private func generatePreviewFrame(from sourceURL: URL) async throws -> Bool {
@@ -1026,9 +1069,9 @@ private enum UnattendedCaptureSmokeMediaValidator {
         guard let videoFormat = videoFormats.first,
               let h264ProfileIDC = h264ProfileIDC(videoFormat),
               h264ProfileIDC == 100,
-              hasRec709ColorDescription(videoFormat) else {
+              hasSRGBColorDescription(videoFormat) else {
             throw UnattendedCaptureSmokeError.invalidMedia(
-                "The video did not preserve H.264 High profile Rec.709 metadata."
+                "The processed video did not preserve H.264 High profile with sRGB transfer and Rec.709 primaries/matrix."
             )
         }
         return UnattendedCaptureSmokeMetrics(
@@ -1047,7 +1090,7 @@ private enum UnattendedCaptureSmokeMediaValidator {
                     framesPerSecond: expectedFramesPerSecond
                 ),
             h264ProfileIDC: h264ProfileIDC,
-            hasRec709ColorDescription: true,
+            hasSRGBColorDescription: true,
             fixtureFrameCount: evidence.fixtureFrames,
             fixtureMotionRangePixels: evidence.motionRange,
             maximumFineDetailEdgeRetention: evidence.maximumFineDetailEdgeRetention,
@@ -1291,7 +1334,7 @@ private enum UnattendedCaptureSmokeMediaValidator {
         return Int(configuration[configuration.index(configuration.startIndex, offsetBy: 1)])
     }
 
-    private static func hasRec709ColorDescription(
+    private static func hasSRGBColorDescription(
         _ description: CMFormatDescription
     ) -> Bool {
         guard let extensions = CMFormatDescriptionGetExtensions(description) as NSDictionary?
@@ -1299,7 +1342,7 @@ private enum UnattendedCaptureSmokeMediaValidator {
         return (extensions[kCVImageBufferColorPrimariesKey] as? String)
             == (kCVImageBufferColorPrimaries_ITU_R_709_2 as String)
             && (extensions[kCVImageBufferTransferFunctionKey] as? String)
-                == (kCVImageBufferTransferFunction_ITU_R_709_2 as String)
+                == (kCVImageBufferTransferFunction_sRGB as String)
             && (extensions[kCVImageBufferYCbCrMatrixKey] as? String)
                 == (kCVImageBufferYCbCrMatrix_ITU_R_709_2 as String)
     }

@@ -165,10 +165,10 @@ struct ApplicationDirectoriesTests {
         ))
     }
 
-    @Test("Unattended capture report exposes a preserved review path")
+    @Test("Unattended capture report distinguishes temporary HEVC from processed H.264")
     func unattendedCapturePreservedOutputReport() throws {
         let report = UnattendedCaptureSmokeReport(
-            protocolVersion: 3,
+            protocolVersion: 4,
             status: "passed",
             scope: "fixture",
             requestedDurationSeconds: 6,
@@ -182,13 +182,21 @@ struct ApplicationDirectoriesTests {
             outputWasDeleted: false,
             preservedOutputPath: "/tmp/synthetic-capture.mp4",
             metrics: nil,
+            processing: .init(captureCodec: "hevc", captureBitrateMbps: 10,
+                captureFileSizeBytes: 7_500_000, outputCodec: "h264", scalePercent: 100, crf: 24,
+                encodingSeconds: 0.8, processingSeconds: 1.1, temporaryCaptureWasDeleted: true),
             failure: nil
         )
 
         let object = try #require(
             JSONSerialization.jsonObject(with: report.encoded()) as? [String: Any]
         )
-        #expect(object["protocolVersion"] as? Int == 3)
+        #expect(object["protocolVersion"] as? Int == 4)
+        let processing = try #require(object["processing"] as? [String: Any])
+        #expect(processing["captureCodec"] as? String == "hevc")
+        #expect(processing["outputCodec"] as? String == "h264")
+        #expect(processing["temporaryCaptureWasDeleted"] as? Bool == true)
+        #expect(processing["processingSeconds"] as? Double == 1.1)
         #expect(object["outputWasDeleted"] as? Bool == false)
         #expect(
             object["preservedOutputPath"] as? String
@@ -748,9 +756,8 @@ struct ApplicationDirectoriesTests {
         #expect(fixedSettings.audio == .none)
         #expect(fixedSettings.countdown == .oneSecond)
         #expect(fixedSettings.historyRetention == .indefinitely)
-        #expect(fixedSettings.exportConfiguration == .crisp)
+        #expect(fixedSettings.recordingProcessing == .defaults)
         #expect(!fixedSettings.automaticallyClosePreviewAfterCopy)
-        #expect(fixedSettings.keepOriginalAfterExport)
         #expect(!fixedSettings.launchAtLogin)
         #expect(!fixedSettings.showInDock)
 
@@ -877,14 +884,14 @@ struct ApplicationDirectoriesTests {
         #expect(configuration.realCaptureOverrides.frameRate == .sixty)
         #expect(configuration.realCaptureOverrides.showsCursor == false)
         #expect(configuration.realCaptureOverrides.remembersLastArea)
-        #expect(configuration.realCaptureOverrides.historyRetention == .doNotRetainAfterExport)
+        #expect(configuration.realCaptureOverrides.historyRetention == .sevenDays)
         #expect(configuration.realCaptureOverrides.defaultSaveDirectory == saveDirectory)
         #expect(configuration.realCaptureOverrides.preservesIsolatedState)
         #expect(!configuration.resetsIsolatedStateOnLaunch)
         #expect(settings.frameRate == .sixty)
         #expect(!settings.showCursor)
         #expect(settings.rememberLastArea)
-        #expect(settings.historyRetention == .doNotRetainAfterExport)
+        #expect(settings.historyRetention == .sevenDays)
         #expect(settings.defaultSaveDirectory == saveDirectory)
 
         let outsideTemporaryDirectory = AppLaunchConfiguration.resolve(
@@ -1337,15 +1344,11 @@ struct ApplicationDirectoriesTests {
         )
         let copied = try managedExportRequest(
             recordingID: recordingID,
-            filename: "copied-demo.mp4",
-            preset: .crisp,
-            qualityPercent: 98
+            filename: "copied-demo.mp4"
         )
         let saveAsStaging = try managedExportRequest(
             recordingID: recordingID,
-            filename: "saved-externally.mp4",
-            preset: .compact,
-            qualityPercent: 90
+            filename: "saved-externally.mp4"
         )
         let copiedURL = try await writeManagedExportFixture(
             copied,
@@ -1366,8 +1369,6 @@ struct ApplicationDirectoriesTests {
         #expect(published.filename.fileName == "copied-demo.mp4")
         #expect(published.byteCount == 37)
         #expect(published.createdAt == publishedAt)
-        #expect(published.preset == .crisp)
-        #expect(published.qualityPercent == 98)
 
         let inventory = try await coordinator.inventory()
         #expect(inventory.items == [published])
@@ -1391,21 +1392,15 @@ struct ApplicationDirectoriesTests {
         )
         let first = try managedExportRequest(
             recordingID: recordingID,
-            filename: "first-name.mp4",
-            preset: .crisp,
-            qualityPercent: 98
+            filename: "first-name.mp4"
         )
         let renamed = try managedExportRequest(
             recordingID: recordingID,
-            filename: "renamed-copy.mp4",
-            preset: .crisp,
-            qualityPercent: 98
+            filename: "renamed-copy.mp4"
         )
         let staging = try managedExportRequest(
             recordingID: recordingID,
-            filename: "save-as-stage.mp4",
-            preset: .crisp,
-            qualityPercent: 98
+            filename: "save-as-stage.mp4"
         )
         let firstURL = try await writeManagedExportFixture(
             first,
@@ -1470,9 +1465,7 @@ struct ApplicationDirectoriesTests {
 
         let linked = try managedExportRequest(
             recordingID: recordingID,
-            filename: "linked.mp4",
-            preset: .compact,
-            qualityPercent: 90
+            filename: "linked.mp4"
         )
         let key = await coordinator.cacheKey(for: linked)
         let linkedURL = root
@@ -1512,9 +1505,7 @@ struct ApplicationDirectoriesTests {
             recordingID: RecordingID(
                 UUID(uuidString: "51515151-4343-5656-7878-909090909090")!
             ),
-            filename: "renewed.mp4",
-            preset: .smallest,
-            qualityPercent: 70
+            filename: "renewed.mp4"
         )
         let outputURL = try await writeManagedExportFixture(
             request,
@@ -1577,9 +1568,7 @@ struct ApplicationDirectoriesTests {
 
         let cancelledRequest = try managedExportRequest(
             recordingID: recordingID,
-            filename: "cancelled-copy.mp4",
-            preset: .crisp,
-            qualityPercent: 98
+            filename: "cancelled-copy.mp4"
         )
         let cancelledURL = try await writeManagedExportFixture(
             cancelledRequest,
@@ -1601,9 +1590,7 @@ struct ApplicationDirectoriesTests {
 
         let expiredRequest = try managedExportRequest(
             recordingID: recordingID,
-            filename: "expired-drag.mp4",
-            preset: .compact,
-            qualityPercent: 90
+            filename: "expired-drag.mp4"
         )
         let expiredURL = try await writeManagedExportFixture(
             expiredRequest,
@@ -1621,33 +1608,36 @@ struct ApplicationDirectoriesTests {
         #expect(!FileManager.default.fileExists(atPath: expiredURL.path))
     }
 
-    @Test("Export cache identity includes the encoding schema version")
+    @Test("Export cache identity includes the schema and processed source revision")
     func exportCacheIdentityInvalidatesEarlierEncodingAlgorithms() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let source = root.appendingPathComponent("candidate.mp4")
+        try Data("first-processed-candidate".utf8).write(to: source)
         let coordinator = PreviewExportCoordinator(
-            exportsDirectory: URL(fileURLWithPath: "/tmp/clip-export-cache-version")
+            exportsDirectory: root.appendingPathComponent("Exports")
         )
         let request = PreviewExportRequest(
             recordingID: RecordingID(
                 UUID(uuidString: "11111111-2222-3333-4444-555555555555")!
             ),
-            sourceURL: URL(fileURLWithPath: "/tmp/master.mp4"),
+            sourceURL: source,
             captureFrameRate: .thirty,
             filename: try RecordingFilename(validating: "clip-cache.mp4"),
             trimRange: try TrimRange(startTime: 0, endTime: 21.598),
-            configuration: .crisp,
-            videoQualityPercent: 98,
-            sourceVideoQualityPercent: 98,
             audioPreference: .keepAudio
         )
 
         let key = await coordinator.cacheKey(for: request)
 
-        #expect(PreviewExportCoordinator.cacheSchemaVersion == 4)
-        #expect(key == "v4-0-21598-crisp-q98-sourceq98-30fps-audio")
-        #expect(key != "0-21598-crisp")
+        #expect(PreviewExportCoordinator.cacheSchemaVersion == 6)
+        #expect(key.hasPrefix("v6-") && key.hasSuffix("-0-21598-30fps-audio"))
+        try Data("second-candidate-with-new-resolution-and-size".utf8).write(to: source)
+        #expect(await coordinator.cacheKey(for: request) != key)
     }
 
-    @Test("Export planning preserves the capture FPS ceiling instead of rounding nominal FPS")
+    @Test("Passthrough planning preserves full raster, capture cadence, and audio")
     func exportPlanningUsesCaptureFrameRateCeiling() async throws {
         let coordinator = PreviewExportCoordinator(
             exportsDirectory: URL(fileURLWithPath: "/tmp/clip-export-cadence")
@@ -1660,9 +1650,6 @@ struct ApplicationDirectoriesTests {
             captureFrameRate: .thirty,
             filename: try RecordingFilename(validating: "variable-rate.mp4"),
             trimRange: try TrimRange(startTime: 0, endTime: 12),
-            configuration: .crisp,
-            videoQualityPercent: 98,
-            sourceVideoQualityPercent: 98,
             audioPreference: .keepAudio
         )
         let inspection = MediaInspection(
@@ -1684,8 +1671,7 @@ struct ApplicationDirectoriesTests {
         #expect(configuration.framesPerSecond == 30)
         #expect(configuration.width == 1_920)
         #expect(configuration.height == 1_080)
-        #expect(configuration.videoQuality == 0.98)
-        #expect(configuration.sourceVideoQuality == 0.98)
+        #expect(configuration.includesAudio)
     }
 
     @MainActor
@@ -1723,9 +1709,7 @@ struct ApplicationDirectoriesTests {
 
     private func managedExportRequest(
         recordingID: RecordingID,
-        filename: String,
-        preset: ExportPreset,
-        qualityPercent: Int
+        filename: String
     ) throws -> PreviewExportRequest {
         PreviewExportRequest(
             recordingID: recordingID,
@@ -1733,9 +1717,6 @@ struct ApplicationDirectoriesTests {
             captureFrameRate: .thirty,
             filename: try RecordingFilename(validating: filename),
             trimRange: try TrimRange(startTime: 0, endTime: 5),
-            configuration: ExportConfiguration(preset: preset),
-            videoQualityPercent: qualityPercent,
-            sourceVideoQualityPercent: 98,
             audioPreference: .keepAudio
         )
     }

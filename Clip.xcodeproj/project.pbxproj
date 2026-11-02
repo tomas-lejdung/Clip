@@ -136,6 +136,10 @@
 		S4B100000000000000000008 /* ServerCoordinatedMeshThreeParticipantFlowTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = S4F100000000000000000008 /* ServerCoordinatedMeshThreeParticipantFlowTests.swift */; };
 		M8B100000000000000000001 /* MeshParticipantLocalPublicationController.swift in Sources */ = {isa = PBXBuildFile; fileRef = M8F100000000000000000001 /* MeshParticipantLocalPublicationController.swift */; };
 		M8B100000000000000000002 /* MeshParticipantLocalPublicationControllerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = M8F100000000000000000002 /* MeshParticipantLocalPublicationControllerTests.swift */; };
+		B61000000000000000000001 /* RecordingProcessingSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = F61000000000000000000001 /* RecordingProcessingSession.swift */; };
+		B61000000000000000000002 /* RecordingProcessingRecovery.swift in Sources */ = {isa = PBXBuildFile; fileRef = F61000000000000000000002 /* RecordingProcessingRecovery.swift */; };
+		B61000000000000000000003 /* RecordingProcessingSessionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F61000000000000000000003 /* RecordingProcessingSessionTests.swift */; };
+		B61000000000000000000004 /* RecordingProcessingRecoveryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F61000000000000000000004 /* RecordingProcessingRecoveryTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -281,6 +285,10 @@
 		S4F100000000000000000008 /* ServerCoordinatedMeshThreeParticipantFlowTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServerCoordinatedMeshThreeParticipantFlowTests.swift; sourceTree = "<group>"; };
 		M8F100000000000000000001 /* MeshParticipantLocalPublicationController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MeshParticipantLocalPublicationController.swift; sourceTree = "<group>"; };
 		M8F100000000000000000002 /* MeshParticipantLocalPublicationControllerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MeshParticipantLocalPublicationControllerTests.swift; sourceTree = "<group>"; };
+		F61000000000000000000001 /* RecordingProcessingSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecordingProcessingSession.swift; sourceTree = "<group>"; };
+		F61000000000000000000002 /* RecordingProcessingRecovery.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecordingProcessingRecovery.swift; sourceTree = "<group>"; };
+		F61000000000000000000003 /* RecordingProcessingSessionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecordingProcessingSessionTests.swift; sourceTree = "<group>"; };
+		F61000000000000000000004 /* RecordingProcessingRecoveryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecordingProcessingRecoveryTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -346,6 +354,7 @@
 				G10000000000000000000001 /* Capture */,
 				G10000000000000000000002 /* Recording */,
 				G10000000000000000000003 /* Preview */,
+				G61000000000000000000001 /* Processing */,
 				G10000000000000000000004 /* Export */,
 				G10000000000000000000005 /* History */,
 				G10000000000000000000006 /* Settings */,
@@ -611,6 +620,8 @@
 		G00000000000000000000008 /* ClipTests */ = {
 			isa = PBXGroup;
 			children = (
+				F61000000000000000000004 /* RecordingProcessingRecoveryTests.swift */,
+				F61000000000000000000003 /* RecordingProcessingSessionTests.swift */,
 				L2G100000000000000000006 /* LiveShare */,
 				U1F100000000000000000002 /* ApplicationUpdateConfigurationTests.swift */,
 				F0000000000000000000000D /* ApplicationDirectoriesTests.swift */,
@@ -689,6 +700,15 @@
 			name = Products;
 			sourceTree = "<group>";
 		};
+		G61000000000000000000001 /* Processing */ = {
+			isa = PBXGroup;
+			children = (
+				F61000000000000000000002 /* RecordingProcessingRecovery.swift */,
+				F61000000000000000000001 /* RecordingProcessingSession.swift */,
+			);
+			path = Processing;
+			sourceTree = "<group>";
+		};
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
@@ -699,6 +719,7 @@
 				P30000000000000000000001 /* Sources */,
 				P20000000000000000000001 /* Frameworks */,
 				P40000000000000000000001 /* Resources */,
+				P50000000000000000000001 /* Bundle recording encoder */,
 			);
 			buildRules = (
 			);
@@ -867,11 +888,28 @@
 		};
 /* End PBXResourcesBuildPhase section */
 
+/* Begin PBXShellScriptBuildPhase section */
+		P50000000000000000000001 /* Bundle recording encoder */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = ();
+			inputPaths = ();
+			outputPaths = ();
+			name = "Bundle recording encoder";
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/bash;
+			shellScript = "\"$SRCROOT/scripts/bundle-recording-encoder.sh\" \"$TARGET_BUILD_DIR/$WRAPPER_NAME\"\n";
+		};
+/* End PBXShellScriptBuildPhase section */
+
 /* Begin PBXSourcesBuildPhase section */
 		P30000000000000000000001 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				B61000000000000000000002 /* RecordingProcessingRecovery.swift in Sources */,
+				B61000000000000000000001 /* RecordingProcessingSession.swift in Sources */,
 				S5B100000000000000000001 /* MeshParticipantMediaPolicies.swift in Sources */,
 				S5B100000000000000000002 /* MeshParticipantPresentationPolicies.swift in Sources */,
 				F4B100000000000000000003 /* MeshFriendshipHandshakeController.swift in Sources */,
@@ -952,6 +990,8 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				B61000000000000000000004 /* RecordingProcessingRecoveryTests.swift in Sources */,
+				B61000000000000000000003 /* RecordingProcessingSessionTests.swift in Sources */,
 				S5B100000000000000000003 /* MeshParticipantMediaPoliciesTests.swift in Sources */,
 				S4B100000000000000000005 /* ServerCoordinatedMeshMediaRuntimeTests.swift in Sources */,
 				S4B100000000000000000006 /* ServerCoordinatedMeshParticipantCoordinatorTests.swift in Sources */,
@@ -1229,12 +1269,13 @@
 		C10000000000000000000001 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = Clip/Resources/Clip.entitlements;
 				CODE_SIGN_IDENTITY = "-";
 				CODE_SIGN_STYLE = Manual;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 20;
+				CURRENT_PROJECT_VERSION = 25;
 				ENABLE_APP_SANDBOX = YES;
 				ENABLE_HARDENED_RUNTIME = YES;
 				ENABLE_PREVIEWS = YES;
@@ -1245,7 +1286,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 1.4.1;
+				MARKETING_VERSION = 1.5.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.tomaslejdung.clip;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
@@ -1257,12 +1298,13 @@
 		C10000000000000000000002 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = Clip/Resources/Clip.entitlements;
 				CODE_SIGN_IDENTITY = "-";
 				CODE_SIGN_STYLE = Manual;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 20;
+				CURRENT_PROJECT_VERSION = 25;
 				ENABLE_APP_SANDBOX = YES;
 				ENABLE_HARDENED_RUNTIME = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -1272,7 +1314,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 1.4.1;
+				MARKETING_VERSION = 1.5.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.tomaslejdung.clip;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;

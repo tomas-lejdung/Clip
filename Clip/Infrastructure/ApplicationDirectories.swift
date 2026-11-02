@@ -412,7 +412,7 @@ struct AppLaunchConfiguration: Equatable, Sendable {
         let retention: HistoryRetentionPolicy?
         switch uniqueValue(for: realRetentionArgumentPrefix, in: arguments) {
         case "indefinitely": retention = .indefinitely
-        case "do-not-retain": retention = .doNotRetainAfterExport
+        case "do-not-retain": retention = .sevenDays
         default: retention = nil
         }
 
@@ -529,9 +529,8 @@ struct AppLaunchConfiguration: Equatable, Sendable {
         settings.audio = realCaptureAudioConfiguration ?? .none
         settings.countdown = .oneSecond
         settings.historyRetention = realCaptureOverrides.historyRetention ?? .indefinitely
-        settings.exportConfiguration = .crisp
+        settings.recordingProcessing = .defaults
         settings.automaticallyClosePreviewAfterCopy = false
-        settings.keepOriginalAfterExport = true
         if let defaultSaveDirectory = realCaptureOverrides.defaultSaveDirectory {
             settings.defaultSaveDirectory = defaultSaveDirectory
         }
@@ -560,6 +559,8 @@ struct ApplicationDirectories: Equatable, Sendable {
     let recordings: URL
     let exports: URL
     let caches: URL
+    var processing: URL { applicationSupport.appendingPathComponent("Processing", isDirectory: true) }
+    var captureStaging: URL { processing.appendingPathComponent("Captures", isDirectory: true) }
 
     static func resolve(
         fileManager: FileManager = .default,
@@ -602,7 +603,8 @@ struct ApplicationDirectories: Equatable, Sendable {
         let exports = caches
             .appendingPathComponent("Exports", isDirectory: true)
 
-        for directory in [applicationSupport, recordings, exports, caches] {
+        let captureStaging = applicationSupport.appendingPathComponent("Processing/Captures", isDirectory: true)
+        for directory in [applicationSupport, recordings, exports, caches, captureStaging] {
             try fileSystem.createDirectory(at: directory)
         }
 

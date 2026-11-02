@@ -12,6 +12,8 @@ struct PreparedCaptureTarget: Equatable, Sendable {
     let outputWidth: Int
     let outputHeight: Int
     let captureResolution: CaptureVideoResolution
+    /// Backing scale expected in ScreenCaptureKit's delivered frame metadata.
+    let requiredNativeScale: Double?
     /// When non-nil, native capture includes only this application's windows.
     let includedApplicationBundleIdentifier: String?
 
@@ -22,7 +24,8 @@ struct PreparedCaptureTarget: Equatable, Sendable {
         outputWidth: Int,
         outputHeight: Int,
         captureResolution: CaptureVideoResolution = .best,
-        includedApplicationBundleIdentifier: String? = nil
+        includedApplicationBundleIdentifier: String? = nil,
+        requiredNativeScale: Double? = nil
     ) {
         self.domainTarget = domainTarget
         self.displayID = displayID
@@ -31,6 +34,7 @@ struct PreparedCaptureTarget: Equatable, Sendable {
         self.outputHeight = outputHeight
         self.captureResolution = captureResolution
         self.includedApplicationBundleIdentifier = includedApplicationBundleIdentifier
+        self.requiredNativeScale = requiredNativeScale
     }
 }
 
@@ -197,7 +201,7 @@ struct AppDependencies {
         let pasteboard = LivePasteboardService()
         let displays = LiveDisplayService()
         let capture = NativeCaptureService(
-            recordingsDirectory: directories.recordings
+            recordingsDirectory: directories.captureStaging
         )
         let exports = PreviewExportCoordinator(exportsDirectory: directories.exports)
         let sharing = PreviewSharingService(

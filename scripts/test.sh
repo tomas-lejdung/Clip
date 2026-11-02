@@ -118,6 +118,7 @@ export CLANG_MODULE_CACHE_PATH="$MODULE_CACHE"
 export SWIFTPM_MODULECACHE_OVERRIDE="$MODULE_CACHE"
 
 swift test --package-path "$ROOT/Packages/ClipCore"
+"$ROOT/scripts/build-recording-encoder.sh"
 swift test --package-path "$ROOT/Packages/ClipMedia"
 swift test --package-path "$ROOT/Packages/ClipCapture"
 swift test --package-path "$ROOT/Packages/ClipLiveShare"

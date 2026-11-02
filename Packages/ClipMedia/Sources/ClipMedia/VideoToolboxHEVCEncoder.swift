@@ -3,68 +3,10 @@
 import Foundation
 @preconcurrency import VideoToolbox
 
-enum VideoToolboxVideoCodec: CaseIterable, Equatable, Sendable {
-    case h264
-    case hevc
-
-    /// Prefer the broadly compatible codec whenever the hardware accepts the
-    /// exact capture geometry. HEVC is the native-pixel hardware fallback for
-    /// display modes whose dimensions exceed Apple's H.264 encoder limits.
-    static let liveHardwarePreference: [VideoToolboxVideoCodec] = [.h264, .hevc]
-
-    var codecType: CMVideoCodecType {
-        switch self {
-        case .h264: kCMVideoCodecType_H264
-        case .hevc: kCMVideoCodecType_HEVC
-        }
-    }
-
-    var profileLevel: CFString {
-        switch self {
-        case .h264: kVTProfileLevel_H264_High_AutoLevel
-        case .hevc: kVTProfileLevel_HEVC_Main_AutoLevel
-        }
-    }
-}
-
-enum VideoToolboxHardwareCodecSelection<Value> {
-    case selected(codec: VideoToolboxVideoCodec, value: Value)
-    case unavailable(lastStatus: OSStatus)
-}
-
-/// Selects the first exact-geometry hardware encoder while retaining the value
-/// created by the successful attempt. Production therefore never probes and
-/// then recreates a session across a capability race; tests can exercise the
-/// same ordered decision with inert values.
-enum VideoToolboxHardwareCodecSelector {
-    static var hardwareOnlyEncoderSpecification: [CFString: Any] {
-        [
-            kVTVideoEncoderSpecification_EnableHardwareAcceleratedVideoEncoder: true,
-            kVTVideoEncoderSpecification_RequireHardwareAcceleratedVideoEncoder: true,
-        ]
-    }
-
-    static func select<Value>(
-        preference: [VideoToolboxVideoCodec] = VideoToolboxVideoCodec.liveHardwarePreference,
-        attempt: (VideoToolboxVideoCodec) -> (status: OSStatus, value: Value?)
-    ) -> VideoToolboxHardwareCodecSelection<Value> {
-        var lastStatus = kVTVideoEncoderNotAvailableNowErr
-        for codec in preference {
-            let result = attempt(codec)
-            lastStatus = result.status
-            if result.status == noErr, let value = result.value {
-                return .selected(codec: codec, value: value)
-            }
-        }
-        return .unavailable(lastStatus: lastStatus)
-    }
-}
-
-/// A direct, quality-oriented VideoToolbox encoder for live screen capture.
-/// Raw ScreenCaptureKit pixel buffers enter here and compressed samples leave
-/// here; no AVFoundation video encoder sits between capture and the MP4 muxer.
-final class VideoToolboxVideoEncoder: @unchecked Sendable {
-    enum EncoderError: Error, Equatable, Sendable {
+/// Hardware HEVC for temporary screen recordings. The final H.264 sharing
+/// file is encoded by the separate processing service after capture.
+final class VideoToolboxHEVCEncoder: @unchecked Sendable {
+    enum EncoderError: Error, LocalizedError, Equatable, Sendable {
         case cannotCreate(OSStatus)
         case cannotSetProperty(name: String, status: OSStatus)
         case cannotPrepare(OSStatus)
@@ -73,57 +15,47 @@ final class VideoToolboxVideoEncoder: @unchecked Sendable {
         case missingCompressedSample
         case backpressureExceeded
         case cannotComplete(OSStatus)
+
+        var errorDescription: String? {
+            switch self {
+            case .cannotCreate(let status): "The video encoder could not be created (\(status))."
+            case .cannotSetProperty(let name, let status): "The video encoder rejected \(name) (\(status))."
+            case .cannotPrepare(let status): "The video encoder could not prepare (\(status))."
+            case .rejectedFrame(let status): "The video encoder rejected a frame (\(status))."
+            case .droppedFrame: "The video encoder dropped a submitted frame."
+            case .missingCompressedSample: "The video encoder returned no complete compressed frame."
+            case .backpressureExceeded: "The video encoder exceeded its bounded wait for a frame or output."
+            case .cannotComplete(let status): "The video encoder could not finish pending frames (\(status))."
+            }
+        }
     }
 
     struct Configuration: Equatable, Sendable {
         let width: Int
         let height: Int
         let framesPerSecond: Int
-        let quality: Double
-        let isRealTime: Bool
-        let allowsFrameReordering: Bool
-        let prioritizesEncodingSpeedOverQuality: Bool
-        let maximumKeyFrameInterval: Int
-
-        init(
-            width: Int,
-            height: Int,
-            framesPerSecond: Int,
-            quality: Double = 0.98,
-            isRealTime: Bool = true,
-            allowsFrameReordering: Bool = false
-        ) {
-            self.width = width
-            self.height = height
-            self.framesPerSecond = framesPerSecond
-            self.quality = quality
-            self.isRealTime = isRealTime
-            self.allowsFrameReordering = allowsFrameReordering
-            prioritizesEncodingSpeedOverQuality = false
-            maximumKeyFrameInterval = framesPerSecond * 2
+        let averageBitRate: Int
+        let isRealTime = true
+        let allowsFrameReordering = false
+        let prioritizesEncodingSpeedOverQuality = false
+        var maximumKeyFrameInterval: Int { framesPerSecond * 2 }
+        static var hardwareOnlyEncoderSpecification: [CFString: Any] {
+            [kVTVideoEncoderSpecification_EnableHardwareAcceleratedVideoEncoder: true,
+             kVTVideoEncoderSpecification_RequireHardwareAcceleratedVideoEncoder: true]
         }
-
-        static func liveMaster(
-            recording configuration: RecordingConfiguration
-        ) -> Configuration {
-            Configuration(
-                width: configuration.width,
-                height: configuration.height,
-                framesPerSecond: configuration.framesPerSecond,
-                quality: configuration.videoQuality,
-                isRealTime: true,
-                allowsFrameReordering: false
-            )
+        static func liveMaster(recording configuration: RecordingConfiguration) -> Configuration {
+            Configuration(width: configuration.width, height: configuration.height,
+                framesPerSecond: configuration.framesPerSecond, averageBitRate: configuration.targetAverageBitRate)
         }
     }
 
-    let codec: VideoToolboxVideoCodec
     private let session: VTCompressionSession
     private let condition = NSCondition()
     private let sessionOperationLock = NSLock()
     private let maximumPendingFrameCount: Int
     private let backpressureTimeout: TimeInterval
     private let firstOutputTimeout: TimeInterval
+    private let finalizationTimeout: TimeInterval
     private let flushQueue = DispatchQueue(
         label: "com.tomaslejdung.clip.videotoolbox.flush",
         qos: .userInitiated
@@ -135,125 +67,54 @@ final class VideoToolboxVideoEncoder: @unchecked Sendable {
     private var isInvalidated = false
 
     init(configuration: Configuration) throws {
-        precondition(configuration.width > 0 && configuration.height > 0)
-        precondition(configuration.framesPerSecond > 0)
-        precondition((0...1).contains(configuration.quality))
-
+        guard configuration.width >= 2, configuration.height >= 2,
+              configuration.width <= Int32.max, configuration.height <= Int32.max,
+              configuration.width.isMultiple(of: 2), configuration.height.isMultiple(of: 2),
+              [30, 60].contains(configuration.framesPerSecond),
+              (1_000_000...100_000_000).contains(configuration.averageBitRate) else {
+            throw EncoderError.cannotSetProperty(name: "RecordingConfiguration", status: OSStatus(paramErr))
+        }
         maximumPendingFrameCount = 6
         backpressureTimeout = 2.0 / Double(configuration.framesPerSecond)
-
-        let imageBufferAttributes: [CFString: Any] = [
+        finalizationTimeout = 1
+        firstOutputTimeout = max(backpressureTimeout, 0.5)
+        let attributes: [CFString: Any] = [
             kCVPixelBufferPixelFormatTypeKey: kCVPixelFormatType_32BGRA,
             kCVPixelBufferWidthKey: configuration.width,
             kCVPixelBufferHeightKey: configuration.height,
             kCVPixelBufferIOSurfacePropertiesKey: [:] as [String: Any],
         ]
-
-        func createSession(
-            codec: VideoToolboxVideoCodec,
-            output: inout VTCompressionSession?
-        ) -> OSStatus {
-            VTCompressionSessionCreate(
-                allocator: kCFAllocatorDefault,
-                width: Int32(configuration.width),
-                height: Int32(configuration.height),
-                codecType: codec.codecType,
-                encoderSpecification: VideoToolboxHardwareCodecSelector
-                    .hardwareOnlyEncoderSpecification as CFDictionary,
-                imageBufferAttributes: imageBufferAttributes as CFDictionary,
-                compressedDataAllocator: kCFAllocatorDefault,
-                outputCallback: nil,
-                refcon: nil,
-                compressionSessionOut: &output
-            )
+        var created: VTCompressionSession?
+        let creationStatus = VTCompressionSessionCreate(allocator: kCFAllocatorDefault,
+            width: Int32(configuration.width), height: Int32(configuration.height),
+            codecType: kCMVideoCodecType_HEVC,
+            encoderSpecification: Configuration.hardwareOnlyEncoderSpecification as CFDictionary,
+            imageBufferAttributes: attributes as CFDictionary, compressedDataAllocator: nil,
+            outputCallback: nil, refcon: nil, compressionSessionOut: &created)
+        guard creationStatus == noErr, let created else {
+            if let created { VTCompressionSessionInvalidate(created) }
+            throw EncoderError.cannotCreate(creationStatus)
         }
-
-        let selection = VideoToolboxHardwareCodecSelector.select { codec in
-            var candidate: VTCompressionSession?
-            let status = createSession(codec: codec, output: &candidate)
-            if status != noErr, let failedCandidate = candidate {
-                VTCompressionSessionInvalidate(failedCandidate)
-                candidate = nil
-            }
-            return (status, candidate)
-        }
-        let selectedCodec: VideoToolboxVideoCodec
-        let createdSession: VTCompressionSession
-        switch selection {
-        case let .selected(codec, session):
-            selectedCodec = codec
-            createdSession = session
-        case let .unavailable(lastStatus):
-            throw EncoderError.cannotCreate(lastStatus)
-        }
-        codec = selectedCodec
-        session = createdSession
-        firstOutputTimeout = max(backpressureTimeout, 0.5)
-
+        session = created
         do {
-            try set(
-                kVTCompressionPropertyKey_RealTime,
-                value: configuration.isRealTime ? kCFBooleanTrue : kCFBooleanFalse,
-                name: "RealTime"
-            )
-            try set(
-                kVTCompressionPropertyKey_ProfileLevel,
-                value: selectedCodec.profileLevel,
-                name: "ProfileLevel"
-            )
-            try set(
-                kVTCompressionPropertyKey_Quality,
-                value: NSNumber(value: configuration.quality),
-                name: "Quality"
-            )
-            try set(
-                kVTCompressionPropertyKey_PrioritizeEncodingSpeedOverQuality,
-                value: configuration.prioritizesEncodingSpeedOverQuality
-                    ? kCFBooleanTrue
-                    : kCFBooleanFalse,
-                name: "PrioritizeEncodingSpeedOverQuality"
-            )
-            try set(
-                kVTCompressionPropertyKey_ExpectedFrameRate,
-                value: NSNumber(value: configuration.framesPerSecond),
-                name: "ExpectedFrameRate"
-            )
-            try set(
-                kVTCompressionPropertyKey_AllowFrameReordering,
-                value: configuration.allowsFrameReordering
-                    ? kCFBooleanTrue
-                    : kCFBooleanFalse,
-                name: "AllowFrameReordering"
-            )
-            try set(
-                kVTCompressionPropertyKey_MaxKeyFrameInterval,
-                value: NSNumber(value: configuration.maximumKeyFrameInterval),
-                name: "MaxKeyFrameInterval"
-            )
-            try set(
-                kVTCompressionPropertyKey_MaxKeyFrameIntervalDuration,
-                value: NSNumber(value: 2.0),
-                name: "MaxKeyFrameIntervalDuration"
-            )
-            try set(
-                kVTCompressionPropertyKey_ColorPrimaries,
-                value: kCMFormatDescriptionColorPrimaries_ITU_R_709_2,
-                name: "ColorPrimaries"
-            )
-            try set(
-                kVTCompressionPropertyKey_TransferFunction,
-                value: kCMFormatDescriptionTransferFunction_ITU_R_709_2,
-                name: "TransferFunction"
-            )
-            try set(
-                kVTCompressionPropertyKey_YCbCrMatrix,
-                value: kCMFormatDescriptionYCbCrMatrix_ITU_R_709_2,
-                name: "YCbCrMatrix"
-            )
-
+            try set(kVTCompressionPropertyKey_RealTime, value: NSNumber(value: configuration.isRealTime), name: "RealTime")
+            try set(kVTCompressionPropertyKey_ProfileLevel, value: kVTProfileLevel_HEVC_Main_AutoLevel, name: "ProfileLevel")
+            try set(kVTCompressionPropertyKey_AverageBitRate, value: NSNumber(value: configuration.averageBitRate), name: "AverageBitRate")
+            try set(kVTCompressionPropertyKey_PrioritizeEncodingSpeedOverQuality, value: NSNumber(value: configuration.prioritizesEncodingSpeedOverQuality), name: "PrioritizeEncodingSpeedOverQuality")
+            try set(kVTCompressionPropertyKey_ExpectedFrameRate, value: NSNumber(value: configuration.framesPerSecond), name: "ExpectedFrameRate")
+            try set(kVTCompressionPropertyKey_AllowFrameReordering, value: NSNumber(value: configuration.allowsFrameReordering), name: "AllowFrameReordering")
+            try set(kVTCompressionPropertyKey_MaxKeyFrameInterval, value: NSNumber(value: configuration.maximumKeyFrameInterval), name: "MaxKeyFrameInterval")
+            try set(kVTCompressionPropertyKey_MaxKeyFrameIntervalDuration, value: NSNumber(value: 2), name: "MaxKeyFrameIntervalDuration")
+            try set(kVTCompressionPropertyKey_ColorPrimaries, value: kCMFormatDescriptionColorPrimaries_ITU_R_709_2, name: "ColorPrimaries")
+            try set(kVTCompressionPropertyKey_TransferFunction, value: kCMFormatDescriptionTransferFunction_sRGB, name: "TransferFunction")
+            try set(kVTCompressionPropertyKey_YCbCrMatrix, value: kCMFormatDescriptionYCbCrMatrix_ITU_R_709_2, name: "YCbCrMatrix")
             let prepareStatus = VTCompressionSessionPrepareToEncodeFrames(session)
-            guard prepareStatus == noErr else {
-                throw EncoderError.cannotPrepare(prepareStatus)
+            guard prepareStatus == noErr else { throw EncoderError.cannotPrepare(prepareStatus) }
+            var value: Unmanaged<CFTypeRef>?
+            let status = VTSessionCopyProperty(session, key: kVTCompressionPropertyKey_UsingHardwareAcceleratedVideoEncoder,
+                                              allocator: kCFAllocatorDefault, valueOut: &value)
+            guard status == noErr, let hardware = value?.takeRetainedValue() as? NSNumber, hardware.boolValue else {
+                throw EncoderError.cannotSetProperty(name: "VerifiedHardwareEncoder", status: status == noErr ? kVTVideoEncoderNotAvailableNowErr : status)
             }
         } catch {
             VTCompressionSessionInvalidate(session)
@@ -378,7 +239,7 @@ final class VideoToolboxVideoEncoder: @unchecked Sendable {
     }
 
     func completeFrames() throws -> [CMSampleBuffer] {
-        let timeout = max(firstOutputTimeout, 1.0)
+        let timeout = max(firstOutputTimeout, finalizationTimeout)
         guard let status = boundedCompleteFrames(timeout: timeout) else {
             throw EncoderError.backpressureExceeded
         }
@@ -431,7 +292,10 @@ final class VideoToolboxVideoEncoder: @unchecked Sendable {
     /// the capture/finalization caller bounded. A timeout marks the encoder
     /// terminal immediately and starts invalidation on another queue so even a
     /// pathological teardown cannot re-block the caller that detected it.
-    private func boundedCompleteFrames(timeout: TimeInterval) -> OSStatus? {
+    private func boundedCompleteFrames(
+        through presentationTime: CMTime = .invalid,
+        timeout: TimeInterval
+    ) -> OSStatus? {
         let session = SendableCompressionSession(session)
         let operationLock = sessionOperationLock
         return BoundedVideoToolboxOperation.run(
@@ -441,7 +305,7 @@ final class VideoToolboxVideoEncoder: @unchecked Sendable {
                 operationLock.withLock {
                     VTCompressionSessionCompleteFrames(
                         session.value,
-                        untilPresentationTimeStamp: .invalid
+                        untilPresentationTimeStamp: presentationTime
                     )
                 }
             },

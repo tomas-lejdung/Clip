@@ -142,7 +142,7 @@ struct ManagedHistoryRepositoryTests {
         #expect(try await reloaded.load().item(id: item.id) == item)
     }
 
-    @Test("Rename, trim, preset, and audio export mutations are durable")
+    @Test("Rename, trim, and audio export mutations are durable")
     func metadataMutations() async throws {
         let environment = try makeEnvironment()
         defer { try? FileManager.default.removeItem(at: environment.root) }
@@ -156,10 +156,6 @@ struct ManagedHistoryRepositoryTests {
         _ = try await environment.repository.rename(id: imported.id, to: "dashboard-filters.mp4")
         let trim = try TrimRange(startTime: 1, endTime: 8)
         _ = try await environment.repository.updateTrim(id: imported.id, trimRange: trim)
-        _ = try await environment.repository.updateExportConfiguration(
-            id: imported.id,
-            configuration: .crisp
-        )
         _ = try await environment.repository.updateExportAudioPreference(
             id: imported.id,
             preference: .removeAudio
@@ -169,7 +165,6 @@ struct ManagedHistoryRepositoryTests {
         let item = try #require(reloaded.item(id: imported.id))
         #expect(item.filename.fileName == "dashboard-filters.mp4")
         #expect(item.trimRange == trim)
-        #expect(item.exportConfiguration == .crisp)
         #expect(item.exportAudioPreference == .removeAudio)
     }
 
@@ -193,7 +188,6 @@ struct ManagedHistoryRepositoryTests {
             session: session,
             filename: imported.filename,
             trimRange: imported.trimRange,
-            configuration: imported.exportConfiguration,
             audioPreference: .removeAudio
         )
         _ = try await environment.repository.endPreviewSession(session)
@@ -260,163 +254,31 @@ struct ManagedHistoryRepositoryTests {
         #expect(try await environment.repository.item(id: recent.id) != nil)
     }
 
-    @Test("Every post-export disposition preserves the external exported file")
-    func exportDispositions() async throws {
+    @Test("Sharing preserves full Source bytes, reversible trim, and independent exports")
+    func successfulExportNeverReplacesSource() async throws {
         let environment = try makeEnvironment()
         defer { try? FileManager.default.removeItem(at: environment.root) }
-        let export = environment.external.appendingPathComponent("save-as.mp4")
-        try writeMP4("exported", to: export)
-
-        func imported(_ uuid: String, name: String) async throws -> RecordingHistoryItem {
-            let source = environment.external.appendingPathComponent("\(name).mp4")
-            try writeMP4(name, to: source)
-            return try await environment.repository.importFinalizedRecording(
-                makeRequest(sourceURL: source, id: UUID(uuidString: uuid)!)
-            )
-        }
-
-        let kept = try await imported(
-            "66666666-6666-6666-6666-666666666666",
-            name: "kept"
-        )
-        let keptMaster = try await environment.repository.masterURL(for: kept.id)
-        let keepResult = try await environment.repository.registerSuccessfulExport(
-            id: kept.id,
-            exportedFileURL: export,
-            retentionPolicy: .sevenDays,
-            keepOriginalAfterExport: true
-        )
-        #expect(keepResult.disposition == .keepOriginal)
-        #expect(keepResult.retainedItem?.lastExportedAt == fixedNow)
-        #expect(keepResult.removedItem == nil)
-        #expect(FileManager.default.fileExists(atPath: keptMaster.path))
-
-        let replaced = try await imported(
-            "77777777-7777-7777-7777-777777777777",
-            name: "replaced"
-        )
-        let oldMaster = try await environment.repository.masterURL(for: replaced.id)
-        _ = try await environment.repository.updateTrim(
-            id: replaced.id,
-            trimRange: TrimRange(startTime: 2, endTime: 8)
-        )
-        let replacementMetadata = try RecordingMediaMetadata(
-            duration: 6,
-            pixelSize: PixelSize(width: 960, height: 540),
-            frameRate: .sixty
-        )
-        let replaceResult = try await environment.repository.registerSuccessfulExport(
-            id: replaced.id,
-            exportedFileURL: export,
-            retentionPolicy: .sevenDays,
-            keepOriginalAfterExport: false,
-            exportedVideoQualityPercent: 85,
-            exportedMediaMetadata: replacementMetadata
-        )
-        let replacementURL = try await environment.repository.masterURL(for: replaced.id)
-        #expect(replaceResult.disposition == .replaceOriginalWithExport)
-        #expect(replacementURL == oldMaster)
-        #expect(FileManager.default.fileExists(atPath: oldMaster.path))
-        #expect(try Data(contentsOf: replacementURL) == Data("exported".utf8))
-        #expect(replaceResult.retainedItem?.recordingDuration == 6)
-        let expectedReplacementTrim = try TrimRange.full(recordingDuration: 6)
-        #expect(replaceResult.retainedItem?.trimRange == expectedReplacementTrim)
-        #expect(replaceResult.retainedItem?.pixelSize == replacementMetadata.pixelSize)
-        #expect(replaceResult.retainedItem?.frameRate == .sixty)
-        #expect(replaceResult.retainedItem?.managedMasterVideoQualityPercent == 85)
-        #expect(replaceResult.retainedItem?.managedMaster == replaced.managedMaster)
-        #expect(replaceResult.removedItem == nil)
-
-        let removed = try await imported(
-            "88888888-8888-8888-8888-888888888888",
-            name: "removed"
-        )
-        let removedMaster = try await environment.repository.masterURL(for: removed.id)
-        let removeResult = try await environment.repository.registerSuccessfulExport(
-            id: removed.id,
-            exportedFileURL: export,
-            retentionPolicy: .doNotRetainAfterExport,
-            keepOriginalAfterExport: true
-        )
-        #expect(removeResult.disposition == .removeHistoryItem)
-        #expect(removeResult.retainedItem == nil)
-        #expect(removeResult.removedItem?.id == removed.id)
-        #expect(removeResult.removedItem?.lastExportedAt == fixedNow)
-        #expect(!FileManager.default.fileExists(atPath: removedMaster.path))
-
-        #expect(FileManager.default.fileExists(atPath: export.path))
-        #expect(try Data(contentsOf: export) == Data("exported".utf8))
-    }
-
-    @Test("Replacing from the managed master itself is a safe metadata-only rebase")
-    func replacementSourceEqualsDestination() async throws {
-        let environment = try makeEnvironment()
-        defer { try? FileManager.default.removeItem(at: environment.root) }
-        let source = environment.external.appendingPathComponent("same-source.mp4")
-        try writeMP4("same-file", to: source)
+        let source = environment.external.appendingPathComponent("source.mp4")
+        let export = environment.external.appendingPathComponent("trimmed-export.mp4")
+        try writeMP4("full-source", to: source)
+        try writeMP4("short-trimmed-export", to: export)
         let item = try await environment.repository.importFinalizedRecording(
-            makeRequest(
-                sourceURL: source,
-                id: UUID(uuidString: "dddddddd-dddd-dddd-dddd-dddddddddddd")!
-            )
-        )
-        let masterURL = try await environment.repository.masterURL(for: item.id)
-        let metadata = try RecordingMediaMetadata(
-            duration: 3.25,
-            pixelSize: PixelSize(width: 640, height: 360),
-            frameRate: .thirty
-        )
-
-        let result = try await environment.repository.registerSuccessfulExport(
-            id: item.id,
-            exportedFileURL: masterURL,
-            retentionPolicy: .indefinitely,
-            keepOriginalAfterExport: false,
-            exportedVideoQualityPercent: 98,
-            exportedMediaMetadata: metadata
-        )
-
-        #expect(try await environment.repository.masterURL(for: item.id) == masterURL)
-        #expect(try Data(contentsOf: masterURL) == Data("same-file".utf8))
-        #expect(result.disposition == .replaceOriginalWithExport)
-        #expect(result.retainedItem?.recordingDuration == 3.25)
-        let expectedTrim = try TrimRange.full(recordingDuration: 3.25)
-        #expect(result.retainedItem?.trimRange == expectedTrim)
-        #expect(result.cleanupFailure == nil)
-    }
-
-    @Test("Do-not-retain removes history immediately but pins the Preview master until close")
-    func previewSessionDefersRemoval() async throws {
-        let environment = try makeEnvironment()
-        defer { try? FileManager.default.removeItem(at: environment.root) }
-        let source = environment.external.appendingPathComponent("preview-removal.mp4")
-        let exported = environment.external.appendingPathComponent("shared.mp4")
-        try writeMP4("preview-source", to: source)
-        try writeMP4("shared-copy", to: exported)
-        let item = try await environment.repository.importFinalizedRecording(
-            makeRequest(
-                sourceURL: source,
-                id: UUID(uuidString: "10101010-1010-1010-1010-101010101010")!
-            )
-        )
-        let masterURL = try await environment.repository.masterURL(for: item.id)
+            makeRequest(sourceURL: source, id: UUID(uuidString: "66666666-6666-6666-6666-666666666666")!))
+        let master = try await environment.repository.masterURL(for: item.id)
         let session = try await environment.repository.beginPreviewSession(id: item.id)
-
-        let result = try await environment.repository.registerSuccessfulExport(
-            id: item.id,
-            exportedFileURL: exported,
-            retentionPolicy: .doNotRetainAfterExport,
-            keepOriginalAfterExport: true
-        )
-
-        #expect(result.finalizationDeferred)
-        #expect(try await environment.repository.item(id: item.id) == nil)
-        #expect(try Data(contentsOf: masterURL) == Data("preview-source".utf8))
-
-        let closeResult = try await environment.repository.endPreviewSession(session)
-        #expect(closeResult.finalizedDisposition == .removeHistoryItem)
-        #expect(!FileManager.default.fileExists(atPath: masterURL.path))
-        #expect(try Data(contentsOf: exported) == Data("shared-copy".utf8))
+        let trim = try TrimRange(startTime: 2, endTime: 8)
+        _ = try await environment.repository.updateTrim(id: item.id, trimRange: trim)
+        let result = try await environment.repository.registerSuccessfulExport(id: item.id, previewSession: session)
+        #expect(result.lastExportedAt == fixedNow)
+        #expect(result.recordingDuration == item.recordingDuration)
+        #expect(result.trimRange == trim)
+        _ = try await environment.repository.endPreviewSession(session)
+        #expect(try Data(contentsOf: master) == Data("full-source".utf8))
+        #expect(try Data(contentsOf: export) == Data("short-trimmed-export".utf8))
+        let reset = try await environment.repository.updateTrim(id: item.id, trimRange: .full(recordingDuration: item.recordingDuration))
+        #expect(reset.trimRange.duration == item.recordingDuration)
+        let reloaded = try await environment.repository.reloadFromDisk()
+        #expect(reloaded.item(id: item.id)?.recordingDuration == item.recordingDuration)
     }
 
     @Test("Retention cleanup skips a master while Preview has it pinned")
@@ -450,6 +312,33 @@ struct ManagedHistoryRepositoryTests {
         #expect(!FileManager.default.fileExists(atPath: masterURL.path))
     }
 
+    @Test("Closing with an unreadable index releases the Preview pin without deleting its Source")
+    func failedCloseStillReleasesReader() async throws {
+        let environment = try makeEnvironment()
+        defer { try? FileManager.default.removeItem(at: environment.root) }
+        let source = environment.external.appendingPathComponent("expired.mp4")
+        try writeMP4("full-source", to: source)
+        let item = try await environment.repository.importFinalizedRecording(
+            makeRequest(sourceURL: source, id: UUID(),
+                        createdAt: fixedNow.addingTimeInterval(-8 * 86_400)))
+        let master = try await environment.repository.masterURL(for: item.id)
+        let session = try await environment.repository.beginPreviewSession(id: item.id)
+        let indexURL = environment.repository.indexURL
+        let validIndex = try Data(contentsOf: indexURL)
+        try Data("invalid json".utf8).write(to: indexURL, options: .atomic)
+        await #expect(throws: DecodingError.self) {
+            try await environment.repository.reloadFromDisk()
+        }
+        await #expect(throws: DecodingError.self) {
+            try await environment.repository.endPreviewSession(session)
+        }
+        #expect(try Data(contentsOf: master) == Data("full-source".utf8))
+        try validIndex.write(to: indexURL, options: .atomic)
+        _ = try await environment.repository.reloadFromDisk()
+        let cleanup = try await environment.repository.applyRetentionCleanup(policy: .sevenDays)
+        #expect(cleanup.plan.recordingIDs == [item.id])
+    }
+
     @Test("History deletion cannot invalidate a Preview opened by another UI surface")
     func externalDeletionDefersWhilePreviewIsPinned() async throws {
         let environment = try makeEnvironment()
@@ -472,82 +361,8 @@ struct ManagedHistoryRepositoryTests {
         #expect(FileManager.default.fileExists(atPath: masterURL.path))
 
         let closeResult = try await environment.repository.endPreviewSession(session)
-        #expect(closeResult.finalizedDisposition == .removeHistoryItem)
+        #expect(closeResult.didFinalizeDeletion)
         #expect(!FileManager.default.fileExists(atPath: masterURL.path))
-    }
-
-    @Test("Keep-original off installs only the latest successful export when Preview closes")
-    func previewSessionDefersLatestReplacement() async throws {
-        let environment = try makeEnvironment()
-        defer { try? FileManager.default.removeItem(at: environment.root) }
-        let source = environment.external.appendingPathComponent("preview-original.mp4")
-        let firstExport = environment.external.appendingPathComponent("first.mp4")
-        let latestExport = environment.external.appendingPathComponent("latest.mp4")
-        try writeMP4("original", to: source)
-        try writeMP4("first-export", to: firstExport)
-        try writeMP4("latest-export", to: latestExport)
-        let item = try await environment.repository.importFinalizedRecording(
-            makeRequest(
-                sourceURL: source,
-                id: UUID(uuidString: "20202020-2020-2020-2020-202020202020")!,
-                duration: 10,
-                captureSessionSnapshot: CaptureSessionSnapshot(
-                    frameRate: .thirty,
-                    showCursor: true,
-                    audio: .none,
-                    countdown: .threeSeconds,
-                    crispQuality: 98
-                )
-            )
-        )
-        let masterURL = try await environment.repository.masterURL(for: item.id)
-        let session = try await environment.repository.beginPreviewSession(id: item.id)
-        let firstMetadata = try RecordingMediaMetadata(
-            duration: 6,
-            pixelSize: PixelSize(width: 960, height: 540),
-            frameRate: .thirty
-        )
-        let latestMetadata = try RecordingMediaMetadata(
-            duration: 4,
-            pixelSize: PixelSize(width: 1280, height: 720),
-            frameRate: .sixty
-        )
-
-        _ = try await environment.repository.registerSuccessfulExport(
-            id: item.id,
-            exportedFileURL: firstExport,
-            retentionPolicy: .indefinitely,
-            keepOriginalAfterExport: false,
-            exportedVideoQualityPercent: 90,
-            exportedMediaMetadata: firstMetadata,
-            previewSession: session
-        )
-        let latestResult = try await environment.repository.registerSuccessfulExport(
-            id: item.id,
-            exportedFileURL: latestExport,
-            retentionPolicy: .indefinitely,
-            keepOriginalAfterExport: false,
-            exportedVideoQualityPercent: 85,
-            exportedMediaMetadata: latestMetadata,
-            previewSession: session
-        )
-
-        #expect(latestResult.finalizationDeferred)
-        #expect(try Data(contentsOf: masterURL) == Data("original".utf8))
-        #expect(try await environment.repository.item(id: item.id)?.trimRange == item.trimRange)
-
-        let closeResult = try await environment.repository.endPreviewSession(session)
-        let rebasedItem = try #require(closeResult.retainedItem)
-        #expect(try Data(contentsOf: masterURL) == Data("latest-export".utf8))
-        #expect(rebasedItem.recordingDuration == latestMetadata.duration)
-        #expect(rebasedItem.pixelSize == latestMetadata.pixelSize)
-        #expect(rebasedItem.frameRate == latestMetadata.frameRate)
-        #expect(rebasedItem.managedMasterVideoQualityPercent == 85)
-        #expect(rebasedItem.captureSessionSnapshot?.crispQuality == 98)
-        let expectedFullTrim = try TrimRange.full(recordingDuration: 4)
-        #expect(rebasedItem.trimRange == expectedFullTrim)
-        #expect(try Data(contentsOf: firstExport) == Data("first-export".utf8))
-        #expect(try Data(contentsOf: latestExport) == Data("latest-export".utf8))
     }
 
     @Test("Reconciliation removes missing metadata and owned orphans but retains unknown MP4s")

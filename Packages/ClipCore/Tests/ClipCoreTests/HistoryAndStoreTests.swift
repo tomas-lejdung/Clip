@@ -62,55 +62,23 @@ struct HistoryMetadataTests {
         }
     }
 
-    @Test("History item mutations retain edits and rebase replacement media metadata")
+    @Test("History edits and successful exports preserve the complete Source")
     func historyMutations() throws {
-        let captureSnapshot = CaptureSessionSnapshot(
-            frameRate: .thirty,
-            showCursor: true,
-            audio: .none,
-            countdown: .threeSeconds,
-            crispQuality: 98
-        )
-        var item = try makeHistoryItem(captureSessionSnapshot: captureSnapshot)
-        #expect(item.managedMasterVideoQualityPercent == 98)
+        var item = try makeHistoryItem()
+        let original = item
         try item.rename(to: "dashboard-filters.mp4", at: Date(timeIntervalSince1970: 1_001))
-        #expect(item.filename.fileName == "dashboard-filters.mp4")
-
         let trim = try TrimRange(startTime: 2, endTime: 9)
         try item.setTrimRange(trim, at: Date(timeIntervalSince1970: 1_002))
-        #expect(item.trimRange == trim)
-
-        try item.setExportConfiguration(.crisp, at: Date(timeIntervalSince1970: 1_003))
-        #expect(item.exportConfiguration == .crisp)
-        try item.setExportAudioPreference(.removeAudio, at: Date(timeIntervalSince1970: 1_003.5))
-        #expect(item.exportAudioPreference == .removeAudio)
+        try item.setExportAudioPreference(.removeAudio, at: Date(timeIntervalSince1970: 1_003))
         try item.registerSuccessfulExport(at: Date(timeIntervalSince1970: 1_004))
+        #expect(item.filename.fileName == "dashboard-filters.mp4")
+        #expect(item.trimRange == trim && item.exportAudioPreference == .removeAudio)
         #expect(item.lastExportedAt == Date(timeIntervalSince1970: 1_004))
-
-        let replacement = try ManagedRecordingFile(relativePath: "recordings/trimmed.mp4")
-        try item.replaceManagedMaster(
-            with: replacement,
-            byteCount: 500,
-            mediaMetadata: RecordingMediaMetadata(
-                duration: 4.5,
-                pixelSize: PixelSize(width: 960, height: 540),
-                frameRate: .sixty
-            ),
-            videoQualityPercent: 85,
-            at: Date(timeIntervalSince1970: 1_005)
-        )
-        #expect(item.managedMaster == replacement)
-        #expect(item.managedByteCount == 500)
-        #expect(item.recordingDuration == 4.5)
-        let expectedFullTrim = try TrimRange(startTime: 0, endTime: 4.5)
-        let expectedPixelSize = try PixelSize(width: 960, height: 540)
-        #expect(item.trimRange == expectedFullTrim)
-        #expect(item.pixelSize == expectedPixelSize)
-        #expect(item.frameRate == .sixty)
-        #expect(item.managedMasterVideoQualityPercent == 85)
-        #expect(item.captureSessionSnapshot?.crispQuality == 98)
-        #expect(item.lastExportedAt == Date(timeIntervalSince1970: 1_005))
-        #expect(item.updatedAt == Date(timeIntervalSince1970: 1_005))
+        #expect(item.managedMaster == original.managedMaster)
+        #expect(item.recordingDuration == original.recordingDuration)
+        #expect(item.pixelSize == original.pixelSize && item.managedByteCount == original.managedByteCount)
+        try item.setTrimRange(.full(recordingDuration: item.recordingDuration), at: Date(timeIntervalSince1970: 1_005))
+        #expect(item.trimRange.duration == original.recordingDuration)
     }
 
     @Test("History mutations reject invalid clock and metadata values")
@@ -126,24 +94,7 @@ struct HistoryMetadataTests {
             )
         }
         #expect(throws: HistoryMetadataError.negativeByteCount(-1)) {
-            try item.replaceManagedMaster(
-                with: ManagedRecordingFile(relativePath: "recordings/new.mp4"),
-                byteCount: -1,
-                mediaMetadata: RecordingMediaMetadata(
-                    duration: 3,
-                    pixelSize: PixelSize(width: 640, height: 360),
-                    frameRate: .thirty
-                ),
-                videoQualityPercent: 85,
-                at: Date(timeIntervalSince1970: 1_001)
-            )
-        }
-        #expect(throws: HistoryMetadataError.invalidDuration(0)) {
-            try RecordingMediaMetadata(
-                duration: 0,
-                pixelSize: PixelSize(width: 640, height: 360),
-                frameRate: .thirty
-            )
+            try makeHistoryItem(byteCount: -1)
         }
     }
 
@@ -155,7 +106,7 @@ struct HistoryMetadataTests {
             showClickHighlights: true,
             audio: .microphoneAndSystemAudio,
             countdown: .fiveSeconds,
-            crispQuality: 73
+            captureBitrateMbps: 20
         )
         var item = try makeHistoryItem(captureSessionSnapshot: snapshot)
         try item.setTrimRange(
@@ -168,7 +119,7 @@ struct HistoryMetadataTests {
         )
         #expect(try jsonRoundTrip(item) == item)
         #expect(try jsonRoundTrip(item).exportAudioPreference == .removeAudio)
-        #expect(try jsonRoundTrip(item).managedMasterVideoQualityPercent == 73)
+        #expect(try jsonRoundTrip(item).captureSessionSnapshot?.captureBitrateMbps == 20)
     }
 
     @Test("Capture session snapshots restore only capture inputs")
@@ -178,19 +129,14 @@ struct HistoryMetadataTests {
         )
         current.showInDock = true
         current.historyRetention = .thirtyDays
-        current.exportConfiguration = .crisp
-        current.exportQualities = ExportQualitySettings(
-            crisp: 41,
-            compact: 37,
-            smallest: 29
-        )
+        current.recordingProcessing = .init(scale: .half, crf: 28, captureBitrateMbps: 50)
         let snapshot = CaptureSessionSnapshot(
             frameRate: .sixty,
             showCursor: false,
             showClickHighlights: true,
             audio: .microphoneAndSystemAudio,
             countdown: .fiveSeconds,
-            crispQuality: 73
+            captureBitrateMbps: 20
         )
 
         let restored = snapshot.applying(to: current)
@@ -202,10 +148,9 @@ struct HistoryMetadataTests {
         #expect(restored.countdown == .fiveSeconds)
         #expect(restored.showInDock == current.showInDock)
         #expect(restored.historyRetention == current.historyRetention)
-        #expect(restored.exportConfiguration == current.exportConfiguration)
-        #expect(restored.exportQualities.crisp == 73)
-        #expect(restored.exportQualities.compact == 37)
-        #expect(restored.exportQualities.smallest == 29)
+        #expect(restored.recordingProcessing.scale == .half)
+        #expect(restored.recordingProcessing.crf == 28)
+        #expect(restored.recordingProcessing.captureBitrateMbps == 20)
         #expect(try jsonRoundTrip(snapshot) == snapshot)
     }
 
@@ -271,27 +216,24 @@ struct HistoryMetadataTests {
             createdAt: created,
             now: .distantFuture
         ))
-        #expect(!HistoryRetentionPolicy.doNotRetainAfterExport.shouldExpire(
-            createdAt: created,
-            now: .distantFuture
-        ))
     }
 
-    @Test("Post-export retention and keep-original settings compose deterministically")
-    func postExportDisposition() {
-        #expect(
-            HistoryRetentionPolicy.sevenDays.postExportDisposition(keepOriginalAfterExport: true)
-                == .keepOriginal
-        )
-        #expect(
-            HistoryRetentionPolicy.sevenDays.postExportDisposition(keepOriginalAfterExport: false)
-                == .replaceOriginalWithExport
-        )
-        #expect(
-            HistoryRetentionPolicy.doNotRetainAfterExport
-                .postExportDisposition(keepOriginalAfterExport: true)
-                == .removeHistoryItem
-        )
+    @Test("Legacy export-removal retention migrates to timed retention")
+    func legacyExportRetentionMigration() throws {
+        let decoded = try JSONDecoder().decode(HistoryRetentionPolicy.self, from: Data("\"doNotRetainAfterExport\"".utf8))
+        #expect(decoded == .sevenDays)
+    }
+
+    @Test("Legacy source quality metadata never becomes a guessed CRF")
+    func legacySourceMetadataMigration() throws {
+        let item = try makeHistoryItem()
+        var object = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(item)) as? [String: Any])
+        object.removeValue(forKey: "processing")
+        object["managedMasterVideoQualityPercent"] = 98
+        object["exportConfiguration"] = ["preset": "crisp"]
+        let decoded = try JSONDecoder().decode(RecordingHistoryItem.self, from: JSONSerialization.data(withJSONObject: object))
+        #expect(decoded.processing == nil)
+        #expect(decoded.managedMaster == item.managedMaster && decoded.recordingDuration == item.recordingDuration)
     }
 
     @Test("Cleanup plans include only expired managed items and exact reclaimed bytes")

@@ -54,7 +54,7 @@ public struct CaptureSessionSnapshot: Codable, Equatable, Hashable, Sendable {
     public let showClickHighlights: Bool
     public let audio: AudioConfiguration
     public let countdown: CountdownDuration
-    public let crispQuality: Int
+    public let captureBitrateMbps: Int
 
     public init(
         frameRate: CaptureFrameRate,
@@ -62,14 +62,14 @@ public struct CaptureSessionSnapshot: Codable, Equatable, Hashable, Sendable {
         showClickHighlights: Bool = false,
         audio: AudioConfiguration,
         countdown: CountdownDuration,
-        crispQuality: Int = ExportQualitySettings.defaults.crisp
+        captureBitrateMbps: Int = 10
     ) {
         self.frameRate = frameRate
         self.showCursor = showCursor
         self.showClickHighlights = showClickHighlights
         self.audio = audio
         self.countdown = countdown
-        self.crispQuality = crispQuality
+        self.captureBitrateMbps = captureBitrateMbps
     }
 
     public init(settings: ClipSettings) {
@@ -79,7 +79,7 @@ public struct CaptureSessionSnapshot: Codable, Equatable, Hashable, Sendable {
             showClickHighlights: settings.showClickHighlights,
             audio: settings.audio,
             countdown: settings.countdown,
-            crispQuality: settings.exportQualities.crisp
+            captureBitrateMbps: settings.recordingProcessing.captureBitrateMbps
         )
     }
 
@@ -92,7 +92,7 @@ public struct CaptureSessionSnapshot: Codable, Equatable, Hashable, Sendable {
         result.showClickHighlights = showClickHighlights
         result.audio = audio
         result.countdown = countdown
-        result.exportQualities.crisp = crispQuality
+        result.recordingProcessing.captureBitrateMbps = captureBitrateMbps
         return result
     }
 
@@ -102,7 +102,7 @@ public struct CaptureSessionSnapshot: Codable, Equatable, Hashable, Sendable {
         case showClickHighlights
         case audio
         case countdown
-        case crispQuality
+        case captureBitrateMbps
     }
 
     public init(from decoder: any Decoder) throws {
@@ -115,8 +115,7 @@ public struct CaptureSessionSnapshot: Codable, Equatable, Hashable, Sendable {
         ) ?? false
         audio = try container.decode(AudioConfiguration.self, forKey: .audio)
         countdown = try container.decode(CountdownDuration.self, forKey: .countdown)
-        crispQuality = try container.decodeIfPresent(Int.self, forKey: .crispQuality)
-            ?? ExportQualitySettings.defaults.crisp
+        captureBitrateMbps = try container.decodeIfPresent(Int.self, forKey: .captureBitrateMbps) ?? 10
     }
 
     public func encode(to encoder: any Encoder) throws {
@@ -126,7 +125,7 @@ public struct CaptureSessionSnapshot: Codable, Equatable, Hashable, Sendable {
         try container.encode(showClickHighlights, forKey: .showClickHighlights)
         try container.encode(audio, forKey: .audio)
         try container.encode(countdown, forKey: .countdown)
-        try container.encode(crispQuality, forKey: .crispQuality)
+        try container.encode(captureBitrateMbps, forKey: .captureBitrateMbps)
     }
 }
 
@@ -283,7 +282,7 @@ public struct ShortcutConfiguration: Codable, Equatable, Sendable {
 }
 
 public struct ClipSettings: Codable, Equatable, Sendable {
-    public static let currentSchemaVersion = 2
+    public static let currentSchemaVersion = 3
 
     public var schemaVersion: Int
     public var launchAtLogin: Bool
@@ -299,11 +298,9 @@ public struct ClipSettings: Codable, Equatable, Sendable {
     public var audio: AudioConfiguration
     public var countdown: CountdownDuration
     public var historyRetention: HistoryRetentionPolicy
-    public var exportConfiguration: ExportConfiguration
-    public var exportQualities: ExportQualitySettings
+    public var recordingProcessing: RecordingProcessingOptions
     public var defaultFilenameTemplate: RecordingFilenameTemplate
     public var automaticallyClosePreviewAfterCopy: Bool
-    public var keepOriginalAfterExport: Bool
     public var defaultSaveDirectory: URL
     public var shortcuts: ShortcutConfiguration
 
@@ -320,11 +317,9 @@ public struct ClipSettings: Codable, Equatable, Sendable {
         audio: AudioConfiguration,
         countdown: CountdownDuration,
         historyRetention: HistoryRetentionPolicy,
-        exportConfiguration: ExportConfiguration,
-        exportQualities: ExportQualitySettings = .defaults,
+        recordingProcessing: RecordingProcessingOptions = .defaults,
         defaultFilenameTemplate: RecordingFilenameTemplate = .default,
         automaticallyClosePreviewAfterCopy: Bool,
-        keepOriginalAfterExport: Bool,
         defaultSaveDirectory: URL,
         shortcuts: ShortcutConfiguration
     ) {
@@ -340,11 +335,9 @@ public struct ClipSettings: Codable, Equatable, Sendable {
         self.audio = audio
         self.countdown = countdown
         self.historyRetention = historyRetention
-        self.exportConfiguration = exportConfiguration
-        self.exportQualities = exportQualities
+        self.recordingProcessing = recordingProcessing
         self.defaultFilenameTemplate = defaultFilenameTemplate
         self.automaticallyClosePreviewAfterCopy = automaticallyClosePreviewAfterCopy
-        self.keepOriginalAfterExport = keepOriginalAfterExport
         self.defaultSaveDirectory = defaultSaveDirectory
         self.shortcuts = shortcuts
     }
@@ -362,11 +355,9 @@ public struct ClipSettings: Codable, Equatable, Sendable {
             audio: .none,
             countdown: .threeSeconds,
             historyRetention: .sevenDays,
-            exportConfiguration: .crisp,
-            exportQualities: .defaults,
+            recordingProcessing: .defaults,
             defaultFilenameTemplate: .default,
             automaticallyClosePreviewAfterCopy: false,
-            keepOriginalAfterExport: true,
             defaultSaveDirectory: homeDirectory.appending(path: "Movies", directoryHint: .isDirectory),
             shortcuts: .defaults
         )
@@ -391,11 +382,9 @@ public struct ClipSettings: Codable, Equatable, Sendable {
         case audio
         case countdown
         case historyRetention
-        case exportConfiguration
-        case exportQualities
+        case recordingProcessing
         case defaultFilenameTemplate
         case automaticallyClosePreviewAfterCopy
-        case keepOriginalAfterExport
         case defaultSaveDirectory
         case shortcuts
     }
@@ -414,9 +403,9 @@ public struct ClipSettings: Codable, Equatable, Sendable {
             )
         }
 
-        // Schema 1 did not persist a filename template. Decoding it as the
-        // product default is an in-memory migration; the next settings write
-        // persists schema 2 without requiring a separate migration file.
+        // Older files may contain quality presets and export-driven Source
+        // policies. Those keys are ignored; new processing choices start at
+        // Native / CRF 24 / HEVC 10 Mbps and are remembered after Preview.
         schemaVersion = Self.currentSchemaVersion
         launchAtLogin = try container.decode(Bool.self, forKey: .launchAtLogin)
         showInDock = try container.decode(Bool.self, forKey: .showInDock)
@@ -438,13 +427,9 @@ public struct ClipSettings: Codable, Equatable, Sendable {
             HistoryRetentionPolicy.self,
             forKey: .historyRetention
         )
-        exportConfiguration = try container.decode(
-            ExportConfiguration.self,
-            forKey: .exportConfiguration
-        )
-        exportQualities = try container.decodeIfPresent(
-            ExportQualitySettings.self,
-            forKey: .exportQualities
+        recordingProcessing = try container.decodeIfPresent(
+            RecordingProcessingOptions.self,
+            forKey: .recordingProcessing
         ) ?? .defaults
         defaultFilenameTemplate = try container.decodeIfPresent(
             RecordingFilenameTemplate.self,
@@ -453,10 +438,6 @@ public struct ClipSettings: Codable, Equatable, Sendable {
         automaticallyClosePreviewAfterCopy = try container.decode(
             Bool.self,
             forKey: .automaticallyClosePreviewAfterCopy
-        )
-        keepOriginalAfterExport = try container.decode(
-            Bool.self,
-            forKey: .keepOriginalAfterExport
         )
         defaultSaveDirectory = try container.decode(URL.self, forKey: .defaultSaveDirectory)
         shortcuts = try container.decode(ShortcutConfiguration.self, forKey: .shortcuts)
@@ -476,14 +457,12 @@ public struct ClipSettings: Codable, Equatable, Sendable {
         try container.encode(audio, forKey: .audio)
         try container.encode(countdown, forKey: .countdown)
         try container.encode(historyRetention, forKey: .historyRetention)
-        try container.encode(exportConfiguration, forKey: .exportConfiguration)
-        try container.encode(exportQualities, forKey: .exportQualities)
+        try container.encode(recordingProcessing, forKey: .recordingProcessing)
         try container.encode(defaultFilenameTemplate, forKey: .defaultFilenameTemplate)
         try container.encode(
             automaticallyClosePreviewAfterCopy,
             forKey: .automaticallyClosePreviewAfterCopy
         )
-        try container.encode(keepOriginalAfterExport, forKey: .keepOriginalAfterExport)
         try container.encode(defaultSaveDirectory, forKey: .defaultSaveDirectory)
         try container.encode(shortcuts, forKey: .shortcuts)
     }

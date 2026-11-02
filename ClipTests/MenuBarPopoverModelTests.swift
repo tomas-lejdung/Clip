@@ -8,6 +8,15 @@ import XCTest
 
 @MainActor
 final class MenuBarPopoverModelTests: XCTestCase {
+    func testStatusItemStopsRecordingAndPausedCaptureDirectly() {
+        XCTAssertEqual(RecordingStatusItemAction.resolve(recordingPhase: .recording), .stopRecording)
+        XCTAssertEqual(RecordingStatusItemAction.resolve(recordingPhase: .paused), .stopRecording)
+        XCTAssertEqual(RecordingStatusItemAction.resolve(recordingPhase: .finishing), .ignore)
+        for phase in RecordingPhase.allCases where ![.recording, .paused, .finishing].contains(phase) {
+            XCTAssertEqual(RecordingStatusItemAction.resolve(recordingPhase: phase), .togglePopover)
+        }
+    }
+
     func testServerRoomInviteEntryAcceptsOnlyCompleteV4Invites() throws {
         let invite = try makeServerRoomInvite()
         let inviteURL = try invite.url.absoluteString

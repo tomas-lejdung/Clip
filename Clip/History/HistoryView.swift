@@ -441,7 +441,7 @@ private struct RecordingHistoryRow: View {
     }
 
     private func exportDetails(for export: ManagedExportRecord) -> String {
-        "\(HistoryFormatting.preset(export.preset)) \(export.qualityPercent)"
+        String(localized: "MP4 video")
             + " · \(HistoryFormatting.bytes(export.byteCount))"
     }
 
@@ -539,7 +539,7 @@ private struct ManagedExportRow: View {
     }
 
     private var exportMetadata: String {
-        "\(HistoryFormatting.preset(export.preset)) \(export.qualityPercent)"
+        String(localized: "MP4 video")
             + "  ·  \(export.createdAt.formatted(date: .abbreviated, time: .shortened))"
     }
 }
