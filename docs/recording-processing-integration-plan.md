@@ -14,7 +14,7 @@ have been removed.
    and Retake are unavailable until a complete processed result is ready.
 2. **The first Preview offers Resolution and CRF.** Resolution is a menu showing
    Native, 75%, 50%, and 25% with actual pixel dimensions. Native means captured
-   backing pixels, including macOS HiDPI scaling on external displays. CRF is an
+   backing pixels, including macOS HiDPI scaling on external displays. CRF is a
    menu from 18 to 40; lower values generally retain more detail and use more
    space. Changing resolution or CRF processes the retained original
    again. Successful choices are remembered for subsequent recordings.
