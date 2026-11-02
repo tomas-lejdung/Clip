@@ -7,9 +7,9 @@ set -euo pipefail
 # must not alter the already-verified native capture, display-density, recording
 # media, or Live Share source-geometry pipelines.
 # Advance this only after an intentional native capture change has passed its
-# focused tests and real-Mac acceptance. d55ebe9 is the reviewed Space-safe
-# exact-window capture baseline.
-readonly WEB_VIEWER_BASE_COMMIT="${CLIP_WEB_VIEWER_BASE_COMMIT:-d55ebe9}"
+# focused tests and real-Mac acceptance. 2487c4e is the reviewed native-resolution
+# HEVC/H.264 recording pipeline, including manual quality, trim, and export checks.
+readonly WEB_VIEWER_BASE_COMMIT="${CLIP_WEB_VIEWER_BASE_COMMIT:-2487c4e}"
 readonly FORBIDDEN_PATHS=(
   "Packages/ClipCapture"
   "Packages/ClipMedia"
