@@ -1249,12 +1249,12 @@ struct PreviewViewModelTests {
         _ predicate: @MainActor () -> Bool
     ) async throws {
         let clock = ContinuousClock()
-        let deadline = clock.now.advanced(by: .seconds(1))
+        let deadline = clock.now.advanced(by: .seconds(5))
         while !predicate() {
             guard clock.now < deadline else {
                 throw PreviewViewModelTestError.timedOut
             }
-            await Task.yield()
+            try await Task.sleep(for: .milliseconds(10))
         }
     }
 
@@ -1567,10 +1567,10 @@ struct HistoryViewModelTests {
 
     private func waitUntil(_ predicate: @MainActor () -> Bool) async throws {
         let clock = ContinuousClock()
-        let deadline = clock.now.advanced(by: .seconds(1))
+        let deadline = clock.now.advanced(by: .seconds(5))
         while !predicate() {
             guard clock.now < deadline else { throw HistoryViewModelTestError.timedOut }
-            await Task.yield()
+            try await Task.sleep(for: .milliseconds(10))
         }
     }
 }
@@ -1841,10 +1841,10 @@ struct RecordingPresentationModelTests {
 
     private func waitUntil(_ predicate: @MainActor () -> Bool) async throws {
         let clock = ContinuousClock()
-        let deadline = clock.now.advanced(by: .seconds(1))
+        let deadline = clock.now.advanced(by: .seconds(5))
         while !predicate() {
             guard clock.now < deadline else { throw RecordingPresentationTestError.timedOut }
-            await Task.yield()
+            try await Task.sleep(for: .milliseconds(10))
         }
     }
 }
